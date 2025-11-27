@@ -1,0 +1,27 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+
+# Env
+.env
+
+# AWS temp
+.aws/
+.elasticbeanstalk/*
+!.elasticbeanstalk/config.yml
+
+# Logs
+logs
+*.log
+
+# macOS junk
+.DS_Store
+__MACOSX/
+
+# Build artifacts
+dist/
+build/
+tmp/

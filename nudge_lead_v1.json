@@ -1,0 +1,8 @@
+{
+  "TemplateName": "nudge_lead_v1",
+  "TemplateContent": {
+    "Subject": "Hey {{name}}, ready to get your personal handyman?",
+    "Html": "<h2>Hi {{name}}, it''s Taras from Mr. Fixter ??</h2><p>Just wanted to remind you that your <b>7-day free trial</b> is still waiting. With Fixter, you get unlimited visits - <b>trip charge and labor included</b> in your subscription!</p><p>We cover all Suffolk and Nassau County homes. Use code <b>FIX10</b> to save 10% on your first month.</p><p><a href=\"https://profixter.com/register\" style=\"background:#007bff;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;\">Start Free Trial</a></p><p>- Taras from Mr. Fixter</p>",
+    "Text": "Hi {{name}}, it''s Taras from Mr. Fixter! Your 7-day free trial is still open. Unlimited handyman visits - trip charge and labor included. Use FIX10 for 10% off at profixter.com/register"
+  }
+}

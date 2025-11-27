@@ -1,0 +1,8 @@
+{
+  "TemplateName": "nudge_lead_v2",
+  "TemplateContent": {
+    "Subject": "Don't miss out - your free Fixter trial Right now!",
+    "Html": "<h2>Hey {{name}}, it''s Taras again ??</h2><p>Your <b>7-day free trial</b> with Mr. Fixter is about to expire. You still have time to try unlimited handyman visits - everything included under one subscription.</p><p>Use code <b>FIX10</b> to lock in 10% off your first month.</p><p><a href=\"https://profixter.com/register\" style=\"background:#28a745;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;\">Activate My Trial</a></p><p>- Taras from Mr. Fixter</p>",
+    "Text": "Hey {{name}}, your free 7-day Fixter trial is almost over! Unlimited handyman visits - all included. Use FIX10 for 10% off at profixter.com/register"
+  }
+}
