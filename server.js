@@ -219,10 +219,7 @@ if (process.env.CHATBOT_FOLLOWUPS_ENABLED !== "false") {
 // For local development: comment out and run frontend separately on localhost:3000
 // For AWS production: uncomment and ensure 'out' folder exists
 if (process.env.NODE_ENV === "production" || process.env.SERVE_STATIC === "true") {
-  app.use(express.static(path.join(__dirname, "out")));
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "out", "index.html"));
-  });
+  
 }
 
 
