@@ -21,6 +21,11 @@ const Lead = require("./models/Lead");
 
 
 const app = express();
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: "Backend OK" });
+});
+
 
 // Redirect both /uploads/* and /api/uploads/*
 app.get(["/uploads/*", "/api/uploads/*"], (req, res) => {
@@ -87,7 +92,8 @@ mongoose
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");
   })
-  .catch((err) => {
+  .catch((err) => {const app = express();
+
     console.error("❌ MongoDB Error:", err.message);
     process.exit(1);
   });
@@ -215,12 +221,7 @@ if (process.env.CHATBOT_FOLLOWUPS_ENABLED !== "false") {
 /* ========================================================================= */
 
 
-// ✅ 7. Serve static frontend files (Next.js out/ folder)
-// For local development: comment out and run frontend separately on localhost:3000
-// For AWS production: uncomment and ensure 'out' folder exists
-if (process.env.NODE_ENV === "production" || process.env.SERVE_STATIC === "true") {
-  
-}
+
 
 
 // ✅ 8. Global error handler
