@@ -24,27 +24,57 @@ const PLAN_PRICES = {
   elite: 499,
 };
 
-const PRICE_MAP = {
+const LEGACY_PRICE_MAP = {
   monthly: {
-    basic: process.env.STRIPE_PRICE_BASIC_MONTHLY || "price_1RUdq2Bw0RtvSZjMnnI6uRgn",
-    plus: process.env.STRIPE_PRICE_PLUS_MONTHLY || "price_1RUds8Bw0RtvSZjMFS1BoQEU",
-    premium: process.env.STRIPE_PRICE_PREMIUM_MONTHLY || "price_1RUdtWBw0RtvSZjMOo8Q1as9",
-    elite: process.env.STRIPE_PRICE_ELITE_MONTHLY || "price_1RUduRBw0RtvSZjMy6ySmgHk",
+    basic: "price_1RUdq2Bw0RtvSZjMnnI6uRgn",
+    plus: "price_1RUds8Bw0RtvSZjMFS1BoQEU",
+    premium: "price_1RUdtWBw0RtvSZjMOo8Q1as9",
+    elite: "price_1RUduRBw0RtvSZjMy6ySmgHk",
   },
   annual: {
-    basic: process.env.STRIPE_PRICE_BASIC_ANNUAL || "price_1T1FWUBw0RtvSZjMFXMTrt9o",
-    plus: process.env.STRIPE_PRICE_PLUS_ANNUAL || "price_1T1FXiBw0RtvSZjMTmqGIl2d",
-    premium: process.env.STRIPE_PRICE_PREMIUM_ANNUAL || "price_1T1FYPBw0RtvSZjMEYMourmW",
-    elite: process.env.STRIPE_PRICE_ELITE_ANNUAL || "price_1T1FZGBw0RtvSZjMSoBGm4p6",
+    basic: "price_1T1FWUBw0RtvSZjMFXMTrt9o",
+    plus: "price_1T1FXiBw0RtvSZjMTmqGIl2d",
+    premium: "price_1T1FYPBw0RtvSZjMEYMourmW",
+    elite: "price_1T1FZGBw0RtvSZjMSoBGm4p6",
   },
 };
 
-const PRICE_LOOKUP = Object.entries(PRICE_MAP).reduce((acc, [billingCycle, plans]) => {
+const PRICE_ENV_KEYS = {
+  monthly: {
+    basic: "STRIPE_PRICE_BASIC_MONTHLY",
+    plus: "STRIPE_PRICE_PLUS_MONTHLY",
+    premium: "STRIPE_PRICE_PREMIUM_MONTHLY",
+    elite: "STRIPE_PRICE_ELITE_MONTHLY",
+  },
+  annual: {
+    basic: "STRIPE_PRICE_BASIC_ANNUAL",
+    plus: "STRIPE_PRICE_PLUS_ANNUAL",
+    premium: "STRIPE_PRICE_PREMIUM_ANNUAL",
+    elite: "STRIPE_PRICE_ELITE_ANNUAL",
+  },
+};
+
+const PRICE_CACHE_TTL_MS = 5 * 60 * 1000;
+const priceResolutionCache = new Map();
+
+const PRICE_LOOKUP = Object.entries(LEGACY_PRICE_MAP).reduce((acc, [billingCycle, plans]) => {
   for (const [plan, priceId] of Object.entries(plans)) {
     acc[priceId] = { plan, billingCycle };
   }
   return acc;
 }, {});
+
+function logPriceResolution(level, event, details = {}) {
+  const payload = JSON.stringify({
+    level,
+    event,
+    scope: "stripe_price_resolution",
+    ...details,
+  });
+  if (level === "error") console.error(payload);
+  else if (level === "warn") console.warn(payload);
+  else console.log(payload);
+}
 
 function normalizePlanType(raw) {
   const plan = String(raw || "").trim().toLowerCase();
@@ -55,11 +85,146 @@ function normalizeBillingCycle(raw, fallback = "monthly") {
   return String(raw || "").trim().toLowerCase() === "annual" ? "annual" : fallback;
 }
 
-function getPriceId(plan, billingCycle = "monthly") {
+function getLegacyPriceId(plan, billingCycle = "monthly") {
   const normalizedPlan = normalizePlanType(plan);
   const normalizedCycle = normalizeBillingCycle(billingCycle);
   if (!normalizedPlan) return null;
-  return PRICE_MAP[normalizedCycle]?.[normalizedPlan] || null;
+  return LEGACY_PRICE_MAP[normalizedCycle]?.[normalizedPlan] || null;
+}
+
+function rememberPriceMapping(priceId, plan, billingCycle) {
+  if (!priceId) return;
+  PRICE_LOOKUP[String(priceId)] = {
+    plan: normalizePlanType(plan),
+    billingCycle: normalizeBillingCycle(billingCycle, "monthly"),
+  };
+}
+
+function getStripeMetadataValue(price, key) {
+  const direct = price?.metadata?.[key];
+  if (direct) return direct;
+  const product = price?.product;
+  if (product && typeof product === "object") {
+    return product.metadata?.[key] || null;
+  }
+  return null;
+}
+
+async function resolveStripePriceId({ plan, billingCycle = "monthly" }) {
+  const normalizedPlan = normalizePlanType(plan);
+  const normalizedCycle = normalizeBillingCycle(billingCycle, "monthly");
+  const cacheKey = `${normalizedPlan || "invalid"}:${normalizedCycle}`;
+  const cached = priceResolutionCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  if (!normalizedPlan) {
+    const value = { priceId: null, source: null };
+    priceResolutionCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+    });
+    logPriceResolution("warn", "stripe_price_resolution_failed", {
+      requestedPlan: plan || null,
+      billingCycle: normalizedCycle,
+      source: null,
+      found: false,
+    });
+    return value;
+  }
+
+  const envKey = PRICE_ENV_KEYS[normalizedCycle]?.[normalizedPlan] || null;
+  const envPriceId = envKey ? String(process.env[envKey] || "").trim() : "";
+  if (envPriceId) {
+    rememberPriceMapping(envPriceId, normalizedPlan, normalizedCycle);
+    const value = { priceId: envPriceId, source: "env" };
+    priceResolutionCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+    });
+    logPriceResolution("info", "stripe_price_resolution_succeeded", {
+      requestedPlan: normalizedPlan,
+      billingCycle: normalizedCycle,
+      source: value.source,
+      found: true,
+    });
+    return value;
+  }
+
+  if (hasStripeSecretKey()) {
+    try {
+      const prices = await stripe.prices.list({
+        active: true,
+        limit: 100,
+        expand: ["data.product"],
+      });
+
+      const matched = (prices.data || []).find((price) => {
+        const metadataPlan = normalizePlanType(getStripeMetadataValue(price, "profixter_plan"));
+        const metadataCycle = normalizeBillingCycle(
+          getStripeMetadataValue(price, "billing_cycle"),
+          ""
+        );
+        return metadataPlan === normalizedPlan && metadataCycle === normalizedCycle;
+      });
+
+      if (matched?.id) {
+        rememberPriceMapping(matched.id, normalizedPlan, normalizedCycle);
+        const value = { priceId: matched.id, source: "stripe_metadata" };
+        priceResolutionCache.set(cacheKey, {
+          value,
+          expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+        });
+        logPriceResolution("info", "stripe_price_resolution_succeeded", {
+          requestedPlan: normalizedPlan,
+          billingCycle: normalizedCycle,
+          source: value.source,
+          found: true,
+        });
+        return value;
+      }
+    } catch (error) {
+      logPriceResolution("warn", "stripe_price_metadata_lookup_failed", {
+        requestedPlan: normalizedPlan,
+        billingCycle: normalizedCycle,
+        source: "stripe_metadata",
+        found: false,
+        message: error?.message || "Unable to query Stripe prices",
+      });
+    }
+  }
+
+  const legacyPriceId = getLegacyPriceId(normalizedPlan, normalizedCycle);
+  if (legacyPriceId) {
+    rememberPriceMapping(legacyPriceId, normalizedPlan, normalizedCycle);
+    const value = { priceId: legacyPriceId, source: "legacy" };
+    priceResolutionCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+    });
+    logPriceResolution("info", "stripe_price_resolution_succeeded", {
+      requestedPlan: normalizedPlan,
+      billingCycle: normalizedCycle,
+      source: value.source,
+      found: true,
+    });
+    return value;
+  }
+
+  const value = { priceId: null, source: null };
+  priceResolutionCache.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+  });
+  logPriceResolution("error", "stripe_price_resolution_failed", {
+    requestedPlan: normalizedPlan,
+    billingCycle: normalizedCycle,
+    source: null,
+    found: false,
+  });
+  return value;
 }
 
 function getPlanAndBillingFromPrice(priceId) {
@@ -72,15 +237,24 @@ function mapStripePriceToPlan(priceOrId) {
       ? priceOrId
       : { id: String(priceOrId || "") };
   const mapped = getPlanAndBillingFromPrice(price.id);
+  const metadataPlan = normalizePlanType(getStripeMetadataValue(price, "profixter_plan"));
+  const metadataCycle = normalizeBillingCycle(
+    getStripeMetadataValue(price, "billing_cycle"),
+    mapped.billingCycle
+  );
   const interval = String(price?.recurring?.interval || "").toLowerCase();
   const billingCycle =
     interval === "year"
       ? "annual"
       : interval === "month"
         ? "monthly"
-        : mapped.billingCycle;
+        : metadataCycle;
+  const plan = metadataPlan || mapped.plan;
+  if (plan && price.id) {
+    rememberPriceMapping(price.id, plan, billingCycle);
+  }
   return {
-    plan: mapped.plan,
+    plan,
     billingCycle,
     priceId: price.id || null,
   };
@@ -795,7 +969,6 @@ async function applyStripeSubscriptionUpgrade({
   let updatedStripeSubscription;
   try {
     updatedStripeSubscription = await stripe.subscriptions.update(upgradeTarget.id, {
-      cancel_at_period_end: false,
       proration_behavior: "always_invoice",
       payment_behavior: "pending_if_incomplete",
       items: [{ id: upgradeItem.id, price: nextPriceId }],
@@ -943,11 +1116,14 @@ module.exports = {
   stripe,
   hasStripeSecretKey,
   PLAN_PRICES,
-  PRICE_MAP,
+  PRICE_MAP: LEGACY_PRICE_MAP,
+  LEGACY_PRICE_MAP,
   PRICE_LOOKUP,
   normalizePlanType,
   normalizeBillingCycle,
-  getPriceId,
+  getPriceId: getLegacyPriceId,
+  getLegacyPriceId,
+  resolveStripePriceId,
   getPlanAndBillingFromPrice,
   mapStripePriceToPlan,
   normalizeStripeStatus,

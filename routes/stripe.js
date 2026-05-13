@@ -7,7 +7,7 @@ const Subscription = require("../models/Subscription");
 const {
   stripe,
   hasStripeSecretKey,
-  getPriceId,
+  resolveStripePriceId,
   normalizeBillingCycle,
   resolveUserStripeCustomerId,
 } = require("../utils/subscriptionManagement");
@@ -42,7 +42,8 @@ function logCheckout(level, event, details = {}) {
 router.post("/create-checkout-session", auth, async (req, res) => {
   const { plan, addressId, code, billingCycle } = req.body;
   const cycle = normalizeBillingCycle(billingCycle, "monthly");
-  const priceId = getPriceId(plan, cycle);
+  const priceResolution = await resolveStripePriceId({ plan, billingCycle: cycle });
+  const priceId = priceResolution.priceId;
   const requestId = `checkout_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   logCheckout("info", "subscription_checkout_start", {
@@ -50,6 +51,8 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     userId: req.user?.id || null,
     plan: plan || null,
     billingCycle: cycle,
+    priceResolutionSource: priceResolution.source || null,
+    priceFound: !!priceId,
     hasAddressId: !!addressId,
     hasPromoCode: !!code,
   });
@@ -66,9 +69,16 @@ router.post("/create-checkout-session", auth, async (req, res) => {
   }
 
   if (!plan || !priceId) {
+    logCheckout("error", "subscription_checkout_price_mapping_missing", {
+      requestId,
+      plan: plan || null,
+      billingCycle: cycle,
+      priceResolutionSource: priceResolution.source || null,
+      found: !!priceId,
+    });
     return res.status(400).json({
-      message: "Missing or invalid plan or billingCycle",
-      details: { planProvided: !!plan, billingCycle: cycle, priceFound: !!priceId },
+      message: "Unable to map the requested plan",
+      code: "PRICE_MAPPING_NOT_FOUND",
     });
   }
 

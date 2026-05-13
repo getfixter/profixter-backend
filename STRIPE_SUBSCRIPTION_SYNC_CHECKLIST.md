@@ -1,5 +1,14 @@
 # Stripe Subscription Sync Manual Checklist
 
+## Stripe price metadata
+
+For each active Stripe membership price, add metadata on the Price itself or on its Product:
+
+- `profixter_plan = basic | plus | premium | elite`
+- `billing_cycle = monthly | annual`
+
+Price-level metadata is preferred because it keeps webhook and subscription sync mapping explicit. Environment variables such as `STRIPE_PRICE_PLUS_MONTHLY` remain optional overrides, not required deployment configuration.
+
 1. Create a new subscription through Stripe Checkout and confirm webhook sync creates or updates the local Stripe-managed subscription record.
 2. Upgrade plan from the website and confirm Stripe changes first, then local plan, Stripe price ID, billing cycle, current period dates, and access state match Stripe.
 3. Downgrade plan from the website and confirm the Stripe schedule exists and local pending plan fields reflect the scheduled change.

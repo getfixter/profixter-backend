@@ -8,7 +8,7 @@ const {
   stripe,
   normalizePlanType,
   normalizeBillingCycle,
-  getPriceId,
+  resolveStripePriceId,
   classifyPlanChange,
   serializeSubscription,
   resolveStripeSubscriptionForRecord,
@@ -148,7 +148,9 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
   let logContext = {
     userId: req.user?.id || null,
     addressId: addressId || null,
+    currentPlan: null,
     currentStripeSubscriptionIdExists: false,
+    currentStripeItemIdExists: false,
     currentPriceId: null,
     requestedPlan: targetPlan || req.body?.plan || null,
     requestedBillingCycle: requestedCycle,
@@ -198,6 +200,7 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
 
     logContext = {
       ...logContext,
+      currentPlan: subscription.subscriptionType || null,
       currentStripeSubscriptionIdExists: !!subscription.stripeSubscriptionId,
       currentPriceId: subscription.stripePriceId || null,
     };
@@ -241,19 +244,31 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
         code: "STRIPE_SUBSCRIPTION_ITEM_MISSING",
       });
     }
+    logContext = {
+      ...logContext,
+      currentStripeItemIdExists: !!item?.id,
+    };
 
-    const nextPriceId = getPriceId(targetPlan, requestedCycle);
+    const priceResolution = await resolveStripePriceId({
+      plan: targetPlan,
+      billingCycle: requestedCycle,
+    });
+    const nextPriceId = priceResolution.priceId;
     if (!nextPriceId) {
-      logPlanChange("error", "subscription_plan_change_price_missing", logContext);
+      logPlanChange("error", "subscription_plan_change_price_missing", {
+        ...logContext,
+        priceResolutionSource: priceResolution.source || null,
+      });
       return res.status(500).json({
         message: "Unable to map the requested plan",
-        code: "SUBSCRIPTION_PRICE_ID_MISSING",
+        code: "PRICE_MAPPING_NOT_FOUND",
       });
     }
     logContext = {
       ...logContext,
       currentPriceId: item?.price?.id || subscription.stripePriceId || null,
       resolvedNewPriceIdExists: true,
+      priceResolutionSource: priceResolution.source || null,
     };
 
     const changeType = classifyPlanChange({

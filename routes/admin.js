@@ -25,7 +25,7 @@ const {
 const {
   stripe,
   normalizePlanType,
-  getPriceId,
+  resolveStripePriceId,
   classifyPlanChange,
   resolveStripeSubscriptionForRecord,
   getStripeSubscriptionItemForRecord,
@@ -396,7 +396,11 @@ router.put(
 
         const targetPlan = normalizePlanType(planRaw);
         const targetCycle = activeSub.billingCycle || "monthly";
-        const nextPriceId = getPriceId(targetPlan, targetCycle);
+        const priceResolution = await resolveStripePriceId({
+          plan: targetPlan,
+          billingCycle: targetCycle,
+        });
+        const nextPriceId = priceResolution.priceId;
         const item = getStripeSubscriptionItemForRecord({
           subscription: activeSub,
           stripeSubscription,
