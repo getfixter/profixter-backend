@@ -508,10 +508,16 @@ router.post("/create-billing-portal-session", auth, async (req, res) => {
       });
     }
 
-    const session = await stripe.billingPortal.sessions.create({
+    const portalSessionParams = {
       customer: stripeCustomerId,
       return_url: `${process.env.CLIENT_URL || "https://www.profixter.com"}/account?tab=plan`,
-    });
+    };
+
+    if (process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID) {
+      portalSessionParams.configuration = process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID;
+    }
+
+    const session = await stripe.billingPortal.sessions.create(portalSessionParams);
 
     return res.json({ url: session.url });
   } catch (err) {
