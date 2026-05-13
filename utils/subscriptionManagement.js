@@ -799,12 +799,6 @@ async function applyStripeSubscriptionUpgrade({
       proration_behavior: "always_invoice",
       payment_behavior: "pending_if_incomplete",
       items: [{ id: upgradeItem.id, price: nextPriceId }],
-      metadata: {
-        ...(upgradeTarget.metadata || {}),
-        addressId: String(addressId),
-        userId: String(user.userId || user._id),
-        localSubscriptionId: String(subscription._id),
-      },
       expand: ["items.data.price", "schedule", "latest_invoice.payment_intent"],
     });
   } catch (error) {
@@ -851,6 +845,29 @@ async function applyStripeSubscriptionUpgrade({
     error.statusCode = 402;
     error.code = "stripe_upgrade_payment_incomplete";
     throw error;
+  }
+
+  try {
+    await stripe.subscriptions.update(updatedStripeSubscription.id, {
+      metadata: {
+        ...(upgradeTarget.metadata || {}),
+        addressId: String(addressId),
+        userId: String(user.userId || user._id),
+        localSubscriptionId: String(subscription._id),
+      },
+    });
+  } catch (metadataError) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "subscription_upgrade_metadata_sync_failed",
+        scope: "stripe_subscription_management",
+        stripeSubscriptionId: updatedStripeSubscription.id,
+        userId: String(user._id),
+        addressId: String(addressId),
+        message: metadataError?.message || "Unable to update Stripe subscription metadata",
+      })
+    );
   }
 
   return retrieveStripeSubscription(updatedStripeSubscription.id);

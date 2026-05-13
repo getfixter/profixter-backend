@@ -22,6 +22,18 @@ const {
 
 const router = express.Router();
 
+function logPlanChange(level, event, details = {}) {
+  const payload = JSON.stringify({
+    level,
+    event,
+    scope: "subscription_plan_change",
+    ...details,
+  });
+  if (level === "error") console.error(payload);
+  else if (level === "warn") console.warn(payload);
+  else console.log(payload);
+}
+
 async function getOwnedAddress(userId, addressId) {
   const user = await User.findById(userId);
   if (!user) return { user: null, address: null };
@@ -130,21 +142,45 @@ router.get("/manage/address/:addressId", auth, async (req, res) => {
 });
 
 router.patch("/manage/address/:addressId", auth, async (req, res) => {
-  try {
-    const { addressId } = req.params;
-    const targetPlan = normalizePlanType(req.body?.plan);
-    const requestedCycle = normalizeBillingCycle(req.body?.billingCycle, "monthly");
+  const { addressId } = req.params;
+  const targetPlan = normalizePlanType(req.body?.plan);
+  const requestedCycle = normalizeBillingCycle(req.body?.billingCycle, "monthly");
+  let logContext = {
+    userId: req.user?.id || null,
+    addressId: addressId || null,
+    currentStripeSubscriptionIdExists: false,
+    currentPriceId: null,
+    requestedPlan: targetPlan || req.body?.plan || null,
+    requestedBillingCycle: requestedCycle,
+    resolvedNewPriceIdExists: false,
+  };
 
+  logPlanChange("info", "subscription_plan_change_start", logContext);
+
+  try {
     if (!mongoose.isValidObjectId(addressId)) {
-      return res.status(400).json({ message: "Invalid addressId" });
+      return res.status(400).json({
+        message: "Invalid addressId",
+        code: "INVALID_ADDRESS_ID",
+      });
     }
     if (!targetPlan) {
-      return res.status(400).json({ message: "Invalid target plan" });
+      return res.status(400).json({
+        message: "Invalid target plan",
+        code: "INVALID_TARGET_PLAN",
+      });
     }
 
     const { user, address } = await getOwnedAddress(req.user.id, addressId);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (!address) return res.status(404).json({ message: "Address not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found", code: "USER_NOT_FOUND" });
+    }
+    if (!address) {
+      return res.status(404).json({
+        message: "Address not found",
+        code: "ADDRESS_NOT_FOUND",
+      });
+    }
 
     const subscription = await getOwnedSubscriptionForAddress({
       userId: user._id,
@@ -153,13 +189,24 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
     });
 
     if (!subscription) {
-      return res.status(404).json({ message: "No active subscription found for this address" });
+      logPlanChange("warn", "subscription_plan_change_missing_subscription", logContext);
+      return res.status(404).json({
+        message: "No active subscription found for this address",
+        code: "ACTIVE_SUBSCRIPTION_NOT_FOUND",
+      });
     }
+
+    logContext = {
+      ...logContext,
+      currentStripeSubscriptionIdExists: !!subscription.stripeSubscriptionId,
+      currentPriceId: subscription.stripePriceId || null,
+    };
 
     if (subscription.cancelAtPeriodEnd) {
       return res.status(409).json({
         message:
           "Cancellation is already scheduled for this subscription. Please keep the current plan or start a new subscription later.",
+        code: "SUBSCRIPTION_CANCELLATION_ALREADY_SCHEDULED",
       });
     }
 
@@ -167,14 +214,19 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       String(subscription.subscriptionType || "").toLowerCase() === targetPlan &&
       normalizeBillingCycle(subscription.billingCycle, "monthly") === requestedCycle
     ) {
-      return res.status(400).json({ message: "You are already on this plan" });
+      return res.status(400).json({
+        message: "You are already on this plan",
+        code: "SUBSCRIPTION_PLAN_ALREADY_SELECTED",
+      });
     }
 
     const stripeSubscription = await resolveStripeSubscriptionForRecord({ subscription, user });
     if (!stripeSubscription) {
+      logPlanChange("warn", "subscription_plan_change_stripe_link_missing", logContext);
       return res.status(409).json({
         message:
           "We could not safely link this older subscription to Stripe yet. This subscription is not ready for self-serve changes yet.",
+        code: "STRIPE_SUBSCRIPTION_LINK_MISSING",
       });
     }
 
@@ -183,13 +235,26 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       stripeSubscription,
     });
     if (!item?.id) {
-      return res.status(409).json({ message: "Stripe subscription item not found" });
+      logPlanChange("warn", "subscription_plan_change_item_missing", logContext);
+      return res.status(409).json({
+        message: "Stripe subscription item not found",
+        code: "STRIPE_SUBSCRIPTION_ITEM_MISSING",
+      });
     }
 
     const nextPriceId = getPriceId(targetPlan, requestedCycle);
     if (!nextPriceId) {
-      return res.status(400).json({ message: "Unable to map the requested plan" });
+      logPlanChange("error", "subscription_plan_change_price_missing", logContext);
+      return res.status(500).json({
+        message: "Unable to map the requested plan",
+        code: "SUBSCRIPTION_PRICE_ID_MISSING",
+      });
     }
+    logContext = {
+      ...logContext,
+      currentPriceId: item?.price?.id || subscription.stripePriceId || null,
+      resolvedNewPriceIdExists: true,
+    };
 
     const changeType = classifyPlanChange({
       currentPlan: subscription.subscriptionType,
@@ -217,6 +282,12 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       });
     }
 
+    logPlanChange("info", "subscription_plan_change_stripe_success", {
+      ...logContext,
+      changeType,
+      stripeSubscriptionId: updatedStripeSubscription?.id || stripeSubscription.id,
+    });
+
     const updatedSubscription = await upsertSubscriptionFromStripe({
       stripeSubscription: updatedStripeSubscription,
       user,
@@ -231,12 +302,23 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       subscription: serializeSubscription(updatedSubscription, address),
     });
   } catch (err) {
-    console.error("PATCH /subscriptions/manage/address error:", err);
-    return res.status(err?.statusCode || 500).json({
+    logPlanChange("error", "subscription_plan_change_failed", {
+      ...logContext,
+      stripeErrorType: err?.type || null,
+      stripeErrorCode: err?.code || null,
+      stripeErrorParam: err?.param || null,
+      statusCode: err?.statusCode || err?.status || 500,
+      message: err?.message || "Unknown subscription update error",
+    });
+    return res.status(err?.statusCode || err?.status || 502).json({
       message:
         err?.code === "stripe_upgrade_payment_incomplete"
           ? err.message
           : "Unable to update plan right now",
+      code:
+        err?.code === "stripe_upgrade_payment_incomplete"
+          ? "STRIPE_UPGRADE_PAYMENT_INCOMPLETE"
+          : "SUBSCRIPTION_PLAN_CHANGE_FAILED",
     });
   }
 });
