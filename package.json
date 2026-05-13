@@ -33,7 +33,7 @@
     "stripe": "^17.7.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "22.x"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"
