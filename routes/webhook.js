@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
+const StripeWebhookEvent = require("../models/StripeWebhookEvent");
 const RepAttribution = require("../models/RepAttribution");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
 const { syncGhlConversion } = require("../utils/ghlSync");
@@ -11,10 +12,9 @@ const {
   getPlanPrice,
   retrieveStripeSubscription,
   upsertSubscriptionFromStripe,
-  syncLegacyUserSubscription,
+  syncCustomerFromStripe,
+  handlePaymentFailure,
 } = require("../utils/subscriptionManagement");
-
-const PAYMENT_FAILURE_STATUSES = new Set(["past_due", "unpaid", "incomplete_expired"]);
 
 function logWebhook(level, event, details = {}) {
   const payload = JSON.stringify({
@@ -436,13 +436,6 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
   const incomingStatus = String(canonicalStripeSubscription?.status || "").toLowerCase();
   const incomingCancelAtPeriodEnd = !!canonicalStripeSubscription.cancel_at_period_end;
 
-  if (PAYMENT_FAILURE_STATUSES.has(incomingStatus)) {
-    return endSubscriptionForPaymentFailure({
-      stripeSubscription: canonicalStripeSubscription,
-      user,
-    });
-  }
-
   const subscription = await upsertSubscriptionFromStripe({
     stripeSubscription: canonicalStripeSubscription,
     user,
@@ -491,36 +484,6 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
   return subscription;
 }
 
-async function endSubscriptionForPaymentFailure({ stripeSubscription, user }) {
-  let terminalStripeSubscription = stripeSubscription;
-
-  if (String(stripeSubscription?.status || "").toLowerCase() !== "canceled") {
-    await stripe.subscriptions.cancel(String(stripeSubscription.id), {
-      prorate: false,
-    });
-    terminalStripeSubscription = await retrieveStripeSubscription(String(stripeSubscription.id));
-  }
-
-  const subscription = await upsertSubscriptionFromStripe({
-    stripeSubscription: terminalStripeSubscription,
-    user,
-    addressIdHint:
-      terminalStripeSubscription.metadata?.addressId ||
-      stripeSubscription.metadata?.addressId ||
-      null,
-  });
-
-  if (!subscription) return null;
-
-  subscription.status = "canceled";
-  subscription.cancelAtPeriodEnd = false;
-  subscription.cancellationDate = subscription.cancellationDate || new Date();
-  subscription.cancellationReason = "payment_failed";
-  await subscription.save();
-  await syncLegacyUserSubscription(user._id);
-  return subscription;
-}
-
 async function handleInvoicePaid(invoice) {
   if (!invoice?.subscription) return;
 
@@ -532,7 +495,10 @@ async function handleInvoicePaid(invoice) {
   subscription.latestPaymentDate = invoice.status_transitions?.paid_at
     ? new Date(invoice.status_transitions.paid_at * 1000)
     : new Date(invoice.created * 1000);
+  subscription.latestInvoiceId = invoice.id || subscription.latestInvoiceId || null;
+  subscription.latestInvoiceStatus = invoice.status || subscription.latestInvoiceStatus || null;
   await subscription.save();
+  return subscription;
 }
 
 async function handleInvoicePaymentFailed(invoice) {
@@ -575,11 +541,86 @@ async function handleInvoicePaymentFailed(invoice) {
       console.warn("No local user found for failed recurring invoice:", invoice.id);
       return;
     }
-    await endSubscriptionForPaymentFailure({ stripeSubscription, user });
+    await handlePaymentFailure(invoice, stripeSubscription, user);
     return;
   }
 
-  await syncStripeSubscriptionRecord(stripeSubscription);
+  await handlePaymentFailure(invoice, stripeSubscription, user);
+}
+
+async function handleCustomerUpdated(customer) {
+  const user = await syncCustomerFromStripe(customer?.id || null);
+  return user ? { userId: String(user._id) } : null;
+}
+
+async function handlePaymentMethodAttached(paymentMethod) {
+  const customerId = paymentMethod?.customer ? String(paymentMethod.customer) : null;
+  if (!customerId) return null;
+  const user = await syncCustomerFromStripe(customerId);
+  if (!user) return null;
+
+  const subscriptions = await stripe.subscriptions.list({
+    customer: customerId,
+    status: "all",
+    limit: 100,
+    expand: ["data.items.data.price", "data.schedule", "data.latest_invoice.payment_intent"],
+  });
+
+  let synced = 0;
+  for (const stripeSubscription of subscriptions.data || []) {
+    const updated = await upsertSubscriptionFromStripe({
+      stripeSubscription,
+      user,
+      addressIdHint: stripeSubscription.metadata?.addressId || null,
+    });
+    if (updated) synced++;
+  }
+  return { userId: String(user._id), synced };
+}
+
+function eventStripeIds(event) {
+  const object = event?.data?.object || {};
+  return {
+    stripeCustomerId: object.customer ? String(object.customer) : object.id?.startsWith?.("cus_") ? object.id : null,
+    stripeSubscriptionId:
+      object.subscription
+        ? String(object.subscription)
+        : object.id?.startsWith?.("sub_")
+          ? object.id
+          : null,
+  };
+}
+
+async function beginWebhookEvent(event) {
+  const ids = eventStripeIds(event);
+  const existing = await StripeWebhookEvent.findOne({ eventId: event.id });
+  if (existing?.status === "completed" || existing?.status === "processing") {
+    return { duplicate: true, record: existing, ...ids };
+  }
+  if (existing) {
+    existing.status = "processing";
+    existing.lastError = null;
+    existing.eventType = event.type;
+    existing.stripeCustomerId = ids.stripeCustomerId;
+    existing.stripeSubscriptionId = ids.stripeSubscriptionId;
+    await existing.save();
+    return { duplicate: false, record: existing, ...ids };
+  }
+  try {
+    const record = await StripeWebhookEvent.create({
+      eventId: event.id,
+      eventType: event.type,
+      stripeCustomerId: ids.stripeCustomerId,
+      stripeSubscriptionId: ids.stripeSubscriptionId,
+      status: "processing",
+    });
+    return { duplicate: false, record, ...ids };
+  } catch (error) {
+    if (error?.code === 11000) {
+      return { duplicate: true, record: null, ...ids };
+    }
+    throw error;
+  }
 }
 
 module.exports = async (req, res) => {
@@ -604,29 +645,43 @@ module.exports = async (req, res) => {
   }
 
   try {
+    const eventState = await beginWebhookEvent(event);
+    logWebhook("info", "webhook_event_received", {
+      stripeEventId: event.id,
+      stripeEventType: event.type,
+      stripeCustomerId: eventState.stripeCustomerId,
+      stripeSubscriptionId: eventState.stripeSubscriptionId,
+      duplicate: eventState.duplicate,
+    });
+
+    if (eventState.duplicate) {
+      return res.sendStatus(200);
+    }
+
+    let syncResult = null;
     switch (event.type) {
       case "checkout.session.completed":
-        await handleCheckoutCompleted(event.data.object);
+        syncResult = await handleCheckoutCompleted(event.data.object);
         break;
 
       case "customer.subscription.created":
-        await syncStripeSubscriptionRecord(event.data.object);
+        syncResult = await syncStripeSubscriptionRecord(event.data.object);
         break;
 
       case "customer.subscription.updated":
-        await syncStripeSubscriptionRecord(event.data.object);
+        syncResult = await syncStripeSubscriptionRecord(event.data.object);
         break;
 
       case "customer.subscription.deleted":
-        await syncStripeSubscriptionRecord(event.data.object);
+        syncResult = await syncStripeSubscriptionRecord(event.data.object);
         break;
 
       case "invoice.paid":
-        await handleInvoicePaid(event.data.object);
+        syncResult = await handleInvoicePaid(event.data.object);
         break;
 
       case "invoice.payment_failed":
-        await handleInvoicePaymentFailed(event.data.object);
+        syncResult = await handleInvoicePaymentFailed(event.data.object);
         break;
 
       case "invoice.payment_action_required":
@@ -637,7 +692,7 @@ module.exports = async (req, res) => {
             const sub = await retrieveStripeSubscription(
               String(event.data.object.subscription)
             );
-            await syncStripeSubscriptionRecord(sub);
+            syncResult = await syncStripeSubscriptionRecord(sub);
           } catch (syncErr) {
             console.warn(
               "invoice.payment_action_required sync failed:",
@@ -647,12 +702,48 @@ module.exports = async (req, res) => {
         }
         break;
 
+      case "customer.updated":
+        syncResult = await handleCustomerUpdated(event.data.object);
+        break;
+
+      case "payment_method.attached":
+        syncResult = await handlePaymentMethodAttached(event.data.object);
+        break;
+
       default:
         break;
     }
 
+    await StripeWebhookEvent.updateOne(
+      { eventId: event.id },
+      {
+        $set: {
+          status: "completed",
+          processedAt: new Date(),
+          lastError: null,
+        },
+      }
+    );
+    logWebhook("info", "webhook_event_synced", {
+      stripeEventId: event.id,
+      stripeEventType: event.type,
+      stripeCustomerId: eventState.stripeCustomerId,
+      stripeSubscriptionId: eventState.stripeSubscriptionId,
+      syncResult: syncResult?._id ? String(syncResult._id) : syncResult || null,
+    });
     return res.sendStatus(200);
   } catch (err) {
+    if (event?.id) {
+      await StripeWebhookEvent.updateOne(
+        { eventId: event.id },
+        {
+          $set: {
+            status: "failed",
+            lastError: err?.message || "Unknown webhook error",
+          },
+        }
+      ).catch(() => {});
+    }
     logWebhook("error", "webhook_handler_failed", {
       stripeEventId: event?.id || null,
       stripeEventType: event?.type || null,

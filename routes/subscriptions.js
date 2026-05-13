@@ -233,7 +233,10 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
   } catch (err) {
     console.error("PATCH /subscriptions/manage/address error:", err);
     return res.status(err?.statusCode || 500).json({
-      message: err?.message || "Unable to update plan right now",
+      message:
+        err?.code === "stripe_upgrade_payment_incomplete"
+          ? err.message
+          : "Unable to update plan right now",
     });
   }
 });
@@ -314,7 +317,7 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
   } catch (err) {
     console.error("POST /subscriptions/manage/address/:addressId/cancel error:", err);
     return res.status(500).json({
-      message: err?.message || "Unable to cancel subscription right now",
+      message: "Unable to cancel subscription right now",
     });
   }
 });
@@ -374,7 +377,7 @@ router.post("/manage/address/:addressId/reactivate", auth, async (req, res) => {
   } catch (err) {
     console.error("POST /subscriptions/manage/address/:addressId/reactivate error:", err);
     return res.status(500).json({
-      message: err?.message || "Unable to reactivate subscription right now",
+      message: "Unable to reactivate subscription right now",
     });
   }
 });

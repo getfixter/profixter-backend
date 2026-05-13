@@ -42,7 +42,19 @@ const SubscriptionSchema = new mongoose.Schema(
     startDate: { type: Date, required: true },
     latestPaymentDate: { type: Date, required: true },
     nextPaymentDate: { type: Date, required: true },
+    currentPeriodStart: { type: Date, default: null },
     currentPeriodEnd: { type: Date, default: null },
+    trialStart: { type: Date, default: null },
+    trialEnd: { type: Date, default: null },
+    latestInvoiceId: { type: String, default: null },
+    latestInvoiceStatus: { type: String, default: null },
+    latestPaymentIntentStatus: { type: String, default: null },
+    accessStatus: {
+      type: String,
+      enum: ["active", "inactive"],
+      default: "inactive",
+      index: true,
+    },
 
     status: {
       type: String,
@@ -55,6 +67,7 @@ const SubscriptionSchema = new mongoose.Schema(
         "incomplete_expired",
         "canceled",
         "expired",
+        "paused",
       ],
       default: "active",
       index: true,
