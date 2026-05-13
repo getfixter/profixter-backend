@@ -1,0 +1,148 @@
+name: Deploy Backend to Elastic Beanstalk
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      EB_APPLICATION_NAME: ${{ secrets.EB_APPLICATION_NAME }}
+      EB_ENVIRONMENT_NAME: ${{ secrets.EB_ENVIRONMENT_NAME }}
+      VERSION_LABEL: backend-${{ github.sha }}
+
+    steps:
+      - name: Checkout backend repo
+        uses: actions/checkout@v4
+
+      - name: Verify required deployment secrets
+        shell: bash
+        run: |
+          missing=0
+          for name in \
+            AWS_ACCESS_KEY_ID \
+            AWS_SECRET_ACCESS_KEY \
+            AWS_REGION \
+            EB_APPLICATION_NAME \
+            EB_ENVIRONMENT_NAME
+          do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing GitHub secret::$name is required for Elastic Beanstalk deployment."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Run backend validation
+        shell: bash
+        run: |
+          if npm run | grep -qE '^[[:space:]]+test($|:)'; then
+            npm test
+          fi
+
+          if npm run | grep -qE '^[[:space:]]+lint($|:)'; then
+            npm run lint
+          fi
+
+          if ! npm run | grep -qE '^[[:space:]]+test($|:)'; then
+            node --check server.js
+            find routes controllers middleware models utils jobs scripts \
+              -type f -name '*.js' -print0 2>/dev/null \
+              | xargs -0 -r -n 1 node --check
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create clean Elastic Beanstalk bundle
+        shell: bash
+        run: |
+          rm -rf deploy_bundle backend-deploy.zip
+          mkdir deploy_bundle
+
+          rsync -a ./ deploy_bundle/ \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'node_modules/' \
+            --exclude 'logs/' \
+            --exclude 'coverage/' \
+            --exclude 'dist/' \
+            --exclude 'build/' \
+            --exclude 'tmp/' \
+            --exclude '*.log' \
+            --exclude '*.zip' \
+            --exclude '*.test.js' \
+            --exclude '*.spec.js'
+
+          test -f deploy_bundle/package.json
+          test -f deploy_bundle/package-lock.json
+          test -f deploy_bundle/server.js
+          test -f deploy_bundle/Procfile
+
+          cd deploy_bundle
+          zip -qr ../backend-deploy.zip .
+
+      - name: Upload application bundle to S3
+        shell: bash
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          SAFE_REGION="${AWS_REGION}"
+          BUCKET="elasticbeanstalk-${SAFE_REGION}-${ACCOUNT_ID}"
+          KEY="${EB_APPLICATION_NAME}/${VERSION_LABEL}.zip"
+
+          aws s3api head-bucket --bucket "$BUCKET"
+          aws s3 cp backend-deploy.zip "s3://${BUCKET}/${KEY}" --only-show-errors
+
+          echo "EB_BUNDLE_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          echo "EB_BUNDLE_KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: Create Elastic Beanstalk application version
+        shell: bash
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "$EB_APPLICATION_NAME" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="$EB_BUNDLE_BUCKET",S3Key="$EB_BUNDLE_KEY" \
+            --process
+
+      - name: Deploy application version to environment
+        shell: bash
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "$EB_ENVIRONMENT_NAME" \
+            --version-label "$VERSION_LABEL"
+
+      - name: Wait for Elastic Beanstalk deployment
+        shell: bash
+        run: |
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "$EB_ENVIRONMENT_NAME"
+
+          aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENVIRONMENT_NAME" \
+            --query 'Environments[0].[EnvironmentName,Status,Health,HealthStatus,VersionLabel]' \
+            --output table
