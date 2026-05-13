@@ -767,6 +767,84 @@ const TEMPLATES = {
     };
   },
 
+  exterior_lead_admin: ({
+    leadId = "-",
+    service = "-",
+    name = "-",
+    phone = "-",
+    email = "-",
+    address = "-",
+    contactPref = "phone",
+    bestTime = "any",
+    sourcePage = "",
+    notes = "",
+  }) => {
+    const subject =
+      service === "roofing"
+        ? "New Roofing Lead"
+        : service === "siding"
+          ? "New Siding Lead"
+          : "New Roofing & Siding Lead";
+
+    const projectLabel =
+      service === "roofing"
+        ? "Roofing"
+        : service === "siding"
+          ? "Siding"
+          : "Roofing & Siding";
+
+    const bestTimeLabel = {
+      morning:   "Morning (8am – 12pm)",
+      afternoon: "Afternoon (12pm – 5pm)",
+      evening:   "Evening (5pm – 8pm)",
+      any:       "Any time",
+    }[bestTime] || bestTime;
+
+    const contactPrefLabel = {
+      call:  "Phone Call",
+      text:  "Text Message",
+      email: "Email",
+      phone: "Phone Call",
+    }[contactPref] || contactPref;
+
+    return {
+      subject,
+      html: frame(
+        `
+        <h2 style="margin:0 0 6px;">${subject}</h2>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:18px;">
+          Source: Exterior Landing Page &nbsp;&middot;&nbsp; Page: ${escapeHtml(sourcePage || "exterior")} &nbsp;&middot;&nbsp; ID: ${escapeHtml(leadId)}
+        </div>
+
+        <div style="padding:16px;background:#eff6ff;border-radius:12px;border:1px solid #bfdbfe;margin-bottom:20px;">
+          <div style="font-size:18px;font-weight:800;margin-bottom:4px;">${escapeHtml(projectLabel)}</div>
+          <div style="font-size:15px;color:#1d4ed8;font-weight:700;">Premium Island Construction lead</div>
+        </div>
+
+        <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px;line-height:1.8;width:100%;">
+          <tr><td style="padding:3px 0;"><strong>Name:</strong>&nbsp;${escapeHtml(name)}</td></tr>
+          <tr><td style="padding:3px 0;"><strong>Phone:</strong>&nbsp;<a href="tel:${escapeHtml(phone)}" style="color:#0b5cab;">${escapeHtml(phone)}</a></td></tr>
+          <tr><td style="padding:3px 0;"><strong>Email:</strong>&nbsp;<a href="mailto:${escapeHtml(email)}" style="color:#0b5cab;">${escapeHtml(email)}</a></td></tr>
+          <tr><td style="padding:3px 0;"><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>
+          <tr><td style="padding:3px 0;"><strong>Project Type:</strong>&nbsp;${escapeHtml(projectLabel)}</td></tr>
+          <tr><td style="padding:3px 0;"><strong>Preferred Contact:</strong>&nbsp;${escapeHtml(contactPrefLabel)}</td></tr>
+          <tr><td style="padding:3px 0;"><strong>Best Time to Reach:</strong>&nbsp;${escapeHtml(bestTimeLabel)}</td></tr>
+        </table>
+
+        ${
+          notes
+            ? `<div style="margin-top:16px;padding:14px;background:${BRAND.gray100};border-radius:12px;border:1px solid ${BRAND.border};">
+                <div style="font-weight:800;margin-bottom:6px;">Message / Notes</div>
+                <div style="white-space:pre-wrap;font-size:15px;">${escapeHtml(notes)}</div>
+               </div>`
+            : ""
+        }
+        `,
+        { preheader: `${subject} - ${name}` }
+      ),
+    };
+  },
+
   subscription_cancellation_scheduled: ({ name = "there", plan, address, accessEndDate }) => ({
     subject: `Cancellation scheduled — your access ends ${accessEndDate || "at period end"}`,
     html: frame(`

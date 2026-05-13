@@ -6,7 +6,7 @@ const EstimateLeadSchema = new mongoose.Schema(
     // ── Service ────────────────────────────────────────────────────────────
     service: {
       type: String,
-      enum: ["roofing", "bathroom", "kitchen"],
+      enum: ["roofing", "siding", "roofing_siding", "bathroom", "kitchen"],
       required: true,
       index: true,
     },
@@ -16,7 +16,9 @@ const EstimateLeadSchema = new mongoose.Schema(
     phone:       { type: String, required: true },
     email:       { type: String, required: true, lowercase: true, trim: true, index: true },
     address:     { type: String, required: true },
-    contactPref: { type: String, enum: ["phone", "text", "email"], default: "phone" },
+    contactPref: { type: String, enum: ["phone", "call", "text", "email"], default: "phone" },
+    bestTime:    { type: String, default: "any" },
+    sourcePage:  { type: String, default: "" },
     notes:       { type: String, default: "" },
 
     // ── Estimate range shown to homeowner ─────────────────────────────────

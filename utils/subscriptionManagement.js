@@ -385,7 +385,7 @@ async function retrieveStripeSubscription(subscriptionId) {
 async function retrieveStripeSubscriptionSchedule(scheduleId) {
   if (!scheduleId) return null;
   return stripe.subscriptionSchedules.retrieve(String(scheduleId), {
-    expand: ["phases.items.price"],
+    expand: ["phases.items.price", "phases.items.price.product"],
   });
 }
 
@@ -419,11 +419,13 @@ function getPendingPlanChange(stripeSubscription) {
   const nextItem = nextPhase?.items?.[0] || null;
   const nextPriceId =
     typeof nextItem?.price === "string" ? nextItem.price : nextItem?.price?.id || null;
-  const { plan, billingCycle } = getPlanAndBillingFromPrice(nextPriceId);
+  const nextPrice = typeof nextItem?.price === "string" ? nextPriceId : nextItem?.price || null;
+  const { plan, billingCycle } = mapStripePriceToPlan(nextPrice);
   const currentItem = stripeSubscription?.items?.data?.[0] || null;
   const currentPriceId = currentItem?.price?.id || null;
-  const currentPlan = getPlanAndBillingFromPrice(currentPriceId).plan;
-  const currentCycle = getPlanAndBillingFromPrice(currentPriceId).billingCycle;
+  const currentMappedPrice = mapStripePriceToPlan(currentItem?.price || currentPriceId);
+  const currentPlan = currentMappedPrice.plan;
+  const currentCycle = currentMappedPrice.billingCycle;
 
   if (!plan || (plan === currentPlan && billingCycle === currentCycle)) {
     return {
@@ -708,6 +710,15 @@ async function upsertSubscriptionRecordFromStripe({
   let canonicalStripeSubscription = stripeSubscription;
   if (scheduleId && typeof stripeSubscription.schedule === "string") {
     canonicalStripeSubscription = await retrieveStripeSubscription(stripeSubscription.id);
+  }
+  if (scheduleId) {
+    const expandedSchedule = await retrieveStripeSubscriptionSchedule(scheduleId);
+    if (expandedSchedule) {
+      canonicalStripeSubscription = {
+        ...canonicalStripeSubscription,
+        schedule: expandedSchedule,
+      };
+    }
   }
 
   const pendingChange = getPendingPlanChange(canonicalStripeSubscription);

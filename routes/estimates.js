@@ -44,7 +44,7 @@ router.post("/", async (req, res) => {
       });
     }
 
-    if (!["roofing", "bathroom", "kitchen"].includes(service)) {
+    if (!["roofing", "siding", "roofing_siding", "bathroom", "kitchen"].includes(service)) {
       return res.status(400).json({
         success: false,
         message: "Invalid service type.",
@@ -75,12 +75,16 @@ router.post("/", async (req, res) => {
 
     // ── Build document ─────────────────────────────────────────────────────
     const contactPref = clean(b.contactPref) || "phone";
+    const bestTime    = clean(b.bestTime) || "any";
+    const sourcePage  = clean(b.sourcePage) || "";
     const notes       = clean(b.notes);
     const timeline    = clean(b.timeline);
     const financing   = clean(b.financing);
 
     const estimateLow  = typeof b.estimateLow  === "number" ? b.estimateLow  : undefined;
     const estimateHigh = typeof b.estimateHigh === "number" ? b.estimateHigh : undefined;
+
+    const source = clean(b.source) || "estimate_builder";
 
     const doc = {
       service,
@@ -89,12 +93,14 @@ router.post("/", async (req, res) => {
       email,
       address,
       contactPref,
+      bestTime:   bestTime   || undefined,
+      sourcePage: sourcePage || undefined,
       notes,
       estimateLow,
       estimateHigh,
       timeline:  timeline  || undefined,
       financing: financing || undefined,
-      source: "estimate_builder",
+      source,
     };
 
     // Roofing answers
@@ -137,10 +143,13 @@ router.post("/", async (req, res) => {
     });
 
     // ── Admin notification email ───────────────────────────────────────────
-    const adminTo = process.env.MAIL_ADMIN || "getfixter@gmail.com";
+    const adminTo =
+      source === "exterior_landing"
+        ? "premiumislandconstruction@gmail.com"
+        : process.env.MAIL_ADMIN || "getfixter@gmail.com";
     try {
       await sendTx(
-        "estimate_lead_admin",
+        source === "exterior_landing" ? "exterior_lead_admin" : "estimate_lead_admin",
         adminTo,
         {
           leadId: String(lead._id),
@@ -150,11 +159,14 @@ router.post("/", async (req, res) => {
           email,
           address,
           contactPref,
+          bestTime,
+          sourcePage,
           notes,
           estimateLow,
           estimateHigh,
           timeline,
           financing,
+          source,
         },
         { bccAdmin: false }
       );
