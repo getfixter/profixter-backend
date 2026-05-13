@@ -44,7 +44,7 @@ router.post("/", async (req, res) => {
       });
     }
 
-    if (!["roofing", "siding", "roofing_siding", "bathroom", "kitchen"].includes(service)) {
+    if (!["roofing", "siding", "roofing_siding", "both", "bathroom", "kitchen"].includes(service)) {
       return res.status(400).json({
         success: false,
         message: "Invalid service type.",

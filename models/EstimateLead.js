@@ -6,7 +6,7 @@ const EstimateLeadSchema = new mongoose.Schema(
     // ── Service ────────────────────────────────────────────────────────────
     service: {
       type: String,
-      enum: ["roofing", "siding", "roofing_siding", "bathroom", "kitchen"],
+      enum: ["roofing", "siding", "roofing_siding", "both", "bathroom", "kitchen"],
       required: true,
       index: true,
     },

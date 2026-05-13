@@ -223,6 +223,34 @@ if (!activeSub && isDeletingDefault) {
   }
 });
 
+// Delete account (self-service — blocked if active subscription exists)
+router.delete("/me", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    const activeSub = await Subscription.findOne({
+      user: me._id,
+      status: { $in: ["active", "trialing"] },
+    });
+
+    if (activeSub) {
+      return res.status(400).json({
+        message:
+          "You have an active subscription. Please cancel it in the My Plan tab before deleting your account.",
+        code: "ACTIVE_SUBSCRIPTION",
+      });
+    }
+
+    await User.findByIdAndDelete(me._id);
+
+    return res.json({ ok: true, message: "Account deleted." });
+  } catch (e) {
+    console.error("DELETE /me error:", e);
+    return res.status(500).json({ message: "Server error. Please try again." });
+  }
+});
+
 // Set default
 router.patch("/default-address/:addressId", auth, async (req, res) => {
   try {
