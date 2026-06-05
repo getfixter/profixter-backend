@@ -169,25 +169,29 @@ function startBookingReminders() {
 
       try {
         // ===================== 24h reminders =====================
-        // Robust window:
-        // - never send before the booking crosses the 24h threshold
-        // - keep trying if that threshold was missed (restart/deploy/downtime)
-        // - stop once the booking is too close to the 60m reminder window
-        const earliest24Booking = new Date(now.getTime() + REMINDER_60M_MS + WINDOW_MS);
-        const latest24Booking = new Date(now.getTime() + REMINDER_24H_MS + WINDOW_MS);
+        // 24h reminders are sent within a +/-15 minute window around
+        // 24 hours before the booking.
+        const from24 = new Date(now.getTime() + REMINDER_24H_MS - WINDOW_MS);
+        const to24 = new Date(now.getTime() + REMINDER_24H_MS + WINDOW_MS);
+        const staleLockBefore = new Date(now.getTime() - STALE_LOCK_MS);
+        const reminder24hNotSent = {
+          $or: [
+            { reminder24hSentAt: { $exists: false } },
+            { reminder24hSentAt: null },
+          ],
+        };
+        const reminder24hLockAvailable = {
+          $or: [
+            { reminder24hQueuedAt: { $exists: false } },
+            { reminder24hQueuedAt: null },
+            { reminder24hQueuedAt: { $lte: staleLockBefore } },
+          ],
+        };
 
         const candidates24 = await Booking.find({
           status: /^confirmed$/i,
-          date: { $gt: earliest24Booking, $lte: latest24Booking },
-          reminder24hSentAt: { $exists: false },
-          $or: [
-            { reminder24hQueuedAt: { $exists: false } },
-            {
-              reminder24hQueuedAt: {
-                $lte: new Date(now.getTime() - STALE_LOCK_MS),
-              },
-            },
-          ],
+          date: { $gte: from24, $lte: to24 },
+          $and: [reminder24hNotSent, reminder24hLockAvailable],
         })
           .select(
             "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt"
@@ -196,6 +200,11 @@ function startBookingReminders() {
           .lean();
 
         stats.scanned24 = candidates24.length;
+        console.log("Booking reminder 24h window", {
+          from: from24.toISOString(),
+          to: to24.toISOString(),
+          candidates: candidates24.length,
+        });
 
         for (const b of candidates24) {
           if (!isConfirmedStatus(b.status) || isTerminalStatus(b.status)) {
@@ -204,10 +213,11 @@ function startBookingReminders() {
           }
 
           const msUntilBooking = new Date(b.date).getTime() - now.getTime();
-          const hasCrossed24hThreshold = msUntilBooking <= REMINDER_24H_MS + WINDOW_MS;
-          const stillBefore60mWindow = msUntilBooking > REMINDER_60M_MS + WINDOW_MS;
+          const isIn24hWindow =
+            msUntilBooking >= REMINDER_24H_MS - WINDOW_MS &&
+            msUntilBooking <= REMINDER_24H_MS + WINDOW_MS;
 
-          if (!hasCrossed24hThreshold || !stillBefore60mWindow) {
+          if (!isIn24hWindow) {
             stats.notDue24++;
             continue;
           }
@@ -218,15 +228,7 @@ function startBookingReminders() {
             {
               _id: b._id,
               status: /^confirmed$/i,
-              reminder24hSentAt: { $exists: false },
-              $or: [
-                { reminder24hQueuedAt: { $exists: false } },
-                {
-                  reminder24hQueuedAt: {
-                    $lte: new Date(now.getTime() - STALE_LOCK_MS),
-                  },
-                },
-              ],
+              $and: [reminder24hNotSent, reminder24hLockAvailable],
             },
             { $set: { reminder24hQueuedAt: new Date() } }
           );
