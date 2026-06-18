@@ -40,7 +40,7 @@ function logCheckout(level, event, details = {}) {
 }
 
 router.post("/create-checkout-session", auth, async (req, res) => {
-  const { plan, addressId, code, billingCycle } = req.body;
+  const { plan, addressId, billingCycle } = req.body;
   const cycle = normalizeBillingCycle(billingCycle, "monthly");
   const priceResolution = await resolveStripePriceId({ plan, billingCycle: cycle });
   const priceId = priceResolution.priceId;
@@ -54,7 +54,6 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     priceResolutionSource: priceResolution.source || null,
     priceFound: !!priceId,
     hasAddressId: !!addressId,
-    hasPromoCode: !!code,
   });
 
   if (!hasStripeSecretKey()) {
@@ -108,18 +107,6 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       });
     }
 
-    let promoCodeId = null;
-    if (code) {
-      const promo = await stripe.promotionCodes.list({
-        code,
-        active: true,
-        limit: 1,
-      });
-      if (promo.data[0]) {
-        promoCodeId = promo.data[0].id;
-      }
-    }
-
     const fbp = getCookie(req, "_fbp");
     const fbc = getCookie(req, "_fbc");
     const sourceUrl = req.headers.referer || `${CLIENT_URL}/`;
@@ -151,6 +138,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       payment_method_types: ["card"],
       client_reference_id: String(addressId),
       line_items: [{ price: priceId, quantity: 1 }],
+      allow_promotion_codes: true,
       metadata: {
         plan,
         billingCycle: cycle,
@@ -176,17 +164,12 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       cancel_url: `${CLIENT_URL}/?canceled=true&plan=${plan}&billingCycle=${cycle}`,
     };
 
-    if (promoCodeId) {
-      sessionConfig.discounts = [{ promotion_code: promoCodeId }];
-    }
-
     if (stripeCustomerId) {
       sessionConfig.customer = stripeCustomerId;
     } else {
       sessionConfig.customer_email = email;
     }
 
-    console.log('STRIPE_SESSION_CONFIG', JSON.stringify(sessionConfig, null, 2));
     const session = await stripe.checkout.sessions.create(sessionConfig);
     if (!session?.url) {
       logCheckout("error", "subscription_checkout_missing_redirect_url", {
