@@ -108,7 +108,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       });
     }
 
-    let discounts = [];
+    let promoCodeId = null;
     if (code) {
       const promo = await stripe.promotionCodes.list({
         code,
@@ -116,7 +116,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         limit: 1,
       });
       if (promo.data[0]) {
-        discounts = [{ promotion_code: promo.data[0].id }];
+        promoCodeId = promo.data[0].id;
       }
     }
 
@@ -146,13 +146,11 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     );
 
     const stripeCustomerId = await resolveUserStripeCustomerId(user);
-    const sessionPayload = {
+    const sessionConfig = {
       mode: "subscription",
       payment_method_types: ["card"],
       client_reference_id: String(addressId),
       line_items: [{ price: priceId, quantity: 1 }],
-      allow_promotion_codes: true,
-      discounts,
       metadata: {
         plan,
         billingCycle: cycle,
@@ -178,13 +176,18 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       cancel_url: `${CLIENT_URL}/?canceled=true&plan=${plan}&billingCycle=${cycle}`,
     };
 
-    if (stripeCustomerId) {
-      sessionPayload.customer = stripeCustomerId;
-    } else {
-      sessionPayload.customer_email = email;
+    if (promoCodeId) {
+      sessionConfig.discounts = [{ promotion_code: promoCodeId }];
     }
 
-    const session = await stripe.checkout.sessions.create(sessionPayload);
+    if (stripeCustomerId) {
+      sessionConfig.customer = stripeCustomerId;
+    } else {
+      sessionConfig.customer_email = email;
+    }
+
+    console.log('STRIPE_SESSION_CONFIG', JSON.stringify(sessionConfig, null, 2));
+    const session = await stripe.checkout.sessions.create(sessionConfig);
     if (!session?.url) {
       logCheckout("error", "subscription_checkout_missing_redirect_url", {
         requestId,
