@@ -14,6 +14,9 @@ const { sendTx } = require("./utils/emailService");
 const { startBookingReminders } = require("./jobs/bookingReminders");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
+const {
+  ensureCapacityOverrideIndexes,
+} = require("./utils/capacityOverrideIndexSafety");
 const path = require("path"); // <-- add this line
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_PREFIX = (process.env.S3_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
@@ -101,6 +104,8 @@ mongoose
     await require("./models/User").syncIndexes()
       .then(() => console.log("✅ User indexes in sync"))
       .catch(e => console.warn("⚠️ Could not sync User indexes:", e.message));
+
+    await ensureCapacityOverrideIndexes();
 
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");

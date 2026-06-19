@@ -293,6 +293,7 @@ function calculateDayFromContext({
   );
 
   const technicianAvailability = new Map();
+  const technicianSlotStates = new Map();
   for (const technician of technicians) {
     const id = String(technician._id);
     const template = templateByTechnician.get(id);
@@ -324,31 +325,54 @@ function calculateDayFromContext({
     );
 
     const availableTimes = new Set();
-    for (const slot of generated.values()) {
-      if (!companySlots.has(slot.time)) continue;
+    const slotStates = new Map();
+    for (const companySlot of companySlots.values()) {
+      const slot = generated.get(companySlot.time);
+      const companyCapacity = applyCapacity(
+        companySlot.capacity,
+        companyCapacityOverrides,
+        companySlot.time
+      );
       const slotStart = moment.tz(
-        `${date} ${slot.time}`,
+        `${date} ${companySlot.time}`,
         "YYYY-MM-DD HH:mm",
         timezone
       ).toDate();
       const slotEnd = moment.tz(
-        `${date} ${slot.endTime}`,
+        `${date} ${companySlot.endTime}`,
         "YYYY-MM-DD HH:mm",
         timezone
       ).toDate();
-      const unavailableForTimeOff = technicianTimeOff.some((entry) =>
+      const matchingTimeOff = technicianTimeOff.find((entry) =>
         timeOffOverlaps(entry, slotStart, slotEnd)
       );
-      const capacity = applyCapacity(
-        1,
-        technicianCapacityOverrides,
-        slot.time
-      );
-      if (!unavailableForTimeOff && capacity > 0) {
-        availableTimes.add(slot.time);
+      const capacity = slot
+        ? applyCapacity(1, technicianCapacityOverrides, companySlot.time)
+        : 0;
+      const available =
+        companyCapacity > 0 && !!slot && !matchingTimeOff && capacity > 0;
+      if (available) {
+        availableTimes.add(companySlot.time);
       }
+      slotStates.set(companySlot.time, {
+        available,
+        unavailableReason: matchingTimeOff
+          ? matchingTimeOff.type === "sick"
+            ? "Sick"
+            : matchingTimeOff.type === "training"
+              ? "Training"
+              : "Time off"
+          : !slot
+            ? "Outside schedule"
+            : companyCapacity <= 0
+              ? "Company closed"
+            : capacity <= 0
+              ? "Blocked"
+              : "",
+      });
     }
     technicianAvailability.set(id, availableTimes);
+    technicianSlotStates.set(id, slotStates);
   }
 
   const scopedBookings =
@@ -389,7 +413,7 @@ function calculateDayFromContext({
     );
     const totalCapacity =
       scope === "technician"
-        ? availableTechnicians.length
+        ? configuredCapacity > 0 && availableTechnicians.length
           ? 1
           : 0
         : Math.min(configuredCapacity, availableTechnicians.length);
@@ -414,18 +438,28 @@ function calculateDayFromContext({
       open: insideBookingWindow && totalCapacity > usedCapacity,
       ...(includeDetails
         ? {
-            technicians: availableTechnicians.map((technician) => ({
-              id: String(technician._id),
-              name: technician.name,
-              position: technician.employeePosition,
-              visibilityStatus:
-                technician.employeeAvailabilityStatus || "Available",
-              booked: slotBookings.some(
-                (booking) =>
-                  String(booking.assignedFixterId || "") ===
-                  String(technician._id)
-              ),
-            })),
+            technicians: technicians.map((technician) => {
+              const id = String(technician._id);
+              const state = technicianSlotStates
+                .get(id)
+                ?.get(companySlot.time) || {
+                available: false,
+                unavailableReason: "Outside schedule",
+              };
+              return {
+                id,
+                name: technician.name,
+                position: technician.employeePosition,
+                visibilityStatus:
+                  technician.employeeAvailabilityStatus || "Available",
+                available: state.available,
+                unavailableReason: state.unavailableReason,
+                booked: slotBookings.some(
+                  (booking) =>
+                    String(booking.assignedFixterId || "") === id
+                ),
+              };
+            }),
             bookings: slotBookings.map((booking) => ({
               id: String(booking._id),
               bookingNumber: booking.bookingNumber,

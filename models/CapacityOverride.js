@@ -35,7 +35,12 @@ const CapacityOverrideSchema = new mongoose.Schema(
     reason: { type: String, trim: true, maxlength: 200, default: "" },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    // Built explicitly during startup so duplicate shadow rows can be reported
+    // without taking down the application before the audit can be run.
+    autoIndex: false,
+  }
 );
 
 CapacityOverrideSchema.pre("validate", function validateCapacity(next) {
@@ -67,13 +72,19 @@ CapacityOverrideSchema.pre("validate", function validateCapacity(next) {
   return next();
 });
 
-CapacityOverrideSchema.index({
-  scopeType: 1,
-  technicianId: 1,
-  date: 1,
-  startTime: 1,
-  endTime: 1,
-});
+CapacityOverrideSchema.index(
+  {
+    scopeType: 1,
+    technicianId: 1,
+    date: 1,
+    startTime: 1,
+    endTime: 1,
+  },
+  {
+    unique: true,
+    name: "one_capacity_override_per_scope_date_range",
+  }
+);
 CapacityOverrideSchema.index({ date: 1, scopeType: 1 });
 
 module.exports = mongoose.model("CapacityOverride", CapacityOverrideSchema);

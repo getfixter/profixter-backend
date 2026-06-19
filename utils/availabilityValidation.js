@@ -28,8 +28,9 @@ function validateIntervals(intervals, { allowCapacity = false } = {}) {
     }
     if (
       allowCapacity &&
+      current.capacity !== null &&
       current.capacity !== undefined &&
-      (!Number.isInteger(current.capacity) || current.capacity < 0)
+      (!Number.isFinite(current.capacity) || current.capacity < 0)
     ) {
       return false;
     }
