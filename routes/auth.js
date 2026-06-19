@@ -8,6 +8,7 @@ const { normalizeEmail, normalizePhone } = require("../utils/identity");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
+const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const router = express.Router();
 
 router.get("/___ping", (req, res) => {
@@ -41,16 +42,13 @@ async function ensurePrimaryFromLegacy(user) {
 }
 
 // ── Coverage helpers
-const isSubActive = (sub) =>
-  !!sub && ["active", "trialing"].includes(String(sub.status || "").toLowerCase());
-
 // Build per-address map: {addressId: {active, plan}}
 async function buildPerAddressCoverage(user) {
   const map = {};
   const subs = await Subscription.find({ user: user._id }).sort({ startDate: -1, createdAt: -1 });
 
   for (const s of subs) {
-    if (!isSubActive(s)) continue;
+    if (!subscriptionGrantsAccess(s)) continue;
     const plan = String(s.subscriptionType || "").toLowerCase();
     if (!s.addressId) continue;
 
@@ -58,7 +56,7 @@ async function buildPerAddressCoverage(user) {
     if (!map[key]) map[key] = { active: true, plan };
   }
 
-  const addrless = subs.find((s) => isSubActive(s) && !s.addressId);
+  const addrless = subs.find((s) => subscriptionGrantsAccess(s) && !s.addressId);
   if (addrless && user.defaultAddressId) {
     const plan = String(addrless.subscriptionType || "").toLowerCase();
     const key = String(user.defaultAddressId);

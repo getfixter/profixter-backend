@@ -33,6 +33,7 @@ const {
   scheduleStripeSubscriptionDowngrade,
   upsertSubscriptionFromStripe,
   clearStripeSubscriptionSchedule,
+  subscriptionGrantsAccess,
 } = require("../utils/subscriptionManagement");
 
 const ADMIN_EMAIL = process.env.MAIL_ADMIN || "getfixter@gmail.com";
@@ -124,10 +125,13 @@ const onlyAdmin = async (req, res, next) => {
 
 /* ───────────────── per-address plan helper ───────────────── */
 async function getAddressPlansForUser(user) {
-  const subs = await Subscription.find({
+  const candidates = await Subscription.find({
     user: user._id,
     status: { $in: ["active", "trialing"] },
   });
+  const subs = candidates.filter((subscription) =>
+    subscriptionGrantsAccess(subscription)
+  );
 
   const byAddressId = new Map();
   const cancellationByAddressId = new Map();

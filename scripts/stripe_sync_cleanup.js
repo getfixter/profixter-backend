@@ -7,9 +7,9 @@ const { stripe } = require('../utils/subscriptionManagement');
 // -------------------------------------------------------------------
 // MODE
 // Default: DRY_RUN=true. No writes.
-// Apply:   DRY_RUN=false node scripts/stripe_sync_cleanup.js
+// Apply:   node scripts/stripe_sync_cleanup.js --write
 // -------------------------------------------------------------------
-const DRY_RUN = process.env.DRY_RUN !== 'false';
+const DRY_RUN = process.env.DRY_RUN !== 'false' && !process.argv.includes('--write');
 
 // Stripe statuses that mean the subscription is still alive and billing
 const STRIPE_ALIVE = new Set(['active', 'trialing']);
@@ -108,6 +108,7 @@ async function processStripeLinked(sub) {
         {
           $set: {
             status: 'canceled',
+            accessStatus: 'inactive',
             cancelAtPeriodEnd: false,
             cancellationDate: canceledAt,
             cancellationReason: 'stripe_subscription_not_active',
@@ -140,6 +141,7 @@ async function processStripeLinked(sub) {
 
   const $set = {
     status: stripeStatus,
+    accessStatus: 'active',
     currentPeriodEnd,
     cancelAtPeriodEnd,
     cancellationDate,
@@ -206,6 +208,7 @@ async function processLegacy(sub) {
       {
         $set: {
           status: 'canceled',
+          accessStatus: 'inactive',
           cancelAtPeriodEnd: false,
           cancellationDate: sub.cancellationDate || new Date(),
           cancellationReason: 'legacy_manual_removed',

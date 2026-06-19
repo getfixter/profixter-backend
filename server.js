@@ -18,6 +18,9 @@ const S3_BUCKET = process.env.S3_BUCKET;
 const S3_PREFIX = (process.env.S3_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
 const usersRouter = require("./routes/users");
 const Lead = require("./models/Lead");
+const {
+  reconcileActiveStripeSubscriptions,
+} = require("./utils/subscriptionManagement");
 
 
 const app = express();
@@ -305,6 +308,31 @@ if (process.env.NURTURE_ENABLED !== "false") {
   );
 }
 /* =================================================================== */
+
+/* ================= Nightly Stripe subscription reconciliation ================= */
+if (process.env.STRIPE_RECONCILIATION_ENABLED !== "false") {
+  cron.schedule(
+    "30 6 * * *",
+    async () => {
+      try {
+        await reconcileActiveStripeSubscriptions({
+          source: "nightly_reconciliation",
+        });
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            event: "subscription_reconciliation_failed",
+            scope: "stripe_subscription_reconciliation",
+            message: error?.message || "Nightly reconciliation failed",
+          })
+        );
+      }
+    },
+    { timezone: "UTC" }
+  );
+}
+/* ============================================================================ */
 
 /* ================= Nightly DB-only subscription auto-cancel ================= */
 cron.schedule(

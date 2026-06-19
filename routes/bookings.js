@@ -16,6 +16,10 @@ const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const mail = require("../utils/emailService");
 const { putPublicObject } = require("../utils/s3");
+const {
+  subscriptionGrantsAccess,
+  verifySubscriptionAccess,
+} = require("../utils/subscriptionManagement");
 
 const BOOKINGS_ROUTE_VERSION = "v5.1-capacity-gated";
 console.log("Loaded routes/bookings.js", BOOKINGS_ROUTE_VERSION);
@@ -59,6 +63,57 @@ const hhmmInTZ = (d, tz) =>
     hour12: false,
   }).format(d);
 
+async function resolveBookingSubscription(user, address, options = {}) {
+  const hasAnyAddressSubs = await Subscription.exists({
+    user: user._id,
+    addressId: { $nin: [null, undefined] },
+  });
+
+  let candidate = await Subscription.findOne({
+    user: user._id,
+    addressId: address._id,
+    status: { $in: ["active", "trialing"] },
+  }).sort({ updatedAt: -1 });
+
+  if (!candidate && !hasAnyAddressSubs) {
+    const addrless = await Subscription.findOne({
+      user: user._id,
+      addressId: { $in: [null, undefined] },
+      status: { $in: ["active", "trialing"] },
+    }).sort({ updatedAt: -1 });
+
+    if (
+      addrless &&
+      user.defaultAddressId &&
+      String(user.defaultAddressId) === String(address._id)
+    ) {
+      candidate = addrless;
+    }
+  }
+
+  if (!candidate) {
+    return { subscription: null, staleSubscription: false, reason: "not_found" };
+  }
+
+  if (!options.verifyStripe || !candidate.stripeSubscriptionId) {
+    const grantsAccess = subscriptionGrantsAccess(candidate);
+    return {
+      subscription: grantsAccess ? candidate : null,
+      staleSubscription: !grantsAccess,
+      reason: grantsAccess ? "local_access_valid" : "local_access_inactive",
+    };
+  }
+
+  const verification = await verifySubscriptionAccess(candidate, {
+    source: "booking_access",
+  });
+  return {
+    subscription: verification.grantsAccess ? verification.subscription : null,
+    staleSubscription: !verification.grantsAccess,
+    reason: verification.reason,
+  };
+}
+
 /* ---------- GET /api/bookings (all user bookings) ---------- */
 router.get("/", auth, async (req, res) => {
   try {
@@ -91,32 +146,10 @@ router.get("/next", auth, async (req, res) => {
       return res.status(400).json({ message: "Address not found on your account." });
     }
 
-    const hasAnyAddressSubs = await Subscription.exists({
-      user: me._id,
-      addressId: { $nin: [null, undefined] },
+    const access = await resolveBookingSubscription(me, subdoc, {
+      verifyStripe: false,
     });
-
-    let activeSub = await Subscription.findOne({
-      user: me._id,
-      addressId: subdoc._id,
-      status: { $in: ["active", "trialing"] },
-    });
-
-    if (!activeSub && !hasAnyAddressSubs) {
-      const addrless = await Subscription.findOne({
-        user: me._id,
-        addressId: { $in: [null, undefined] },
-        status: { $in: ["active", "trialing"] },
-      });
-
-      if (
-        addrless &&
-        me.defaultAddressId &&
-        String(me.defaultAddressId) === String(subdoc._id)
-      ) {
-        activeSub = addrless;
-      }
-    }
+    const activeSub = access.subscription;
 
     let plan = String(activeSub?.subscriptionType || "").toLowerCase();
     let hasSubscription = !!activeSub;
@@ -126,7 +159,7 @@ router.get("/next", auth, async (req, res) => {
 
     let hasAnyBookings = false;
 
-    if (!hasSubscription) {
+    if (!hasSubscription && !access.staleSubscription) {
       const anyBooking = await Booking.exists({ user: me._id });
       hasAnyBookings = !!anyBooking;
 
@@ -174,6 +207,7 @@ router.get("/next", auth, async (req, res) => {
       bookingLimit,
       activeCount,
       hasAnyBookings,
+      subscriptionAccessBlocked: access.staleSubscription,
       future: next
         ? {
             _id: String(next._id),
@@ -358,37 +392,23 @@ router.post(
         "Noshow",
       ];
 
-      const hasAnyAddressSubs = await Subscription.exists({
-        user: me._id,
-        addressId: { $nin: [null, undefined] },
+      const access = await resolveBookingSubscription(me, subdoc, {
+        verifyStripe: true,
       });
-
-      let activeSub = await Subscription.findOne({
-        user: me._id,
-        addressId: subdoc._id,
-        status: { $in: ["active", "trialing"] },
-      });
-
-      if (!activeSub && !hasAnyAddressSubs) {
-        const addrless = await Subscription.findOne({
-          user: me._id,
-          addressId: { $in: [null, undefined] },
-          status: { $in: ["active", "trialing"] },
-        });
-
-        if (
-          addrless &&
-          me.defaultAddressId &&
-          String(me.defaultAddressId) === String(subdoc._id)
-        ) {
-          activeSub = addrless;
-        }
-      }
+      const activeSub = access.subscription;
 
       let usingFreeFirstVisit = false;
 
       let plan = String(activeSub?.subscriptionType || "").toLowerCase();
       let bookingLimit = plan === "basic" ? 1 : plan ? 2 : 0;
+
+      if (access.staleSubscription) {
+        return res.status(403).json({
+          message:
+            "Your membership could not be verified as active. Please update billing or contact support before booking.",
+          code: "SUBSCRIPTION_ACCESS_INACTIVE",
+        });
+      }
 
       if (!activeSub) {
         const alreadyUsedFree = await Booking.exists({

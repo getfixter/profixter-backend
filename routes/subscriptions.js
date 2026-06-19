@@ -18,6 +18,8 @@ const {
   getOwnedSubscriptionForAddress,
   getStripeSubscriptionItemForRecord,
   clearStripeSubscriptionSchedule,
+  subscriptionGrantsAccess,
+  verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 
 const router = express.Router();
@@ -39,6 +41,22 @@ async function getOwnedAddress(userId, addressId) {
   if (!user) return { user: null, address: null };
   const address = user.addresses?.id(addressId) || null;
   return { user, address };
+}
+
+async function getAccessibleOwnedSubscription(user, address, source) {
+  const candidate = await getOwnedSubscriptionForAddress({
+    userId: user._id,
+    addressId: address._id,
+    statuses: ["active", "trialing"],
+  });
+
+  if (!candidate) return null;
+  if (!candidate.stripeSubscriptionId) {
+    return subscriptionGrantsAccess(candidate) ? candidate : null;
+  }
+
+  const verification = await verifySubscriptionAccess(candidate, { source });
+  return verification.grantsAccess ? verification.subscription : null;
 }
 
 router.get("/my", auth, async (req, res) => {
@@ -82,11 +100,11 @@ router.get("/check/address/:addressId", auth, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!address) return res.status(404).json({ message: "Address not found" });
 
-    const activeSub = await getOwnedSubscriptionForAddress({
-      userId: user._id,
-      addressId: address._id,
-      statuses: ["active", "trialing"],
-    });
+    const activeSub = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_check"
+    );
 
     if (!activeSub) return res.json({ active: false });
 
@@ -111,11 +129,11 @@ router.get("/manage/address/:addressId", auth, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!address) return res.status(404).json({ message: "Address not found" });
 
-    let subscription = await getOwnedSubscriptionForAddress({
-      userId: user._id,
-      addressId: address._id,
-      statuses: ["active", "trialing"],
-    });
+    let subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_manage"
+    );
 
     if (!subscription) {
       subscription = await getOwnedSubscriptionForAddress({
@@ -184,11 +202,11 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       });
     }
 
-    const subscription = await getOwnedSubscriptionForAddress({
-      userId: user._id,
-      addressId: address._id,
-      statuses: ["active", "trialing"],
-    });
+    const subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_plan_change"
+    );
 
     if (!subscription) {
       logPlanChange("warn", "subscription_plan_change_missing_subscription", logContext);
@@ -349,11 +367,11 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!address) return res.status(404).json({ message: "Address not found" });
 
-    const subscription = await getOwnedSubscriptionForAddress({
-      userId: user._id,
-      addressId: address._id,
-      statuses: ["active", "trialing"],
-    });
+    const subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_cancel"
+    );
 
     if (!subscription) {
       return res.status(404).json({ message: "No active subscription found for this address" });
@@ -430,11 +448,11 @@ router.post("/manage/address/:addressId/reactivate", auth, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!address) return res.status(404).json({ message: "Address not found" });
 
-    const subscription = await getOwnedSubscriptionForAddress({
-      userId: user._id,
-      addressId: address._id,
-      statuses: ["active", "trialing"],
-    });
+    const subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_reactivate"
+    );
 
     if (!subscription) {
       return res.status(404).json({ message: "No active subscription found for this address" });

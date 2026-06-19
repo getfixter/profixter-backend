@@ -7,6 +7,21 @@ const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const Booking = require("../models/Booking");
 const auth = require("../middleware/auth");
+const {
+  subscriptionGrantsAccess,
+  verifySubscriptionAccess,
+} = require("../utils/subscriptionManagement");
+
+async function subscriptionBlocksDestructiveAction(subscription, source) {
+  if (!subscription) return false;
+  if (!subscription.stripeSubscriptionId) {
+    return subscriptionGrantsAccess(subscription);
+  }
+
+  const verification = await verifySubscriptionAccess(subscription, { source });
+  // Account/address deletion should fail closed during a Stripe outage.
+  return verification.error ? true : verification.grantsAccess;
+}
 
 /* Helpers */
 function normalizeAddressInput(body = {}) {
@@ -168,11 +183,17 @@ router.delete("/addresses/:addressId", auth, async (req, res) => {
       return res.status(400).json({ message: "Cannot delete the only address on the account" });
     }
 
-const activeSub = await Subscription.findOne({
+const activeSubCandidate = await Subscription.findOne({
   user: me._id,
   addressId,
   status: { $in: ["active", "trialing"] },
 });
+const activeSub = await subscriptionBlocksDestructiveAction(
+  activeSubCandidate,
+  "address_delete_guard"
+)
+  ? activeSubCandidate
+  : null;
     if (activeSub) {
       return res.status(400).json({ message: "This address has an active subscription. Cancel or move the subscription first." });
     }
@@ -181,11 +202,17 @@ const isDeletingDefault = me.defaultAddressId && String(me.defaultAddressId) ===
 
 // ✅ Addressless active Subscription doc blocks deleting default address
 if (!activeSub && isDeletingDefault) {
-  const addrless = await Subscription.findOne({
+  const addrlessCandidate = await Subscription.findOne({
     user: me._id,
     addressId: { $in: [null, undefined] },
     status: { $in: ["active", "trialing"] },
   });
+  const addrless = await subscriptionBlocksDestructiveAction(
+    addrlessCandidate,
+    "address_delete_guard"
+  )
+    ? addrlessCandidate
+    : null;
 
   if (addrless) {
     return res.status(400).json({
@@ -229,10 +256,17 @@ router.delete("/me", auth, async (req, res) => {
     const me = await User.findById(req.user.id);
     if (!me) return res.status(404).json({ message: "User not found" });
 
-    const activeSub = await Subscription.findOne({
+    const activeCandidates = await Subscription.find({
       user: me._id,
       status: { $in: ["active", "trialing"] },
     });
+    let activeSub = null;
+    for (const subscription of activeCandidates) {
+      if (await subscriptionBlocksDestructiveAction(subscription, "account_delete_guard")) {
+        activeSub = subscription;
+        break;
+      }
+    }
 
     if (activeSub) {
       return res.status(400).json({

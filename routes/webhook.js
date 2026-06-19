@@ -591,21 +591,47 @@ function eventStripeIds(event) {
   };
 }
 
+const WEBHOOK_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function beginWebhookEvent(event) {
   const ids = eventStripeIds(event);
   const existing = await StripeWebhookEvent.findOne({ eventId: event.id });
-  if (existing?.status === "completed" || existing?.status === "processing") {
-    return { duplicate: true, record: existing, ...ids };
+
+  if (existing?.status === "completed") {
+    return { duplicate: true, retryLater: false, record: existing, ...ids };
   }
+
   if (existing) {
-    existing.status = "processing";
-    existing.lastError = null;
-    existing.eventType = event.type;
-    existing.stripeCustomerId = ids.stripeCustomerId;
-    existing.stripeSubscriptionId = ids.stripeSubscriptionId;
-    await existing.save();
-    return { duplicate: false, record: existing, ...ids };
+    const staleBefore = new Date(Date.now() - WEBHOOK_PROCESSING_TIMEOUT_MS);
+    const claimed = await StripeWebhookEvent.findOneAndUpdate(
+      {
+        _id: existing._id,
+        status: { $ne: "completed" },
+        $or: [
+          { status: "failed" },
+          { status: "processing", updatedAt: { $lte: staleBefore } },
+        ],
+      },
+      {
+        $set: {
+          status: "processing",
+          lastError: null,
+          eventType: event.type,
+          stripeCustomerId: ids.stripeCustomerId,
+          stripeSubscriptionId: ids.stripeSubscriptionId,
+        },
+      },
+      { new: true }
+    );
+
+    return {
+      duplicate: !claimed,
+      retryLater: !claimed,
+      record: claimed || existing,
+      ...ids,
+    };
   }
+
   try {
     const record = await StripeWebhookEvent.create({
       eventId: event.id,
@@ -617,7 +643,13 @@ async function beginWebhookEvent(event) {
     return { duplicate: false, record, ...ids };
   } catch (error) {
     if (error?.code === 11000) {
-      return { duplicate: true, record: null, ...ids };
+      const concurrent = await StripeWebhookEvent.findOne({ eventId: event.id });
+      return {
+        duplicate: true,
+        retryLater: concurrent?.status !== "completed",
+        record: concurrent,
+        ...ids,
+      };
     }
     throw error;
   }
@@ -655,6 +687,9 @@ module.exports = async (req, res) => {
     });
 
     if (eventState.duplicate) {
+      if (eventState.retryLater) {
+        return res.status(409).send("Webhook event is already processing");
+      }
       return res.sendStatus(200);
     }
 

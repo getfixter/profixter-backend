@@ -281,6 +281,234 @@ function deriveAccessStatus(subscription) {
   return ["active", "trialing"].includes(status) ? "active" : "inactive";
 }
 
+function subscriptionGrantsAccess(subscription, options = {}) {
+  if (!subscription) return false;
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const stripeConfirmed = options.stripeConfirmed === true;
+  const status = String(subscription.status || "").trim().toLowerCase();
+
+  if (!["active", "trialing"].includes(status)) return false;
+
+  // Stripe-managed records use accessStatus as an additional safety latch.
+  // Legacy/manual records do not because older admin-created records may not
+  // have this field populated.
+  if (
+    subscription.stripeSubscriptionId &&
+    String(subscription.accessStatus || "").toLowerCase() !== "active" &&
+    !stripeConfirmed
+  ) {
+    return false;
+  }
+
+  const periodEnd = toDate(subscription.currentPeriodEnd);
+  if (periodEnd && periodEnd.getTime() <= now.getTime() && !stripeConfirmed) {
+    return false;
+  }
+
+  if (subscription.cancelAtPeriodEnd) {
+    const accessEnd = toDate(subscription.currentPeriodEnd || subscription.cancellationDate);
+    if (!accessEnd || accessEnd.getTime() <= now.getTime()) return false;
+  }
+
+  return true;
+}
+
+function isStripeSubscriptionMissingError(error) {
+  return error?.statusCode === 404 || error?.code === "resource_missing";
+}
+
+function subscriptionAccessSnapshot(subscription) {
+  return {
+    status: subscription?.status || null,
+    accessStatus: subscription?.accessStatus || null,
+    currentPeriodEnd: subscription?.currentPeriodEnd || null,
+    cancelAtPeriodEnd: !!subscription?.cancelAtPeriodEnd,
+    cancellationDate: subscription?.cancellationDate || null,
+  };
+}
+
+function accessSnapshotsEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function logSubscriptionAccessChange(subscription, oldState, reason) {
+  const newState = subscriptionAccessSnapshot(subscription);
+  if (accessSnapshotsEqual(oldState, newState)) return;
+
+  console.log(
+    JSON.stringify({
+      level: "info",
+      event: "subscription_access_reconciled",
+      scope: "stripe_subscription_reconciliation",
+      userId: String(subscription.userId || subscription.user || ""),
+      subscriptionId: String(subscription._id || ""),
+      stripeSubscriptionId: subscription.stripeSubscriptionId || null,
+      oldStatus: oldState.status,
+      newStatus: newState.status,
+      oldAccessStatus: oldState.accessStatus,
+      newAccessStatus: newState.accessStatus,
+      reason,
+    })
+  );
+}
+
+async function markSubscriptionAccessInactive(subscription, reason, stripeSubscription = null) {
+  const oldState = subscriptionAccessSnapshot(subscription);
+  const canceledAt =
+    toDate(stripeSubscription?.canceled_at) ||
+    toDate(stripeSubscription?.ended_at) ||
+    subscription.cancellationDate ||
+    new Date();
+
+  subscription.status = "canceled";
+  subscription.accessStatus = "inactive";
+  subscription.cancelAtPeriodEnd = false;
+  subscription.cancellationDate = canceledAt;
+  subscription.cancellationReason = reason;
+  subscription.pendingPlan = null;
+  subscription.pendingBillingCycle = null;
+  subscription.pendingStripePriceId = null;
+  subscription.pendingChangeEffectiveDate = null;
+
+  await subscription.save();
+  await syncLegacyUserSubscription(subscription.user);
+  logSubscriptionAccessChange(subscription, oldState, reason);
+  return subscription;
+}
+
+async function syncSubscriptionAccessFromStripe(subscription, stripeSubscription) {
+  const oldState = subscriptionAccessSnapshot(subscription);
+  const stripeStatus = normalizeStripeStatus(stripeSubscription?.status);
+
+  if (!["active", "trialing"].includes(stripeStatus)) {
+    return markSubscriptionAccessInactive(
+      subscription,
+      `stripe_status_${stripeStatus}`,
+      stripeSubscription
+    );
+  }
+
+  const period = handleCurrentPeriodStartEnd(stripeSubscription);
+  const cancellation = handleCancelAtPeriodEnd(stripeSubscription);
+
+  subscription.status = stripeStatus;
+  subscription.accessStatus = "active";
+  subscription.currentPeriodStart = period.currentPeriodStart;
+  subscription.currentPeriodEnd = period.currentPeriodEnd;
+  subscription.nextPaymentDate =
+    period.currentPeriodEnd || subscription.nextPaymentDate || new Date();
+  subscription.cancelAtPeriodEnd = cancellation.cancelAtPeriodEnd;
+  subscription.cancellationDate = cancellation.cancellationDate;
+  if (!cancellation.cancelAtPeriodEnd) {
+    subscription.cancellationReason = null;
+  }
+
+  await subscription.save();
+  await syncLegacyUserSubscription(subscription.user);
+  logSubscriptionAccessChange(subscription, oldState, `stripe_status_${stripeStatus}`);
+  return subscription;
+}
+
+async function verifySubscriptionAccess(subscription, options = {}) {
+  if (!subscription) {
+    return { grantsAccess: false, subscription: null, reason: "missing_local_subscription" };
+  }
+
+  if (!subscription.stripeSubscriptionId) {
+    return {
+      grantsAccess: subscriptionGrantsAccess(subscription),
+      subscription,
+      reason: subscriptionGrantsAccess(subscription)
+        ? "legacy_local_access_valid"
+        : "legacy_local_access_inactive",
+    };
+  }
+
+  let stripeSubscription;
+  try {
+    stripeSubscription = await retrieveStripeSubscription(subscription.stripeSubscriptionId);
+  } catch (error) {
+    if (isStripeSubscriptionMissingError(error)) {
+      const updated = await markSubscriptionAccessInactive(
+        subscription,
+        "stripe_subscription_missing"
+      );
+      return {
+        grantsAccess: false,
+        subscription: updated,
+        reason: "stripe_subscription_missing",
+      };
+    }
+
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "subscription_access_verification_failed",
+        scope: "stripe_subscription_reconciliation",
+        userId: String(subscription.userId || subscription.user || ""),
+        subscriptionId: String(subscription._id || ""),
+        stripeSubscriptionId: subscription.stripeSubscriptionId,
+        message: error?.message || "Stripe verification failed",
+        source: options.source || "unknown",
+      })
+    );
+    return {
+      grantsAccess: false,
+      subscription,
+      reason: "stripe_verification_failed",
+      error,
+    };
+  }
+
+  const updated = await syncSubscriptionAccessFromStripe(subscription, stripeSubscription);
+  const stripeStatus = normalizeStripeStatus(stripeSubscription.status);
+  return {
+    grantsAccess: subscriptionGrantsAccess(updated, {
+      stripeConfirmed: ["active", "trialing"].includes(stripeStatus),
+    }),
+    subscription: updated,
+    stripeSubscription,
+    reason: `stripe_status_${stripeStatus}`,
+  };
+}
+
+async function reconcileActiveStripeSubscriptions(options = {}) {
+  const subscriptions = await Subscription.find({
+    status: { $in: ["active", "trialing"] },
+    stripeSubscriptionId: { $nin: [null, ""] },
+  }).sort({ updatedAt: 1 });
+
+  const summary = {
+    scanned: subscriptions.length,
+    accessKept: 0,
+    accessRemoved: 0,
+    errors: 0,
+  };
+
+  for (const subscription of subscriptions) {
+    const result = await verifySubscriptionAccess(subscription, {
+      source: options.source || "scheduled_reconciliation",
+    });
+
+    if (result.error) summary.errors += 1;
+    else if (result.grantsAccess) summary.accessKept += 1;
+    else summary.accessRemoved += 1;
+  }
+
+  console.log(
+    JSON.stringify({
+      level: "info",
+      event: "subscription_reconciliation_completed",
+      scope: "stripe_subscription_reconciliation",
+      source: options.source || "scheduled_reconciliation",
+      ...summary,
+    })
+  );
+
+  return summary;
+}
+
 function handleCancelAtPeriodEnd(stripeSubscription) {
   const hasCancelAt = !!stripeSubscription?.cancel_at;
   const cancelAtPeriodEnd = !!(stripeSubscription?.cancel_at_period_end || hasCancelAt);
@@ -482,6 +710,13 @@ function toDate(value) {
 }
 
 function serializeSubscription(subscription, address = null) {
+  const grantsAccess = subscriptionGrantsAccess(subscription);
+  const storedStatus = String(subscription.status || "").toLowerCase();
+  const effectiveStatus =
+    ["active", "trialing"].includes(storedStatus) && !grantsAccess
+      ? "expired"
+      : subscription.status;
+
   return {
     _id: String(subscription._id),
     addressId: subscription.addressId ? String(subscription.addressId) : null,
@@ -498,7 +733,7 @@ function serializeSubscription(subscription, address = null) {
       : null,
     addressSnapshot: subscription.addressSnapshot || null,
     subscriptionType: String(subscription.subscriptionType || "").toLowerCase(),
-    status: subscription.status,
+    status: effectiveStatus,
     billingCycle: subscription.billingCycle || "monthly",
     startDate: subscription.startDate || null,
     latestPaymentDate: subscription.latestPaymentDate || null,
@@ -510,7 +745,7 @@ function serializeSubscription(subscription, address = null) {
     latestInvoiceId: subscription.latestInvoiceId || null,
     latestInvoiceStatus: subscription.latestInvoiceStatus || null,
     latestPaymentIntentStatus: subscription.latestPaymentIntentStatus || null,
-    accessStatus: subscription.accessStatus || "inactive",
+    accessStatus: grantsAccess ? "active" : "inactive",
     cancelAtPeriodEnd: !!subscription.cancelAtPeriodEnd,
     cancellationDate: subscription.cancellationDate || null,
     cancellationReason: subscription.cancellationReason || null,
@@ -527,10 +762,13 @@ async function syncLegacyUserSubscription(userId) {
   const user = await User.findById(userId);
   if (!user) return null;
 
-  const activeSubs = await Subscription.find({
+  const candidates = await Subscription.find({
     user: user._id,
     status: { $in: ["active", "trialing"] },
   }).sort({ currentPeriodEnd: 1, nextPaymentDate: 1, updatedAt: -1 });
+  const activeSubs = candidates.filter((subscription) =>
+    subscriptionGrantsAccess(subscription)
+  );
 
   let chosen = null;
   if (user.defaultAddressId) {
@@ -1139,6 +1377,9 @@ module.exports = {
   mapStripePriceToPlan,
   normalizeStripeStatus,
   deriveAccessStatus,
+  subscriptionGrantsAccess,
+  verifySubscriptionAccess,
+  reconcileActiveStripeSubscriptions,
   handleCancelAtPeriodEnd,
   handleCurrentPeriodStartEnd,
   handleTrial,

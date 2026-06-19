@@ -8,7 +8,9 @@
     "migrate:addresses": "node scripts/migrate_addresses.js",
     "migrate:subs-addr": "node scripts/backfill_subscription_address.js",
     "audit:subs": "node scripts/ensure_primary_and_link_subs.js --dry",
-    "fix:subs": "node scripts/ensure_primary_and_link_subs.js"
+    "fix:subs": "node scripts/ensure_primary_and_link_subs.js",
+    "subscriptions:cleanup:dry": "node scripts/stripe_sync_cleanup.js",
+    "subscriptions:cleanup": "node scripts/stripe_sync_cleanup.js --write"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",
