@@ -157,6 +157,13 @@ async function run() {
         };
       },
     },
+    CapacityBucketModel: {
+      deleteMany() {
+        return {
+          async session() {},
+        };
+      },
+    },
     BookingModel: {
       find() {
         return {

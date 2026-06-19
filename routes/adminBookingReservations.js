@@ -29,6 +29,7 @@ router.get(
       if (!booking) return res.status(404).json({ message: "Booking not found" });
       const options = await findEligibleTechnicians({
         slotStart: booking.date,
+        excludeReservationId: booking.slotReservationId || null,
       });
       return res.json({
         bookingId: String(booking._id),

@@ -120,6 +120,11 @@ async function run() {
       BookingModel,
       ReservationModel,
       BucketModel,
+      CapacityBucketModel: {
+        find() {
+          return { lean: async () => [] };
+        },
+      },
       findEligibleTechnicians: async () => ({
         available: [],
         unavailable: [{ reason: "Outside schedule" }],

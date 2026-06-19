@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const BookingSlotReservation = require("../models/BookingSlotReservation");
 const BookingHistory = require("../models/BookingHistory");
 const ReservationTimeBucket = require("../models/ReservationTimeBucket");
+const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 
 async function run() {
   const bookingId = new mongoose.Types.ObjectId();
@@ -80,6 +81,15 @@ async function run() {
   assert.equal(
     bucketIndexes.filter(([fields]) => fields.expiresAt === 1).length,
     1
+  );
+  assert(
+    ReservationCapacityBucket.schema.indexes().some(
+      ([fields, options]) =>
+        fields.bucketStart === 1 &&
+        fields.capacityUnit === 1 &&
+        options.unique &&
+        options.name === "one_reservation_per_company_capacity_bucket"
+    )
   );
   console.log("BookingSlotReservation model tests passed");
 }

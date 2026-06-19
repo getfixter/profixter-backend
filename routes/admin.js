@@ -17,6 +17,13 @@ const {
   snapshot: bookingSnapshot,
   logBookingChanges,
 } = require("../utils/bookingHistory");
+const {
+  cancelBookingWithReservation,
+  findEligibleTechnicians,
+  moveReservationForBooking,
+  reservationEngineEnabled,
+  transitionBookingWithReservation,
+} = require("../utils/slotReservationService");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -836,42 +843,117 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
   }
 
   try {
-    const booking = await Booking.findById(req.params.id);
+    let booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const before = bookingSnapshot(booking);
-    if (Object.prototype.hasOwnProperty.call(req.body, "assignedFixterId")) {
+    const useReservationEngine = reservationEngineEnabled();
+    const assignmentRequested = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "assignedFixterId"
+    );
+    if (assignmentRequested) {
       if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
         return res.status(403).json({ message: "Assignment access denied" });
       }
-      Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+      if (useReservationEngine) {
+        if (!req.body.assignedFixterId) {
+          return res.status(400).json({
+            code: "TECHNICIAN_REQUIRED",
+            message: "A reserved booking cannot be unassigned",
+          });
+        }
+        await moveReservationForBooking({
+          bookingId: booking._id,
+          technicianId: req.body.assignedFixterId,
+          slotStart: booking.date,
+          actorUser: req.accessUser,
+          createdByType: "admin",
+          assignmentSource:
+            req.accessRole === "admin" ? "admin" : "general_fixter",
+        });
+        booking = await Booking.findById(booking._id);
+      } else {
+        Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+      }
+    }
+    if (
+      useReservationEngine &&
+      status.toLowerCase() === "confirmed" &&
+      !booking.slotReservationId &&
+      !assignmentRequested
+    ) {
+      const options = await findEligibleTechnicians({
+        slotStart: booking.date,
+      });
+      if (!options.recommended?.id) {
+        return res.status(409).json({
+          code: "SLOT_UNAVAILABLE",
+          message: "No eligible technician is available for this booking",
+        });
+      }
+      await moveReservationForBooking({
+        bookingId: booking._id,
+        technicianId: options.recommended.id,
+        slotStart: booking.date,
+        actorUser: req.accessUser,
+        createdByType: "admin",
+        assignmentSource: "automatic",
+      });
+      booking = await Booking.findById(booking._id);
     }
 
     const prev = String(booking.status || "");
 
-    booking.statusHistory = (booking.statusHistory || []).concat({
-      status: booking.status,
-      date: new Date(),
-    });
-
-    booking.status = status;
-
     if (
-      prev.toLowerCase() !== "confirmed" &&
-      String(status).toLowerCase() === "confirmed"
+      useReservationEngine &&
+      status.toLowerCase() === "canceled"
     ) {
-      booking.reminder24hQueuedAt = undefined;
-      booking.reminder24hSentAt = undefined;
-      booking.reminder60mQueuedAt = undefined;
-      booking.reminder60mSentAt = undefined;
-    }
+      const result = await cancelBookingWithReservation({
+        bookingId: booking._id,
+        actorUser: req.accessUser,
+        createdByType: "admin",
+        reason: "Canceled by Admin",
+      });
+      booking = result.booking;
+    } else if (
+      useReservationEngine &&
+      status.toLowerCase() === "completed" &&
+      prev.toLowerCase() !== "completed"
+    ) {
+      const result = await transitionBookingWithReservation({
+        bookingId: booking._id,
+        actorUser: req.accessUser,
+        createdByType: "admin",
+        reason: "Booking completed",
+        status: "Completed",
+        clearAssignment: false,
+      });
+      booking = result.booking;
+    } else {
+      booking.statusHistory = (booking.statusHistory || []).concat({
+        status: booking.status,
+        date: new Date(),
+      });
+      booking.status = status;
 
-    await booking.save();
-    await logBookingChanges({
-      bookingId: booking._id,
-      before,
-      after: bookingSnapshot(booking),
-      req,
-    });
+      if (
+        prev.toLowerCase() !== "confirmed" &&
+        String(status).toLowerCase() === "confirmed"
+      ) {
+        booking.reminder24hQueuedAt = undefined;
+        booking.reminder24hSentAt = undefined;
+        booking.reminder60mQueuedAt = undefined;
+        booking.reminder60mSentAt = undefined;
+      }
+
+      await booking.save();
+      await logBookingChanges({
+        bookingId: booking._id,
+        before,
+        after: bookingSnapshot(booking),
+        req,
+      });
+    }
 
     // GHL SMS automation hooks
     try {
@@ -927,7 +1009,11 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
     }
 
     // Free capacity if newly canceled
-    if (prev.toLowerCase() !== "canceled" && status.toLowerCase() === "canceled") {
+    if (
+      !useReservationEngine &&
+      prev.toLowerCase() !== "canceled" &&
+      status.toLowerCase() === "canceled"
+    ) {
       try {
         const cfg = await CalendarConfig.findOne().lean();
         const tz = cfg?.timezone || "America/New_York";
@@ -986,9 +1072,15 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
     const { id } = req.params;
     const { note, date } = req.body || {};
 
-    const booking = await Booking.findById(id);
+    let booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const before = bookingSnapshot(booking);
+    const useReservationEngine = reservationEngineEnabled();
+    const assignmentRequested = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "assignedFixterId"
+    );
+    let parsedDate = null;
 
     if (note !== undefined) booking.note = String(note);
 
@@ -997,17 +1089,53 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
       if (isNaN(d.getTime())) {
         return res.status(400).json({ message: "Invalid date" });
       }
-      booking.date = d;
+      parsedDate = d;
+      if (!useReservationEngine) booking.date = d;
       booking.reminder24hQueuedAt = undefined;
       booking.reminder24hSentAt = undefined;
       booking.reminder60mQueuedAt = undefined;
       booking.reminder60mSentAt = undefined;
     }
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, "assignedFixterId")) {
+    if (assignmentRequested) {
       if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
         return res.status(403).json({ message: "Assignment access denied" });
       }
-      Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+      if (!useReservationEngine) {
+        Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+      }
+    }
+    if (useReservationEngine && (parsedDate || assignmentRequested)) {
+      let technicianId =
+        req.body.assignedFixterId || booking.assignedFixterId || null;
+      if (!technicianId) {
+        const options = await findEligibleTechnicians({
+          slotStart: parsedDate || booking.date,
+        });
+        technicianId = options.recommended?.id;
+      }
+      if (!technicianId) {
+        return res.status(409).json({
+          code: "SLOT_UNAVAILABLE",
+          message: "No eligible technician is available for this time",
+        });
+      }
+      await moveReservationForBooking({
+        bookingId: booking._id,
+        technicianId,
+        slotStart: parsedDate || booking.date,
+        actorUser: req.accessUser,
+        createdByType: "admin",
+        assignmentSource:
+          req.accessRole === "admin" ? "admin" : "general_fixter",
+      });
+      booking = await Booking.findById(booking._id);
+      if (note !== undefined) booking.note = String(note);
+      if (parsedDate) {
+        booking.reminder24hQueuedAt = undefined;
+        booking.reminder24hSentAt = undefined;
+        booking.reminder60mQueuedAt = undefined;
+        booking.reminder60mSentAt = undefined;
+      }
     }
 
     await booking.save();

@@ -110,20 +110,28 @@ function actionForChanges(changes) {
   return ["booking_edited", "Booking edited"];
 }
 
-async function logBookingChanges({ bookingId, before, after, req }) {
+async function logBookingChanges({
+  bookingId,
+  before,
+  after,
+  req,
+  actor = null,
+  session = null,
+}) {
   const changes = detectChanges(before, after);
   if (!changes.length) return null;
   const [actionType, summary] = actionForChanges(changes);
-  return BookingHistory.create({
+  const [entry] = await BookingHistory.create([{
     bookingId,
-    ...actorFromRequest(req),
+    ...(actor || actorFromRequest(req)),
     actionType,
     changes,
     summary,
-  });
+  }], session ? { session } : {});
+  return entry;
 }
 
-async function logBookingCreated({ booking, req, actorName }) {
+async function logBookingCreated({ booking, req, actorName, session = null }) {
   const actor = actorName
     ? {
         actorUserId: null,
@@ -133,13 +141,14 @@ async function logBookingCreated({ booking, req, actorName }) {
         actorPosition: "",
       }
     : actorFromRequest(req);
-  return BookingHistory.create({
+  const [entry] = await BookingHistory.create([{
     bookingId: booking._id,
     ...actor,
     actionType: "booking_created",
     changes: [],
     summary: "Booking created",
-  });
+  }], session ? { session } : {});
+  return entry;
 }
 
 async function logReservationAction({

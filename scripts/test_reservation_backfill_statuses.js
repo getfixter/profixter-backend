@@ -93,6 +93,32 @@ async function run() {
   assert.equal(writes, 1);
   assert.equal(bucketWrites, 6);
 
+  let repairs = 0;
+  const existingDependencies = {
+    BookingModel,
+    activeReservationForBooking: async (bookingId) =>
+      String(bookingId) === "active-booking"
+        ? { _id: "existing-reservation" }
+        : null,
+    findEligibleTechnicians: dependencies.findEligibleTechnicians,
+    ensureReservationLocks: async (reservationId) => {
+      assert.equal(reservationId, "existing-reservation");
+      repairs += 1;
+      return { repaired: true };
+    },
+  };
+  await backfillReservationsForFutureBookings({
+    write: false,
+    dependencies: existingDependencies,
+  });
+  assert.equal(repairs, 0);
+  const repairRun = await backfillReservationsForFutureBookings({
+    write: true,
+    dependencies: existingDependencies,
+  });
+  assert.equal(repairs, 1);
+  assert.equal(repairRun.repairedReservationLocks, 1);
+
   console.log("Reservation backfill status tests passed");
 }
 

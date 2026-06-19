@@ -134,3 +134,46 @@ GET /api/admin/calendar/customer-availability-preview?days=30
 The endpoint is Admin-only, accepts 30–60 days, performs no writes, and returns
 legacy-versus-shadow mismatch categories, reservation backfill dry-run results,
 and a conservative `safeToCutOver` / `decision` result.
+
+## Customer Calendar Cutover
+
+Keep `ENABLE_RESERVATION_ENGINE=false` until every step below passes:
+
+1. Run `npm run mongo:transactions:probe` from the EB instance and require exit
+   code `0`.
+2. Set `MONGO_TRANSACTIONS_VERIFIED=true` and
+   `ENABLE_CUSTOMER_AVAILABILITY_PREVIEW=true`, while keeping the reservation
+   engine disabled.
+3. Request:
+
+   ```text
+   GET /api/admin/calendar/customer-availability-preview?days=60
+   ```
+
+   Require `decision: "YES"` and no blockers.
+4. Run `npm run reservations:audit`. Resolve all missing, stale, mismatched,
+   overlapping, technician-bucket, and company-capacity-bucket issues.
+5. Run `npm run reservations:backfill:dry`, review the report, then run
+   `npm run reservations:backfill` during a controlled maintenance window.
+   Write mode creates missing reservations and repairs missing technician and
+   company-capacity locks for existing active reservations.
+6. Run the reservation audit and 60-day preview again. Both must be clean.
+7. Set `ENABLE_RESERVATION_ENGINE=true` and deploy/restart the backend.
+8. Smoke test customer month availability, a day with open times, one customer
+   booking, customer cancellation, Admin reschedule, Admin cancellation, and
+   General Fixter reassignment.
+
+With the flag disabled, `/api/calendar` and booking creation continue through
+the legacy `CalendarConfig` and `SlotCounter` path. Do not remove those models
+or their data during this cutover.
+
+When enabled:
+
+- Customer availability is calculated from company/technician schedules,
+  overrides, time off, bookings, and active 90-minute reservations.
+- Customer responses never include technician identity.
+- Booking, reservation, technician buckets, company-capacity buckets,
+  assignment fields, and booking history are committed in one transaction.
+- Unsupported MongoDB transactions return a safe service-unavailable response.
+- Customer/Admin cancellation releases both lock types.
+- Admin reschedule/reassignment moves locks before releasing old locks.

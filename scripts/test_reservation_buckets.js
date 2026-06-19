@@ -89,6 +89,15 @@ async function run() {
     reservationId: "one",
     session: {},
     BucketModel,
+    CapacityBucketModel: {
+      deleteMany() {
+        return {
+          async session() {
+            return { deletedCount: 0 };
+          },
+        };
+      },
+    },
   });
   assert.equal(occupied.size, 0);
 

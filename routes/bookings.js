@@ -5,6 +5,7 @@ const multer = require("multer");
 const sharp = require("sharp");
 const path = require("path");
 const mongoose = require("mongoose");
+const moment = require("moment-timezone");
 
 const Booking = require("../models/Booking");
 const User = require("../models/User");
@@ -25,6 +26,15 @@ const {
   subscriptionGrantsAccess,
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
+const {
+  cancelBookingWithReservation,
+  createBookingWithReservation,
+  isTerminalBookingStatus,
+  reservationEngineEnabled,
+} = require("../utils/slotReservationService");
+const {
+  suggestNextAvailableSlots,
+} = require("../utils/customerCalendarService");
 
 const BOOKINGS_ROUTE_VERSION = "v5.1-capacity-gated";
 console.log("Loaded routes/bookings.js", BOOKINGS_ROUTE_VERSION);
@@ -123,6 +133,9 @@ async function resolveBookingSubscription(user, address, options = {}) {
 router.get("/", auth, async (req, res) => {
   try {
     const bookings = await Booking.find({ user: req.user.id })
+      .select(
+        "-assignedFixterId -assignedFixterName -assignedFixterEmail -assignedFixterPosition -slotReservationId"
+      )
       .sort({ date: 1 })
       .lean();
 
@@ -179,31 +192,19 @@ router.get("/next", auth, async (req, res) => {
       }
     }
 
-    const ACTIVE_EXCLUDE = [
-      "Canceled",
-      "Cancelled",
-      "Completed",
-      "Complete",
-      "Done",
-      "Failed",
-      "No-Show",
-      "Noshow",
-    ];
-
     const now = new Date();
-    const activeCount = await Booking.countDocuments({
+    const futureBookings = await Booking.find({
       user: req.user.id,
       addressId: subdoc._id,
       date: { $gte: now },
-      status: { $nin: ACTIVE_EXCLUDE },
-    });
-
-    const next = await Booking.findOne({
-      user: req.user.id,
-      addressId: subdoc._id,
-      date: { $gte: now },
-      status: { $nin: ACTIVE_EXCLUDE },
-    }).sort({ date: 1 });
+    })
+      .sort({ date: 1 })
+      .lean();
+    const activeBookings = futureBookings.filter(
+      (booking) => !isTerminalBookingStatus(booking.status)
+    );
+    const activeCount = activeBookings.length;
+    const next = activeBookings[0] || null;
 
     return res.json({
       plan,
@@ -213,6 +214,14 @@ router.get("/next", auth, async (req, res) => {
       activeCount,
       hasAnyBookings,
       subscriptionAccessBlocked: access.staleSubscription,
+      activeBookings: activeBookings.map((booking) => ({
+        _id: String(booking._id),
+        date: booking.date,
+        status: booking.status,
+        service: booking.service,
+        bookingNumber: booking.bookingNumber,
+        addressId: booking.addressId,
+      })),
       future: next
         ? {
             _id: String(next._id),
@@ -242,14 +251,23 @@ async function cancelOrDelete(req, res) {
       return res.status(400).json({ message: "Invalid booking id" });
     }
 
-    const booking = await Booking.findOne({ _id: id, user: req.user.id });
+    let booking = await Booking.findOne({ _id: id, user: req.user.id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const before = bookingSnapshot(booking);
+    const useReservationEngine = reservationEngineEnabled();
 
     const status = String(booking.status || "").toLowerCase();
     const deletable = new Set(["pending", "complete", "completed"]);
 
-    try {
+    if (useReservationEngine) {
+      const result = await cancelBookingWithReservation({
+        bookingId: booking._id,
+        actorUser: null,
+        createdByType: "customer",
+        reason: "Canceled by customer",
+      });
+      booking = result.booking;
+    } else try {
       const cfg = await CalendarConfig.findOne().lean();
       const tz = cfg?.timezone || "America/New_York";
       const ymd = ymdInTZ(new Date(booking.date), tz);
@@ -259,23 +277,25 @@ async function cancelOrDelete(req, res) {
       console.log("slot decrement (cancel/delete) error:", e.message);
     }
 
-    if (deletable.has(status)) {
+    if (!useReservationEngine && deletable.has(status)) {
       await Booking.deleteOne({ _id: booking._id });
       return res.json({ ok: true, action: "deleted", message: "Booking deleted." });
     }
 
-    booking.statusHistory = (booking.statusHistory || []).concat({
-      status: booking.status,
-      date: new Date(),
-    });
-    booking.status = "Canceled";
-    await booking.save();
-    await logBookingChanges({
-      bookingId: booking._id,
-      before,
-      after: bookingSnapshot(booking),
-      req,
-    });
+    if (!useReservationEngine) {
+      booking.statusHistory = (booking.statusHistory || []).concat({
+        status: booking.status,
+        date: new Date(),
+      });
+      booking.status = "Canceled";
+      await booking.save();
+      await logBookingChanges({
+        bookingId: booking._id,
+        before,
+        after: bookingSnapshot(booking),
+        req,
+      });
+    }
 
     // GHL SMS automation hooks
     try {
@@ -370,7 +390,7 @@ router.post(
         return res.status(401).json({ message: "User not found or session expired." });
       }
 
-      const { service, date, note } = req.body;
+      const { service, date, note, requestedDate, requestedTime } = req.body;
       const addressId = req.body.addressId;
 
       if (!service || !date || !note) {
@@ -383,7 +403,21 @@ router.post(
           .json({ message: "Please choose an address for this booking." });
       }
 
-      const bookingDate = new Date(date);
+      const useReservationEngine = reservationEngineEnabled();
+      const requestedStart =
+        useReservationEngine &&
+        /^\d{4}-\d{2}-\d{2}$/.test(String(requestedDate || "")) &&
+        /^\d{2}:\d{2}$/.test(String(requestedTime || ""))
+          ? moment.tz(
+              `${requestedDate} ${requestedTime}`,
+              "YYYY-MM-DD HH:mm",
+              true,
+              "America/New_York"
+            )
+          : null;
+      const bookingDate = requestedStart?.isValid()
+        ? requestedStart.toDate()
+        : new Date(date);
       if (Number.isNaN(bookingDate.getTime())) {
         return res.status(400).json({ message: "Invalid date." });
       }
@@ -392,17 +426,6 @@ router.post(
       if (!subdoc) {
         return res.status(400).json({ message: "Address not found on your account." });
       }
-
-      const ACTIVE_EXCLUDE = [
-        "Canceled",
-        "Cancelled",
-        "Completed",
-        "Complete",
-        "Done",
-        "Failed",
-        "No-Show",
-        "Noshow",
-      ];
 
       const access = await resolveBookingSubscription(me, subdoc, {
         verifyStripe: true,
@@ -448,12 +471,16 @@ router.post(
         }
       }
 
-      const activeCount = await Booking.countDocuments({
+      const futureAddressBookings = await Booking.find({
         user: req.user.id,
         addressId: subdoc._id,
         date: { $gte: new Date() },
-        status: { $nin: ACTIVE_EXCLUDE },
-      });
+      })
+        .select("status")
+        .lean();
+      const activeCount = futureAddressBookings.filter(
+        (booking) => !isTerminalBookingStatus(booking.status)
+      ).length;
 
       if (bookingLimit > 0 && activeCount >= bookingLimit) {
         return res.status(400).json({
@@ -464,31 +491,34 @@ router.post(
         });
       }
 
-      const cfg = await CalendarConfig.findOne().lean();
+      const cfg = useReservationEngine
+        ? null
+        : await CalendarConfig.findOne().lean();
       const tz = cfg?.timezone || "America/New_York";
-      const capacity = Math.max(1, Number(cfg?.maxConcurrent ?? 1));
-      const ymd = ymdInTZ(bookingDate, tz);
-      const hh = hhmmInTZ(bookingDate, tz);
-
-      const gate = await SlotCounter.findOneAndUpdate(
-        {
-          ymd,
-          time: hh,
-          $or: [{ count: { $lt: capacity } }, { count: { $exists: false } }],
-        },
-        {
-          $inc: { count: 1 },
-          $setOnInsert: { ymd, time: hh },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-
-      if (!gate || gate.count > capacity) {
-        return res.status(409).json({
-          message: "This time is fully booked. Please choose another time.",
-        });
+      if (!useReservationEngine) {
+        const capacity = Math.max(1, Number(cfg?.maxConcurrent ?? 1));
+        const ymd = ymdInTZ(bookingDate, tz);
+        const hh = hhmmInTZ(bookingDate, tz);
+        const gate = await SlotCounter.findOneAndUpdate(
+          {
+            ymd,
+            time: hh,
+            $or: [{ count: { $lt: capacity } }, { count: { $exists: false } }],
+          },
+          {
+            $inc: { count: 1 },
+            $setOnInsert: { ymd, time: hh },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        if (!gate || gate.count > capacity) {
+          return res.status(409).json({
+            code: "SLOT_UNAVAILABLE",
+            message: "This time is fully booked. Please choose another time.",
+          });
+        }
+        counterStamped = { ymd, time: hh };
       }
-      counterStamped = { ymd, time: hh };
 
       const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
 
@@ -589,7 +619,7 @@ router.post(
         }
       }
 
-      const booking = new Booking({
+      const bookingData = {
         bookingNumber,
         date: bookingDate,
         service,
@@ -614,13 +644,25 @@ router.post(
         note,
         images,
         status: "Pending",
-      });
-
-      await booking.save();
-      await logBookingCreated({
-        booking,
-        actorName: "System",
-      });
+      };
+      let booking;
+      if (useReservationEngine) {
+        const result = await createBookingWithReservation({
+          bookingData,
+          slotStart: bookingDate,
+          createdByType: "customer",
+          actorUser: me,
+          assignmentSource: "automatic",
+        });
+        booking = result.booking;
+      } else {
+        booking = new Booking(bookingData);
+        await booking.save();
+        await logBookingCreated({
+          booking,
+          actorName: "System",
+        });
+      }
 
       // GHL SMS automation hooks
       try {
@@ -723,6 +765,36 @@ router.post(
       } catch (_) {}
 
       const msg = (error && (error.message || "")).toString();
+      if (
+        ["SLOT_UNAVAILABLE", "SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(
+          error?.code
+        )
+      ) {
+        let suggestions = [];
+        try {
+          suggestions = await suggestNextAvailableSlots({
+            slotStart:
+              req.body?.requestedDate && req.body?.requestedTime
+                ? moment.tz(
+                    `${req.body.requestedDate} ${req.body.requestedTime}`,
+                    "YYYY-MM-DD HH:mm",
+                    "America/New_York"
+                  ).toDate()
+                : new Date(req.body?.date),
+          });
+        } catch (_) {}
+        return res.status(409).json({
+          code: "SLOT_UNAVAILABLE",
+          message: "This time is no longer available. Please choose another time.",
+          suggestions,
+        });
+      }
+      if (error?.code === "TRANSACTIONS_UNAVAILABLE") {
+        return res.status(503).json({
+          code: "TRANSACTIONS_UNAVAILABLE",
+          message: "Booking is temporarily unavailable. Please try again later.",
+        });
+      }
       if (error?.name === "ValidationError" || /validation failed/i.test(msg)) {
         const first =
           (error.errors && Object.values(error.errors)[0]?.message) || msg;

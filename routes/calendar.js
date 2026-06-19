@@ -5,6 +5,12 @@ const router = express.Router();
 const CalendarConfig = require("../models/CalendarConfig");
 const Booking = require("../models/Booking");
 const SlotCounter = require("../models/SlotCounter");
+const {
+  customerCalendarConfig,
+  customerDayAvailability,
+  customerMonthAvailability,
+  reservationEngineEnabled,
+} = require("../utils/customerCalendarService");
 
 /* ---------------- helpers ---------------- */
 const toMin = (hhmm) => {
@@ -108,6 +114,9 @@ function hoursForDate(cfg, ymd) {
 // GET /api/calendar/config
 router.get("/config", async (_req, res) => {
   try {
+    if (reservationEngineEnabled()) {
+      return res.json(await customerCalendarConfig());
+    }
     const cfg = await getCfg();
     const overridesObj =
       cfg.overrides instanceof Map
@@ -138,6 +147,9 @@ router.get("/slots", async (req, res) => {
     const date = String(req.query.date || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ message: "Missing or invalid date (YYYY-MM-DD)" });
+    }
+    if (reservationEngineEnabled()) {
+      return res.json(await customerDayAvailability({ date }));
     }
 
     const cfg = await getCfg();
@@ -194,6 +206,27 @@ router.get("/slots", async (req, res) => {
   } catch (e) {
     console.error("slots error:", e?.stack || e?.message || e);
     res.status(500).json({ message: "Failed to load slots" });
+  }
+});
+
+router.get("/month", async (req, res) => {
+  if (!reservationEngineEnabled()) {
+    return res.status(404).json({
+      code: "RESERVATION_ENGINE_DISABLED",
+      message: "Customer month availability uses the legacy calendar",
+    });
+  }
+  try {
+    return res.json(
+      await customerMonthAvailability({
+        month: String(req.query.month || ""),
+      })
+    );
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({
+      code: error?.code || "CALENDAR_ERROR",
+      message: error?.message || "Failed to load month availability",
+    });
   }
 });
 

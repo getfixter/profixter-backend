@@ -110,6 +110,7 @@ mongoose
       await Promise.all([
         require("./models/BookingSlotReservation").init(),
         require("./models/ReservationTimeBucket").init(),
+        require("./models/ReservationCapacityBucket").init(),
       ]);
     } catch (error) {
       if (error?.code === 11000) {

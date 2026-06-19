@@ -8,6 +8,7 @@ const {
   loadAvailabilityContext,
 } = require("./availabilityService");
 const {
+  auditReservationConflicts,
   backfillReservationsForFutureBookings,
   reservationBlocksAvailability,
 } = require("./slotReservationService");
@@ -271,6 +272,8 @@ async function buildCustomerAvailabilityReadiness({
   const runBackfill =
     dependencies.backfillReservationsForFutureBookings ||
     backfillReservationsForFutureBookings;
+  const runReservationAudit =
+    dependencies.auditReservationConflicts || auditReservationConflicts;
 
   const config = await ConfigModel.findOne().lean();
   if (!config) {
@@ -334,7 +337,10 @@ async function buildCustomerAvailabilityReadiness({
     timezone,
     now,
   });
-  const backfillReadiness = await runBackfill({ write: false });
+  const [backfillReadiness, reservationAudit] = await Promise.all([
+    runBackfill({ write: false }),
+    runReservationAudit(),
+  ]);
   const backfillBlocked =
     backfillReadiness.conflicts > 0 ||
     backfillReadiness.noEligibleTechnician > 0 ||
@@ -352,6 +358,40 @@ async function buildCustomerAvailabilityReadiness({
         backfillReadiness.outsideWorkingHours +
         backfillReadiness.missingFoundation +
         (backfillReadiness.errors?.length || 0),
+    });
+  }
+  const auditBlockerKeys = [
+    "duplicateActiveReservations",
+    "staleReservationForTerminalBooking",
+    "assignmentMismatch",
+    "technicianOverlap",
+    "reservationWithoutBooking",
+    "reservationOutsideAvailability",
+    "reservationBucketsMissing",
+    "bucketWithoutReservation",
+    "bucketReservationMismatch",
+    "staleBuckets",
+    "duplicateBucketKeys",
+    "capacityBucketsMissing",
+    "capacityBucketWithoutReservation",
+    "capacityBucketReservationMismatch",
+    "staleCapacityBuckets",
+    "duplicateCapacityBucketKeys",
+  ];
+  const reservationAuditIssues = auditBlockerKeys.reduce(
+    (sum, key) =>
+      sum +
+      (Array.isArray(reservationAudit?.[key])
+        ? reservationAudit[key].length
+        : 0),
+    0
+  );
+  if (reservationAuditIssues > 0) {
+    comparison.safeToCutOver = false;
+    comparison.decision = "NO";
+    comparison.blockers.push({
+      category: "reservationAuditIssues",
+      count: reservationAuditIssues,
     });
   }
   const reservationEngineCurrentlyEnabled =
@@ -386,6 +426,7 @@ async function buildCustomerAvailabilityReadiness({
     range: { from: fromDate, to: toDate, days: previewDays, timezone },
     ...comparison,
     backfillReadiness,
+    reservationAudit,
   };
 }
 
