@@ -36,6 +36,12 @@ const UserSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true, required: true, index: true },
     mustChangePassword: { type: Boolean, default: false },
     isDefaultFixter: { type: Boolean, default: false },
+    employeeAvailabilityStatus: {
+      type: String,
+      enum: ["Available", "Busy", "Vacation", "Sick", "Training", "Inactive"],
+      default: "Available",
+      index: true,
+    },
 
     // Google OAuth
     googleId: { type: String, unique: true, sparse: true }, // Google user ID

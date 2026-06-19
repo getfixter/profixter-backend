@@ -3,9 +3,18 @@ const bcrypt = require("bcryptjs");
 const auth = require("../middleware/auth");
 const User = require("../models/User");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 
 const router = express.Router();
 const POSITIONS = ["Fixter", "General Fixter"];
+const AVAILABILITY_STATUSES = [
+  "Available",
+  "Busy",
+  "Vacation",
+  "Sick",
+  "Training",
+  "Inactive",
+];
 const adminOnly = requirePermission(PERMISSIONS.ADMIN);
 
 function clean(value) {
@@ -24,6 +33,8 @@ function fixterDTO(user) {
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
     isDefaultFixter: !!user.isDefaultFixter,
+    employeeAvailabilityStatus:
+      user.employeeAvailabilityStatus || "Available",
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -86,11 +97,26 @@ router.post("/", async (req, res) => {
       employeePosition,
       isActive: true,
       mustChangePassword: true,
+      employeeAvailabilityStatus: "Available",
       addresses: [],
       defaultAddressId: null,
       subscription: null,
     });
-    return res.status(201).json({ fixter: fixterDTO(user) });
+    try {
+      await ensureTechnicianTemplate(user._id);
+      return res.status(201).json({
+        fixter: fixterDTO(user),
+        templateReady: true,
+      });
+    } catch (templateError) {
+      console.error("Fixter created but template provisioning failed:", templateError);
+      return res.status(201).json({
+        fixter: fixterDTO(user),
+        templateReady: false,
+        warning:
+          "Fixter account was created, but the availability template is missing. Run calendar foundation bootstrap.",
+      });
+    }
   } catch (error) {
     console.error("Create Fixter failed:", error);
     return res.status(500).json({ message: "Failed to create Fixter" });
@@ -124,13 +150,53 @@ router.put("/:id", async (req, res) => {
 });
 
 router.patch("/:id/status", async (req, res) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, role: "employee" });
+    if (!user) return res.status(404).json({ message: "Fixter not found" });
+    if (typeof req.body.isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive must be boolean" });
+    }
+
+    if (req.body.isActive) {
+      try {
+        await ensureTechnicianTemplate(user._id);
+      } catch (templateError) {
+        console.error("Fixter reactivation template provisioning failed:", templateError);
+        return res.status(503).json({
+          message:
+            "Fixter was not reactivated because the availability template could not be prepared.",
+          templateReady: false,
+        });
+      }
+      user.isActive = true;
+      if (user.employeeAvailabilityStatus === "Inactive") {
+        user.employeeAvailabilityStatus = "Available";
+      }
+    } else {
+      user.isActive = false;
+      user.isDefaultFixter = false;
+      user.employeeAvailabilityStatus = "Inactive";
+    }
+
+    await user.save();
+    return res.json({
+      fixter: fixterDTO(user),
+      templateReady: true,
+    });
+  } catch (error) {
+    console.error("Update Fixter active status failed:", error);
+    return res.status(500).json({ message: "Failed to update Fixter status" });
+  }
+});
+
+router.patch("/:id/availability-status", async (req, res) => {
   const user = await User.findOne({ _id: req.params.id, role: "employee" });
   if (!user) return res.status(404).json({ message: "Fixter not found" });
-  if (typeof req.body.isActive !== "boolean") {
-    return res.status(400).json({ message: "isActive must be boolean" });
+  const status = clean(req.body.employeeAvailabilityStatus);
+  if (!AVAILABILITY_STATUSES.includes(status)) {
+    return res.status(400).json({ message: "Invalid employee availability status" });
   }
-  user.isActive = req.body.isActive;
-  if (!user.isActive) user.isDefaultFixter = false;
+  user.employeeAvailabilityStatus = status;
   await user.save();
   return res.json({ fixter: fixterDTO(user) });
 });

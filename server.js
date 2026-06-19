@@ -13,6 +13,7 @@ const cron = require("node-cron");
 const { sendTx } = require("./utils/emailService");
 const { startBookingReminders } = require("./jobs/bookingReminders");
 const adminCalendar = require("./routes/adminCalendar");
+const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const path = require("path"); // <-- add this line
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_PREFIX = (process.env.S3_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
@@ -123,6 +124,7 @@ app.use("/api/requests", require("./routes/requests"));
 app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
+app.use("/api/admin/calendar", adminCalendarShadow);
 app.use("/api/admin/calendar", adminCalendar);
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
