@@ -2,23 +2,61 @@ const mongoose = require("mongoose");
 const moment = require("moment-timezone");
 const Booking = require("../models/Booking");
 const BookingSlotReservation = require("../models/BookingSlotReservation");
+const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 const User = require("../models/User");
 const { calculateDayAvailability } = require("./availabilityService");
 const { logReservationAction } = require("./bookingHistory");
+const { runReservationTransaction } = require("./reservationTransaction");
 
 const TIMEZONE = "America/New_York";
 const VISIT_DURATION_MINUTES = 90;
+const BUCKET_MINUTES = 15;
 const ACTIVE_RESERVATION_STATUSES = ["held", "reserved"];
-const NON_ACTIVE_BOOKING_STATUSES = [
-  "Canceled",
-  "Cancelled",
-  "Completed",
-  "Complete",
-  "Done",
-  "Failed",
-  "No-Show",
-  "Noshow",
-];
+const TERMINAL_BOOKING_STATUSES = new Set([
+  "canceled",
+  "cancelled",
+  "completed",
+  "complete",
+  "done",
+  "failed",
+  "no-show",
+  "noshow",
+]);
+
+function normalizeBookingStatus(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+}
+
+function isTerminalBookingStatus(status) {
+  return TERMINAL_BOOKING_STATUSES.has(normalizeBookingStatus(status));
+}
+
+function reservationBlocksAvailability(reservation, now = new Date()) {
+  if (reservation?.status === "reserved") return true;
+  if (reservation?.status !== "held") return false;
+  if (!reservation.holdExpiresAt) return true;
+  const expiresAt = new Date(reservation.holdExpiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return true;
+  return expiresAt > now;
+}
+
+function blockingReservationFilter(now = new Date()) {
+  return {
+    $or: [
+      { status: "reserved" },
+      {
+        status: "held",
+        $or: [
+          { holdExpiresAt: null },
+          { holdExpiresAt: { $gt: now } },
+        ],
+      },
+    ],
+  };
+}
 
 function reservationEngineEnabled() {
   return String(process.env.ENABLE_RESERVATION_ENGINE || "false").toLowerCase() === "true";
@@ -47,6 +85,117 @@ function reservationWindow(slotStart) {
 function overlaps(leftStart, leftEnd, rightStart, rightEnd) {
   return new Date(leftStart) < new Date(rightEnd) &&
     new Date(leftEnd) > new Date(rightStart);
+}
+
+function reservationBucketStarts(slotStart, slotEnd) {
+  const start = new Date(slotStart);
+  const end = new Date(slotEnd);
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime()) ||
+    start.getTime() % (BUCKET_MINUTES * 60 * 1000) !== 0
+  ) {
+    throw serviceError(
+      "INVALID_SLOT",
+      "Reservation starts must align to a 15-minute boundary",
+      400
+    );
+  }
+  const starts = [];
+  for (
+    let cursor = start.getTime();
+    cursor < end.getTime();
+    cursor += BUCKET_MINUTES * 60 * 1000
+  ) {
+    starts.push(new Date(cursor));
+  }
+  return starts;
+}
+
+function bucketDocuments({
+  technicianId,
+  reservationId,
+  bookingId,
+  slotStart,
+  slotEnd,
+  status,
+  expiresAt,
+}) {
+  return reservationBucketStarts(slotStart, slotEnd).map((bucketStart) => ({
+    technicianId,
+    bucketStart,
+    bucketEnd: new Date(
+      bucketStart.getTime() + BUCKET_MINUTES * 60 * 1000
+    ),
+    reservationId,
+    bookingId,
+    status,
+    expiresAt: status === "held" ? expiresAt : null,
+  }));
+}
+
+function planBucketMove(oldBuckets, desiredDocuments) {
+  const oldByKey = new Map(
+    oldBuckets.map((bucket) => [
+      `${bucket.technicianId}:${new Date(bucket.bucketStart).toISOString()}`,
+      bucket,
+    ])
+  );
+  const desiredKeys = new Set(
+    desiredDocuments.map(
+      (bucket) =>
+        `${bucket.technicianId}:${new Date(bucket.bucketStart).toISOString()}`
+    )
+  );
+  return {
+    newOnly: desiredDocuments.filter(
+      (bucket) =>
+        !oldByKey.has(
+          `${bucket.technicianId}:${new Date(bucket.bucketStart).toISOString()}`
+        )
+    ),
+    oldOnly: oldBuckets.filter(
+      (bucket) =>
+        !desiredKeys.has(
+          `${bucket.technicianId}:${new Date(bucket.bucketStart).toISOString()}`
+        )
+    ),
+  };
+}
+
+async function applyBucketMove({
+  oldBuckets,
+  desiredDocuments,
+  session,
+  BucketModel = ReservationTimeBucket,
+}) {
+  const { newOnly, oldOnly } = planBucketMove(
+    oldBuckets,
+    desiredDocuments
+  );
+  if (newOnly.length) {
+    try {
+      await BucketModel.insertMany(newOnly, {
+        session,
+        ordered: true,
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        throw serviceError(
+          "SLOT_CONFLICT",
+          "Technician has an overlapping reservation"
+        );
+      }
+      throw error;
+    }
+  }
+  const oldOnlyIds = oldOnly.map((bucket) => bucket._id);
+  if (oldOnlyIds.length) {
+    await BucketModel.deleteMany({
+      _id: { $in: oldOnlyIds },
+    }).session(session);
+  }
+  return { newOnly, oldOnly };
 }
 
 function assignmentFields(technician, reservation, assignmentSource) {
@@ -81,11 +230,119 @@ function historyActor({ actorUser, createdByType }) {
   };
 }
 
-async function activeReservationForBooking(bookingId) {
-  return BookingSlotReservation.findOne({
+async function activeReservationForBooking(bookingId, session = null) {
+  const query = BookingSlotReservation.findOne({
     bookingId,
-    status: { $in: ACTIVE_RESERVATION_STATUSES },
+    ...blockingReservationFilter(),
   });
+  if (session) query.session(session);
+  return query;
+}
+
+async function releaseExpiredHolds(
+  session,
+  now = new Date(),
+  dependencies = {}
+) {
+  const ReservationModel =
+    dependencies.ReservationModel || BookingSlotReservation;
+  const BucketModel = dependencies.BucketModel || ReservationTimeBucket;
+  const BookingModel = dependencies.BookingModel || Booking;
+  const writeHistory = dependencies.logReservationAction || logReservationAction;
+  const expired = await ReservationModel.find({
+    status: "held",
+    holdExpiresAt: { $lte: now },
+  }).session(session);
+  if (!expired.length) return 0;
+  const reservationIds = expired.map((entry) => entry._id);
+  await BucketModel.deleteMany({
+    reservationId: { $in: reservationIds },
+  }).session(session);
+  await ReservationModel.updateMany(
+    { _id: { $in: reservationIds } },
+    {
+      $set: {
+        status: "released",
+        releasedAt: now,
+        releaseReason: "Hold expired",
+      },
+    },
+    { session }
+  );
+  const bookings = await BookingModel.find({
+    slotReservationId: { $in: reservationIds },
+  }).session(session);
+  for (const booking of bookings) {
+    const reservation = expired.find(
+      (entry) => String(entry._id) === String(booking.slotReservationId)
+    );
+    booking.assignedFixterId = null;
+    booking.assignedFixterName = "";
+    booking.assignedFixterEmail = "";
+    booking.assignedFixterPosition = "";
+    booking.scheduledStart = null;
+    booking.scheduledEnd = null;
+    booking.slotReservationId = null;
+    booking.assignmentSource = "";
+    await booking.save({ session });
+    await writeHistory({
+      bookingId: booking._id,
+      actionType: "reservation_released",
+      summary: "Reservation hold expired",
+      actor: historyActor({ createdByType: "system" }),
+      changes: [
+        {
+          field: "reservation",
+          label: "Reservation",
+          oldValue: reservation
+            ? `${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`
+            : "Held reservation",
+          newValue: "Hold expired",
+        },
+      ],
+      session,
+    });
+  }
+  return expired.length;
+}
+
+async function createReservationBuckets({
+  reservation,
+  session,
+  BucketModel = ReservationTimeBucket,
+}) {
+  const documents = bucketDocuments({
+    technicianId: reservation.technicianId,
+    reservationId: reservation._id,
+    bookingId: reservation.bookingId,
+    slotStart: reservation.slotStart,
+    slotEnd: reservation.slotEnd,
+    status: reservation.status,
+    expiresAt: reservation.holdExpiresAt,
+  });
+  try {
+    await BucketModel.insertMany(documents, {
+      session,
+      ordered: true,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw serviceError(
+        "SLOT_CONFLICT",
+        "Technician has an overlapping reservation"
+      );
+    }
+    throw error;
+  }
+  return documents;
+}
+
+async function deleteReservationBuckets({
+  reservationId,
+  session,
+  BucketModel = ReservationTimeBucket,
+}) {
+  return BucketModel.deleteMany({ reservationId }).session(session);
 }
 
 async function technicianOverlap({
@@ -93,12 +350,13 @@ async function technicianOverlap({
   slotStart,
   slotEnd,
   excludeReservationId = null,
+  now = new Date(),
 }) {
   // MongoDB uniquely protects exact starts. Arbitrary 90-minute interval
   // overlap is checked here because MongoDB has no native exclusion constraint.
   const query = {
     technicianId,
-    status: { $in: ACTIVE_RESERVATION_STATUSES },
+    ...blockingReservationFilter(now),
     slotStart: { $lt: slotEnd },
     slotEnd: { $gt: slotStart },
   };
@@ -171,31 +429,32 @@ async function bookingCountsByTechnician(technicianIds, slotStart) {
   const dayEnd = local.clone().add(1, "day").startOf("day").toDate();
   const weekStart = local.clone().startOf("isoWeek").toDate();
   const weekEnd = local.clone().endOf("isoWeek").add(1, "millisecond").toDate();
-  const [dayCounts, weekCounts] = await Promise.all([
-    Booking.aggregate([
-      {
-        $match: {
-          assignedFixterId: { $in: technicianIds },
-          date: { $gte: dayStart, $lt: dayEnd },
-          status: { $nin: NON_ACTIVE_BOOKING_STATUSES },
-        },
-      },
-      { $group: { _id: "$assignedFixterId", count: { $sum: 1 } } },
-    ]),
-    Booking.aggregate([
-      {
-        $match: {
-          assignedFixterId: { $in: technicianIds },
-          date: { $gte: weekStart, $lt: weekEnd },
-          status: { $nin: NON_ACTIVE_BOOKING_STATUSES },
-        },
-      },
-      { $group: { _id: "$assignedFixterId", count: { $sum: 1 } } },
-    ]),
+  const [dayBookings, weekBookings] = await Promise.all([
+    Booking.find({
+      assignedFixterId: { $in: technicianIds },
+      date: { $gte: dayStart, $lt: dayEnd },
+    })
+      .select("assignedFixterId status")
+      .lean(),
+    Booking.find({
+      assignedFixterId: { $in: technicianIds },
+      date: { $gte: weekStart, $lt: weekEnd },
+    })
+      .select("assignedFixterId status")
+      .lean(),
   ]);
+  const countByTechnician = (bookings) => {
+    const counts = new Map();
+    for (const booking of bookings) {
+      if (isTerminalBookingStatus(booking.status)) continue;
+      const key = String(booking.assignedFixterId);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  };
   return {
-    day: new Map(dayCounts.map((entry) => [String(entry._id), entry.count])),
-    week: new Map(weekCounts.map((entry) => [String(entry._id), entry.count])),
+    day: countByTechnician(dayBookings),
+    week: countByTechnician(weekBookings),
   };
 }
 
@@ -209,28 +468,34 @@ function rankEligibleTechnicians(technicians) {
   );
 }
 
-async function findEligibleTechnicians({ slotStart }) {
+async function findEligibleTechnicians({ slotStart, dependencies = {} }) {
+  const UserModel = dependencies.UserModel || User;
+  const getBookingCounts =
+    dependencies.bookingCountsByTechnician || bookingCountsByTechnician;
+  const getAvailability =
+    dependencies.availabilityForTechnician || availabilityForTechnician;
+  const findOverlap = dependencies.technicianOverlap || technicianOverlap;
   const window = reservationWindow(slotStart);
-  const technicians = await User.find({
+  const technicians = await UserModel.find({
     role: "employee",
     isActive: { $ne: false },
     employeePosition: { $in: ["Fixter", "General Fixter"] },
   })
     .select("_id name email employeePosition isDefaultFixter")
     .lean();
-  const counts = await bookingCountsByTechnician(
+  const counts = await getBookingCounts(
     technicians.map((technician) => technician._id),
     window.slotStart
   );
 
   const evaluated = await Promise.all(
     technicians.map(async (technician) => {
-      const availability = await availabilityForTechnician({
+      const availability = await getAvailability({
         technicianId: technician._id,
         slotStart: window.slotStart,
       });
       const conflict = availability.available
-        ? await technicianOverlap({
+        ? await findOverlap({
             technicianId: technician._id,
             slotStart: window.slotStart,
             slotEnd: window.slotEnd,
@@ -277,15 +542,8 @@ async function reserveSlotForBooking({
   }
   const booking = await Booking.findById(bookingId);
   if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
-  if (NON_ACTIVE_BOOKING_STATUSES.includes(String(booking.status || ""))) {
+  if (isTerminalBookingStatus(booking.status)) {
     throw serviceError("BOOKING_INACTIVE", "Canceled or completed bookings cannot be reserved");
-  }
-  const existing = await activeReservationForBooking(booking._id);
-  if (existing) {
-    throw serviceError(
-      "BOOKING_ALREADY_RESERVED",
-      "Booking already has an active reservation"
-    );
   }
   const desiredStart = slotStart || booking.date;
   const window = reservationWindow(desiredStart);
@@ -327,88 +585,103 @@ async function reserveSlotForBooking({
     throw serviceError("TECHNICIAN_UNAVAILABLE", availability.reason);
   }
   try {
-    await assertNoTechnicianOverlap({
-      technicianId: technician._id,
-      slotStart: window.slotStart,
-      slotEnd: window.slotEnd,
-    });
-  } catch (error) {
-    await logReservationAction({
-      bookingId: booking._id,
-      actionType: "reservation_conflict",
-      summary: "Reservation rejected: slot conflict",
-      actor: historyActor({ actorUser, createdByType }),
-      changes: [{
-        field: "reservation",
-        label: "Reservation",
-        oldValue: "None",
-        newValue: "Overlapping 90-minute reservation",
-      }],
-    });
-    throw error;
-  }
+    return await runReservationTransaction(async (session) => {
+      await releaseExpiredHolds(session);
+      const transactionalBooking = await Booking.findById(bookingId).session(
+        session
+      );
+      if (!transactionalBooking) {
+        throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
+      }
+      if (isTerminalBookingStatus(transactionalBooking.status)) {
+        throw serviceError(
+          "BOOKING_INACTIVE",
+          "Canceled or completed bookings cannot be reserved"
+        );
+      }
+      const existing = await activeReservationForBooking(
+        transactionalBooking._id,
+        session
+      );
+      if (existing) {
+        throw serviceError(
+          "BOOKING_ALREADY_RESERVED",
+          "Booking already has an active reservation"
+        );
+      }
 
-  let reservation;
-  try {
-    reservation = await BookingSlotReservation.create({
-      bookingId: booking._id,
-      technicianId: technician._id,
-      slotStart: window.slotStart,
-      slotEnd: window.slotEnd,
-      timezone: TIMEZONE,
-      status,
-      holdExpiresAt,
-      createdByType,
-      createdBy: actorUser?._id || null,
+      const [reservation] = await BookingSlotReservation.create(
+        [
+          {
+            bookingId: transactionalBooking._id,
+            technicianId: technician._id,
+            slotStart: window.slotStart,
+            slotEnd: window.slotEnd,
+            timezone: TIMEZONE,
+            status,
+            holdExpiresAt,
+            createdByType,
+            createdBy: actorUser?._id || null,
+          },
+        ],
+        { session }
+      );
+      await createReservationBuckets({ reservation, session });
+
+      Object.assign(
+        transactionalBooking,
+        assignmentFields(technician, reservation, assignmentSource)
+      );
+      transactionalBooking.date = window.slotStart;
+      await transactionalBooking.save({ session });
+
+      if (historyAction) {
+        await logReservationAction({
+          bookingId: transactionalBooking._id,
+          actionType: historyAction,
+          summary:
+            historyAction === "reservation_backfilled"
+              ? "Reservation backfilled"
+              : "Reservation created",
+          actor: historyActor({ actorUser, createdByType }),
+          changes: [
+            {
+              field: "reservation",
+              label: "Reservation",
+              oldValue: "None",
+              newValue: `${technician.name} · ${window.slotStart.toISOString()}–${window.slotEnd.toISOString()}`,
+            },
+          ],
+          session,
+        });
+      }
+      return {
+        booking: transactionalBooking,
+        reservation,
+        technician,
+      };
     });
   } catch (error) {
     if (error?.code === 11000) {
       throw serviceError("SLOT_CONFLICT", "Booking or technician slot was reserved concurrently");
     }
-    throw error;
-  }
-
-  try {
-    Object.assign(
-      booking,
-      assignmentFields(technician, reservation, assignmentSource)
-    );
-    booking.date = window.slotStart;
-    await booking.save();
-  } catch (error) {
-    await BookingSlotReservation.updateOne(
-      { _id: reservation._id },
-      {
-        $set: {
-          status: "released",
-          releasedAt: new Date(),
-          releaseReason: "Booking update failed",
-        },
-      }
-    );
-    throw error;
-  }
-
-  if (historyAction) {
-    await logReservationAction({
-      bookingId: booking._id,
-      actionType: historyAction,
-      summary:
-        historyAction === "reservation_backfilled"
-          ? "Reservation backfilled"
-          : "Reservation created",
-      actor: historyActor({ actorUser, createdByType }),
-      changes: [
-        {
+    if (error.code === "SLOT_CONFLICT") {
+      // Conflict history cannot be in the rolled-back transaction.
+      await logReservationAction({
+        bookingId: booking._id,
+        actionType: "reservation_conflict",
+        summary: "Reservation rejected: slot conflict",
+        actor: historyActor({ actorUser, createdByType }),
+        changes: [{
           field: "reservation",
           label: "Reservation",
           oldValue: "None",
-          newValue: `${technician.name} · ${window.slotStart.toISOString()}–${window.slotEnd.toISOString()}`,
-        },
-      ],
-    });
+          newValue: "Overlapping 90-minute reservation",
+        }],
+      });
+    }
+    throw error;
   }
-  return { booking, reservation, technician };
 }
 
 async function releaseReservationForBooking({
@@ -418,18 +691,32 @@ async function releaseReservationForBooking({
   createdByType = "system",
   clearAssignment = true,
 }) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
-  const reservation = await activeReservationForBooking(booking._id);
-  if (!reservation) {
-    throw serviceError("RESERVATION_NOT_FOUND", "Active reservation not found", 404);
-  }
-  const oldDescription = `${booking.assignedFixterName || "Technician"} · ${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`;
-  reservation.status = "released";
-  reservation.releasedAt = new Date();
-  reservation.releaseReason = reason;
-  await reservation.save();
-  try {
+  return runReservationTransaction(async (session) => {
+    const booking = await Booking.findById(bookingId).session(session);
+    if (!booking) {
+      throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
+    }
+    const reservation = await activeReservationForBooking(
+      booking._id,
+      session
+    );
+    if (!reservation) {
+      throw serviceError(
+        "RESERVATION_NOT_FOUND",
+        "Active reservation not found",
+        404
+      );
+    }
+    const oldDescription = `${booking.assignedFixterName || "Technician"} · ${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`;
+    await deleteReservationBuckets({
+      reservationId: reservation._id,
+      session,
+    });
+    reservation.status = "released";
+    reservation.releasedAt = new Date();
+    reservation.releaseReason = reason;
+    await reservation.save({ session });
+
     if (clearAssignment) {
       booking.assignedFixterId = null;
       booking.assignedFixterName = "";
@@ -439,30 +726,25 @@ async function releaseReservationForBooking({
       booking.scheduledEnd = null;
       booking.slotReservationId = null;
       booking.assignmentSource = "";
-      await booking.save();
+      await booking.save({ session });
     }
-  } catch (error) {
-    reservation.status = "reserved";
-    reservation.releasedAt = null;
-    reservation.releaseReason = "";
-    await reservation.save();
-    throw error;
-  }
-  await logReservationAction({
-    bookingId: booking._id,
-    actionType: "reservation_released",
-    summary: "Reservation released",
-    actor: historyActor({ actorUser, createdByType }),
-    changes: [
-      {
-        field: "reservation",
-        label: "Reservation",
-        oldValue: oldDescription,
-        newValue: reason,
-      },
-    ],
+    await logReservationAction({
+      bookingId: booking._id,
+      actionType: "reservation_released",
+      summary: "Reservation released",
+      actor: historyActor({ actorUser, createdByType }),
+      changes: [
+        {
+          field: "reservation",
+          label: "Reservation",
+          oldValue: oldDescription,
+          newValue: reason,
+        },
+      ],
+      session,
+    });
+    return { booking, reservation };
   });
-  return { booking, reservation };
 }
 
 async function moveReservationForBooking({
@@ -475,53 +757,117 @@ async function moveReservationForBooking({
 }) {
   const booking = await Booking.findById(bookingId);
   if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
-  const previous = await activeReservationForBooking(booking._id);
   const desiredStart = slotStart || booking.date;
-  const oldDescription = previous
-    ? `${booking.assignedFixterName || "Technician"} · ${previous.slotStart.toISOString()}–${previous.slotEnd.toISOString()}`
-    : "None";
-
-  if (previous) {
-    previous.status = "released";
-    previous.releasedAt = new Date();
-    previous.releaseReason = "Moved";
-    await previous.save();
+  const window = reservationWindow(desiredStart);
+  const technician = await User.findOne({
+    _id: technicianId,
+    role: "employee",
+    isActive: { $ne: false },
+    employeePosition: { $in: ["Fixter", "General Fixter"] },
+  }).lean();
+  if (!technician) {
+    throw serviceError(
+      "TECHNICIAN_UNAVAILABLE",
+      "Technician is invalid or inactive"
+    );
   }
-  let result;
-  try {
-    result = await reserveSlotForBooking({
+  const availability = await availabilityForTechnician({
+    technicianId: technician._id,
+    slotStart: window.slotStart,
+  });
+  if (!availability.available) {
+    throw serviceError("TECHNICIAN_UNAVAILABLE", availability.reason);
+  }
+
+  const previous = await activeReservationForBooking(booking._id);
+  if (!previous) {
+    return reserveSlotForBooking({
       bookingId,
       technicianId,
       slotStart: desiredStart,
       createdByType,
       actorUser,
       assignmentSource,
-      historyAction: null,
+      historyAction: "reservation_moved",
+    });
+  }
+
+  try {
+    return await runReservationTransaction(async (session) => {
+      await releaseExpiredHolds(session);
+      const transactionalBooking = await Booking.findById(bookingId).session(
+        session
+      );
+      const reservation = await activeReservationForBooking(
+        bookingId,
+        session
+      );
+      if (!transactionalBooking || !reservation) {
+        throw serviceError(
+          "RESERVATION_NOT_FOUND",
+          "Active reservation not found",
+          404
+        );
+      }
+      const oldDescription = `${transactionalBooking.assignedFixterName || "Technician"} · ${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`;
+      const oldBuckets = await ReservationTimeBucket.find({
+        reservationId: reservation._id,
+      }).session(session);
+      const desiredDocuments = bucketDocuments({
+        technicianId: technician._id,
+        reservationId: reservation._id,
+        bookingId: transactionalBooking._id,
+        slotStart: window.slotStart,
+        slotEnd: window.slotEnd,
+        status: reservation.status,
+        expiresAt: reservation.holdExpiresAt,
+      });
+      await applyBucketMove({
+        oldBuckets,
+        desiredDocuments,
+        session,
+      });
+
+      reservation.technicianId = technician._id;
+      reservation.slotStart = window.slotStart;
+      reservation.slotEnd = window.slotEnd;
+      await reservation.save({ session });
+      Object.assign(
+        transactionalBooking,
+        assignmentFields(technician, reservation, assignmentSource)
+      );
+      transactionalBooking.date = window.slotStart;
+      await transactionalBooking.save({ session });
+      await logReservationAction({
+        bookingId,
+        actionType: "reservation_moved",
+        summary: "Reservation moved",
+        actor: historyActor({ actorUser, createdByType }),
+        changes: [
+          {
+            field: "reservation",
+            label: "Reservation",
+            oldValue: oldDescription,
+            newValue: `${technician.name} · ${window.slotStart.toISOString()}–${window.slotEnd.toISOString()}`,
+          },
+        ],
+        session,
+      });
+      return {
+        booking: transactionalBooking,
+        reservation,
+        technician,
+      };
     });
   } catch (error) {
-    if (previous) {
-      previous.status = "reserved";
-      previous.releasedAt = null;
-      previous.releaseReason = "";
-      await previous.save();
+    if (error?.code === 11000) {
+      throw serviceError(
+        "SLOT_CONFLICT",
+        "Technician slot was reserved concurrently"
+      );
     }
     throw error;
   }
-  await logReservationAction({
-    bookingId,
-    actionType: "reservation_moved",
-    summary: "Reservation moved",
-    actor: historyActor({ actorUser, createdByType }),
-    changes: [
-      {
-        field: "reservation",
-        label: "Reservation",
-        oldValue: oldDescription,
-        newValue: `${result.technician.name} · ${result.reservation.slotStart.toISOString()}–${result.reservation.slotEnd.toISOString()}`,
-      },
-    ],
-  });
-  return result;
 }
 
 async function backfillReservationsForFutureBookings({
@@ -535,13 +881,17 @@ async function backfillReservationsForFutureBookings({
     dependencies.findEligibleTechnicians || findEligibleTechnicians;
   const reserve = dependencies.reserveSlotForBooking || reserveSlotForBooking;
   const now = new Date();
-  const bookings = await BookingModel.find({
+  const futureBookings = await BookingModel.find({
     date: { $gte: now },
-    status: { $nin: NON_ACTIVE_BOOKING_STATUSES },
   }).sort({ date: 1 });
+  const bookings = futureBookings.filter(
+    (booking) => !isTerminalBookingStatus(booking.status)
+  );
   const report = {
     dryRun: !write,
-    totalFutureBookings: bookings.length,
+    totalFutureBookings: futureBookings.length,
+    terminalBookingsSkipped: futureBookings.length - bookings.length,
+    activeFutureBookings: bookings.length,
     alreadyReserved: 0,
     canReserve: 0,
     created: 0,
@@ -591,11 +941,24 @@ async function backfillReservationsForFutureBookings({
   return report;
 }
 
-function analyzeReservationAudit({ bookings, reservations }) {
+function analyzeReservationAudit({ bookings, reservations, now = new Date() }) {
   const bookingById = new Map(bookings.map((booking) => [String(booking._id), booking]));
   const activeReservations = reservations.filter((entry) =>
-    ACTIVE_RESERVATION_STATUSES.includes(entry.status)
+    reservationBlocksAvailability(entry, now)
   );
+  const staleExpiredHolds = reservations
+    .filter(
+      (entry) =>
+        entry.status === "held" &&
+        entry.holdExpiresAt &&
+        new Date(entry.holdExpiresAt) <= now
+    )
+    .map((entry) => ({
+      reservationId: String(entry._id),
+      bookingId: String(entry.bookingId),
+      holdExpiresAt: entry.holdExpiresAt,
+      actionNeeded: "release",
+    }));
   const activeByBooking = new Map();
   for (const reservation of activeReservations) {
     const key = String(reservation.bookingId);
@@ -638,69 +1001,280 @@ function analyzeReservationAudit({ bookings, reservations }) {
       );
     })
     .map((reservation) => String(reservation._id));
-  const reservationsForCanceledBookings = activeReservations
+  const staleReservations = activeReservations
     .filter((reservation) => {
       const booking = bookingById.get(String(reservation.bookingId));
-      return (
-        booking &&
-        NON_ACTIVE_BOOKING_STATUSES.includes(String(booking.status || ""))
-      );
+      return booking && isTerminalBookingStatus(booking.status);
     })
+    .map((reservation) => ({
+      reservationId: String(reservation._id),
+      bookingId: String(reservation.bookingId),
+      bookingStatus:
+        bookingById.get(String(reservation.bookingId))?.status || "",
+      normalizedStatus: normalizeBookingStatus(
+        bookingById.get(String(reservation.bookingId))?.status
+      ),
+      actionNeeded: "release",
+    }));
+  const missingReservations = bookings
+    .filter(
+      (booking) =>
+        !isTerminalBookingStatus(booking.status) &&
+        !(activeByBooking.get(String(booking._id)) || []).length
+    )
+    .map((booking) => String(booking._id));
+  const reservationsWithoutBookings = activeReservations
+    .filter((reservation) => !bookingById.has(String(reservation.bookingId)))
     .map((reservation) => String(reservation._id));
+  const duplicateActiveReservations = [...activeByBooking.entries()]
+    .filter(([, entries]) => entries.length > 1)
+    .map(([bookingId, entries]) => ({
+      bookingId,
+      reservationIds: entries.map((entry) => String(entry._id)),
+    }));
   return {
     bookingById,
     activeReservations,
     activeByBooking,
     technicianOverlaps,
     assignmentMismatch,
-    reservationsForCanceledBookings,
-    futureBookingsWithoutReservations: bookings
-      .filter((booking) => !(activeByBooking.get(String(booking._id)) || []).length)
-      .map((booking) => String(booking._id)),
-    reservationsWithoutBookings: activeReservations
-      .filter((reservation) => !bookingById.has(String(reservation.bookingId)))
-      .map((reservation) => String(reservation._id)),
-    bookingsWithMultipleActiveReservations: [...activeByBooking.entries()]
+    staleReservations,
+    staleExpiredHolds,
+    missingReservations,
+    reservationsWithoutBookings,
+    duplicateActiveReservations,
+    // Compatibility aliases for the original report keys.
+    reservationsForCanceledBookings: staleReservations.map(
+      (entry) => entry.reservationId
+    ),
+    futureBookingsWithoutReservations: missingReservations,
+    bookingsWithMultipleActiveReservations: duplicateActiveReservations,
+  };
+}
+
+function analyzeReservationBucketAudit({
+  bookings,
+  reservations,
+  buckets,
+  now = new Date(),
+}) {
+  const bookingById = new Map(
+    bookings.map((booking) => [String(booking._id), booking])
+  );
+  const reservationById = new Map(
+    reservations.map((reservation) => [
+      String(reservation._id),
+      reservation,
+    ])
+  );
+  const bucketsByReservation = new Map();
+  for (const bucket of buckets) {
+    const key = String(bucket.reservationId);
+    bucketsByReservation.set(key, [
+      ...(bucketsByReservation.get(key) || []),
+      bucket,
+    ]);
+  }
+  const reservationBucketsMissing = [];
+  const bucketReservationMismatch = [];
+  const staleBuckets = [];
+  const bucketWithoutReservation = [];
+  const bucketsByTechnicianTime = new Map();
+  for (const bucket of buckets) {
+    const key = `${bucket.technicianId}:${new Date(
+      bucket.bucketStart
+    ).toISOString()}`;
+    bucketsByTechnicianTime.set(key, [
+      ...(bucketsByTechnicianTime.get(key) || []),
+      bucket,
+    ]);
+  }
+
+  for (const reservation of reservations.filter((entry) =>
+    ACTIVE_RESERVATION_STATUSES.includes(entry.status)
+  )) {
+    const expected = new Set(
+      reservationBucketStarts(
+        reservation.slotStart,
+        reservation.slotEnd
+      ).map((value) => value.toISOString())
+    );
+    const actual = bucketsByReservation.get(String(reservation._id)) || [];
+    const actualStarts = new Set(
+      actual.map((bucket) => new Date(bucket.bucketStart).toISOString())
+    );
+    const missing = [...expected].filter((value) => !actualStarts.has(value));
+    if (missing.length) {
+      reservationBucketsMissing.push({
+        reservationId: String(reservation._id),
+        missingBucketStarts: missing,
+      });
+    }
+    for (const bucket of actual) {
+      if (
+        String(bucket.technicianId) !== String(reservation.technicianId) ||
+        String(bucket.bookingId) !== String(reservation.bookingId) ||
+        !expected.has(new Date(bucket.bucketStart).toISOString())
+      ) {
+        bucketReservationMismatch.push(String(bucket._id));
+      }
+    }
+  }
+
+  for (const bucket of buckets) {
+    const reservation = reservationById.get(String(bucket.reservationId));
+    if (!reservation) {
+      bucketWithoutReservation.push(String(bucket._id));
+      continue;
+    }
+    const booking = bookingById.get(String(reservation.bookingId));
+    const expiredHeld =
+      reservation.status === "held" &&
+      reservation.holdExpiresAt &&
+      new Date(reservation.holdExpiresAt) <= now;
+    if (
+      reservation.status === "released" ||
+      expiredHeld ||
+      (booking && isTerminalBookingStatus(booking.status))
+    ) {
+      staleBuckets.push(String(bucket._id));
+    }
+  }
+
+  const overlapAnalysis = analyzeReservationAudit({
+    bookings,
+    reservations,
+    now,
+  });
+  const overlapsNotReflectedInBuckets = overlapAnalysis.technicianOverlaps
+    .filter((overlap) => {
+      const bucketSets = overlap.reservationIds.map(
+        (reservationId) =>
+          new Set(
+            (bucketsByReservation.get(reservationId) || []).map((bucket) =>
+              new Date(bucket.bucketStart).toISOString()
+            )
+          )
+      );
+      return ![...bucketSets[0]].some((value) => bucketSets[1].has(value));
+    });
+
+  return {
+    reservationBucketsMissing,
+    bucketWithoutReservation,
+    bucketReservationMismatch: Array.from(
+      new Set(bucketReservationMismatch)
+    ),
+    overlapsNotReflectedInBuckets,
+    staleBuckets: Array.from(new Set(staleBuckets)),
+    duplicateBucketKeys: [...bucketsByTechnicianTime.entries()]
       .filter(([, entries]) => entries.length > 1)
-      .map(([bookingId, entries]) => ({
-        bookingId,
-        reservationIds: entries.map((entry) => String(entry._id)),
+      .map(([key, entries]) => ({
+        key,
+        bucketIds: entries.map((entry) => String(entry._id)),
       })),
   };
 }
 
-async function auditReservationConflicts() {
+async function auditReservationConflicts({ dependencies = {} } = {}) {
+  const BookingModel = dependencies.BookingModel || Booking;
+  const ReservationModel =
+    dependencies.ReservationModel || BookingSlotReservation;
+  const BucketModel =
+    dependencies.BucketModel || ReservationTimeBucket;
+  const getOptions =
+    dependencies.findEligibleTechnicians || findEligibleTechnicians;
+  const getAvailability =
+    dependencies.availabilityForTechnician || availabilityForTechnician;
   const now = new Date();
-  const [bookings, reservations] = await Promise.all([
-    Booking.find({
+  const [futureBookings, initialReservations, buckets] = await Promise.all([
+    BookingModel.find({
       date: { $gte: now },
-      status: { $nin: NON_ACTIVE_BOOKING_STATUSES },
     }).lean(),
-    BookingSlotReservation.find({
+    ReservationModel.find({
       $or: [
         { status: { $in: ACTIVE_RESERVATION_STATUSES } },
         { slotStart: { $gte: now } },
       ],
     }).lean(),
+    BucketModel.find({}).lean(),
   ]);
+  const bucketReservationIds = Array.from(
+    new Set(buckets.map((bucket) => String(bucket.reservationId)))
+  );
+  const bucketReservations = bucketReservationIds.length
+    ? await ReservationModel.find({
+        _id: { $in: bucketReservationIds },
+      }).lean()
+    : [];
+  const reservationMap = new Map();
+  for (const reservation of [
+    ...initialReservations,
+    ...bucketReservations,
+  ]) {
+    reservationMap.set(String(reservation._id), reservation);
+  }
+  const reservations = Array.from(reservationMap.values());
+  const linkedBookingIds = Array.from(
+    new Set(reservations.map((reservation) => String(reservation.bookingId)))
+  );
+  const linkedBookings = linkedBookingIds.length
+    ? await BookingModel.find({ _id: { $in: linkedBookingIds } }).lean()
+    : [];
+  const completeBookingMap = new Map();
+  for (const booking of [...futureBookings, ...linkedBookings]) {
+    completeBookingMap.set(String(booking._id), booking);
+  }
+  const bookings = Array.from(completeBookingMap.values());
   const {
     bookingById,
     activeReservations,
-    activeByBooking,
     technicianOverlaps,
     assignmentMismatch,
-    reservationsForCanceledBookings,
-    futureBookingsWithoutReservations,
-    bookingsWithMultipleActiveReservations,
-  } = analyzeReservationAudit({ bookings, reservations });
+    staleReservations,
+    staleExpiredHolds,
+    missingReservations,
+    reservationsWithoutBookings,
+    duplicateActiveReservations,
+  } = analyzeReservationAudit({ bookings, reservations, now });
   const outsideAvailability = [];
-  for (const reservation of activeReservations) {
-    const booking = bookingById.get(String(reservation.bookingId)) ||
-      (await Booking.findById(reservation.bookingId).lean());
-    if (!booking) continue;
-    bookingById.set(String(booking._id), booking);
+  const noEligibleTechnician = [];
+  const outsideWorkingHours = [];
+  for (const booking of futureBookings.filter(
+    (entry) =>
+      !isTerminalBookingStatus(entry.status) &&
+      missingReservations.includes(String(entry._id))
+  )) {
     try {
-      const availability = await availabilityForTechnician({
+      const options = await getOptions({ slotStart: booking.date });
+      if (!options.available.length) {
+        const reasons = options.unavailable.map((entry) =>
+          String(entry.reason || "").toLowerCase()
+        );
+        const outsideSchedule =
+          reasons.length > 0 &&
+          reasons.every(
+            (reason) =>
+              reason.includes("outside schedule") ||
+              reason.includes("does not fit")
+          );
+        (outsideSchedule ? outsideWorkingHours : noEligibleTechnician).push(
+          String(booking._id)
+        );
+      }
+    } catch (error) {
+      if (error.code === "SHADOW_FOUNDATION_NOT_READY") {
+        noEligibleTechnician.push(String(booking._id));
+      } else {
+        outsideWorkingHours.push(String(booking._id));
+      }
+    }
+  }
+  for (const reservation of activeReservations) {
+    const booking = bookingById.get(String(reservation.bookingId));
+    if (!booking) continue;
+    try {
+      const availability = await getAvailability({
         technicianId: reservation.technicianId,
         slotStart: reservation.slotStart,
       });
@@ -709,34 +1283,64 @@ async function auditReservationConflicts() {
       outsideAvailability.push(String(reservation._id));
     }
   }
+  const bucketAudit = analyzeReservationBucketAudit({
+    bookings,
+    reservations,
+    buckets,
+    now,
+  });
   return {
     generatedAt: new Date(),
-    futureBookingsWithoutReservations,
-    reservationsWithoutBookings: activeReservations
-      .filter((reservation) => !bookingById.has(String(reservation.bookingId)))
-      .map((reservation) => String(reservation._id)),
-    bookingsWithMultipleActiveReservations,
-    technicianOverlaps,
+    missingReservation: missingReservations,
+    duplicateActiveReservations,
+    staleReservationForTerminalBooking: staleReservations,
+    staleExpiredHolds,
     assignmentMismatch,
-    reservationsForCanceledBookings,
+    technicianOverlap: technicianOverlaps,
+    reservationWithoutBooking: reservationsWithoutBookings,
+    reservationOutsideAvailability: outsideAvailability,
+    noEligibleTechnician,
+    outsideWorkingHours,
+    ...bucketAudit,
+    // Compatibility aliases for existing consumers.
+    futureBookingsWithoutReservations: missingReservations,
+    reservationsWithoutBookings,
+    bookingsWithMultipleActiveReservations: duplicateActiveReservations,
+    technicianOverlaps,
+    reservationsForCanceledBookings: staleReservations.map(
+      (entry) => entry.reservationId
+    ),
     reservationsOutsideAvailability: outsideAvailability,
   };
 }
 
 module.exports = {
   ACTIVE_RESERVATION_STATUSES,
+  TERMINAL_BOOKING_STATUSES,
   TIMEZONE,
   VISIT_DURATION_MINUTES,
   analyzeReservationAudit,
+  analyzeReservationBucketAudit,
+  applyBucketMove,
   assertNoTechnicianOverlap,
   auditReservationConflicts,
   backfillReservationsForFutureBookings,
+  blockingReservationFilter,
+  bucketDocuments,
+  createReservationBuckets,
+  deleteReservationBuckets,
   findEligibleTechnicians,
+  isTerminalBookingStatus,
   moveReservationForBooking,
   overlaps,
+  planBucketMove,
+  normalizeBookingStatus,
   rankEligibleTechnicians,
+  releaseExpiredHolds,
   releaseReservationForBooking,
+  reservationBlocksAvailability,
   reservationEngineEnabled,
+  reservationBucketStarts,
   reservationWindow,
   reserveSlotForBooking,
 };

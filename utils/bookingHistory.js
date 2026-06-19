@@ -149,14 +149,16 @@ async function logReservationAction({
   changes = [],
   req,
   actor,
+  session = null,
 }) {
-  return BookingHistory.create({
+  const [entry] = await BookingHistory.create([{
     bookingId,
     ...(actor || actorFromRequest(req)),
     actionType,
     changes,
     summary,
-  });
+  }], session ? { session } : {});
+  return entry;
 }
 
 module.exports = {

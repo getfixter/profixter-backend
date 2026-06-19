@@ -106,6 +106,20 @@ mongoose
       .catch(e => console.warn("⚠️ Could not sync User indexes:", e.message));
 
     await ensureCapacityOverrideIndexes();
+    try {
+      await Promise.all([
+        require("./models/BookingSlotReservation").init(),
+        require("./models/ReservationTimeBucket").init(),
+      ]);
+    } catch (error) {
+      if (error?.code === 11000) {
+        console.error(
+          "❌ Reservation unique index could not be created. Run: npm run reservations:audit"
+        );
+      }
+      throw error;
+    }
+    console.log("✅ Reservation indexes ready");
 
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");
@@ -130,6 +144,10 @@ app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/admin/calendar", adminCalendarShadow);
+app.use(
+  "/api/admin/calendar",
+  require("./routes/adminCustomerAvailabilityPreview")
+);
 app.use("/api/admin/calendar", adminCalendar);
 app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/projects"));

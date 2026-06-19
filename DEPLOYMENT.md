@@ -83,3 +83,54 @@ Version labels use the Git commit SHA, so each deployment maps back to an exact 
 Permanent Stripe subscription reconciliation, manual cleanup commands, and
 SSM/SSH production procedures are documented in
 [`SUBSCRIPTION_OPERATIONS.md`](./SUBSCRIPTION_OPERATIONS.md).
+
+## MongoDB Transaction Verification
+
+The reservation engine requires MongoDB multi-document transactions. Before
+enabling it, run the transaction probe from the Elastic Beanstalk instance or
+another trusted environment that has the production `MONGO_URI`:
+
+```bash
+cd /var/app/current
+export MONGO_URI="$("/opt/elasticbeanstalk/bin/get-config" environment -k MONGO_URI)"
+export ENABLE_RESERVATION_ENGINE=false
+npm run mongo:transactions:probe
+```
+
+Do not print or paste the value of `MONGO_URI`. Running this locally without the
+production URI does not verify the production database topology.
+
+The probe:
+
+1. Runs MongoDB's `hello` command and reports replica-set or mongos topology.
+2. Inserts a uniquely identified document and aborts its transaction.
+3. Verifies the aborted document is absent.
+4. Inserts another uniquely identified document and commits its transaction.
+5. Verifies the committed document exists, then deletes it.
+6. Performs a final cleanup attempt for both probe IDs.
+
+The command refuses to run when `ENABLE_RESERVATION_ENGINE=true`.
+
+`PASS` and exit code `0` mean the connected database successfully demonstrated
+both transaction abort and commit behavior with snapshot reads and majority
+writes. Keep the feature flag disabled until all reservation audits and
+pre-cutover checks are complete.
+
+`FAIL` and a non-zero exit code mean the reservation engine must not be enabled.
+Typical causes include a missing URI, standalone MongoDB topology, unsupported
+transactions, database permissions, connectivity failure, or failed probe
+cleanup. Resolve the reported error and rerun the probe before Phase 4.
+
+After a successful production probe, set `MONGO_TRANSACTIONS_VERIFIED=true`
+only as a readiness acknowledgement. Keep `ENABLE_RESERVATION_ENGINE=false`.
+
+The guarded Admin comparison endpoint can then be enabled with
+`ENABLE_CUSTOMER_AVAILABILITY_PREVIEW=true`:
+
+```text
+GET /api/admin/calendar/customer-availability-preview?days=30
+```
+
+The endpoint is Admin-only, accepts 30–60 days, performs no writes, and returns
+legacy-versus-shadow mismatch categories, reservation backfill dry-run results,
+and a conservative `safeToCutOver` / `decision` result.

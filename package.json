@@ -17,7 +17,8 @@
     "users:roles:backfill": "node scripts/backfill_user_roles.js --write",
     "reservations:backfill:dry": "node scripts/backfill_booking_reservations.js",
     "reservations:backfill": "node scripts/backfill_booking_reservations.js --write",
-    "reservations:audit": "node scripts/audit_booking_reservations.js"
+    "reservations:audit": "node scripts/audit_booking_reservations.js",
+    "mongo:transactions:probe": "node scripts/probe_mongo_transactions.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const mongoose = require("mongoose");
 const BookingSlotReservation = require("../models/BookingSlotReservation");
 const BookingHistory = require("../models/BookingHistory");
+const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 
 async function run() {
   const bookingId = new mongoose.Types.ObjectId();
@@ -66,6 +67,20 @@ async function run() {
   ]) {
     assert(historyActions.includes(action), `Missing history action ${action}`);
   }
+  const bucketIndexes = ReservationTimeBucket.schema.indexes();
+  assert(
+    bucketIndexes.some(
+      ([fields, options]) =>
+        fields.technicianId === 1 &&
+        fields.bucketStart === 1 &&
+        options.unique &&
+        options.name === "one_reservation_bucket_per_technician_time"
+    )
+  );
+  assert.equal(
+    bucketIndexes.filter(([fields]) => fields.expiresAt === 1).length,
+    1
+  );
   console.log("BookingSlotReservation model tests passed");
 }
 
