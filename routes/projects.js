@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const User = require("../models/User");
 const Project = require("../models/Project");
+const Estimate = require("../models/Estimate");
 
 const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -116,6 +117,24 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.get("/:projectId/estimates", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.projectId)) {
+      return res.status(400).json({ message: "Invalid project ID" });
+    }
+    const projectExists = await Project.exists({ _id: req.params.projectId });
+    if (!projectExists) return res.status(404).json({ message: "Project not found" });
+
+    const estimates = await Estimate.find({ projectId: req.params.projectId })
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ estimates });
+  } catch (error) {
+    console.error("GET /admin/projects/:projectId/estimates failed:", error);
+    return res.status(500).json({ message: "Failed to load project estimates" });
+  }
+});
+
 router.get("/:id", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -176,6 +195,12 @@ router.delete("/:id", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: "Invalid project ID" });
+    }
+    const hasEstimates = await Estimate.exists({ projectId: req.params.id });
+    if (hasEstimates) {
+      return res.status(409).json({
+        message: "Delete this project's estimates before deleting the project",
+      });
     }
     const project = await Project.findByIdAndDelete(req.params.id);
     if (!project) return res.status(404).json({ message: "Project not found" });
