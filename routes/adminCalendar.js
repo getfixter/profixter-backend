@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const CalendarConfig = require("../models/CalendarConfig");
 const auth = require("../middleware/auth");
+const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 
 // Load or create config doc
 async function getCfg() {
@@ -17,7 +18,7 @@ async function getCfg() {
  * GET /api/admin/calendar
  * Returns current calendar configuration for Admin UI
  */
-router.get("/", auth, async (req, res) => {
+router.get("/", auth, ...requirePermission(PERMISSIONS.SCHEDULE_READ), async (req, res) => {
   try {
     const cfg = await getCfg();
 
@@ -48,7 +49,7 @@ router.get("/", auth, async (req, res) => {
  * PUT /api/admin/calendar
  * Updates calendar configuration from Admin UI
  */
-router.put("/", auth, async (req, res) => {
+router.put("/", auth, ...requirePermission(PERMISSIONS.SCHEDULE_WRITE), async (req, res) => {
   try {
     const body = req.body || {};
     const cfg = await getCfg();

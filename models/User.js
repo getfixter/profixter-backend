@@ -19,6 +19,22 @@ const UserSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: false }, // Optional for Google OAuth users
     phone: { type: String, required: false }, // Optional for Google OAuth users
+    firstName: { type: String, trim: true, default: "" },
+    lastName: { type: String, trim: true, default: "" },
+    role: {
+      type: String,
+      enum: ["customer", "employee", "admin"],
+      default: "customer",
+      required: true,
+      index: true,
+    },
+    employeePosition: {
+      type: String,
+      enum: ["Fixter", "General Fixter", null],
+      default: null,
+    },
+    isActive: { type: Boolean, default: true, required: true, index: true },
+    mustChangePassword: { type: Boolean, default: false },
 
     // Google OAuth
     googleId: { type: String, unique: true, sparse: true }, // Google user ID

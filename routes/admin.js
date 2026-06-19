@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
+const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Referral = require("../models/Referral");
@@ -110,7 +111,7 @@ function chunk(arr, size) {
 }
 
 // ✅ Middleware: Allow only admin
-const onlyAdmin = async (req, res, next) => {
+const legacyOnlyAdmin = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user || user.email !== ADMIN_EMAIL) {
@@ -124,6 +125,9 @@ const onlyAdmin = async (req, res, next) => {
 };
 
 /* ───────────────── per-address plan helper ───────────────── */
+const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+void legacyOnlyAdmin;
+
 async function getAddressPlansForUser(user) {
   const candidates = await Subscription.find({
     user: user._id,
@@ -188,7 +192,10 @@ router.get("/users/:id/addressesDetailed", auth, onlyAdmin, async (req, res) => 
 // ✅ GET All Users (NEWEST FIRST) + includes addressesDetailed with per-address plan
 router.get("/users", auth, onlyAdmin, async (_req, res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 }).lean();
+    const users = await User.find({ role: { $ne: "employee" } })
+      .select("-password")
+      .sort({ createdAt: -1 })
+      .lean();
     const out = [];
 
     for (const u of users) {
@@ -202,6 +209,36 @@ router.get("/users", auth, onlyAdmin, async (_req, res) => {
     res.status(500).json({ message: "Failed to get users" });
   }
 });
+
+router.get(
+  "/members",
+  auth,
+  ...requirePermission(PERMISSIONS.MEMBERS_READ),
+  async (_req, res) => {
+    try {
+      const users = await User.find({ role: { $ne: "employee" } })
+        .select("userId name email phone addresses defaultAddressId createdAt")
+        .sort({ createdAt: -1 })
+        .lean();
+      const out = [];
+      for (const user of users) {
+        out.push({
+          _id: String(user._id),
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          phone: user.phone || "",
+          createdAt: user.createdAt,
+          addressesDetailed: await getAddressPlansForUser(user),
+        });
+      }
+      return res.json(out);
+    } catch (error) {
+      console.error("Fetch members failed:", error);
+      return res.status(500).json({ message: "Failed to get members" });
+    }
+  }
+);
 
 // ✅ DELETE User by ID
 router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
@@ -227,7 +264,7 @@ router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
   try {
     const user = await User.findByIdAndUpdate(req.params.id, updates, {
       new: true,
-    });
+    }).select("-password");
 
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json({ message: "User updated", user });
@@ -755,9 +792,12 @@ router.post("/ghl/sync-all-users", auth, onlyAdmin, async (_req, res) => {
 /* ───────────────── BOOKINGS ───────────────── */
 
 // ✅ GET All Bookings
-router.get("/bookings", auth, onlyAdmin, async (_req, res) => {
+router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), async (_req, res) => {
   try {
-    const bookings = await Booking.find().populate("user");
+    const bookings = await Booking.find().populate(
+      "user",
+      "userId name email phone subscription"
+    );
     res.json(bookings);
   } catch (err) {
     console.error("❌ Fetch bookings error:", err);

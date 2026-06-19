@@ -4,6 +4,7 @@ const auth = require("../middleware/auth");
 const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
+const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 
 const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -80,7 +81,7 @@ function validateProjectInput(body, { partial = false } = {}) {
   return { errors, update };
 }
 
-router.use(auth, onlyAdmin);
+router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
 
 router.get("/meta", (_req, res) => {
   return res.json({ projectTypes: PROJECT_TYPES, statuses: PROJECT_STATUSES });

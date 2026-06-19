@@ -12,7 +12,9 @@
     "subscriptions:cleanup:dry": "node scripts/stripe_sync_cleanup.js",
     "subscriptions:cleanup": "node scripts/stripe_sync_cleanup.js --write",
     "subscriptions:reconcile:dry": "node scripts/reconcile_stripe_subscriptions.js",
-    "subscriptions:reconcile": "node scripts/reconcile_stripe_subscriptions.js --write"
+    "subscriptions:reconcile": "node scripts/reconcile_stripe_subscriptions.js --write",
+    "users:roles:dry": "node scripts/backfill_user_roles.js",
+    "users:roles:backfill": "node scripts/backfill_user_roles.js --write"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

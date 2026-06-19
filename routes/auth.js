@@ -9,7 +9,24 @@ const { syncGhlConversion } = require("../utils/ghlSync");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
+const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const router = express.Router();
+
+function authUserDTO(user, coverageMap) {
+  return {
+    userId: user.userId,
+    id: user.userId,
+    name: user.name,
+    email: user.email,
+    phone: user.phone || "",
+    subscription: user.subscription || null,
+    subscriptionExpiry: user.subscriptionExpiry || null,
+    subscriptionStart: user.subscriptionStart || null,
+    defaultAddressId: user.defaultAddressId ? String(user.defaultAddressId) : null,
+    addresses: (user.addresses || []).map((a) => toAddressDTOWithCoverage(a, coverageMap)),
+    ...accessProfile(user),
+  };
+}
 
 router.get("/___ping", (req, res) => {
   res.json({ ok: true, msg: "AUTH ROUTER LOADED" });
@@ -204,6 +221,10 @@ router.post("/register", async (req, res) => {
       email: cleanEmail,
       password: hashed,
       phone: e164Phone,
+      role: "customer",
+      employeePosition: null,
+      isActive: true,
+      mustChangePassword: false,
 
       address: String(address).trim(),
       city: String(city).trim(),
@@ -276,18 +297,7 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({
       token,
-      user: {
-        userId: user.userId,
-        id: user.userId,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        subscription: user.subscription || null,
-        subscriptionExpiry: user.subscriptionExpiry || null,
-        subscriptionStart: user.subscriptionStart || null,
-        defaultAddressId: user.defaultAddressId ? String(user.defaultAddressId) : null,
-        addresses: (user.addresses || []).map((a) => toAddressDTOWithCoverage(a, coverageMap)),
-      },
+      user: authUserDTO(user, coverageMap),
     });
   } catch (err) {
     console.error("❌ Registration Error:", err.stack || err.message);
@@ -306,6 +316,9 @@ router.post("/login", async (req, res) => {
 
     const user = await User.findOne({ email: cleanEmail });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    if (effectiveRole(user) === "employee" && user.isActive === false) {
+      return res.status(403).json({ message: "Employee account is inactive" });
+    }
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(400).json({ message: "Invalid credentials" });
@@ -317,18 +330,7 @@ router.post("/login", async (req, res) => {
     const coverageMap = await buildPerAddressCoverage(user);
     return res.json({
       token,
-      user: {
-        userId: user.userId,
-        id: user.userId,
-        name: user.name,
-        email: user.email,
-        phone: user.phone || "",
-        subscription: user.subscription || null,
-        subscriptionExpiry: user.subscriptionExpiry || null,
-        subscriptionStart: user.subscriptionStart || null,
-        defaultAddressId: user.defaultAddressId ? String(user.defaultAddressId) : null,
-        addresses: (user.addresses || []).map((a) => toAddressDTOWithCoverage(a, coverageMap)),
-      },
+      user: authUserDTO(user, coverageMap),
     });
   } catch (err) {
     console.error("❌ Login Error:", err.stack || err.message);
@@ -341,22 +343,14 @@ router.get("/me", require("../middleware/auth"), async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (effectiveRole(user) === "employee" && user.isActive === false) {
+      return res.status(403).json({ message: "Employee account is inactive" });
+    }
 
     await ensurePrimaryFromLegacy(user);
     const coverageMap = await buildPerAddressCoverage(user);
 
-    return res.json({
-      userId: user.userId,
-      id: user.userId,
-      name: user.name,
-      email: user.email,
-      phone: user.phone || "",
-      subscription: user.subscription || null,
-      subscriptionExpiry: user.subscriptionExpiry || null,
-      subscriptionStart: user.subscriptionStart || null,
-      defaultAddressId: user.defaultAddressId ? String(user.defaultAddressId) : null,
-      addresses: (user.addresses || []).map((a) => toAddressDTOWithCoverage(a, coverageMap)),
-    });
+    return res.json(authUserDTO(user, coverageMap));
   } catch (err) {
     console.error("❌ /me Error:", err.stack || err.message);
     return res.status(500).json({ message: "User fetch failed", error: err.message });
@@ -382,6 +376,7 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
 
     const hashed = await bcrypt.hash(newPassword, 10);
     user.password = hashed;
+    user.mustChangePassword = false;
     await user.save();
 
     return res.json({ message: "Password updated successfully" });
@@ -441,6 +436,10 @@ router.post("/google", async (req, res) => {
         subscription: "none",
         addresses: [],
         defaultAddressId: null,
+        role: "customer",
+        employeePosition: null,
+        isActive: true,
+        mustChangePassword: false,
       });
 
       await user.save();
@@ -452,6 +451,10 @@ router.post("/google", async (req, res) => {
       }
     }
 
+    if (effectiveRole(user) === "employee" && user.isActive === false) {
+      return res.status(403).json({ message: "Employee account is inactive" });
+    }
+
     const token = jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, {
       expiresIn: "30d",
     });
@@ -461,18 +464,7 @@ router.post("/google", async (req, res) => {
 
     return res.json({
       token,
-      user: {
-        userId: user.userId,
-        id: user.userId,
-        name: user.name,
-        email: user.email,
-        phone: user.phone || "",
-        subscription: user.subscription || null,
-        subscriptionExpiry: user.subscriptionExpiry || null,
-        subscriptionStart: user.subscriptionStart || null,
-        defaultAddressId: user.defaultAddressId ? String(user.defaultAddressId) : null,
-        addresses: (user.addresses || []).map((a) => toAddressDTOWithCoverage(a, coverageMap)),
-      },
+      user: authUserDTO(user, coverageMap),
     });
   } catch (error) {
     console.error("❌ Google OAuth Error:", error.stack || error.message);
