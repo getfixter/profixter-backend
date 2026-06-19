@@ -365,6 +365,9 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ message: "Both current and new password are required" });
     }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ message: "New password must be at least 8 characters" });
+    }
 
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });

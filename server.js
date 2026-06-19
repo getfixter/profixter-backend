@@ -127,7 +127,9 @@ app.use("/api/admin/calendar", adminCalendar);
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
+app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin", require("./routes/admin"));
+app.use("/api/email", require("./routes/email"));
 app.use("/api/calendar", require("./routes/calendar"));
 
 app.use("/api/facebook", require("./routes/facebook"));

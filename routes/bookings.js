@@ -11,6 +11,11 @@ const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
+const {
+  snapshot: bookingSnapshot,
+  logBookingChanges,
+  logBookingCreated,
+} = require("../utils/bookingHistory");
 
 const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
@@ -239,6 +244,7 @@ async function cancelOrDelete(req, res) {
 
     const booking = await Booking.findOne({ _id: id, user: req.user.id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const before = bookingSnapshot(booking);
 
     const status = String(booking.status || "").toLowerCase();
     const deletable = new Set(["pending", "complete", "completed"]);
@@ -264,6 +270,12 @@ async function cancelOrDelete(req, res) {
     });
     booking.status = "Canceled";
     await booking.save();
+    await logBookingChanges({
+      bookingId: booking._id,
+      before,
+      after: bookingSnapshot(booking),
+      req,
+    });
 
     // GHL SMS automation hooks
     try {
@@ -605,6 +617,10 @@ router.post(
       });
 
       await booking.save();
+      await logBookingCreated({
+        booking,
+        actorName: "System",
+      });
 
       // GHL SMS automation hooks
       try {

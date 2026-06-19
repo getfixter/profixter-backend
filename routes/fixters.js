@@ -23,6 +23,7 @@ function fixterDTO(user) {
     employeePosition: user.employeePosition,
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
+    isDefaultFixter: !!user.isDefaultFixter,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -129,8 +130,36 @@ router.patch("/:id/status", async (req, res) => {
     return res.status(400).json({ message: "isActive must be boolean" });
   }
   user.isActive = req.body.isActive;
+  if (!user.isActive) user.isDefaultFixter = false;
   await user.save();
   return res.json({ fixter: fixterDTO(user) });
+});
+
+router.patch("/:id/default", async (req, res) => {
+  try {
+    const isDefault = req.body.isDefault === true;
+    const user = await User.findOne({ _id: req.params.id, role: "employee" });
+    if (!user) return res.status(404).json({ message: "Fixter not found" });
+    if (isDefault && user.isActive === false) {
+      return res.status(400).json({ message: "Inactive employee cannot be default" });
+    }
+
+    await User.updateMany(
+      { role: "employee", isDefaultFixter: true },
+      { $set: { isDefaultFixter: false } }
+    );
+    if (isDefault) {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { isDefaultFixter: true } }
+      );
+    }
+    const rows = await User.find({ role: "employee" }).sort({ createdAt: -1 });
+    return res.json({ fixters: rows.map(fixterDTO) });
+  } catch (error) {
+    console.error("Set default Fixter failed:", error);
+    return res.status(500).json({ message: "Failed to update default Fixter" });
+  }
 });
 
 module.exports = router;

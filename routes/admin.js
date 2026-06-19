@@ -12,9 +12,13 @@ const Blacklist = require("../models/Blacklist");
 const Subscription = require("../models/Subscription");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
+const BookingHistory = require("../models/BookingHistory");
+const {
+  snapshot: bookingSnapshot,
+  logBookingChanges,
+} = require("../utils/bookingHistory");
 
 const mail = require("../utils/emailService");
-const { sendPromo, TEMPLATES } = require("../utils/emailService");
 const Request = require("../models/Request");
 const {
   createOrUpdateContact,
@@ -50,66 +54,6 @@ const hhmmInTZ = (d, tz) =>
     hour12: false,
   }).format(d);
 
-function segmentQuery(segment) {
-  const base = { email: { $exists: true, $ne: ADMIN_EMAIL } };
-  switch ((segment || "").toLowerCase()) {
-    case "not_subscribed":
-      return {
-        ...base,
-        $or: [
-          { subscription: null },
-          { subscription: "" },
-          { subscription: { $exists: false } },
-        ],
-      };
-    case "basic":
-    case "plus":
-    case "premium":
-    case "elite":
-      return { ...base, subscription: segment.toLowerCase() };
-    case "all":
-    default:
-      return base;
-  }
-}
-
-function personalize(str = "", user = {}) {
-  const name = user.name || (user.email || "").split("@")[0];
-  const plan =
-    (user.subscription || "").charAt(0).toUpperCase() +
-    (user.subscription || "").slice(1);
-
-  return String(str)
-    .replace(/\{\{\s*name\s*\}\}/gi, name)
-    .replace(/\{\{\s*plan\s*\}\}/gi, plan || "—")
-    .replace(/\{\{\s*userid\s*\}\}/gi, user.userId || "—")
-    .replace(/\{\{\s*email\s*\}\}/gi, user.email || "—");
-}
-
-function buildHtml({ useTemplate, subject, body, ctaText, ctaUrl, user }) {
-  const personalizedBody = personalize(body, user);
-
-  if (useTemplate) {
-    const { html } = TEMPLATES.promo_generic({
-      title: subject,
-      body: personalizedBody,
-      ctaText: ctaText || "View Plans",
-      ctaUrl: ctaUrl || "https://profixter.com/subscription",
-    });
-    return html;
-  }
-
-  return personalizedBody;
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function chunk(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
 // ✅ Middleware: Allow only admin
 const legacyOnlyAdmin = async (req, res, next) => {
   try {
@@ -120,12 +64,14 @@ const legacyOnlyAdmin = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("❌ Admin check failed:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(err?.statusCode || 500).json({ message: err.message || "Server error" });
   }
 };
 
 /* ───────────────── per-address plan helper ───────────────── */
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
+const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 void legacyOnlyAdmin;
 
 async function getAddressPlansForUser(user) {
@@ -792,9 +738,13 @@ router.post("/ghl/sync-all-users", auth, onlyAdmin, async (_req, res) => {
 /* ───────────────── BOOKINGS ───────────────── */
 
 // ✅ GET All Bookings
-router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), async (_req, res) => {
+router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), async (req, res) => {
   try {
-    const bookings = await Booking.find().populate(
+    const query =
+      String(req.query.assigned || "").toLowerCase() === "me"
+        ? { assignedFixterId: req.accessUser._id }
+        : {};
+    const bookings = await Booking.find(query).populate(
       "user",
       "userId name email phone subscription"
     );
@@ -805,8 +755,79 @@ router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), a
   }
 });
 
+async function resolveAssignment(assignedFixterId) {
+  if (assignedFixterId === "" || assignedFixterId === null) {
+    return {
+      assignedFixterId: null,
+      assignedFixterName: "",
+      assignedFixterEmail: "",
+      assignedFixterPosition: "",
+    };
+  }
+  const fixter = await User.findOne({
+    _id: assignedFixterId,
+    role: "employee",
+    isActive: true,
+    employeePosition: { $in: ["Fixter", "General Fixter"] },
+  }).lean();
+  if (!fixter) {
+    const error = new Error("Assigned employee is invalid or inactive");
+    error.statusCode = 400;
+    throw error;
+  }
+  return {
+    assignedFixterId: fixter._id,
+    assignedFixterName: fixter.name,
+    assignedFixterEmail: fixter.email,
+    assignedFixterPosition: fixter.employeePosition,
+  };
+}
+
+router.get("/booking-assignees", auth, ...bookingsAssign, async (_req, res) => {
+  const fixters = await User.find({
+    role: "employee",
+    isActive: true,
+    employeePosition: { $in: ["Fixter", "General Fixter"] },
+  })
+    .select("name email employeePosition isDefaultFixter")
+    .sort({ isDefaultFixter: -1, name: 1 })
+    .lean();
+  return res.json({
+    fixters: fixters.map((fixter) => ({
+      id: String(fixter._id),
+      name: fixter.name,
+      email: fixter.email,
+      employeePosition: fixter.employeePosition,
+      isDefaultFixter: !!fixter.isDefaultFixter,
+    })),
+  });
+});
+
+router.get(
+  "/bookings/:bookingId/history",
+  auth,
+  ...requirePermission(PERMISSIONS.BOOKINGS_READ),
+  async (req, res) => {
+    try {
+      const booking = await Booking.findById(req.params.bookingId)
+        .select("_id assignedFixterId")
+        .lean();
+      if (!booking) {
+        return res.status(404).json({ message: "Booking not found" });
+      }
+      const history = await BookingHistory.find({ bookingId: booking._id })
+        .sort({ createdAt: -1 })
+        .lean();
+      return res.json({ history });
+    } catch (error) {
+      console.error("Load booking history failed:", error);
+      return res.status(500).json({ message: "Failed to load booking history" });
+    }
+  }
+);
+
 // ✅ UPDATE Booking Status (admin)
-router.put("/bookings/:id/status", auth, onlyAdmin, async (req, res) => {
+router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
   const { status } = req.body;
   const validStatuses = ["Pending", "Confirmed", "Completed", "Canceled"];
 
@@ -817,6 +838,13 @@ router.put("/bookings/:id/status", auth, onlyAdmin, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const before = bookingSnapshot(booking);
+    if (Object.prototype.hasOwnProperty.call(req.body, "assignedFixterId")) {
+      if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
+        return res.status(403).json({ message: "Assignment access denied" });
+      }
+      Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+    }
 
     const prev = String(booking.status || "");
 
@@ -838,6 +866,12 @@ router.put("/bookings/:id/status", auth, onlyAdmin, async (req, res) => {
     }
 
     await booking.save();
+    await logBookingChanges({
+      bookingId: booking._id,
+      before,
+      after: bookingSnapshot(booking),
+      req,
+    });
 
     // GHL SMS automation hooks
     try {
@@ -941,19 +975,20 @@ router.put("/bookings/:id/status", auth, onlyAdmin, async (req, res) => {
     res.json({ message: "Status updated", booking });
   } catch (err) {
     console.error("❌ Update booking status error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(err?.statusCode || 500).json({ message: err.message || "Server error" });
   }
 });
 
 // ✅ NEW: Update booking note/date (admin)
 // PUT /api/admin/bookings/:id
-router.put("/bookings/:id", auth, onlyAdmin, async (req, res) => {
+router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
   try {
     const { id } = req.params;
     const { note, date } = req.body || {};
 
     const booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const before = bookingSnapshot(booking);
 
     if (note !== undefined) booking.note = String(note);
 
@@ -968,8 +1003,20 @@ router.put("/bookings/:id", auth, onlyAdmin, async (req, res) => {
       booking.reminder60mQueuedAt = undefined;
       booking.reminder60mSentAt = undefined;
     }
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "assignedFixterId")) {
+      if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
+        return res.status(403).json({ message: "Assignment access denied" });
+      }
+      Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
+    }
 
     await booking.save();
+    await logBookingChanges({
+      bookingId: booking._id,
+      before,
+      after: bookingSnapshot(booking),
+      req,
+    });
 
     return res.json({ message: "Booking updated", booking });
   } catch (err) {
@@ -988,118 +1035,6 @@ router.get("/referrals", auth, onlyAdmin, async (_req, res) => {
   } catch (err) {
     console.error("❌ Fetch referrals error:", err);
     res.status(500).json({ message: "Failed to get referrals" });
-  }
-});
-
-/* ───────────────── SEGMENTS / CAMPAIGNS ───────────────── */
-
-// 🔹 Audience sizes for each segment
-router.get("/segments", auth, onlyAdmin, async (_req, res) => {
-  try {
-    const blocked = await Blacklist.find().select("user email");
-    const blockedIds = blocked.map((b) => String(b.user)).filter(Boolean);
-    const blockedEmails = blocked.map((b) => b.email).filter(Boolean);
-
-    const base = {
-      email: { $exists: true, $ne: ADMIN_EMAIL, $nin: blockedEmails },
-      _id: { $nin: blockedIds },
-    };
-
-    const counts = {};
-    counts.all = await User.countDocuments(base);
-    counts.not_subscribed = await User.countDocuments({
-      ...base,
-      $or: [
-        { subscription: null },
-        { subscription: "" },
-        { subscription: { $exists: false } },
-      ],
-    });
-
-    for (const p of ["basic", "plus", "premium", "elite"]) {
-      counts[p] = await User.countDocuments({
-        ...base,
-        subscription: p,
-      });
-    }
-
-    res.json(counts);
-  } catch (err) {
-    console.error("❌ segments error:", err.message);
-    res.status(500).json({ message: "Failed to load segments" });
-  }
-});
-
-// 🔹 Send a campaign (test or full send)
-router.post("/campaigns/send", auth, onlyAdmin, async (req, res) => {
-  try {
-    const {
-      segment = "all",
-      subject,
-      body = "",
-      useTemplate = true,
-      ctaText = "",
-      ctaUrl = "",
-      testOnly = false,
-    } = req.body;
-
-    if (!subject || !body) {
-      return res.status(400).json({ message: "Subject and body are required." });
-    }
-
-    let recipients = [];
-
-    if (testOnly) {
-      recipients = [
-        { email: ADMIN_EMAIL, name: "Admin", userId: "00000000", subscription: "" },
-      ];
-    } else {
-      const blocked = await Blacklist.find().select("user email");
-      const blockedIds = blocked.map((b) => b.user).filter(Boolean);
-      const blockedEmails = blocked.map((b) => b.email).filter(Boolean);
-
-      recipients = await User.find({
-        ...segmentQuery(segment),
-        _id: { $nin: blockedIds },
-        email: { $nin: blockedEmails },
-      })
-        .select("name email userId subscription")
-        .limit(5000);
-    }
-
-    let sent = 0;
-    const errors = [];
-    const batches = chunk(recipients, 10);
-
-    for (const group of batches) {
-      await Promise.all(
-        group.map(async (u) => {
-          try {
-            const html = buildHtml({
-              useTemplate,
-              subject,
-              body,
-              ctaText,
-              ctaUrl,
-              user: u,
-            });
-            await sendPromo(u.email, { subject, html });
-            sent++;
-          } catch (e) {
-            errors.push({ email: u.email, error: e.message });
-          }
-        })
-      );
-
-      await sleep(300);
-    }
-
-    res.json({ segment, total: recipients.length, sent, errors });
-  } catch (err) {
-    console.error("❌ campaigns/send error:", err.message);
-    res
-      .status(500)
-      .json({ message: "Server error sending campaign", error: err.message });
   }
 });
 

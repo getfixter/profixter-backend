@@ -35,6 +35,7 @@ const UserSchema = new mongoose.Schema(
     },
     isActive: { type: Boolean, default: true, required: true, index: true },
     mustChangePassword: { type: Boolean, default: false },
+    isDefaultFixter: { type: Boolean, default: false },
 
     // Google OAuth
     googleId: { type: String, unique: true, sparse: true }, // Google user ID
@@ -76,6 +77,14 @@ const UserSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+UserSchema.index(
+  { isDefaultFixter: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isDefaultFixter: true },
+  }
 );
 
 module.exports = mongoose.model("User", UserSchema);

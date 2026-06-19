@@ -18,7 +18,7 @@ module.exports = async function (req, res, next) {
     req.user = { id: decoded.id };
 
     const user = await User.findById(decoded.id)
-      .select("email role employeePosition isActive mustChangePassword")
+      .select("name email role employeePosition isActive mustChangePassword")
       .lean();
     if (!user) return res.status(401).json({ message: "User not found" });
     if (user.role === "employee" && user.isActive === false) {

@@ -1031,6 +1031,7 @@ async function sendRaw({
   to,
   subject,
   html,
+  text,
   bccAdmin = false,
   from = FROM,
   replyTo = REPLY_TO,
@@ -1042,13 +1043,13 @@ async function sendRaw({
     throw new Error(`Missing "to" email for subject "${subject}"`);
   }
 
-  const text = toText(html);
+  const plainText = text || toText(html);
   const mail = {
     from,
     to: cleanTo,
     subject,
     html,
-    text,
+    text: plainText,
     replyTo,
     headers: { "X-Entity-Ref-ID": Date.now().toString(), ...headers },
   };
@@ -1093,11 +1094,12 @@ async function sendTx(key, to, vars = {}, opts = {}) {
   return sendRaw({ to, subject, html, bccAdmin });
 }
 
-async function sendPromo(to, { subject, html, headers = {} }) {
+async function sendPromo(to, { subject, html, text, headers = {} }) {
   return sendRaw({
     to,
     subject,
     html,
+    text,
     headers,
     from: MARKETING_FROM,
     bccAdmin: false,

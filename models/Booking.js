@@ -37,6 +37,19 @@ const BookingSchema = new mongoose.Schema({
   paymentStatus: { type: String },
   feedback: { type: String },
   assignedHandyman: { type: String },
+  assignedFixterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    default: null,
+    index: true,
+  },
+  assignedFixterName: { type: String, default: "" },
+  assignedFixterEmail: { type: String, default: "" },
+  assignedFixterPosition: {
+    type: String,
+    enum: ["Fixter", "General Fixter", ""],
+    default: "",
+  },
 
   // ✅ NEW: reminder tracking (safe + helps avoid duplicates)
   reminder24hQueuedAt: { type: Date },
@@ -49,6 +62,7 @@ const BookingSchema = new mongoose.Schema({
 /* Useful indexes */
 BookingSchema.index({ user: 1, addressId: 1, date: 1, status: 1 });
 BookingSchema.index({ date: 1 });
+BookingSchema.index({ assignedFixterId: 1, date: 1 });
 BookingSchema.index({ bookingNumber: 1 }, { unique: false });
 
 module.exports = mongoose.model('Booking', BookingSchema);

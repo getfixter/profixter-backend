@@ -3,6 +3,8 @@ const User = require("../models/User");
 const PERMISSIONS = Object.freeze({
   ADMIN: "admin.all",
   BOOKINGS_READ: "bookings.read",
+  BOOKINGS_WRITE: "bookings.write",
+  BOOKINGS_ASSIGN: "bookings.assign",
   MEMBERS_READ: "members.read",
   SCHEDULE_READ: "schedule.read",
   SCHEDULE_WRITE: "schedule.write",
@@ -24,12 +26,15 @@ function permissionsForUser(user) {
   if (user.employeePosition === "General Fixter") {
     return [
       PERMISSIONS.BOOKINGS_READ,
+      PERMISSIONS.BOOKINGS_WRITE,
+      PERMISSIONS.BOOKINGS_ASSIGN,
       PERMISSIONS.MEMBERS_READ,
       PERMISSIONS.SCHEDULE_READ,
+      PERMISSIONS.SCHEDULE_WRITE,
     ];
   }
   if (user.employeePosition === "Fixter") {
-    return [PERMISSIONS.BOOKINGS_READ];
+    return [PERMISSIONS.BOOKINGS_READ, PERMISSIONS.BOOKINGS_WRITE];
   }
   return [];
 }
