@@ -7,7 +7,7 @@ const {
   upsertSubscriptionFromStripe,
 } = require("../utils/subscriptionManagement");
 
-const DRY_RUN = process.env.DRY_RUN !== "false";
+const DRY_RUN = process.env.DRY_RUN !== "false" && !process.argv.includes("--write");
 
 function log(event, details = {}) {
   console.log(

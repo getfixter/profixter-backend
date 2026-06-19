@@ -8,8 +8,10 @@ const { stripe } = require('../utils/subscriptionManagement');
 // MODE
 // Default: DRY_RUN=true. No writes.
 // Apply:   node scripts/stripe_sync_cleanup.js --write
+// Legacy/manual subscriptions are skipped unless --include-legacy is explicit.
 // -------------------------------------------------------------------
 const DRY_RUN = process.env.DRY_RUN !== 'false' && !process.argv.includes('--write');
+const INCLUDE_LEGACY = process.argv.includes('--include-legacy');
 
 // Stripe statuses that mean the subscription is still alive and billing
 const STRIPE_ALIVE = new Set(['active', 'trialing']);
@@ -31,6 +33,7 @@ const summary = {
   scheduledCancellationsSynced: 0,
   stripeCanceled: 0,
   legacyManualCanceled: 0,
+  legacyManualSkipped: 0,
   noChangesNeeded: 0,
   usersLegacySynced: 0,
   errors: [],
@@ -150,6 +153,7 @@ async function processStripeLinked(sub) {
   // Only write if something actually changed
   const noChange =
     sub.status === stripeStatus &&
+    sub.accessStatus === 'active' &&
     sub.cancelAtPeriodEnd === cancelAtPeriodEnd &&
     String(sub.currentPeriodEnd || '') === String(currentPeriodEnd || '') &&
     String(sub.cancellationDate || '') === String(cancellationDate || '');
@@ -186,6 +190,23 @@ async function processStripeLinked(sub) {
 // LEGACY subscriptions (no stripeSubscriptionId)
 // -------------------------------------------------------------------
 async function processLegacy(sub) {
+  if (!STRIPE_ALIVE.has(String(sub.status || '').toLowerCase())) {
+    summary.noChangesNeeded++;
+    return;
+  }
+
+  if (!INCLUDE_LEGACY) {
+    summary.legacyManualSkipped++;
+    summary.manualReview.push({
+      reason: 'legacy_subscription_skipped',
+      subId: String(sub._id),
+      userId: String(sub.userId || sub.user || ''),
+      addressId: sub.addressId ? String(sub.addressId) : null,
+      localStatus: sub.status,
+    });
+    return;
+  }
+
   const alreadyCorrect =
     sub.status === 'canceled' &&
     sub.cancellationReason === 'legacy_manual_removed';
@@ -289,6 +310,7 @@ async function main() {
   log('Connecting to MongoDB...');
   await mongoose.connect(mongoUri);
   log(`Connected. DRY_RUN=${DRY_RUN}`);
+  log(`INCLUDE_LEGACY=${INCLUDE_LEGACY}`);
 
   if (DRY_RUN) {
     log('*** DRY-RUN MODE — logging proposed changes, nothing written ***');

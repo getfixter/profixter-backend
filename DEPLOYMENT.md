@@ -77,3 +77,9 @@ To roll back in Elastic Beanstalk:
 5. Choose `Deploy`.
 
 Version labels use the Git commit SHA, so each deployment maps back to an exact backend commit.
+
+## Subscription Operations
+
+Permanent Stripe subscription reconciliation, manual cleanup commands, and
+SSM/SSH production procedures are documented in
+[`SUBSCRIPTION_OPERATIONS.md`](./SUBSCRIPTION_OPERATIONS.md).
