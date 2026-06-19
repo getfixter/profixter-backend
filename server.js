@@ -124,6 +124,7 @@ app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/admin/calendar", adminCalendar);
+app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/calendar", require("./routes/calendar"));
 
