@@ -15,6 +15,7 @@ function companyTemplate(weeklySchedule) {
   return {
     timezone: "America/New_York",
     slotMinutes: 60,
+    visitDurationMinutes: 90,
     minLeadMinutes: 0,
     maxAdvanceDays: 120,
     defaultCapacity: 3,
@@ -29,7 +30,7 @@ function context({ scope, capacityOverrides = [] }) {
       {
         weekday: 1,
         enabled: true,
-        intervals: [{ startTime: "10:00", endTime: "11:00", capacity: null }],
+        intervals: [{ startTime: "10:00", endTime: "12:00", capacity: null }],
       },
     ]),
     timezone: "America/New_York",
@@ -94,17 +95,20 @@ async function run() {
   );
 
   const inherited = generateSlots(
-    [{ startTime: "10:00", endTime: "11:00", capacity: null }],
+    [{ startTime: "10:00", endTime: "12:00", capacity: null }],
     60,
-    3
+    3,
+    90
   );
   assert.equal(inherited.get("10:00").capacity, 3);
+  assert.equal(inherited.get("10:00").endTime, "11:30");
+  assert.equal(inherited.has("11:00"), false);
 
   const closedOverride = {
     scopeType: "company",
     date: DATE,
     startTime: "10:00",
-    endTime: "11:00",
+    endTime: "11:30",
     mode: "set_capacity",
     value: 0,
   };

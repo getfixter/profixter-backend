@@ -119,6 +119,7 @@ async function ensureCompanyTemplate() {
         name: "Company Schedule",
         timezone: legacy?.timezone || "America/New_York",
         slotMinutes,
+        visitDurationMinutes: 90,
         minLeadMinutes:
           Math.max(0, Number(legacy?.minLeadDays ?? 2)) * 1440,
         maxAdvanceDays: 120,
@@ -136,6 +137,11 @@ async function ensureCompanyTemplate() {
       template = await CompanyAvailabilityTemplate.findOne({ active: true });
       if (!template) throw error;
     }
+  }
+
+  if (template.visitDurationMinutes !== 90) {
+    template.visitDurationMinutes = 90;
+    await template.save();
   }
 
   if (!template.legacyImportCompletedAt) {

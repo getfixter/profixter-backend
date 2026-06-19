@@ -24,6 +24,13 @@ const CompanyAvailabilityTemplateSchema = new mongoose.Schema(
     name: { type: String, trim: true, default: "Company Schedule" },
     timezone: { type: String, required: true, default: "America/New_York" },
     slotMinutes: { type: Number, required: true, min: 15, max: 240, default: 60 },
+    visitDurationMinutes: {
+      type: Number,
+      required: true,
+      min: 90,
+      max: 90,
+      default: 90,
+    },
     minLeadMinutes: { type: Number, required: true, min: 0, max: 43200, default: 2880 },
     maxAdvanceDays: { type: Number, required: true, min: 1, max: 730, default: 120 },
     defaultCapacity: { type: Number, required: true, min: 0, max: 100, default: 1 },

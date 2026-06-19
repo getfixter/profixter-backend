@@ -20,6 +20,10 @@ const {
   calculateMonthSummary,
 } = require("../utils/availabilityService");
 const { dateValidator } = require("../utils/availabilityValidation");
+const {
+  assertEditableCalendarDate,
+  dateForInstant,
+} = require("../utils/shadowCalendarDatePolicy");
 
 router.use(auth, ...requirePermission(PERMISSIONS.SCHEDULE_READ));
 const scheduleWrite = requirePermission(PERMISSIONS.SCHEDULE_WRITE);
@@ -164,6 +168,7 @@ router.put(
       if (allowed.slotMinutes !== undefined) {
         template.slotMinutes = Number(allowed.slotMinutes);
       }
+      template.visitDurationMinutes = 90;
       if (allowed.minLeadMinutes !== undefined) {
         template.minLeadMinutes = Number(allowed.minLeadMinutes);
       }
@@ -233,9 +238,7 @@ router.put(
     try {
       const { scopeType, technicianId } = scopeFromBody(req.body || {});
       const date = String(req.body.date || "");
-      if (!dateValidator(date)) {
-        return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-      }
+      assertEditableCalendarDate(date);
       if (technicianId) await requireTechnician(technicianId);
       let override = await AvailabilityOverride.findOne({
         scopeType,
@@ -270,9 +273,7 @@ router.delete(
     try {
       const { scopeType, technicianId } = scopeFromBody(req.query || {});
       const date = String(req.query.date || "");
-      if (!dateValidator(date)) {
-        return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-      }
+      assertEditableCalendarDate(date);
       await AvailabilityOverride.deleteOne({
         scopeType,
         technicianId,
@@ -295,9 +296,7 @@ router.post(
       const startTime = String(req.body.startTime || "");
       const endTime = String(req.body.endTime || "");
       const action = String(req.body.action || "");
-      if (!dateValidator(date)) {
-        return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-      }
+      assertEditableCalendarDate(date);
       if (technicianId) await requireTechnician(technicianId);
       if (!["close", "open", "add_spot", "remove_spot", "restore"].includes(action)) {
         return res.status(400).json({ message: "Invalid slot action" });
@@ -364,6 +363,10 @@ router.post(
       const timezone = companyTemplate?.timezone || "America/New_York";
       const allDayDate = String(req.body.date || "");
       const useAllDayDate = req.body.allDay !== false && dateValidator(allDayDate);
+      const requestedDate = useAllDayDate
+        ? allDayDate
+        : dateForInstant(req.body.startAt);
+      assertEditableCalendarDate(requestedDate);
       const entry = new TechnicianTimeOff({
         technicianId: req.body.technicianId,
         type: req.body.type,
@@ -397,6 +400,10 @@ router.put(
     try {
       const entry = await TechnicianTimeOff.findById(req.params.id);
       if (!entry) return res.status(404).json({ message: "Time off not found" });
+      assertEditableCalendarDate(dateForInstant(entry.startAt));
+      if (req.body.startAt !== undefined) {
+        assertEditableCalendarDate(dateForInstant(req.body.startAt));
+      }
       if (req.body.technicianId !== undefined) {
         await requireTechnician(req.body.technicianId);
         entry.technicianId = req.body.technicianId;
@@ -419,6 +426,7 @@ router.delete(
   asyncRoute(async (req, res) => {
     const entry = await TechnicianTimeOff.findById(req.params.id);
     if (!entry) return res.status(404).json({ message: "Time off not found" });
+    assertEditableCalendarDate(dateForInstant(entry.startAt));
     entry.status = "canceled";
     await entry.save();
     return res.json({ canceled: true });
@@ -430,9 +438,7 @@ router.put(
   ...scheduleWrite,
   asyncRoute(async (req, res) => {
     try {
-      if (!dateValidator(req.params.date)) {
-        return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-      }
+      assertEditableCalendarDate(req.params.date);
       const noteText = String(req.body.note || "").trim();
       if (!noteText) {
         await CalendarDayNote.deleteOne({ date: req.params.date });
@@ -459,9 +465,7 @@ router.delete(
   "/notes/:date",
   ...scheduleWrite,
   asyncRoute(async (req, res) => {
-    if (!dateValidator(req.params.date)) {
-      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-    }
+    assertEditableCalendarDate(req.params.date);
     await CalendarDayNote.deleteOne({ date: req.params.date });
     return res.json({ deleted: true });
   })

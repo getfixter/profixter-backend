@@ -55,17 +55,26 @@ function minutesToTime(minutes) {
   ).padStart(2, "0")}`;
 }
 
-function generateSlots(intervals, slotMinutes, defaultCapacity = 1) {
+function generateSlots(
+  intervals,
+  slotStepMinutes,
+  defaultCapacity = 1,
+  visitDurationMinutes = 90
+) {
   const slots = new Map();
   for (const interval of intervals || []) {
     const start = timeToMinutes(interval.startTime);
     const end = timeToMinutes(interval.endTime);
     if (start === null || end === null || start >= end) continue;
-    for (let minute = start; minute + slotMinutes <= end; minute += slotMinutes) {
+    for (
+      let minute = start;
+      minute + visitDurationMinutes <= end;
+      minute += slotStepMinutes
+    ) {
       const time = minutesToTime(minute);
       slots.set(time, {
         time,
-        endTime: minutesToTime(minute + slotMinutes),
+        endTime: minutesToTime(minute + visitDurationMinutes),
         capacity: Math.max(
           0,
           interval.capacity !== null &&
@@ -280,7 +289,8 @@ function calculateDayFromContext({
   const companySlots = generateSlots(
     companyIntervals,
     companyTemplate.slotMinutes,
-    companyTemplate.defaultCapacity
+    companyTemplate.defaultCapacity,
+    companyTemplate.visitDurationMinutes || 90
   );
   const companyCapacityOverrides = dayCapacityOverrides.filter(
     (override) => override.scopeType === "company"
@@ -313,7 +323,8 @@ function calculateDayFromContext({
     const generated = generateSlots(
       intervals,
       companyTemplate.slotMinutes,
-      1
+      1,
+      companyTemplate.visitDurationMinutes || 90
     );
     const technicianCapacityOverrides = dayCapacityOverrides.filter(
       (override) =>
