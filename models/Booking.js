@@ -50,6 +50,19 @@ const BookingSchema = new mongoose.Schema({
     enum: ["Fixter", "General Fixter", ""],
     default: "",
   },
+  scheduledStart: { type: Date, default: null, index: true },
+  scheduledEnd: { type: Date, default: null },
+  slotReservationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "BookingSlotReservation",
+    default: null,
+    index: true,
+  },
+  assignmentSource: {
+    type: String,
+    enum: ["", "automatic", "admin", "general_fixter", "backfill", "system"],
+    default: "",
+  },
 
   // ✅ NEW: reminder tracking (safe + helps avoid duplicates)
   reminder24hQueuedAt: { type: Date },

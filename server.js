@@ -131,6 +131,7 @@ app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/admin/calendar", adminCalendarShadow);
 app.use("/api/admin/calendar", adminCalendar);
+app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/fixters", require("./routes/fixters"));

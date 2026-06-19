@@ -142,9 +142,28 @@ async function logBookingCreated({ booking, req, actorName }) {
   });
 }
 
+async function logReservationAction({
+  bookingId,
+  actionType,
+  summary,
+  changes = [],
+  req,
+  actor,
+}) {
+  return BookingHistory.create({
+    bookingId,
+    ...(actor || actorFromRequest(req)),
+    actionType,
+    changes,
+    summary,
+  });
+}
+
 module.exports = {
+  actorFromRequest,
   snapshot,
   detectChanges,
   logBookingChanges,
   logBookingCreated,
+  logReservationAction,
 };

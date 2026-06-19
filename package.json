@@ -14,7 +14,10 @@
     "subscriptions:reconcile:dry": "node scripts/reconcile_stripe_subscriptions.js",
     "subscriptions:reconcile": "node scripts/reconcile_stripe_subscriptions.js --write",
     "users:roles:dry": "node scripts/backfill_user_roles.js",
-    "users:roles:backfill": "node scripts/backfill_user_roles.js --write"
+    "users:roles:backfill": "node scripts/backfill_user_roles.js --write",
+    "reservations:backfill:dry": "node scripts/backfill_booking_reservations.js",
+    "reservations:backfill": "node scripts/backfill_booking_reservations.js --write",
+    "reservations:audit": "node scripts/audit_booking_reservations.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",
