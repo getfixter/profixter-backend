@@ -49,7 +49,12 @@ function inferLegacySlotMinutes(hours, configuredSlotMinutes = 60) {
   return Math.min(configured, inferred);
 }
 
-function hoursToIntervals(hours, slotMinutes, capacity) {
+function hoursToIntervals(
+  hours,
+  slotMinutes,
+  capacity,
+  visitDurationMinutes = 90
+) {
   const starts = normalizedStartMinutes(hours);
   const intervals = [];
   let rangeStart = null;
@@ -64,7 +69,7 @@ function hoursToIntervals(hours, slotMinutes, capacity) {
     if (minute !== previous + slotMinutes) {
       intervals.push({
         startTime: minutesToTime(rangeStart),
-        endTime: minutesToTime(previous + slotMinutes),
+        endTime: minutesToTime(previous + visitDurationMinutes),
         capacity,
       });
       rangeStart = minute;
@@ -74,11 +79,90 @@ function hoursToIntervals(hours, slotMinutes, capacity) {
   if (rangeStart !== null) {
     intervals.push({
       startTime: minutesToTime(rangeStart),
-      endTime: minutesToTime(previous + slotMinutes),
+      endTime: minutesToTime(previous + visitDurationMinutes),
       capacity,
     });
   }
   return intervals;
+}
+
+function comparableIntervals(intervals = []) {
+  return intervals.map((interval) => ({
+    startTime: interval.startTime,
+    endTime: interval.endTime,
+    capacity:
+      interval.capacity === undefined ? null : Number(interval.capacity),
+  }));
+}
+
+function intervalsEqual(left, right) {
+  return (
+    JSON.stringify(comparableIntervals(left)) ===
+    JSON.stringify(comparableIntervals(right))
+  );
+}
+
+async function reconcileLegacyIntervalEnds(legacy, template) {
+  if (!legacy || !template) return { weeklyDaysUpdated: 0, overridesUpdated: 0 };
+
+  const capacity = Number(template.defaultCapacity ?? 1);
+  const defaultHours = legacy.defaultHours || [];
+  const defaultStep = inferLegacySlotMinutes(defaultHours, template.slotMinutes);
+  const oldDefaultIntervals = hoursToIntervals(
+    defaultHours,
+    defaultStep,
+    capacity,
+    defaultStep
+  );
+  const desiredDefaultIntervals = hoursToIntervals(
+    defaultHours,
+    defaultStep,
+    capacity,
+    90
+  );
+  let weeklyDaysUpdated = 0;
+
+  if (!intervalsEqual(oldDefaultIntervals, desiredDefaultIntervals)) {
+    for (const day of template.weeklySchedule || []) {
+      if (day.enabled && intervalsEqual(day.intervals, oldDefaultIntervals)) {
+        day.intervals = desiredDefaultIntervals;
+        weeklyDaysUpdated += 1;
+      }
+    }
+    if (weeklyDaysUpdated) await template.save();
+  }
+
+  const legacyOverrides =
+    legacy.overrides instanceof Map
+      ? Object.fromEntries(legacy.overrides)
+      : legacy.overrides || {};
+  let overridesUpdated = 0;
+  for (const [date, hours] of Object.entries(legacyOverrides)) {
+    if (!dateValidator(date) || !Array.isArray(hours) || !hours.length) continue;
+    const step = inferLegacySlotMinutes(hours, template.slotMinutes);
+    const oldIntervals = hoursToIntervals(hours, step, null, step).map(
+      ({ startTime, endTime }) => ({ startTime, endTime })
+    );
+    const desiredIntervals = hoursToIntervals(hours, step, null, 90).map(
+      ({ startTime, endTime }) => ({ startTime, endTime })
+    );
+    if (intervalsEqual(oldIntervals, desiredIntervals)) continue;
+
+    const result = await AvailabilityOverride.updateOne(
+      {
+        scopeType: "company",
+        technicianId: null,
+        date,
+        mode: "custom_hours",
+        reason: "Imported legacy calendar override",
+        intervals: oldIntervals,
+      },
+      { $set: { intervals: desiredIntervals } }
+    );
+    overridesUpdated += result.modifiedCount || 0;
+  }
+
+  return { weeklyDaysUpdated, overridesUpdated };
 }
 
 async function ensureCompanyTemplate() {
@@ -147,6 +231,7 @@ async function ensureCompanyTemplate() {
   if (!template.legacyImportCompletedAt) {
     await importLegacyOverrides(legacy, template);
   }
+  await reconcileLegacyIntervalEnds(legacy, template);
   return template;
 }
 
@@ -358,4 +443,5 @@ module.exports = {
   getFoundationStatus,
   hoursToIntervals,
   inferLegacySlotMinutes,
+  reconcileLegacyIntervalEnds,
 };

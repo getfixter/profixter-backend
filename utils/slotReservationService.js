@@ -1475,6 +1475,7 @@ async function backfillReservationsForFutureBookings({
     conflicts: 0,
     outsideWorkingHours: 0,
     missingFoundation: 0,
+    issues: [],
     errors: [],
   };
   for (const booking of bookings) {
@@ -1498,6 +1499,11 @@ async function backfillReservationsForFutureBookings({
       const selected = preferred || options.recommended;
       if (!selected) {
         report.noEligibleTechnician += 1;
+        report.issues.push({
+          category: "noEligibleTechnician",
+          bookingId: String(booking._id),
+          slotStart: booking.date,
+        });
         continue;
       }
       report.canReserve += 1;
@@ -1513,10 +1519,30 @@ async function backfillReservationsForFutureBookings({
         report.created += 1;
       }
     } catch (error) {
-      if (error.code === "SHADOW_FOUNDATION_NOT_READY") report.missingFoundation += 1;
-      else if (error.code === "SLOT_CONFLICT") report.conflicts += 1;
-      else if (error.code === "TECHNICIAN_UNAVAILABLE") report.outsideWorkingHours += 1;
-      else report.errors.push({ bookingId: String(booking._id), message: error.message });
+      let category = null;
+      if (error.code === "SHADOW_FOUNDATION_NOT_READY") {
+        report.missingFoundation += 1;
+        category = "missingFoundation";
+      } else if (error.code === "SLOT_CONFLICT") {
+        report.conflicts += 1;
+        category = "slotConflict";
+      } else if (error.code === "TECHNICIAN_UNAVAILABLE") {
+        report.outsideWorkingHours += 1;
+        category = "outsideWorkingHours";
+      } else {
+        report.errors.push({
+          bookingId: String(booking._id),
+          message: error.message,
+        });
+      }
+      if (category) {
+        report.issues.push({
+          category,
+          bookingId: String(booking._id),
+          slotStart: booking.date,
+          message: error.message,
+        });
+      }
     }
   }
   return report;

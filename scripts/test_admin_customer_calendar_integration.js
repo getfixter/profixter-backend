@@ -78,6 +78,27 @@ function run() {
     }],
   });
   assert.deepEqual(closedDay.slots, []);
+  const adjacentDate = "2026-07-08";
+  const adjacentShadowDay = calculateDayFromContext({
+    date: adjacentDate,
+    context: context({
+      availabilityOverrides: [{
+        scopeType: "company",
+        date,
+        mode: "closed",
+        intervals: [],
+      }],
+    }),
+    now,
+    includeDetails: true,
+  });
+  const adjacentCustomerDay = customerDayFromShadow({
+    date: adjacentDate,
+    day: adjacentShadowDay,
+    reservations: [],
+    now,
+  });
+  assert.deepEqual(adjacentCustomerDay.slots, ["09:00", "10:00"]);
 
   const closedSlot = customerDay({
     capacityOverrides: [{

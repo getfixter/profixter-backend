@@ -79,6 +79,33 @@ function run() {
   assert.equal(report.mismatchCounts.capacityMismatch, 1);
   assert.equal(report.mismatchCounts.bookingCountMismatch, 1);
   assert(report.mismatchCounts.reservationConflict >= 1);
+  assert(
+    report.blockers.every((item) => item.category === "reservationConflict")
+  );
+  assert(
+    report.migrationDifferences.some(
+      (item) => item.category === "legacyOnlySlots"
+    )
+  );
+  const migrationOnly = compareAvailabilityDays({
+    legacyDays: [legacy],
+    shadowDays: [{
+      date: "2026-07-01",
+      closed: false,
+      usedCapacity: 0,
+      slots: [{
+        time: "10:00",
+        totalCapacity: 1,
+        usedCapacity: 0,
+        open: true,
+      }],
+    }],
+    reservations: [],
+    now: new Date("2026-06-01T12:00:00Z"),
+  });
+  assert.equal(migrationOnly.decision, "YES");
+  assert.equal(migrationOnly.blockers.length, 0);
+  assert(migrationOnly.migrationDifferences.length > 0);
 
   const status = customerCutoverStatus();
   assert.equal(status.featureFlags.reservationEngineEnabled, false);
