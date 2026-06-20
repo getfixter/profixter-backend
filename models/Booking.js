@@ -72,6 +72,13 @@ const BookingSchema = new mongoose.Schema({
   reminder60mQueuedAt: { type: Date },
   reminder60mSentAt:   { type: Date },
 
+  // Delayed post-completion review request tracking.
+  completedAt: { type: Date, default: null },
+  reviewRequestQueuedAt: { type: Date, default: null },
+  reviewRequestSentAt: { type: Date, default: null },
+  reviewRequestLockExpiresAt: { type: Date, default: null },
+  reviewRequestSkippedAt: { type: Date, default: null },
+
 }, { timestamps: true });
 
 /* Useful indexes */
@@ -79,5 +86,11 @@ BookingSchema.index({ user: 1, addressId: 1, date: 1, status: 1 });
 BookingSchema.index({ date: 1 });
 BookingSchema.index({ assignedFixterId: 1, date: 1 });
 BookingSchema.index({ bookingNumber: 1 }, { unique: false });
+BookingSchema.index({
+  status: 1,
+  completedAt: 1,
+  reviewRequestSentAt: 1,
+  reviewRequestLockExpiresAt: 1,
+});
 
 module.exports = mongoose.model('Booking', BookingSchema);

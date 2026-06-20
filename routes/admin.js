@@ -22,6 +22,10 @@ const {
   evaluate60MinuteReminder,
 } = require("../utils/bookingReminderPolicy");
 const {
+  evaluateReviewRequest,
+  isCompletionTransition,
+} = require("../utils/bookingReviewRequestPolicy");
+const {
   cancelBookingWithReservation,
   findEligibleTechnicians,
   moveReservationForBooking,
@@ -821,6 +825,67 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
   }
 });
 
+router.get(
+  "/bookings/review-requests/debug",
+  auth,
+  ...onlyAdmin,
+  async (_req, res) => {
+    try {
+      const now = new Date();
+      const bookings = await Booking.find({
+        status: /^completed$/i,
+        completedAt: { $ne: null },
+        reviewRequestSentAt: null,
+      })
+        .sort({ completedAt: 1 })
+        .limit(20)
+        .select(
+          "_id bookingNumber status email completedAt reviewRequestQueuedAt reviewRequestSentAt reviewRequestLockExpiresAt reviewRequestSkippedAt"
+        )
+        .lean();
+
+      return res.json({
+        enabled: process.env.BOOKING_REVIEW_REQUESTS_ENABLED !== "false",
+        serverTime: now.toISOString(),
+        newYorkTime: now.toLocaleString("en-US", {
+          timeZone: "America/New_York",
+          dateStyle: "full",
+          timeStyle: "long",
+        }),
+        bookings: bookings.map((booking) => {
+          const eligibility = evaluateReviewRequest(booking, now);
+          const completedAtMs = new Date(booking.completedAt).getTime();
+          const minutesSinceCompletion = Number.isFinite(completedAtMs)
+            ? Number(
+                ((now.getTime() - completedAtMs) / (60 * 1000)).toFixed(2)
+              )
+            : null;
+
+          return {
+            bookingId: String(booking._id),
+            bookingNumber: booking.bookingNumber,
+            status: booking.status,
+            completedAt: booking.completedAt,
+            minutesSinceCompletion,
+            reviewRequestQueuedAt: booking.reviewRequestQueuedAt || null,
+            reviewRequestSentAt: booking.reviewRequestSentAt || null,
+            reviewRequestLockExpiresAt:
+              booking.reviewRequestLockExpiresAt || null,
+            reviewRequestSkippedAt: booking.reviewRequestSkippedAt || null,
+            eligible: eligibility.eligible,
+            eligibilityReason: eligibility.reason,
+          };
+        }),
+      });
+    } catch (error) {
+      console.error("Review request diagnostics failed:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to load review request diagnostics" });
+    }
+  }
+);
+
 async function resolveAssignment(assignedFixterId) {
   if (assignedFixterId === "" || assignedFixterId === null) {
     return {
@@ -962,6 +1027,8 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
     }
 
     const prev = String(booking.status || "");
+    const normalizedNextStatus = String(status || "").toLowerCase();
+    const transitionedToCompleted = isCompletionTransition(prev, status);
 
     if (
       useReservationEngine &&
@@ -1014,6 +1081,31 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
         after: bookingSnapshot(booking),
         req,
       });
+    }
+
+    if (transitionedToCompleted) {
+      await Booking.updateOne(
+        { _id: booking._id, status: /^completed$/i },
+        {
+          $set: { completedAt: new Date() },
+          $unset: {
+            reviewRequestQueuedAt: 1,
+            reviewRequestLockExpiresAt: 1,
+            reviewRequestSkippedAt: 1,
+          },
+        }
+      );
+      booking = await Booking.findById(booking._id);
+    } else if (normalizedNextStatus !== "completed") {
+      await Booking.updateOne(
+        { _id: booking._id },
+        {
+          $unset: {
+            reviewRequestQueuedAt: 1,
+            reviewRequestLockExpiresAt: 1,
+          },
+        }
+      );
     }
 
     // GHL SMS automation hooks
@@ -1101,7 +1193,11 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
           canceled: "booking_canceled",
         }[(status || "").toLowerCase()];
 
-      if (key && (booking.email || u.email)) {
+      const shouldSendStatusEmail =
+        key &&
+        (key !== "booking_completed" || transitionedToCompleted);
+
+      if (shouldSendStatusEmail && (booking.email || u.email)) {
         await mail.sendTx(
           key,
           booking.email || u.email,

@@ -12,6 +12,9 @@ const User = require("./models/User");
 const cron = require("node-cron");
 const { sendTx } = require("./utils/emailService");
 const { startBookingReminders } = require("./jobs/bookingReminders");
+const {
+  startBookingReviewRequests,
+} = require("./jobs/bookingReviewRequests");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
@@ -406,6 +409,11 @@ app.use((err, req, res, next) => {
 
 // ✅ 9. Start server
 const PORT = process.env.PORT || 5000;
+
+if (process.env.BOOKING_REVIEW_REQUESTS_ENABLED !== "false") {
+  startBookingReviewRequests();
+  console.log("Booking review requests enabled");
+}
 
 if (process.env.BOOKING_REMINDERS_ENABLED !== "false") {
   startBookingReminders();
