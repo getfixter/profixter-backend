@@ -5,6 +5,9 @@
 // -----------------------------------------------------------------------------
 
 const nodemailer = require("nodemailer");
+const {
+  createCustomerEmailTemplates,
+} = require("./customerEmailTemplates");
 let marked;
 try {
   ({ marked } = require("marked"));
@@ -41,10 +44,10 @@ const BRAND = {
 /* =========================== ROUTES / LINKS =========================== */
 
 const URLS = {
-  tip: process.env.TIP_LINK || "https://buy.stripe.com/eVq8wO3W98O03NL3AS",
+  tip: process.env.TIP_LINK || "https://www.profixter.com/tip",
   plans: process.env.PLANS_URL || "https://profixter.com",
   schedule: process.env.SCHEDULE_URL || "https://profixter.com",
-  review: process.env.REVIEW_URL || "https://maps.app.goo.gl/65L1i4GGsd1nMWEi7",
+  review: process.env.REVIEW_URL || "https://www.profixter.com/review",
   site: process.env.SITE_URL || "https://profixter.com",
   supportTel: process.env.SUPPORT_TEL_URL || "tel:+16315991363",
   supportSMS:
@@ -1023,6 +1026,15 @@ const TEMPLATES = {
   }),
 };
 
+Object.assign(
+  TEMPLATES,
+  createCustomerEmailTemplates({
+    escapeHtml,
+    formatNYCTime,
+    urls: URLS,
+  })
+);
+
 /* ============= Send wrappers ============= */
 
 const BCC_ADMIN = new Set(["welcome", "subscription_started", "booking_created"]);
@@ -1089,9 +1101,9 @@ async function sendRaw({
 async function sendTx(key, to, vars = {}, opts = {}) {
   const t = TEMPLATES[key];
   if (!t) throw new Error(`Unknown template: ${key}`);
-  const { subject, html } = t(vars);
+  const { subject, html, text } = t(vars);
   const bccAdmin = opts.bccAdmin ?? BCC_ADMIN.has(key);
-  return sendRaw({ to, subject, html, bccAdmin });
+  return sendRaw({ to, subject, html, text, bccAdmin });
 }
 
 async function sendPromo(to, { subject, html, text, headers = {} }) {
