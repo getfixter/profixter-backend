@@ -3,6 +3,7 @@ const {
   analyzeReservationAudit,
   assertNoTechnicianOverlap,
   backfillReservationsForFutureBookings,
+  findEligibleTechnicians,
   overlaps,
   rankEligibleTechnicians,
   reservationEngineEnabled,
@@ -55,6 +56,77 @@ async function run() {
     },
   ]);
   assert.equal(ranked[0].id, "a");
+
+  const diagnosticOptions = await findEligibleTechnicians({
+    slotStart: "2026-07-01T10:00:00-04:00",
+    includeDiagnostics: true,
+    dependencies: {
+      UserModel: {
+        find(query) {
+          const rows = query._id?.$nin
+            ? [{
+                _id: "tech-inactive",
+                name: "Inactive Tech",
+                role: "employee",
+                isActive: false,
+                employeePosition: "Fixter",
+                employeeAvailabilityStatus: "Inactive",
+              }]
+            : [{
+                _id: "tech-scheduled",
+                name: "Scheduled Tech",
+                role: "employee",
+                isActive: true,
+                employeePosition: "Fixter",
+                employeeAvailabilityStatus: "Available",
+                isDefaultFixter: false,
+              }];
+          return {
+            select() {
+              return { async lean() { return rows; } };
+            },
+          };
+        },
+      },
+      TechnicianTemplateModel: {
+        find() {
+          return {
+            select() {
+              return {
+                async lean() {
+                  return [{
+                    technicianId: "tech-scheduled",
+                    inheritCompanyHours: true,
+                    active: true,
+                  }];
+                },
+              };
+            },
+          };
+        },
+      },
+      bookingCountsByTechnician: async () => ({
+        day: new Map(),
+        week: new Map(),
+      }),
+      availabilityForTechnician: async () => ({
+        available: false,
+        reason: "Outside schedule",
+        slot: {},
+      }),
+      technicianOverlap: async () => null,
+    },
+  });
+  assert.equal(diagnosticOptions.available.length, 0);
+  assert.equal(diagnosticOptions.evaluatedTechnicians.length, 2);
+  assert.equal(
+    diagnosticOptions.evaluatedTechnicians[0].scheduleSource,
+    "company_inherited"
+  );
+  assert.match(
+    diagnosticOptions.evaluatedTechnicians[1].reason,
+    /inactive/i
+  );
   const previousFlag = process.env.ENABLE_RESERVATION_ENGINE;
   delete process.env.ENABLE_RESERVATION_ENGINE;
   assert.equal(reservationEngineEnabled(), false);
@@ -91,6 +163,7 @@ async function run() {
     },
   });
   assert.equal(dryRun.canReserve, 1);
+  assert.equal(dryRun.plannedAssignments.length, 1);
   assert.equal(dryRun.created, 0);
   assert.equal(writes, 0);
   const writeRun = await backfillReservationsForFutureBookings({
@@ -109,6 +182,38 @@ async function run() {
   });
   assert.equal(writeRun.created, 1);
   assert.equal(writes, 1);
+
+  const blockedDryRun = await backfillReservationsForFutureBookings({
+    write: false,
+    dependencies: {
+      BookingModel,
+      activeReservationForBooking: async () => null,
+      findEligibleTechnicians: async () => ({
+        available: [],
+        unavailable: [{
+          id: "technician-1",
+          name: "Roman",
+          available: false,
+          reason: "Outside schedule",
+          rejectionCode: "technician_or_capacity_unavailable",
+        }],
+        evaluatedTechnicians: [{
+          id: "technician-1",
+          name: "Roman",
+          available: false,
+          reason: "Outside schedule",
+          rejectionCode: "technician_or_capacity_unavailable",
+        }],
+        recommended: null,
+      }),
+    },
+  });
+  assert.equal(blockedDryRun.noEligibleTechnician, 1);
+  assert.equal(blockedDryRun.issues[0].bookingId, "booking-1");
+  assert.equal(
+    blockedDryRun.issues[0].techniciansEvaluated[0].reason,
+    "Outside schedule"
+  );
 
   const audit = analyzeReservationAudit({
     bookings: [

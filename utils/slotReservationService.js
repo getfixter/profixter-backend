@@ -5,6 +5,7 @@ const BookingSlotReservation = require("../models/BookingSlotReservation");
 const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 const User = require("../models/User");
+const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailabilityTemplate");
 const { calculateDayAvailability } = require("./availabilityService");
 const {
   snapshot: bookingSnapshot,
@@ -713,11 +714,14 @@ async function availabilityForTechnician({ technicianId, slotStart }) {
   const technicianState = slot?.technicians?.find(
     (technician) => String(technician.id) === String(technicianId)
   );
+  const unavailableReason =
+    technicianState?.unavailableReason ||
+    (!slot
+      ? `No company start matches ${window.date} ${window.time}; check company hours, day/slot closures, start interval, and 90-minute fit`
+      : "Technician is unavailable");
   return {
     available: !!slot && !!technicianState?.available && slot.totalCapacity > 0,
-    reason:
-      technicianState?.unavailableReason ||
-      (!slot ? "The full 90-minute visit does not fit this schedule" : "Unavailable"),
+    reason: unavailableReason,
     slot,
     day,
     window,
@@ -772,9 +776,12 @@ function rankEligibleTechnicians(technicians) {
 async function findEligibleTechnicians({
   slotStart,
   excludeReservationId = null,
+  includeDiagnostics = false,
   dependencies = {},
 }) {
   const UserModel = dependencies.UserModel || User;
+  const TechnicianTemplateModel =
+    dependencies.TechnicianTemplateModel || TechnicianAvailabilityTemplate;
   const getBookingCounts =
     dependencies.bookingCountsByTechnician || bookingCountsByTechnician;
   const getAvailability =
@@ -786,8 +793,21 @@ async function findEligibleTechnicians({
     isActive: { $ne: false },
     employeePosition: { $in: ["Fixter", "General Fixter"] },
   })
-    .select("_id name email employeePosition isDefaultFixter")
+    .select(
+      "_id name email role isActive employeePosition employeeAvailabilityStatus isDefaultFixter"
+    )
     .lean();
+  const templates = includeDiagnostics && technicians.length
+    ? await TechnicianTemplateModel.find({
+        technicianId: { $in: technicians.map((technician) => technician._id) },
+        active: true,
+      })
+        .select("technicianId inheritCompanyHours weeklySchedule active")
+        .lean()
+    : [];
+  const templateByTechnician = new Map(
+    templates.map((template) => [String(template.technicianId), template])
+  );
   const counts = await getBookingCounts(
     technicians.map((technician) => technician._id),
     window.slotStart
@@ -813,13 +833,77 @@ async function findEligibleTechnicians({
         email: technician.email,
         position: technician.employeePosition,
         isDefaultFixter: !!technician.isDefaultFixter,
+        accountActive: technician.isActive !== false,
+        availabilityStatus:
+          technician.employeeAvailabilityStatus || "Available",
+        scheduleSource:
+          templateByTechnician.get(String(technician._id))
+            ?.inheritCompanyHours === false
+            ? "technician"
+            : "company_inherited",
         dayBookingCount: counts.day.get(String(technician._id)) || 0,
         weekBookingCount: counts.week.get(String(technician._id)) || 0,
         available: availability.available && !conflict,
-        reason: conflict ? "Conflicts with another 90-minute reservation" : availability.reason,
+        reason: conflict
+          ? "Conflicts with another 90-minute reservation"
+          : availability.available
+            ? ""
+            : availability.reason,
+        rejectionCode: conflict
+          ? "reservation_overlap"
+          : availability.available
+            ? null
+            : availability.slot
+              ? "technician_or_capacity_unavailable"
+              : "no_matching_company_start",
+        requestedDate: window.date,
+        requestedTime: window.time,
+        requestedEnd: window.slotEnd,
       };
     })
   );
+  let excluded = [];
+  if (includeDiagnostics) {
+    const structurallyExcluded = await UserModel.find({
+      $or: [
+        { role: "employee" },
+        { employeePosition: { $in: ["Fixter", "General Fixter"] } },
+        { isDefaultFixter: true },
+      ],
+      _id: { $nin: technicians.map((technician) => technician._id) },
+    })
+      .select(
+        "_id name email role isActive employeePosition employeeAvailabilityStatus isDefaultFixter"
+      )
+      .lean();
+    excluded = structurallyExcluded.map((technician) => {
+      const reasons = [];
+      if (technician.role !== "employee") {
+        reasons.push(`Role is ${technician.role || "unset"}, not employee`);
+      }
+      if (technician.isActive === false) {
+        reasons.push("Employee account is inactive");
+      }
+      if (!["Fixter", "General Fixter"].includes(technician.employeePosition)) {
+        reasons.push(
+          `Position is ${technician.employeePosition || "unset"}, not Fixter or General Fixter`
+        );
+      }
+      return {
+        id: String(technician._id),
+        name: technician.name,
+        email: technician.email,
+        position: technician.employeePosition,
+        isDefaultFixter: !!technician.isDefaultFixter,
+        accountActive: technician.isActive !== false,
+        availabilityStatus:
+          technician.employeeAvailabilityStatus || "Available",
+        available: false,
+        rejectionCode: "account_not_eligible",
+        reason: reasons.join("; ") || "Account does not meet technician rules",
+      };
+    });
+  }
   const available = rankEligibleTechnicians(
     evaluated.filter((technician) => technician.available)
   );
@@ -827,7 +911,11 @@ async function findEligibleTechnicians({
     slotStart: window.slotStart,
     slotEnd: window.slotEnd,
     available,
-    unavailable: evaluated.filter((technician) => !technician.available),
+    unavailable: [
+      ...evaluated.filter((technician) => !technician.available),
+      ...excluded,
+    ],
+    evaluatedTechnicians: [...evaluated, ...excluded],
     recommended: available[0] || null,
   };
 }
@@ -1445,6 +1533,7 @@ async function moveReservationForBooking({
 
 async function backfillReservationsForFutureBookings({
   write = false,
+  bookingIds = null,
   dependencies = {},
 } = {}) {
   const BookingModel = dependencies.BookingModel || Booking;
@@ -1456,9 +1545,13 @@ async function backfillReservationsForFutureBookings({
   const ensureLocks =
     dependencies.ensureReservationLocks || ensureReservationLocks;
   const now = new Date();
-  const futureBookings = await BookingModel.find({
+  const bookingQuery = {
     date: { $gte: now },
-  }).sort({ date: 1 });
+    ...(Array.isArray(bookingIds) && bookingIds.length
+      ? { _id: { $in: bookingIds } }
+      : {}),
+  };
+  const futureBookings = await BookingModel.find(bookingQuery).sort({ date: 1 });
   const bookings = futureBookings.filter(
     (booking) => !isTerminalBookingStatus(booking.status)
   );
@@ -1475,6 +1568,7 @@ async function backfillReservationsForFutureBookings({
     conflicts: 0,
     outsideWorkingHours: 0,
     missingFoundation: 0,
+    plannedAssignments: [],
     issues: [],
     errors: [],
   };
@@ -1489,7 +1583,10 @@ async function backfillReservationsForFutureBookings({
         }
         continue;
       }
-      const options = await getOptions({ slotStart: booking.date });
+      const options = await getOptions({
+        slotStart: booking.date,
+        includeDiagnostics: true,
+      });
       const preferred = booking.assignedFixterId
         ? options.available.find(
             (technician) =>
@@ -1503,10 +1600,30 @@ async function backfillReservationsForFutureBookings({
           category: "noEligibleTechnician",
           bookingId: String(booking._id),
           slotStart: booking.date,
+          assignedFixterId: booking.assignedFixterId
+            ? String(booking.assignedFixterId)
+            : null,
+          techniciansEvaluated: options.evaluatedTechnicians ||
+            options.unavailable ||
+            [],
         });
         continue;
       }
       report.canReserve += 1;
+      report.plannedAssignments.push({
+        bookingId: String(booking._id),
+        requestedStart: booking.date,
+        technicianId: selected.id,
+        technicianName: selected.name || "",
+        isDefaultFixter: !!selected.isDefaultFixter,
+        dayBookingCount: selected.dayBookingCount || 0,
+        weekBookingCount: selected.weekBookingCount || 0,
+        assignmentReason: preferred
+          ? "existing_booking_assignment_is_eligible"
+          : selected.isDefaultFixter
+            ? "default_fixter_then_workload_ranking"
+            : "workload_ranking",
+      });
       if (write) {
         await reserve({
           bookingId: booking._id,

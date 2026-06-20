@@ -132,6 +132,19 @@ function run() {
   assert(statusRoute);
   assert.equal(statusRoute.route.methods.get, true);
   assert.equal(statusRoute.route.stack.length, 4);
+  const assignmentPreviewRoute = router.stack.find(
+    (layer) =>
+      layer.route?.path === "/reservation-auto-assignment-preview"
+  );
+  assert(assignmentPreviewRoute);
+  assert.equal(assignmentPreviewRoute.route.methods.get, true);
+  assert.equal(assignmentPreviewRoute.route.stack.length, 4);
+  const assignmentWriteRoute = router.stack.find(
+    (layer) => layer.route?.path === "/reservation-auto-assignment"
+  );
+  assert(assignmentWriteRoute);
+  assert.equal(assignmentWriteRoute.route.methods.post, true);
+  assert.equal(assignmentWriteRoute.route.stack.length, 4);
 
   console.log("Customer availability readiness tests passed");
 }
