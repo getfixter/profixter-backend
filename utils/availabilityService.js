@@ -89,6 +89,38 @@ function generateSlots(
   return slots;
 }
 
+function generateSlotsFromStarts(
+  starts,
+  defaultCapacity = 1,
+  visitDurationMinutes = 90
+) {
+  const slots = new Map();
+  for (const entry of starts || []) {
+    const time = typeof entry === "string" ? entry : entry?.time;
+    const minute = timeToMinutes(time);
+    if (minute === null || minute + visitDurationMinutes > 24 * 60) continue;
+    const capacity =
+      typeof entry === "string" ? null : entry?.capacity;
+    slots.set(time, {
+      time,
+      endTime: minutesToTime(minute + visitDurationMinutes),
+      capacity: Math.max(
+        0,
+        capacity !== null &&
+        capacity !== undefined &&
+        Number.isFinite(Number(capacity))
+          ? Number(capacity)
+          : Number(defaultCapacity || 0)
+      ),
+    });
+  }
+  return new Map(
+    [...slots.entries()].sort(
+      ([left], [right]) => timeToMinutes(left) - timeToMinutes(right)
+    )
+  );
+}
+
 function intervalsForWeekday(template, weekday) {
   const day = (template?.weeklySchedule || []).find(
     (entry) => entry.weekday === weekday
@@ -96,14 +128,60 @@ function intervalsForWeekday(template, weekday) {
   return day?.enabled ? day.intervals || [] : [];
 }
 
-function applyAvailabilityOverride(baseIntervals, override) {
-  if (!override) return baseIntervals;
-  if (override.mode === "closed") return [];
-  if (override.mode === "custom_hours") return override.intervals || [];
-  if (override.mode === "open" && override.intervals?.length) {
-    return override.intervals;
+function startsForWeekday(template, weekday) {
+  const day = (template?.weeklySchedule || []).find(
+    (entry) => entry.weekday === weekday
+  );
+  return day?.enabled ? day.starts || [] : [];
+}
+
+function scheduleForWeekday(template, weekday) {
+  return {
+    starts: startsForWeekday(template, weekday),
+    intervals: intervalsForWeekday(template, weekday),
+  };
+}
+
+function applyAvailabilityOverride(baseSchedule, override) {
+  if (!override) return baseSchedule;
+  if (override.mode === "closed") return { starts: [], intervals: [] };
+  if (override.mode === "custom_hours") {
+    return {
+      starts: override.starts || [],
+      intervals: override.intervals || [],
+    };
   }
-  return baseIntervals;
+  if (
+    override.mode === "open" &&
+    (override.starts?.length || override.intervals?.length)
+  ) {
+    return {
+      starts: override.starts || [],
+      intervals: override.intervals || [],
+    };
+  }
+  return baseSchedule;
+}
+
+function generateScheduleSlots(
+  schedule,
+  slotStepMinutes,
+  defaultCapacity,
+  visitDurationMinutes
+) {
+  if (schedule?.starts?.length) {
+    return generateSlotsFromStarts(
+      schedule.starts,
+      defaultCapacity,
+      visitDurationMinutes
+    );
+  }
+  return generateSlots(
+    schedule?.intervals || [],
+    slotStepMinutes,
+    defaultCapacity,
+    visitDurationMinutes
+  );
 }
 
 function rangeApplies(override, time) {
@@ -282,12 +360,12 @@ function calculateDayFromContext({
   const companyOverride = dayAvailabilityOverrides.find(
     (override) => override.scopeType === "company"
   );
-  const companyIntervals = applyAvailabilityOverride(
-    intervalsForWeekday(companyTemplate, weekday),
+  const companySchedule = applyAvailabilityOverride(
+    scheduleForWeekday(companyTemplate, weekday),
     companyOverride
   );
-  const companySlots = generateSlots(
-    companyIntervals,
+  const companySlots = generateScheduleSlots(
+    companySchedule,
     companyTemplate.slotMinutes,
     companyTemplate.defaultCapacity,
     companyTemplate.visitDurationMinutes || 90
@@ -307,21 +385,21 @@ function calculateDayFromContext({
   for (const technician of technicians) {
     const id = String(technician._id);
     const template = templateByTechnician.get(id);
-    const baseIntervals =
+    const baseSchedule =
       !template || template.inheritCompanyHours
-        ? companyIntervals
-        : intervalsForWeekday(template, weekday);
+        ? companySchedule
+        : scheduleForWeekday(template, weekday);
     const technicianOverride = dayAvailabilityOverrides.find(
       (override) =>
         override.scopeType === "technician" &&
         String(override.technicianId) === id
     );
-    const intervals = applyAvailabilityOverride(
-      baseIntervals,
+    const schedule = applyAvailabilityOverride(
+      baseSchedule,
       technicianOverride
     );
-    const generated = generateSlots(
-      intervals,
+    const generated = generateScheduleSlots(
+      schedule,
       companyTemplate.slotMinutes,
       1,
       companyTemplate.visitDurationMinutes || 90
@@ -614,7 +692,11 @@ module.exports = {
   calculateDayFromContext,
   calculateMonthSummary,
   generateSlots,
+  generateSlotsFromStarts,
+  generateScheduleSlots,
   intervalsForWeekday,
+  startsForWeekday,
+  scheduleForWeekday,
   loadAvailabilityContext,
   timeOffOverlaps,
 };

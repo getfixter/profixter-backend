@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const {
   hoursToIntervals,
+  hoursToStarts,
   inferLegacySlotMinutes,
 } = require("../utils/availabilityBootstrap");
 const { generateSlots } = require("../utils/availabilityService");
@@ -22,6 +23,12 @@ function run() {
 
   const oldImport = hoursToIntervals(["16:00"], 60, 2, 60);
   assert.equal(oldImport[0].endTime, "17:00");
+  assert.deepEqual(hoursToStarts(["08:00", "10:30", "13:00", "15:30"]), [
+    { time: "08:00" },
+    { time: "10:30" },
+    { time: "13:00" },
+    { time: "15:30" },
+  ]);
 
   console.log("Legacy calendar interval import tests passed");
 }

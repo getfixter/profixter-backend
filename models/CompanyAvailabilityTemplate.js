@@ -10,10 +10,19 @@ const IntervalSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const AppointmentStartSchema = new mongoose.Schema(
+  {
+    time: { type: String, required: true },
+    capacity: { type: Number, min: 0, default: null },
+  },
+  { _id: false }
+);
+
 const WeeklyDaySchema = new mongoose.Schema(
   {
     weekday: { type: Number, required: true, min: 0, max: 6 },
     enabled: { type: Boolean, default: true },
+    starts: { type: [AppointmentStartSchema], default: [] },
     intervals: { type: [IntervalSchema], default: [] },
   },
   { _id: false }

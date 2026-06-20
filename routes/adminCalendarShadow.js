@@ -42,6 +42,20 @@ function cleanSchedule(value) {
   return value.map((day) => ({
     weekday: Number(day.weekday),
     enabled: day.enabled !== false,
+    starts: Array.isArray(day.starts)
+      ? day.starts.map((entry) => ({
+          time: String(
+            typeof entry === "string" ? entry : entry?.time || ""
+          ),
+          ...(typeof entry === "object" &&
+          entry !== null &&
+          entry.capacity !== null &&
+          entry.capacity !== undefined &&
+          entry.capacity !== ""
+            ? { capacity: Number(entry.capacity) }
+            : {}),
+        }))
+      : [],
     intervals: Array.isArray(day.intervals)
       ? day.intervals.map((interval) => ({
           startTime: String(interval.startTime || ""),
@@ -215,6 +229,7 @@ router.put(
         template.weeklySchedule = cleanSchedule(req.body.weeklySchedule).map(
           (day) => ({
             ...day,
+            starts: day.starts.map(({ time }) => ({ time })),
             intervals: day.intervals.map(({ startTime, endTime }) => ({
               startTime,
               endTime,
@@ -249,6 +264,20 @@ router.put(
         override = new AvailabilityOverride({ scopeType, technicianId, date });
       }
       override.mode = String(req.body.mode || "");
+      override.starts = Array.isArray(req.body.starts)
+        ? req.body.starts.map((entry) => ({
+            time: String(
+              typeof entry === "string" ? entry : entry?.time || ""
+            ),
+            ...(typeof entry === "object" &&
+            entry !== null &&
+            entry.capacity !== null &&
+            entry.capacity !== undefined &&
+            entry.capacity !== ""
+              ? { capacity: Number(entry.capacity) }
+              : {}),
+          }))
+        : [];
       override.intervals = Array.isArray(req.body.intervals)
         ? req.body.intervals.map((interval) => ({
             startTime: String(interval.startTime || ""),

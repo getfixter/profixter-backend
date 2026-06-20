@@ -4,9 +4,9 @@ const BookingSlotReservation = require("../models/BookingSlotReservation");
 const {
   calculateDayAvailability,
   calculateDayFromContext,
-  generateSlots,
-  intervalsForWeekday,
+  generateScheduleSlots,
   loadAvailabilityContext,
+  scheduleForWeekday,
 } = require("./availabilityService");
 const {
   reservationBlocksAvailability,
@@ -237,10 +237,12 @@ async function customerCalendarConfig() {
   const defaultHours = new Set();
   const closedWeekdays = [];
   for (let weekday = 0; weekday < 7; weekday += 1) {
-    const intervals = intervalsForWeekday(template, weekday);
-    if (!intervals.length) closedWeekdays.push(weekday);
-    for (const slot of generateSlots(
-      intervals,
+    const schedule = scheduleForWeekday(template, weekday);
+    if (!schedule.starts.length && !schedule.intervals.length) {
+      closedWeekdays.push(weekday);
+    }
+    for (const slot of generateScheduleSlots(
+      schedule,
       template.slotMinutes,
       template.defaultCapacity,
       90

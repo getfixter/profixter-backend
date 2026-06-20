@@ -2,12 +2,21 @@ const mongoose = require("mongoose");
 const {
   dateValidator,
   validateIntervals,
+  validateStarts,
 } = require("../utils/availabilityValidation");
 
 const OverrideIntervalSchema = new mongoose.Schema(
   {
     startTime: { type: String, required: true },
     endTime: { type: String, required: true },
+  },
+  { _id: false }
+);
+
+const OverrideStartSchema = new mongoose.Schema(
+  {
+    time: { type: String, required: true },
+    capacity: { type: Number, min: 0, default: null },
   },
   { _id: false }
 );
@@ -45,6 +54,14 @@ const AvailabilityOverrideSchema = new mongoose.Schema(
         message: "Override contains invalid or overlapping intervals",
       },
     },
+    starts: {
+      type: [OverrideStartSchema],
+      default: [],
+      validate: {
+        validator: (value) => validateStarts(value, { allowCapacity: true }),
+        message: "Override contains invalid or duplicate appointment starts",
+      },
+    },
     reason: { type: String, trim: true, maxlength: 200, default: "" },
     notes: { type: String, trim: true, maxlength: 2000, default: "" },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
@@ -59,8 +76,14 @@ AvailabilityOverrideSchema.pre("validate", function validateScope(next) {
   if (this.scopeType === "company" && this.technicianId) {
     return next(new Error("Company overrides cannot have technicianId"));
   }
-  if (this.mode === "custom_hours" && !this.intervals.length) {
-    return next(new Error("custom_hours requires at least one interval"));
+  if (
+    this.mode === "custom_hours" &&
+    !this.intervals.length &&
+    !this.starts.length
+  ) {
+    return next(
+      new Error("custom_hours requires at least one appointment start")
+    );
   }
   return next();
 });

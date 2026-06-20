@@ -86,6 +86,13 @@ function hoursToIntervals(
   return intervals;
 }
 
+function hoursToStarts(hours, capacity = null) {
+  return normalizedStartMinutes(hours).map((minute) => ({
+    time: minutesToTime(minute),
+    ...(capacity === null || capacity === undefined ? {} : { capacity }),
+  }));
+}
+
 function comparableIntervals(intervals = []) {
   return intervals.map((interval) => ({
     startTime: interval.startTime,
@@ -121,16 +128,23 @@ async function reconcileLegacyIntervalEnds(legacy, template) {
     90
   );
   let weeklyDaysUpdated = 0;
+  const desiredDefaultStarts = hoursToStarts(defaultHours);
 
-  if (!intervalsEqual(oldDefaultIntervals, desiredDefaultIntervals)) {
-    for (const day of template.weeklySchedule || []) {
-      if (day.enabled && intervalsEqual(day.intervals, oldDefaultIntervals)) {
+  for (const day of template.weeklySchedule || []) {
+    if (
+      day.enabled &&
+      (!day.starts || day.starts.length === 0) &&
+      (intervalsEqual(day.intervals, oldDefaultIntervals) ||
+        intervalsEqual(day.intervals, desiredDefaultIntervals))
+    ) {
+      day.starts = desiredDefaultStarts;
+      if (intervalsEqual(day.intervals, oldDefaultIntervals)) {
         day.intervals = desiredDefaultIntervals;
-        weeklyDaysUpdated += 1;
       }
+      weeklyDaysUpdated += 1;
     }
-    if (weeklyDaysUpdated) await template.save();
   }
+  if (weeklyDaysUpdated) await template.save();
 
   const legacyOverrides =
     legacy.overrides instanceof Map
@@ -146,8 +160,6 @@ async function reconcileLegacyIntervalEnds(legacy, template) {
     const desiredIntervals = hoursToIntervals(hours, step, null, 90).map(
       ({ startTime, endTime }) => ({ startTime, endTime })
     );
-    if (intervalsEqual(oldIntervals, desiredIntervals)) continue;
-
     const result = await AvailabilityOverride.updateOne(
       {
         scopeType: "company",
@@ -155,9 +167,17 @@ async function reconcileLegacyIntervalEnds(legacy, template) {
         date,
         mode: "custom_hours",
         reason: "Imported legacy calendar override",
-        intervals: oldIntervals,
+        $or: [
+          { starts: { $exists: false } },
+          { starts: { $size: 0 } },
+        ],
       },
-      { $set: { intervals: desiredIntervals } }
+      {
+        $set: {
+          starts: hoursToStarts(hours),
+          intervals: desiredIntervals,
+        },
+      }
     );
     overridesUpdated += result.modifiedCount || 0;
   }
@@ -197,6 +217,7 @@ async function ensureCompanyTemplate() {
       slotMinutes,
       defaultCapacity
     );
+    const starts = hoursToStarts(legacy?.defaultHours || []);
 
     try {
       template = await CompanyAvailabilityTemplate.create({
@@ -211,6 +232,7 @@ async function ensureCompanyTemplate() {
         weeklySchedule: Array.from({ length: 7 }, (_, weekday) => ({
           weekday,
           enabled: !closedWeekdays.has(weekday),
+          starts: closedWeekdays.has(weekday) ? [] : starts,
           intervals: closedWeekdays.has(weekday) ? [] : intervals,
         })),
         active: true,
@@ -269,7 +291,8 @@ async function importLegacyOverrides(legacy, template) {
           step,
           template.defaultCapacity
         ).map(({ startTime, endTime }) => ({ startTime, endTime }));
-    if (!intervals.length) closed = true;
+    const starts = closed ? [] : hoursToStarts(hours || []);
+    if (!starts.length) closed = true;
 
     try {
       await AvailabilityOverride.updateOne(
@@ -280,6 +303,7 @@ async function importLegacyOverrides(legacy, template) {
             technicianId: null,
             date,
             mode: closed ? "closed" : "custom_hours",
+            starts,
             intervals,
             reason: closedDates.has(date)
               ? "Imported legacy holiday"
@@ -442,6 +466,7 @@ module.exports = {
   ensureTechnicianTemplate,
   getFoundationStatus,
   hoursToIntervals,
+  hoursToStarts,
   inferLegacySlotMinutes,
   reconcileLegacyIntervalEnds,
 };

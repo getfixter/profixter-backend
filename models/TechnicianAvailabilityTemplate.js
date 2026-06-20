@@ -9,10 +9,18 @@ const TechnicianIntervalSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const TechnicianStartSchema = new mongoose.Schema(
+  {
+    time: { type: String, required: true },
+  },
+  { _id: false }
+);
+
 const TechnicianWeeklyDaySchema = new mongoose.Schema(
   {
     weekday: { type: Number, required: true, min: 0, max: 6 },
     enabled: { type: Boolean, default: true },
+    starts: { type: [TechnicianStartSchema], default: [] },
     intervals: { type: [TechnicianIntervalSchema], default: [] },
   },
   { _id: false }

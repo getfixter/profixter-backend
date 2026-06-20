@@ -39,6 +39,26 @@ function validateIntervals(intervals, { allowCapacity = false } = {}) {
   return true;
 }
 
+function validateStarts(starts, { allowCapacity = false } = {}) {
+  if (!Array.isArray(starts)) return false;
+  const seen = new Set();
+  for (const entry of starts) {
+    const time = typeof entry === "string" ? entry : entry?.time;
+    const capacity = typeof entry === "string" ? undefined : entry?.capacity;
+    if (timeToMinutes(time) === null || seen.has(time)) return false;
+    if (
+      allowCapacity &&
+      capacity !== null &&
+      capacity !== undefined &&
+      (!Number.isFinite(capacity) || capacity < 0)
+    ) {
+      return false;
+    }
+    seen.add(time);
+  }
+  return true;
+}
+
 function weeklyScheduleValidator(schedule, options) {
   if (!Array.isArray(schedule)) return false;
   const weekdays = new Set();
@@ -49,6 +69,7 @@ function weeklyScheduleValidator(schedule, options) {
     if (weekdays.has(day.weekday)) return false;
     weekdays.add(day.weekday);
     if (!validateIntervals(day.intervals || [], options)) return false;
+    if (!validateStarts(day.starts || [], options)) return false;
   }
   return true;
 }
@@ -68,5 +89,6 @@ module.exports = {
   dateValidator,
   timeToMinutes,
   validateIntervals,
+  validateStarts,
   weeklyScheduleValidator,
 };
