@@ -51,6 +51,7 @@ assert.match(bookingsSource, /reservationEngineEnabled\(\)/);
 assert.match(bookingsSource, /createBookingWithReservation/);
 assert.match(bookingsSource, /cancelBookingWithReservation/);
 assert.match(bookingsSource, /SLOT_UNAVAILABLE/);
+assert.match(bookingsSource, /deletePublicObjects/);
 assert.match(
   bookingsSource,
   /-assignedFixterId -assignedFixterName -assignedFixterEmail/

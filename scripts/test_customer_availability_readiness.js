@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const {
   buildLegacyDay,
   compareAvailabilityDays,
+  customerCutoverStatus,
   previewEnabled,
 } = require("../utils/customerAvailabilityReadiness");
 const router = require("../routes/adminCustomerAvailabilityPreview");
@@ -79,6 +80,11 @@ function run() {
   assert.equal(report.mismatchCounts.bookingCountMismatch, 1);
   assert(report.mismatchCounts.reservationConflict >= 1);
 
+  const status = customerCutoverStatus();
+  assert.equal(status.featureFlags.reservationEngineEnabled, false);
+  assert.equal(status.readinessPreview.endpoint.includes("days=60"), true);
+  assert.equal(status.transactionProbe.command, "npm run mongo:transactions:probe");
+
   const admin = permissionsForUser({ role: "admin" });
   const general = permissionsForUser({
     role: "employee",
@@ -93,6 +99,12 @@ function run() {
   assert(route);
   assert.equal(route.route.methods.get, true);
   assert.equal(route.route.stack.length, 4);
+  const statusRoute = router.stack.find(
+    (layer) => layer.route?.path === "/customer-cutover-status"
+  );
+  assert(statusRoute);
+  assert.equal(statusRoute.route.methods.get, true);
+  assert.equal(statusRoute.route.stack.length, 4);
 
   console.log("Customer availability readiness tests passed");
 }

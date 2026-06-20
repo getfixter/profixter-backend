@@ -34,6 +34,49 @@ function previewEnabled() {
   );
 }
 
+function customerCutoverStatus() {
+  const reservationEngineEnabled =
+    String(process.env.ENABLE_RESERVATION_ENGINE || "false").toLowerCase() ===
+    "true";
+  const mongoTransactionsVerified =
+    String(process.env.MONGO_TRANSACTIONS_VERIFIED || "false").toLowerCase() ===
+    "true";
+  const availabilityPreviewEnabled = previewEnabled();
+  return {
+    generatedAt: new Date(),
+    featureFlags: {
+      reservationEngineEnabled,
+      availabilityPreviewEnabled,
+      mongoTransactionsVerified,
+    },
+    transactionProbe: {
+      status: mongoTransactionsVerified ? "passed" : "not_verified",
+      verified: mongoTransactionsVerified,
+      command: "npm run mongo:transactions:probe",
+    },
+    audit: {
+      status: availabilityPreviewEnabled ? "run_readiness_preview" : "not_run",
+      command: "npm run reservations:audit",
+    },
+    backfillDryRun: {
+      status: availabilityPreviewEnabled ? "run_readiness_preview" : "not_run",
+      command: "npm run reservations:backfill:dry",
+    },
+    readinessPreview: {
+      status: availabilityPreviewEnabled ? "available" : "disabled",
+      endpoint:
+        "/api/admin/calendar/customer-availability-preview?days=60",
+    },
+    instructions: [
+      "Keep ENABLE_RESERVATION_ENGINE=false while validating production.",
+      "Run the MongoDB transaction probe from EB.",
+      "Enable the Admin availability preview and require safeToCutOver=true.",
+      "Run reservation backfill dry-run, write backfill, then audit again.",
+      "Enable the reservation engine only after all blockers are cleared.",
+    ],
+  };
+}
+
 function configOverrides(config) {
   if (config?.overrides instanceof Map) {
     return Object.fromEntries(config.overrides);
@@ -401,9 +444,7 @@ async function buildCustomerAvailabilityReadiness({
     String(process.env.MONGO_TRANSACTIONS_VERIFIED || "false").toLowerCase() ===
     "true";
   if (reservationEngineCurrentlyEnabled) {
-    comparison.safeToCutOver = false;
-    comparison.decision = "NO";
-    comparison.blockers.push({
+    comparison.warnings.push({
       category: "reservationEngineAlreadyEnabled",
       count: 1,
     });
@@ -435,6 +476,7 @@ module.exports = {
   buildCustomerAvailabilityReadiness,
   buildLegacyDay,
   compareAvailabilityDays,
+  customerCutoverStatus,
   legacyHoursForDate,
   previewEnabled,
 };

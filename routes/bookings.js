@@ -21,7 +21,7 @@ const {
 const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const mail = require("../utils/emailService");
-const { putPublicObject } = require("../utils/s3");
+const { deletePublicObjects, putPublicObject } = require("../utils/s3");
 const {
   subscriptionGrantsAccess,
   verifySubscriptionAccess,
@@ -383,6 +383,8 @@ router.post(
     console.log("📦 PAYLOAD SIZE (bytes):", req.headers["content-length"]);
 
     let counterStamped = null;
+    const uploadedS3Keys = [];
+    let bookingCommitted = false;
 
     try {
       const me = await User.findById(req.user.id);
@@ -611,6 +613,7 @@ router.post(
             Body: finalBuffer,
             ContentType: finalContentType,
           });
+          uploadedS3Keys.push(key);
           images.push(url);
         }
       } else {
@@ -663,6 +666,7 @@ router.post(
           actorName: "System",
         });
       }
+      bookingCommitted = true;
 
       // GHL SMS automation hooks
       try {
@@ -756,13 +760,26 @@ router.post(
       console.error("❌ Booking Error:", error.stack || error.message);
 
       try {
-        if (counterStamped) {
+        if (counterStamped && !bookingCommitted) {
           await SlotCounter.updateOne(
             { ymd: counterStamped.ymd, time: counterStamped.time },
             { $inc: { count: -1 } }
           );
         }
       } catch (_) {}
+      try {
+        if (uploadedS3Keys.length && !bookingCommitted) {
+          await deletePublicObjects({
+            Bucket: S3_BUCKET,
+            Keys: uploadedS3Keys,
+          });
+        }
+      } catch (cleanupError) {
+        console.error(
+          "S3 booking upload cleanup failed:",
+          cleanupError?.message || cleanupError
+        );
+      }
 
       const msg = (error && (error.message || "")).toString();
       if (

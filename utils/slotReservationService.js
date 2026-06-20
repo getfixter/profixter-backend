@@ -1877,7 +1877,11 @@ async function auditReservationConflicts({ dependencies = {} } = {}) {
     CapacityBucketModel.find({}).lean(),
   ]);
   const bucketReservationIds = Array.from(
-    new Set(buckets.map((bucket) => String(bucket.reservationId)))
+    new Set(
+      [...buckets, ...capacityBuckets].map((bucket) =>
+        String(bucket.reservationId)
+      )
+    )
   );
   const bucketReservations = bucketReservationIds.length
     ? await ReservationModel.find({

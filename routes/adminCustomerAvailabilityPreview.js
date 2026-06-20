@@ -4,8 +4,16 @@ const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const {
   buildCustomerAvailabilityReadiness,
+  customerCutoverStatus,
   previewEnabled,
 } = require("../utils/customerAvailabilityReadiness");
+
+router.get(
+  "/customer-cutover-status",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  (_req, res) => res.json(customerCutoverStatus())
+);
 
 router.get(
   "/customer-availability-preview",

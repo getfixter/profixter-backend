@@ -1,5 +1,9 @@
 // backend/utils/s3.js
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const {
+  DeleteObjectsCommand,
+  S3Client,
+  PutObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 const REGION  = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1";
 const BUCKET  = process.env.S3_BUCKET;
@@ -29,4 +33,19 @@ async function putPublicObject({ Bucket = BUCKET, Key, Body, ContentType, CacheC
   return `https://${Bucket}.s3.amazonaws.com/${Key}`;
 }
 
-module.exports = { putPublicObject };
+async function deletePublicObjects({ Bucket = BUCKET, Keys = [] }) {
+  const uniqueKeys = [...new Set(Keys.filter(Boolean))];
+  if (!uniqueKeys.length) return { deleted: 0 };
+  await s3.send(
+    new DeleteObjectsCommand({
+      Bucket,
+      Delete: {
+        Objects: uniqueKeys.map((Key) => ({ Key })),
+        Quiet: true,
+      },
+    })
+  );
+  return { deleted: uniqueKeys.length };
+}
+
+module.exports = { deletePublicObjects, putPublicObject };
