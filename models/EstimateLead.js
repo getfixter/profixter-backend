@@ -6,7 +6,17 @@ const EstimateLeadSchema = new mongoose.Schema(
     // ── Service ────────────────────────────────────────────────────────────
     service: {
       type: String,
-      enum: ["roofing", "siding", "roofing_siding", "both", "bathroom", "kitchen"],
+      enum: [
+        "roofing",
+        "siding",
+        "roofing_siding",
+        "both",
+        "bathroom",
+        "kitchen",
+        "basement",
+        "interior",
+        "other",
+      ],
       required: true,
       index: true,
     },
@@ -50,6 +60,7 @@ const EstimateLeadSchema = new mongoose.Schema(
 
     // ── Common answers ─────────────────────────────────────────────────────
     timeline:  String, // asap | 1month | 1-3months | planning
+    budgetRange: String,
     financing: String, // yes | maybe | no
 
     // ── Metadata ───────────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ const {
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
+const EstimateLead = require("../models/EstimateLead");
 const {
   createOrUpdateContact,
   updateContactFields,
@@ -1420,11 +1421,30 @@ router.delete("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
 // GET /api/admin/requests
 router.get("/requests", auth, onlyAdmin, async (_req, res) => {
   try {
-    const requests = await Request.find({})
-      .sort({ createdAt: -1 })
-      .lean();
+    const [requests, estimateLeads] = await Promise.all([
+      Request.find({}).sort({ createdAt: -1 }).lean(),
+      EstimateLead.find({}).sort({ createdAt: -1 }).lean(),
+    ]);
+    const mappedEstimateLeads = estimateLeads.map((lead) => ({
+      _id: `estimate:${lead._id}`,
+      name: lead.name,
+      email: lead.email,
+      phone: lead.phone,
+      address: lead.address,
+      message: lead.notes,
+      serviceType: lead.service,
+      sourcePage: lead.sourcePage || lead.source || "estimate",
+      status: lead.status === "qualified" ? "contacted" : lead.status,
+      createdAt: lead.createdAt,
+      leadSource: "estimate",
+    }));
+    const combined = [...requests, ...mappedEstimateLeads].sort(
+      (a, b) =>
+        new Date(b.createdAt || 0).getTime() -
+        new Date(a.createdAt || 0).getTime()
+    );
 
-    res.json(requests);
+    res.json(combined);
   } catch (err) {
     console.error("❌ Failed to fetch requests:", err.message);
     res.status(500).json({ message: "Failed to fetch requests" });
@@ -1438,6 +1458,37 @@ router.put("/requests/:id/status", auth, onlyAdmin, async (req, res) => {
 
     if (!["new", "contacted", "won", "lost"].includes(String(status))) {
       return res.status(400).json({ message: "Invalid status" });
+    }
+
+    if (String(req.params.id).startsWith("estimate:")) {
+      const estimateId = String(req.params.id).slice("estimate:".length);
+      if (!mongoose.isValidObjectId(estimateId)) {
+        return res.status(400).json({ message: "Invalid estimate lead ID" });
+      }
+      const estimateLead = await EstimateLead.findByIdAndUpdate(
+        estimateId,
+        { $set: { status } },
+        { new: true }
+      );
+      if (!estimateLead) {
+        return res.status(404).json({ message: "Estimate lead not found" });
+      }
+      return res.json({
+        request: {
+          _id: `estimate:${estimateLead._id}`,
+          name: estimateLead.name,
+          email: estimateLead.email,
+          phone: estimateLead.phone,
+          address: estimateLead.address,
+          message: estimateLead.notes,
+          serviceType: estimateLead.service,
+          sourcePage:
+            estimateLead.sourcePage || estimateLead.source || "estimate",
+          status: estimateLead.status,
+          createdAt: estimateLead.createdAt,
+          leadSource: "estimate",
+        },
+      });
     }
 
     const request = await Request.findByIdAndUpdate(

@@ -2,7 +2,9 @@
 const express = require("express");
 const router = express.Router();
 const Request = require("../models/Request");
-const { sendTx } = require("../utils/emailService");
+const {
+  sendAdminLeadNotification,
+} = require("../utils/adminLeadNotification");
 
 function clean(v) {
   return String(v || "").trim();
@@ -10,6 +12,17 @@ function clean(v) {
 
 function normalizeEmail(v) {
   return clean(v).toLowerCase();
+}
+
+function serviceLabel(serviceType) {
+  return (
+    {
+      address_request: "Address Request",
+      on_demand: "On-Demand Service",
+      general_contractor: "General Contractor",
+      home_improvement: "Home Improvement",
+    }[serviceType] || serviceType
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -45,6 +58,32 @@ router.post("/", async (req, res) => {
 
     await newRequest.save();
     console.log("✅ Address request saved:", newRequest._id);
+
+    try {
+      await sendAdminLeadNotification({
+        leadId: String(newRequest._id),
+        leadType: "Address Request",
+        service: serviceLabel(newRequest.serviceType),
+        name: newRequest.name,
+        phone: newRequest.phone,
+        email: newRequest.email,
+        address: [
+          newRequest.address,
+          newRequest.city,
+          newRequest.state,
+          newRequest.zip,
+        ]
+          .filter(Boolean)
+          .join(", "),
+        sourcePage: "/api/requests",
+        submittedAt: newRequest.createdAt,
+      });
+    } catch (emailErr) {
+      console.error("⚠️ Address request notification failed; lead was saved:", {
+        requestId: newRequest._id,
+        message: emailErr.message,
+      });
+    }
 
     res.status(201).json({ message: "Request received" });
   } catch (err) {
@@ -104,30 +143,30 @@ router.post("/public", async (req, res) => {
       sourcePage,
     });
 
-    const adminTo =
-      process.env.MAIL_ADMIN ||
-      process.env.MAIL_REPLY_TO ||
-      "getfixter@gmail.com";
-
-    await sendTx(
-      "service_request_admin",
-      adminTo,
-      {
+    try {
+      await sendAdminLeadNotification({
+        leadId: String(newRequest._id),
+        leadType: serviceLabel(serviceType),
+        service: serviceLabel(serviceType),
         name,
         email,
         phone,
         message,
-        serviceType,
         sourcePage,
-        requestId: String(newRequest._id),
-      },
-      { bccAdmin: false }
-    );
-
-    console.log("✅ Public service request email sent to admin:", {
-      requestId: newRequest._id,
-      adminTo,
-    });
+        submittedAt: newRequest.createdAt,
+      });
+      console.log("✅ Public service request notification sent:", {
+        requestId: newRequest._id,
+      });
+    } catch (emailErr) {
+      console.error(
+        "⚠️ Public service request notification failed; lead was saved:",
+        {
+          requestId: newRequest._id,
+          message: emailErr.message,
+        }
+      );
+    }
 
     return res.status(201).json({
       success: true,

@@ -6,6 +6,9 @@ const Lead = require("../models/Lead");
 const Conversation = require("../models/Conversation");
 const knowledge = require("../data/chatbotKnowledge");
 const { getNextAvailableSlot } = require("../utils/getNextAvailableSlot");
+const {
+  sendAdminLeadNotification,
+} = require("../utils/adminLeadNotification");
 
 // --- CONFIG ---
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
@@ -99,6 +102,13 @@ router.post("/message", async (req, res) => {
     // 1️⃣ Save lead if provided
     let leadDoc = null;
     if (lead && (lead.email || lead.phone)) {
+      const identity = [
+        lead.email ? { email: String(lead.email).trim().toLowerCase() } : null,
+        lead.phone ? { phone: String(lead.phone).trim() } : null,
+      ].filter(Boolean);
+      const existingLead = identity.length
+        ? await Lead.findOne({ $or: identity }).lean()
+        : null;
       const countyGuess = (lead.county || lead.city || "").toLowerCase();
       let detectedCounty = null;
       let status = "engaged";
@@ -108,7 +118,7 @@ router.post("/message", async (req, res) => {
       if (!detectedCounty) status = "waitlist";
 
       leadDoc = await Lead.findOneAndUpdate(
-        { $or: [{ email: lead.email }, { phone: lead.phone }] },
+        { $or: identity },
         {
           $set: {
             ...lead,
@@ -120,6 +130,35 @@ router.post("/message", async (req, res) => {
         },
         { upsert: true, new: true }
       );
+
+      if (!existingLead) {
+        try {
+          await sendAdminLeadNotification({
+            leadId: String(leadDoc._id),
+            leadType: "Chatbot Lead",
+            service: "Chatbot inquiry",
+            name: leadDoc.name,
+            email: leadDoc.email,
+            phone: leadDoc.phone,
+            address: [
+              leadDoc.address_line1,
+              leadDoc.city,
+              leadDoc.state,
+              leadDoc.zip,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            message: input,
+            sourcePage: leadDoc.source || `chatbot:${channel}`,
+            submittedAt: leadDoc.createdAt,
+          });
+        } catch (emailErr) {
+          console.error("⚠️ Chatbot notification failed; lead was saved:", {
+            leadId: leadDoc._id,
+            message: emailErr.message,
+          });
+        }
+      }
     }
 
     // 2️⃣ Load or create conversation

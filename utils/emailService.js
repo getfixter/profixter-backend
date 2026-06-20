@@ -719,6 +719,7 @@ const TEMPLATES = {
     estimateLow,
     estimateHigh,
     timeline = "-",
+    budgetRange = "-",
     financing = "-",
   }) => {
     const rangeStr =
@@ -728,8 +729,12 @@ const TEMPLATES = {
 
     const serviceLabel = {
       roofing:  "🏠 1-Day Roof Replacement",
+      siding: "Siding",
       bathroom: "🛁 Full Bathroom Remodeling",
       kitchen:  "🍳 Full Kitchen Remodeling",
+      basement: "Basement Finishing",
+      interior: "Interior Renovations",
+      other: "Other Larger Project",
     }[service] || service;
 
     return {
@@ -753,6 +758,7 @@ const TEMPLATES = {
           <tr><td style="padding:3px 0;"><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>
           <tr><td style="padding:3px 0;"><strong>Preferred Contact:</strong>&nbsp;${escapeHtml(contactPref)}</td></tr>
           <tr><td style="padding:3px 0;"><strong>Timeline:</strong>&nbsp;${escapeHtml(timeline || "-")}</td></tr>
+          <tr><td style="padding:3px 0;"><strong>Budget Range:</strong>&nbsp;${escapeHtml(budgetRange || "-")}</td></tr>
           <tr><td style="padding:3px 0;"><strong>Financing Interest:</strong>&nbsp;${escapeHtml(financing || "-")}</td></tr>
         </table>
 
@@ -1048,6 +1054,7 @@ async function sendRaw({
   from = FROM,
   replyTo = REPLY_TO,
   headers = {},
+  attachments,
 }) {
   const cleanTo = String(to || "").trim().toLowerCase();
 
@@ -1065,6 +1072,7 @@ async function sendRaw({
     replyTo,
     headers: { "X-Entity-Ref-ID": Date.now().toString(), ...headers },
   };
+  if (attachments?.length) mail.attachments = attachments;
 
   if (bccAdmin && ADMIN) mail.bcc = ADMIN;
 
@@ -1136,6 +1144,7 @@ async function sendPromoMarkdown(
 }
 
 module.exports = {
+  sendRaw,
   sendTx,
   sendPromo,
   sendPromoMarkdown,
@@ -1143,5 +1152,6 @@ module.exports = {
   formatNYCTime,
   transporter,
   FROM,
+  REPLY_TO,
   ADMIN,
 };

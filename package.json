@@ -21,7 +21,8 @@
     "mongo:transactions:probe": "node scripts/probe_mongo_transactions.js",
     "test:booking-reminders": "node scripts/test_booking_reminder_policy.js",
     "test:customer-emails": "node scripts/test_customer_email_templates.js",
-    "test:booking-review-requests": "node scripts/test_booking_review_requests.js"
+    "test:booking-review-requests": "node scripts/test_booking_review_requests.js",
+    "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

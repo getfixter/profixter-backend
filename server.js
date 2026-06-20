@@ -147,6 +147,7 @@ app.use("/api/requests", require("./routes/requests"));
 app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
+app.use("/api", require("./routes/promotionPopup"));
 app.use("/api/admin/calendar", adminCalendarShadow);
 app.use(
   "/api/admin/calendar",

@@ -4,7 +4,9 @@
 const express = require("express");
 const router = express.Router();
 const EstimateLead = require("../models/EstimateLead");
-const { sendTx } = require("../utils/emailService");
+const {
+  sendAdminLeadNotification,
+} = require("../utils/adminLeadNotification");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -22,6 +24,22 @@ function isValidEmail(email) {
 
 function isValidPhone(phone) {
   return phone.replace(/\D/g, "").length >= 10;
+}
+
+function serviceLabel(service) {
+  return (
+    {
+      roofing: "Roofing",
+      siding: "Siding",
+      roofing_siding: "Roofing and Siding",
+      both: "Roofing and Siding",
+      bathroom: "Bathroom Remodeling",
+      kitchen: "Kitchen Remodeling",
+      basement: "Basement Finishing",
+      interior: "Interior Renovations",
+      other: "Other Larger Project",
+    }[service] || service
+  );
 }
 
 // ── POST /api/estimates ───────────────────────────────────────────────────────
@@ -44,7 +62,19 @@ router.post("/", async (req, res) => {
       });
     }
 
-    if (!["roofing", "siding", "roofing_siding", "both", "bathroom", "kitchen"].includes(service)) {
+    if (
+      ![
+        "roofing",
+        "siding",
+        "roofing_siding",
+        "both",
+        "bathroom",
+        "kitchen",
+        "basement",
+        "interior",
+        "other",
+      ].includes(service)
+    ) {
       return res.status(400).json({
         success: false,
         message: "Invalid service type.",
@@ -79,6 +109,7 @@ router.post("/", async (req, res) => {
     const sourcePage  = clean(b.sourcePage) || "";
     const notes       = clean(b.notes);
     const timeline    = clean(b.timeline);
+    const budgetRange = clean(b.budgetRange);
     const financing   = clean(b.financing);
 
     const estimateLow  = typeof b.estimateLow  === "number" ? b.estimateLow  : undefined;
@@ -99,6 +130,7 @@ router.post("/", async (req, res) => {
       estimateLow,
       estimateHigh,
       timeline:  timeline  || undefined,
+      budgetRange: budgetRange || undefined,
       financing: financing || undefined,
       source,
     };
@@ -143,37 +175,33 @@ router.post("/", async (req, res) => {
     });
 
     // ── Admin notification email ───────────────────────────────────────────
-    const adminTo =
-      source === "exterior_landing"
-        ? "premiumislandconstruction@gmail.com"
-        : process.env.MAIL_ADMIN || "getfixter@gmail.com";
     try {
-      await sendTx(
-        source === "exterior_landing" ? "exterior_lead_admin" : "estimate_lead_admin",
-        adminTo,
-        {
-          leadId: String(lead._id),
-          service,
-          name,
-          phone,
-          email,
-          address,
-          contactPref,
-          bestTime,
-          sourcePage,
-          notes,
-          estimateLow,
-          estimateHigh,
-          timeline,
-          financing,
-          source,
-        },
-        { bccAdmin: false }
-      );
-      console.log("✅ Estimate admin email sent to:", adminTo);
+      await sendAdminLeadNotification({
+        leadId: String(lead._id),
+        leadType: serviceLabel(service),
+        service: serviceLabel(service),
+        name,
+        phone,
+        email,
+        address,
+        contactPref,
+        sourcePage: sourcePage || source,
+        notes,
+        timeline,
+        budgetRange,
+        submittedAt: lead.createdAt,
+      });
+      console.log("✅ Estimate admin notification sent:", {
+        leadId: lead._id,
+        service,
+      });
     } catch (emailErr) {
       // Never let email failure kill the lead save response
-      console.error("⚠️ Estimate admin email failed (lead was saved):", emailErr.message);
+      console.error("⚠️ Estimate admin notification failed; lead was saved:", {
+        leadId: lead._id,
+        service,
+        message: emailErr.message,
+      });
     }
 
     return res.status(201).json({ success: true, message: "Estimate received" });

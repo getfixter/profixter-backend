@@ -8,6 +8,9 @@ const { normalizeEmail, normalizePhone } = require("../utils/identity");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
+const {
+  sendAdminLeadNotification,
+} = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const router = express.Router();
@@ -277,19 +280,46 @@ router.post("/register", async (req, res) => {
         { name: user.name || user.email.split("@")[0], userId: user.userId },
         { bccAdmin: false }
       );
-
-      await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
-        subject: `New Registration: ${user.name}`,
-        html: `
-          <h2>New Customer Registered</h2>
-          <p><strong>Name:</strong> ${user.name}</p>
-          <p><strong>Email:</strong> ${user.email}</p>
-          <p><strong>Phone:</strong> ${user.phone}</p>
-          <p><strong>ID:</strong> ${user.userId}</p>
-          <p><strong>Address:</strong> ${user.address}, ${user.city}, ${user.state} ${user.zip}</p>
-        `,
+    } catch (emailErr) {
+      console.error("Welcome email failed after registration:", {
+        userId: user.userId,
+        message: emailErr.message,
       });
-    } catch (_) {}
+    }
+
+    try {
+      const primaryAddress = user.addresses?.[0];
+      await sendAdminLeadNotification({
+        leadId: String(user._id),
+        leadType: "Website Registration",
+        service: "Customer account registration",
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        address: primaryAddress
+          ? [
+              primaryAddress.line1,
+              primaryAddress.city,
+              primaryAddress.state,
+              primaryAddress.zip,
+            ]
+              .filter(Boolean)
+              .join(", ")
+          : [user.address, user.city, user.state, user.zip]
+              .filter(Boolean)
+              .join(", "),
+        sourcePage: "/signup",
+        submittedAt: user.createdAt,
+      });
+    } catch (emailErr) {
+      console.error(
+        "Registration admin notification failed; user was saved:",
+        {
+          userId: user.userId,
+          message: emailErr.message,
+        }
+      );
+    }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
@@ -451,6 +481,27 @@ router.post("/google", async (req, res) => {
         await mail.sendTx("welcome", user.email, { name: user.name });
       } catch (emailError) {
         console.log("Welcome email failed:", emailError.message);
+      }
+
+      try {
+        await sendAdminLeadNotification({
+          leadId: String(user._id),
+          leadType: "Google Registration",
+          service: "Customer account registration",
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          sourcePage: "/signin",
+          submittedAt: user.createdAt,
+        });
+      } catch (emailError) {
+        console.error(
+          "Google registration admin notification failed; user was saved:",
+          {
+            userId: user.userId,
+            message: emailError.message,
+          }
+        );
       }
     }
 
