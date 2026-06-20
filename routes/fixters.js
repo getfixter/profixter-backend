@@ -1,7 +1,14 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const mongoose = require("mongoose");
+const moment = require("moment-timezone");
 const auth = require("../middleware/auth");
 const User = require("../models/User");
+const Booking = require("../models/Booking");
+const TechnicianTimeOff = require("../models/TechnicianTimeOff");
+const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailabilityTemplate");
+const AvailabilityOverride = require("../models/AvailabilityOverride");
+const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 
@@ -21,7 +28,36 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
-function fixterDTO(user) {
+function normalizeBookingStatus(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+}
+
+const COMPLETED_BOOKING_STATUSES = new Set(["completed", "done"]);
+const DELETE_SAFE_BOOKING_STATUSES = new Set([
+  "completed",
+  "done",
+  "cancelled",
+  "canceled",
+  "failed",
+  "no-show",
+  "noshow",
+]);
+
+function bookingBlocksFixterDeletion(booking) {
+  return !DELETE_SAFE_BOOKING_STATUSES.has(
+    normalizeBookingStatus(booking?.status)
+  );
+}
+
+function localDate(value) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(new Date(value));
+}
+
+function fixterDTO(user, reporting = {}) {
   return {
     id: String(user._id),
     firstName: user.firstName || "",
@@ -35,9 +71,88 @@ function fixterDTO(user) {
     isDefaultFixter: !!user.isDefaultFixter,
     employeeAvailabilityStatus:
       user.employeeAvailabilityStatus || "Available",
+    completedBookingsCount: reporting.completedBookingsCount || 0,
+    offDaysSummary: reporting.offDaysSummary || {
+      upcomingCount: 0,
+      pastCount: 0,
+      recent: [],
+    },
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
+}
+
+function reportingByFixter({ bookings, timeOff, now = new Date() }) {
+  const today = localDate(now);
+  const todayStart = moment
+    .tz(today, "YYYY-MM-DD", "America/New_York")
+    .startOf("day")
+    .toDate();
+  const completedCounts = new Map();
+  for (const booking of bookings) {
+    if (!COMPLETED_BOOKING_STATUSES.has(normalizeBookingStatus(booking.status))) {
+      continue;
+    }
+    const id = String(booking.assignedFixterId);
+    completedCounts.set(id, (completedCounts.get(id) || 0) + 1);
+  }
+
+  const offDaysByFixter = new Map();
+  for (const entry of timeOff) {
+    const id = String(entry.technicianId);
+    const rows = offDaysByFixter.get(id) || [];
+    rows.push(entry);
+    offDaysByFixter.set(id, rows);
+  }
+
+  return (fixterId) => {
+    const rows = (offDaysByFixter.get(String(fixterId)) || []).sort(
+      (left, right) =>
+        new Date(right.startAt).getTime() - new Date(left.startAt).getTime()
+    );
+    const upcomingCount = rows.filter(
+      (entry) =>
+        entry.status === "approved" &&
+        new Date(entry.endAt) > todayStart
+    ).length;
+    const pastCount = rows.filter(
+      (entry) => new Date(entry.endAt) <= todayStart
+    ).length;
+    return {
+      completedBookingsCount:
+        completedCounts.get(String(fixterId)) || 0,
+      offDaysSummary: {
+        upcomingCount,
+        pastCount,
+        recent: rows.slice(0, 5).map((entry) => ({
+          date: localDate(entry.startAt),
+          endDate: localDate(
+            entry.allDay
+              ? new Date(new Date(entry.endAt).getTime() - 1)
+              : entry.endAt
+          ),
+          reason: entry.reason || entry.type || "",
+          type: entry.type,
+          status: entry.status,
+        })),
+      },
+    };
+  };
+}
+
+async function loadFixtersWithReporting() {
+  const rows = await User.find({ role: "employee" }).sort({ createdAt: -1 });
+  const ids = rows.map((row) => row._id);
+  const [bookings, timeOff] = await Promise.all([
+    Booking.find({ assignedFixterId: { $in: ids } })
+      .select("assignedFixterId status")
+      .lean(),
+    TechnicianTimeOff.find({ technicianId: { $in: ids } })
+      .select("technicianId type startAt endAt allDay reason status")
+      .lean(),
+  ]);
+  const reportingFor = reportingByFixter({ bookings, timeOff });
+  return rows.map((row) => fixterDTO(row, reportingFor(row._id)));
 }
 
 async function nextUserId() {
@@ -60,8 +175,7 @@ function normalizePhone(value) {
 router.use(auth, ...adminOnly);
 
 router.get("/", async (_req, res) => {
-  const rows = await User.find({ role: "employee" }).sort({ createdAt: -1 });
-  return res.json({ fixters: rows.map(fixterDTO) });
+  return res.json({ fixters: await loadFixtersWithReporting() });
 });
 
 router.post("/", async (req, res) => {
@@ -220,12 +334,71 @@ router.patch("/:id/default", async (req, res) => {
         { $set: { isDefaultFixter: true } }
       );
     }
-    const rows = await User.find({ role: "employee" }).sort({ createdAt: -1 });
-    return res.json({ fixters: rows.map(fixterDTO) });
+    return res.json({ fixters: await loadFixtersWithReporting() });
   } catch (error) {
     console.error("Set default Fixter failed:", error);
     return res.status(500).json({ message: "Failed to update default Fixter" });
   }
 });
 
+router.delete("/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ message: "Fixter not found" });
+    }
+    const user = await User.findOne({
+      _id: req.params.id,
+      role: "employee",
+    });
+    if (!user) return res.status(404).json({ message: "Fixter not found" });
+    if (user.isDefaultFixter) {
+      return res.status(409).json({
+        message:
+          "Remove this fixter as the default fixter before deleting.",
+      });
+    }
+
+    const futureBookings = await Booking.find({
+      assignedFixterId: user._id,
+      date: { $gte: new Date() },
+    })
+      .select("_id date status")
+      .lean();
+    const activeFutureBookings = futureBookings.filter(
+      bookingBlocksFixterDeletion
+    );
+    if (activeFutureBookings.length) {
+      return res.status(409).json({
+        message:
+          "This fixter has upcoming assigned bookings. Reassign or cancel them before deleting.",
+        upcomingBookingCount: activeFutureBookings.length,
+      });
+    }
+
+    await Promise.all([
+      TechnicianAvailabilityTemplate.deleteMany({
+        technicianId: user._id,
+      }),
+      TechnicianTimeOff.deleteMany({ technicianId: user._id }),
+      AvailabilityOverride.deleteMany({
+        scopeType: "technician",
+        technicianId: user._id,
+      }),
+      CapacityOverride.deleteMany({
+        scopeType: "technician",
+        technicianId: user._id,
+      }),
+    ]);
+    await User.deleteOne({ _id: user._id, role: "employee" });
+    return res.json({ deleted: true, fixterId: String(user._id) });
+  } catch (error) {
+    console.error("Delete Fixter failed:", error);
+    return res.status(500).json({ message: "Failed to delete Fixter" });
+  }
+});
+
 module.exports = router;
+
+module.exports.normalizeBookingStatus = normalizeBookingStatus;
+module.exports.reportingByFixter = reportingByFixter;
+module.exports.bookingBlocksFixterDeletion = bookingBlocksFixterDeletion;
