@@ -169,7 +169,7 @@ app.use("/api/estimates", require("./routes/estimates"));
 
 
 /* ================= Weekly nudge CRON ================= */
-if (process.env.WEEKLY_NUDGE_ENABLED !== "false") {
+if (process.env.WEEKLY_NUDGE_ENABLED === "true") {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const chunk = (arr, size) =>
     arr.reduce((a, _, i) => (i % size ? a : [...a, arr.slice(i, i + size)]), []);
@@ -208,7 +208,7 @@ if (process.env.WEEKLY_NUDGE_ENABLED !== "false") {
 /* ===================================================== */
 
 /* ================= Chatbot follow-ups CRON (SES templates) ================= */
-if (process.env.CHATBOT_FOLLOWUPS_ENABLED !== "false") {
+if (process.env.CHATBOT_FOLLOWUPS_ENABLED === "true") {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const safeFrom = process.env.MAIL_ADMIN || "getfixter@gmail.com"; // your SES sender
 
@@ -272,7 +272,7 @@ if (process.env.CHATBOT_FOLLOWUPS_ENABLED !== "false") {
 
 
 /* ================= Non-subscriber nurture sequence ================= */
-if (process.env.NURTURE_ENABLED !== "false") {
+if (process.env.NURTURE_ENABLED === "true") {
   const NURTURE_SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Runs hourly at :45. Sends up to 200 eligible users per step per run.

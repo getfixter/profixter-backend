@@ -67,6 +67,8 @@ const BookingSchema = new mongoose.Schema({
   // ✅ NEW: reminder tracking (safe + helps avoid duplicates)
   reminder24hQueuedAt: { type: Date },
   reminder24hSentAt:   { type: Date },
+  reminder24hSkippedAt: { type: Date },
+  reminder24hSkipReason: { type: String, default: "" },
   reminder60mQueuedAt: { type: Date },
   reminder60mSentAt:   { type: Date },
 

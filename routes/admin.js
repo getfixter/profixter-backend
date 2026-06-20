@@ -18,6 +18,10 @@ const {
   logBookingChanges,
 } = require("../utils/bookingHistory");
 const {
+  evaluate24HourReminder,
+  evaluate60MinuteReminder,
+} = require("../utils/bookingReminderPolicy");
+const {
   cancelBookingWithReservation,
   findEligibleTechnicians,
   moveReservationForBooking,
@@ -762,6 +766,61 @@ router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), a
   }
 });
 
+router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) => {
+  try {
+    const now = new Date();
+    const bookings = await Booking.find({
+      status: /^confirmed$/i,
+      date: { $gte: now },
+    })
+      .sort({ date: 1 })
+      .limit(20)
+      .select(
+        "_id bookingNumber status date email reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason reminder60mQueuedAt reminder60mSentAt"
+      )
+      .lean();
+
+    return res.json({
+      serverTime: now.toISOString(),
+      newYorkTime: now.toLocaleString("en-US", {
+        timeZone: "America/New_York",
+        dateStyle: "full",
+        timeStyle: "long",
+      }),
+      bookings: bookings.map((booking) => {
+        const reminder24h = evaluate24HourReminder(booking, now);
+        const reminder60m = evaluate60MinuteReminder(booking, now);
+        const bookingStartMs = new Date(booking.date).getTime();
+        const hoursUntilAppointment = Number.isFinite(bookingStartMs)
+          ? Number(
+              ((bookingStartMs - now.getTime()) / (60 * 60 * 1000)).toFixed(2)
+            )
+          : null;
+        return {
+          bookingId: String(booking._id),
+          bookingNumber: booking.bookingNumber,
+          status: booking.status,
+          startDateTime: booking.date,
+          hoursUntilAppointment,
+          reminder24hQueuedAt: booking.reminder24hQueuedAt || null,
+          reminder24hSentAt: booking.reminder24hSentAt || null,
+          reminder24hSkippedAt: booking.reminder24hSkippedAt || null,
+          reminder24hSkipReason: booking.reminder24hSkipReason || "",
+          reminder24hEligible: reminder24h.eligible,
+          reminder24hReason: reminder24h.reason,
+          reminder60mQueuedAt: booking.reminder60mQueuedAt || null,
+          reminder60mSentAt: booking.reminder60mSentAt || null,
+          reminder60mEligible: reminder60m.eligible,
+          reminder60mReason: reminder60m.reason,
+        };
+      }),
+    });
+  } catch (error) {
+    console.error("Reminder diagnostics failed:", error);
+    return res.status(500).json({ message: "Failed to load reminder diagnostics" });
+  }
+});
+
 async function resolveAssignment(assignedFixterId) {
   if (assignedFixterId === "" || assignedFixterId === null) {
     return {
@@ -942,6 +1001,8 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
       ) {
         booking.reminder24hQueuedAt = undefined;
         booking.reminder24hSentAt = undefined;
+        booking.reminder24hSkippedAt = undefined;
+        booking.reminder24hSkipReason = "";
         booking.reminder60mQueuedAt = undefined;
         booking.reminder60mSentAt = undefined;
       }
@@ -1093,6 +1154,8 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
       if (!useReservationEngine) booking.date = d;
       booking.reminder24hQueuedAt = undefined;
       booking.reminder24hSentAt = undefined;
+      booking.reminder24hSkippedAt = undefined;
+      booking.reminder24hSkipReason = "";
       booking.reminder60mQueuedAt = undefined;
       booking.reminder60mSentAt = undefined;
     }
@@ -1133,6 +1196,8 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
       if (parsedDate) {
         booking.reminder24hQueuedAt = undefined;
         booking.reminder24hSentAt = undefined;
+        booking.reminder24hSkippedAt = undefined;
+        booking.reminder24hSkipReason = "";
         booking.reminder60mQueuedAt = undefined;
         booking.reminder60mSentAt = undefined;
       }

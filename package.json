@@ -18,7 +18,8 @@
     "reservations:backfill:dry": "node scripts/backfill_booking_reservations.js",
     "reservations:backfill": "node scripts/backfill_booking_reservations.js --write",
     "reservations:audit": "node scripts/audit_booking_reservations.js",
-    "mongo:transactions:probe": "node scripts/probe_mongo_transactions.js"
+    "mongo:transactions:probe": "node scripts/probe_mongo_transactions.js",
+    "test:booking-reminders": "node scripts/test_booking_reminder_policy.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

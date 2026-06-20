@@ -1,9 +1,16 @@
-// backend/jobs/bookingReminders.js
 const cron = require("node-cron");
 const Booking = require("../models/Booking");
 const User = require("../models/User");
 const { sendTx } = require("../utils/emailService");
-
+const {
+  REMINDER_24H_CATCHUP_MIN_MS,
+  REMINDER_24H_MS,
+  REMINDER_60M_MS,
+  REMINDER_LOCK_STALE_MS,
+  REMINDER_WINDOW_MS,
+  evaluate24HourReminder,
+  evaluate60MinuteReminder,
+} = require("../utils/bookingReminderPolicy");
 const {
   createOrUpdateContact,
   updateContactFields,
@@ -11,9 +18,11 @@ const {
   addTag,
 } = require("../utils/ghlContact");
 
-function buildAddress(b) {
-  return [b.address, b.city, b.state, b.zip]
-    .map((v) => String(v || "").trim())
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function buildAddress(booking) {
+  return [booking.address, booking.city, booking.state, booking.zip]
+    .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(", ");
 }
@@ -22,116 +31,419 @@ function safeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
-function bookingLogShape(b) {
+function bookingLogShape(booking) {
+  const email = safeEmail(booking.email);
   return {
-    bookingId: String(b._id || ""),
-    bookingNumber: b.bookingNumber || "",
-    userId: b.userId || "",
-    name: b.name || "",
-    email: b.email || "",
-    phone: b.phone || "",
-    service: b.service || "",
-    date: b.date || null,
-    address: buildAddress(b),
+    bookingId: String(booking._id || ""),
+    bookingNumber: booking.bookingNumber || "",
+    status: booking.status || "",
+    date: booking.date || null,
+    emailDomain: email.includes("@") ? email.split("@").pop() : "",
   };
 }
 
-function errorDetails(err) {
+function errorDetails(error) {
   return {
-    message: err?.message || "Unknown error",
-    stack: err?.stack || "",
-    name: err?.name || "",
-    code: err?.code || "",
-    response: err?.response || "",
-    responseCode: err?.responseCode || "",
-    command: err?.command || "",
+    message: error?.message || "Unknown error",
+    name: error?.name || "",
+    code: error?.code || "",
+    responseCode: error?.responseCode || "",
+    command: error?.command || "",
   };
 }
 
-function isConfirmedStatus(status) {
-  return String(status || "").trim().toLowerCase() === "confirmed";
+function emptyField(field) {
+  return {
+    $or: [{ [field]: { $exists: false } }, { [field]: null }],
+  };
 }
 
-function isTerminalStatus(status) {
-  return [
-    "canceled",
-    "cancelled",
-    "completed",
-    "complete",
-    "done",
-    "no-show",
-    "noshow",
-    "failed",
-  ].includes(String(status || "").trim().toLowerCase());
+function availableLock(field, staleBefore) {
+  return {
+    $or: [
+      { [field]: { $exists: false } },
+      { [field]: null },
+      { [field]: { $lte: staleBefore } },
+    ],
+  };
 }
 
 async function sendReminderEmail({ templateKey, booking, vars }) {
   const to = safeEmail(booking.email);
-
   if (!to) {
     throw new Error(`Missing customer email for booking ${booking._id}`);
   }
 
-  console.log(`📧 Sending ${templateKey} email`, {
-    to,
-    ...bookingLogShape(booking),
-  });
-
+  console.log(`Sending ${templateKey} email`, bookingLogShape(booking));
   const info = await sendTx(templateKey, to, vars);
-
-  console.log(`✅ ${templateKey} email sent`, {
-    to,
-    messageId: info?.messageId || "",
+  console.log(`${templateKey} email sent`, {
     ...bookingLogShape(booking),
+    messageId: info?.messageId || "",
   });
-
   return info;
 }
 
 async function sendReminderSmsTag({ booking, tag }) {
   const user = await User.findOne({ userId: booking.userId }).lean();
-
   const contactId = await createOrUpdateContact({
     name: booking.name || user?.name,
     email: booking.email || user?.email,
     phone: booking.phone || user?.phone,
   });
-
   if (!contactId) {
-    throw new Error(
-      `Could not create/update GHL contact for booking ${booking._id}`
-    );
+    throw new Error(`Could not sync GHL contact for booking ${booking._id}`);
   }
 
   const pretty = formatBookingDateTime(booking.date);
-
   const updated = await updateContactFields(contactId, [
-    {
-      key: "booking_datetime_pretty",
-      value: pretty,
-    },
+    { key: "booking_datetime_pretty", value: pretty },
   ]);
-
   if (!updated) {
-    throw new Error(
-      `Failed updating GHL custom fields for contact ${contactId} booking ${booking._id}`
-    );
+    throw new Error(`Failed updating GHL fields for booking ${booking._id}`);
+  }
+  if (!(await addTag(contactId, tag))) {
+    throw new Error(`Failed adding GHL tag ${tag} for booking ${booking._id}`);
   }
 
-  const tagAdded = await addTag(contactId, tag);
-
-  if (!tagAdded) {
-    throw new Error(
-      `Failed adding GHL tag ${tag} for contact ${contactId} booking ${booking._id}`
-    );
-  }
-
-  console.log(`✅ GHL reminder tag added`, {
-    tag,
-    contactId,
-    pretty,
+  console.log("GHL reminder tag added", {
     ...bookingLogShape(booking),
+    tag,
   });
+}
+
+async function process24HourReminders(now, stats) {
+  const catchupFloor = new Date(
+    now.getTime() + REMINDER_24H_CATCHUP_MIN_MS
+  );
+  const windowCeiling = new Date(
+    now.getTime() + REMINDER_24H_MS + REMINDER_WINDOW_MS
+  );
+  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
+  const notSent = emptyField("reminder24hSentAt");
+  const notSkipped = emptyField("reminder24hSkippedAt");
+  const lockAvailable = availableLock("reminder24hQueuedAt", staleBefore);
+
+  const candidates = await Booking.find({
+    status: /^confirmed$/i,
+    date: { $gt: catchupFloor, $lte: windowCeiling },
+    $and: [notSent, notSkipped, lockAvailable],
+  })
+    .select(
+      "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt"
+    )
+    .sort({ date: 1 })
+    .limit(100)
+    .lean();
+
+  stats.scanned24 = candidates.length;
+  const staleLocks = candidates.filter(
+    (booking) =>
+      booking.reminder24hQueuedAt &&
+      new Date(booking.reminder24hQueuedAt) <= staleBefore
+  );
+  console.log("24h reminder candidates found", {
+    catchupFloor: catchupFloor.toISOString(),
+    windowCeiling: windowCeiling.toISOString(),
+    candidates: candidates.length,
+    staleLocksRecoverable: staleLocks.length,
+  });
+  if (staleLocks.length) {
+    console.warn("24h reminder lock recovery", {
+      bookings: staleLocks.map(bookingLogShape),
+    });
+  }
+
+  for (const booking of candidates) {
+    const eligibility = evaluate24HourReminder(booking, now);
+    if (!eligibility.eligible) {
+      stats.notDue24++;
+      console.log("24h reminder skipped", {
+        ...bookingLogShape(booking),
+        reason: eligibility.reason,
+      });
+      continue;
+    }
+
+    const lockTime = new Date();
+    const claim = await Booking.updateOne(
+      {
+        _id: booking._id,
+        status: /^confirmed$/i,
+        date: { $gt: catchupFloor, $lte: windowCeiling },
+        $and: [notSent, notSkipped, lockAvailable],
+      },
+      { $set: { reminder24hQueuedAt: lockTime } }
+    );
+    if (claim.modifiedCount !== 1) {
+      stats.locked24++;
+      console.log("24h reminder skipped", {
+        ...bookingLogShape(booking),
+        reason: "claim_lost_or_booking_changed",
+      });
+      continue;
+    }
+
+    stats.matched24++;
+    try {
+      const stillConfirmed = await Booking.exists({
+        _id: booking._id,
+        status: /^confirmed$/i,
+        reminder24hQueuedAt: lockTime,
+        $and: [notSent, notSkipped],
+      });
+      if (!stillConfirmed) {
+        await Booking.updateOne(
+          { _id: booking._id, reminder24hQueuedAt: lockTime },
+          { $unset: { reminder24hQueuedAt: 1 } }
+        );
+        stats.notDue24++;
+        console.log("24h reminder skipped", {
+          ...bookingLogShape(booking),
+          reason: "booking_changed_after_claim",
+        });
+        continue;
+      }
+
+      console.log("Processing 24h reminder", {
+        ...bookingLogShape(booking),
+        mode: eligibility.mode,
+      });
+      await sendReminderEmail({
+        templateKey: "booking_reminder_24h",
+        booking,
+        vars: {
+          name: booking.name || "there",
+          bookingNumber: booking.bookingNumber,
+          date: booking.date,
+          service: booking.service,
+          address: buildAddress(booking),
+        },
+      });
+
+      await Booking.updateOne(
+        { _id: booking._id, reminder24hQueuedAt: lockTime },
+        {
+          $set: { reminder24hSentAt: new Date() },
+          $unset: { reminder24hQueuedAt: 1 },
+        }
+      );
+
+      try {
+        await sendReminderSmsTag({ booking, tag: "reminder_24h" });
+      } catch (error) {
+        console.warn("24h GHL tag failed after email sent", {
+          booking: bookingLogShape(booking),
+          error: errorDetails(error),
+        });
+      }
+
+      stats.sent24++;
+      console.log("24h reminder sent success", {
+        ...bookingLogShape(booking),
+        mode: eligibility.mode,
+      });
+      await sleep(80);
+    } catch (error) {
+      await Booking.updateOne(
+        { _id: booking._id, reminder24hQueuedAt: lockTime },
+        { $unset: { reminder24hQueuedAt: 1 } }
+      );
+      stats.failed24++;
+      console.warn("24h reminder send failed", {
+        booking: bookingLogShape(booking),
+        error: errorDetails(error),
+      });
+    }
+  }
+
+  const tooLate = await Booking.find({
+    status: /^confirmed$/i,
+    date: { $gt: now, $lte: catchupFloor },
+    $and: [notSent, notSkipped],
+  })
+    .select("_id bookingNumber status date email")
+    .limit(100)
+    .lean();
+
+  for (const booking of tooLate) {
+    const eligibility = evaluate24HourReminder(booking, now);
+    if (!eligibility.shouldMarkSkipped) continue;
+    const result = await Booking.updateOne(
+      {
+        _id: booking._id,
+        status: /^confirmed$/i,
+        $and: [notSent, notSkipped],
+      },
+      {
+        $set: {
+          reminder24hSkippedAt: new Date(),
+          reminder24hSkipReason: eligibility.reason,
+        },
+        $unset: { reminder24hQueuedAt: 1 },
+      }
+    );
+    if (result.modifiedCount === 1) {
+      console.log("24h reminder skipped", {
+        ...bookingLogShape(booking),
+        reason: eligibility.reason,
+      });
+    }
+  }
+}
+
+async function process60MinuteReminders(now, stats) {
+  const from = new Date(now.getTime() - REMINDER_WINDOW_MS);
+  const to = new Date(
+    now.getTime() + REMINDER_60M_MS + REMINDER_WINDOW_MS
+  );
+  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
+  const notSent = emptyField("reminder60mSentAt");
+  const lockAvailable = availableLock("reminder60mQueuedAt", staleBefore);
+
+  const candidates = await Booking.find({
+    status: /^confirmed$/i,
+    date: { $gte: from, $lte: to },
+    $and: [notSent, lockAvailable],
+  })
+    .select(
+      "status userId name email phone bookingNumber date service address city state zip reminder60mQueuedAt reminder60mSentAt"
+    )
+    .limit(50)
+    .lean();
+
+  stats.scanned60 = candidates.length;
+  const staleLocks = candidates.filter(
+    (booking) =>
+      booking.reminder60mQueuedAt &&
+      new Date(booking.reminder60mQueuedAt) <= staleBefore
+  );
+  console.log("60m reminder candidates found", {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    candidates: candidates.length,
+    staleLocksRecoverable: staleLocks.length,
+  });
+  if (staleLocks.length) {
+    console.warn("60m reminder lock recovery", {
+      bookings: staleLocks.map(bookingLogShape),
+    });
+  }
+
+  for (const booking of candidates) {
+    const eligibility = evaluate60MinuteReminder(booking, now);
+    if (!eligibility.eligible) {
+      stats.notDue60++;
+      console.log("60m reminder skipped", {
+        ...bookingLogShape(booking),
+        reason: eligibility.reason,
+      });
+      continue;
+    }
+
+    const lockTime = new Date();
+    const claim = await Booking.updateOne(
+      {
+        _id: booking._id,
+        status: /^confirmed$/i,
+        date: { $gte: from, $lte: to },
+        $and: [notSent, lockAvailable],
+      },
+      { $set: { reminder60mQueuedAt: lockTime } }
+    );
+    if (claim.modifiedCount !== 1) {
+      stats.locked60++;
+      continue;
+    }
+
+    stats.matched60++;
+    try {
+      const stillConfirmed = await Booking.exists({
+        _id: booking._id,
+        status: /^confirmed$/i,
+        reminder60mQueuedAt: lockTime,
+        $and: [notSent],
+      });
+      if (!stillConfirmed) {
+        await Booking.updateOne(
+          { _id: booking._id, reminder60mQueuedAt: lockTime },
+          { $unset: { reminder60mQueuedAt: 1 } }
+        );
+        stats.notDue60++;
+        continue;
+      }
+
+      console.log("Processing 60m reminder", bookingLogShape(booking));
+      await sendReminderEmail({
+        templateKey: "booking_reminder_60m",
+        booking,
+        vars: {
+          name: booking.name || "there",
+          date: booking.date,
+        },
+      });
+
+      await Booking.updateOne(
+        { _id: booking._id, reminder60mQueuedAt: lockTime },
+        {
+          $set: { reminder60mSentAt: new Date() },
+          $unset: { reminder60mQueuedAt: 1 },
+        }
+      );
+
+      try {
+        await sendReminderSmsTag({ booking, tag: "reminder_60m" });
+      } catch (error) {
+        console.warn("60m GHL tag failed after email sent", {
+          booking: bookingLogShape(booking),
+          error: errorDetails(error),
+        });
+      }
+
+      stats.sent60++;
+      console.log("60m reminder sent success", bookingLogShape(booking));
+      await sleep(80);
+    } catch (error) {
+      await Booking.updateOne(
+        { _id: booking._id, reminder60mQueuedAt: lockTime },
+        { $unset: { reminder60mQueuedAt: 1 } }
+      );
+      stats.failed60++;
+      console.warn("60m reminder send failed", {
+        booking: bookingLogShape(booking),
+        error: errorDetails(error),
+      });
+    }
+  }
+}
+
+async function runBookingReminderCycle(now = new Date()) {
+  const stats = {
+    scanned24: 0,
+    matched24: 0,
+    notDue24: 0,
+    locked24: 0,
+    sent24: 0,
+    failed24: 0,
+    scanned60: 0,
+    matched60: 0,
+    notDue60: 0,
+    locked60: 0,
+    sent60: 0,
+    failed60: 0,
+  };
+
+  console.log("Booking reminder job cycle started", {
+    serverTime: now.toISOString(),
+    newYorkTime: now.toLocaleString("en-US", {
+      timeZone: "America/New_York",
+    }),
+  });
+
+  await process24HourReminders(now, stats);
+  await process60MinuteReminders(now, stats);
+
+  console.log("Booking reminder cycle summary", stats);
+  return stats;
 }
 
 function startBookingReminders() {
@@ -140,304 +452,15 @@ function startBookingReminders() {
   cron.schedule(
     "* * * * *",
     async () => {
-      if (running) return;
+      if (running) {
+        console.log("Booking reminder cycle skipped: prior local cycle still running");
+        return;
+      }
       running = true;
-
-      const now = new Date();
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-      const WINDOW_MS = 15 * 60 * 1000;
-      const STALE_LOCK_MS = 10 * 60 * 1000;
-      const HOUR_MS = 60 * 60 * 1000;
-      const REMINDER_24H_MS = 24 * HOUR_MS;
-      const REMINDER_60M_MS = 1 * HOUR_MS;
-
-      const stats = {
-        scanned24: 0,
-        matched24: 0,
-        notDue24: 0,
-        locked24: 0,
-        sent24: 0,
-        failed24: 0,
-        scanned60: 0,
-        matched60: 0,
-        notDue60: 0,
-        locked60: 0,
-        sent60: 0,
-        failed60: 0,
-      };
-
       try {
-        // ===================== 24h reminders =====================
-        // 24h reminders are sent within a +/-15 minute window around
-        // 24 hours before the booking.
-        const from24 = new Date(now.getTime() + REMINDER_24H_MS - WINDOW_MS);
-        const to24 = new Date(now.getTime() + REMINDER_24H_MS + WINDOW_MS);
-        const staleLockBefore = new Date(now.getTime() - STALE_LOCK_MS);
-        const reminder24hNotSent = {
-          $or: [
-            { reminder24hSentAt: { $exists: false } },
-            { reminder24hSentAt: null },
-          ],
-        };
-        const reminder24hLockAvailable = {
-          $or: [
-            { reminder24hQueuedAt: { $exists: false } },
-            { reminder24hQueuedAt: null },
-            { reminder24hQueuedAt: { $lte: staleLockBefore } },
-          ],
-        };
-
-        const candidates24 = await Booking.find({
-          status: /^confirmed$/i,
-          date: { $gte: from24, $lte: to24 },
-          $and: [reminder24hNotSent, reminder24hLockAvailable],
-        })
-          .select(
-            "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt"
-          )
-          .limit(50)
-          .lean();
-
-        stats.scanned24 = candidates24.length;
-        console.log("Booking reminder 24h window", {
-          from: from24.toISOString(),
-          to: to24.toISOString(),
-          candidates: candidates24.length,
-        });
-
-        for (const b of candidates24) {
-          if (!isConfirmedStatus(b.status) || isTerminalStatus(b.status)) {
-            stats.notDue24++;
-            continue;
-          }
-
-          const msUntilBooking = new Date(b.date).getTime() - now.getTime();
-          const isIn24hWindow =
-            msUntilBooking >= REMINDER_24H_MS - WINDOW_MS &&
-            msUntilBooking <= REMINDER_24H_MS + WINDOW_MS;
-
-          if (!isIn24hWindow) {
-            stats.notDue24++;
-            continue;
-          }
-
-          stats.matched24++;
-
-          const claim = await Booking.updateOne(
-            {
-              _id: b._id,
-              status: /^confirmed$/i,
-              $and: [reminder24hNotSent, reminder24hLockAvailable],
-            },
-            { $set: { reminder24hQueuedAt: new Date() } }
-          );
-
-          if (claim.modifiedCount !== 1) {
-            stats.locked24++;
-            continue;
-          }
-
-          try {
-            console.log("⏳ Processing 24h reminder", bookingLogShape(b));
-
-            await sendReminderEmail({
-              templateKey: "booking_reminder_24h",
-              booking: b,
-              vars: {
-                name: b.name || "there",
-                bookingNumber: b.bookingNumber,
-                date: b.date,
-                service: b.service,
-                address: buildAddress(b),
-              },
-            });
-
-            // Mark sent immediately after email succeeds.
-            // This prevents duplicate emails if the GHL step below throws.
-            await Booking.updateOne(
-              { _id: b._id },
-              {
-                $set: { reminder24hSentAt: new Date() },
-                $unset: { reminder24hQueuedAt: 1 },
-              }
-            );
-
-            // GHL tag is secondary — log failures but do not retry the whole reminder.
-            try {
-              await sendReminderSmsTag({ booking: b, tag: "reminder_24h" });
-            } catch (ghlErr) {
-              console.warn("⚠️ 24h GHL tag failed (email already sent, will not retry)", {
-                booking: bookingLogShape(b),
-                error: errorDetails(ghlErr),
-              });
-            }
-
-            console.log("✅ 24h reminder finished", bookingLogShape(b));
-            stats.sent24++;
-            await sleep(80);
-          } catch (e) {
-            await Booking.updateOne(
-              { _id: b._id },
-              { $unset: { reminder24hQueuedAt: 1 } }
-            );
-
-            console.warn("❌ 24h reminder send failed", {
-              booking: bookingLogShape(b),
-              error: errorDetails(e),
-            });
-            stats.failed24++;
-          }
-        }
-
-        // ===================== 60m reminders =====================
-        const from60 = new Date(now.getTime() - WINDOW_MS);
-        const to60 = new Date(now.getTime() + REMINDER_60M_MS + WINDOW_MS);
-
-        const candidates60 = await Booking.find({
-          status: /^confirmed$/i,
-          date: { $gte: from60, $lte: to60 },
-          reminder60mSentAt: { $exists: false },
-          $or: [
-            { reminder60mQueuedAt: { $exists: false } },
-            {
-              reminder60mQueuedAt: {
-                $lte: new Date(now.getTime() - STALE_LOCK_MS),
-              },
-            },
-          ],
-        })
-          .select(
-            "status userId name email phone bookingNumber date service address city state zip reminder60mQueuedAt reminder60mSentAt"
-          )
-          .limit(50)
-          .lean();
-
-        stats.scanned60 = candidates60.length;
-
-        for (const b of candidates60) {
-          if (!isConfirmedStatus(b.status) || isTerminalStatus(b.status)) {
-            stats.notDue60++;
-            continue;
-          }
-
-          const msUntilBooking = new Date(b.date).getTime() - now.getTime();
-          const hasCrossed60mThreshold = msUntilBooking <= REMINDER_60M_MS + WINDOW_MS;
-          const notTooLate = msUntilBooking >= -WINDOW_MS;
-
-          if (!hasCrossed60mThreshold || !notTooLate) {
-            stats.notDue60++;
-            continue;
-          }
-
-          stats.matched60++;
-
-          const claim = await Booking.updateOne(
-            {
-              _id: b._id,
-              status: /^confirmed$/i,
-              reminder60mSentAt: { $exists: false },
-              $or: [
-                { reminder60mQueuedAt: { $exists: false } },
-                {
-                  reminder60mQueuedAt: {
-                    $lte: new Date(now.getTime() - STALE_LOCK_MS),
-                  },
-                },
-              ],
-            },
-            { $set: { reminder60mQueuedAt: new Date() } }
-          );
-
-          if (claim.modifiedCount !== 1) {
-            stats.locked60++;
-            continue;
-          }
-
-          try {
-            console.log("⏳ Processing 60m reminder", bookingLogShape(b));
-
-            await sendReminderEmail({
-              templateKey: "booking_reminder_60m",
-              booking: b,
-              vars: {
-                name: b.name || "there",
-                date: b.date,
-              },
-            });
-
-            // Mark sent immediately after email succeeds.
-            // This prevents duplicate emails if the GHL step below throws.
-            await Booking.updateOne(
-              { _id: b._id },
-              {
-                $set: { reminder60mSentAt: new Date() },
-                $unset: { reminder60mQueuedAt: 1 },
-              }
-            );
-
-            // GHL tag is secondary — log failures but do not retry the whole reminder.
-            try {
-              await sendReminderSmsTag({ booking: b, tag: "reminder_60m" });
-            } catch (ghlErr) {
-              console.warn("⚠️ 60m GHL tag failed (email already sent, will not retry)", {
-                booking: bookingLogShape(b),
-                error: errorDetails(ghlErr),
-              });
-            }
-
-            console.log("✅ 60m reminder finished", bookingLogShape(b));
-            stats.sent60++;
-            await sleep(80);
-          } catch (e) {
-            await Booking.updateOne(
-              { _id: b._id },
-              { $unset: { reminder60mQueuedAt: 1 } }
-            );
-
-            console.warn("❌ 60m reminder send failed", {
-              booking: bookingLogShape(b),
-              error: errorDetails(e),
-            });
-            stats.failed60++;
-          }
-        }
-
-        if (
-          stats.scanned24 ||
-          stats.scanned60 ||
-          stats.sent24 ||
-          stats.sent60 ||
-          stats.failed24 ||
-          stats.failed60
-        ) {
-          console.log("📨 Booking reminder cycle summary", {
-            nowIso: now.toISOString(),
-            nowNY: now.toLocaleString("en-US", {
-              timeZone: "America/New_York",
-            }),
-            twentyFourHour: {
-              scanned: stats.scanned24,
-              matchedWindow: stats.matched24,
-              skippedNotDue: stats.notDue24,
-              skippedLocked: stats.locked24,
-              sent: stats.sent24,
-              failed: stats.failed24,
-            },
-            sixtyMinute: {
-              scanned: stats.scanned60,
-              matchedWindow: stats.matched60,
-              skippedNotDue: stats.notDue60,
-              skippedLocked: stats.locked60,
-              sent: stats.sent60,
-              failed: stats.failed60,
-            },
-          });
-        }
-      } catch (e) {
-        console.error("Booking reminders cron failed:", {
-          error: errorDetails(e),
-        });
+        await runBookingReminderCycle(new Date());
+      } catch (error) {
+        console.error("Booking reminders cron failed", errorDetails(error));
       } finally {
         running = false;
       }
@@ -445,7 +468,13 @@ function startBookingReminders() {
     { timezone: "America/New_York" }
   );
 
-  console.log("⏰ Booking reminder cron started");
+  console.log("Booking reminder cron started", {
+    schedule: "* * * * *",
+    timezone: "America/New_York",
+  });
 }
 
-module.exports = { startBookingReminders };
+module.exports = {
+  runBookingReminderCycle,
+  startBookingReminders,
+};
