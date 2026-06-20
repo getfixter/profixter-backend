@@ -109,6 +109,14 @@ function intervalsEqual(left, right) {
   );
 }
 
+function shouldPopulateLegacyStarts(day, desiredStarts) {
+  return (
+    day?.enabled === true &&
+    (!day.starts || day.starts.length === 0) &&
+    desiredStarts.length > 0
+  );
+}
+
 async function reconcileLegacyIntervalEnds(legacy, template) {
   if (!legacy || !template) return { weeklyDaysUpdated: 0, overridesUpdated: 0 };
 
@@ -131,12 +139,7 @@ async function reconcileLegacyIntervalEnds(legacy, template) {
   const desiredDefaultStarts = hoursToStarts(defaultHours);
 
   for (const day of template.weeklySchedule || []) {
-    if (
-      day.enabled &&
-      (!day.starts || day.starts.length === 0) &&
-      (intervalsEqual(day.intervals, oldDefaultIntervals) ||
-        intervalsEqual(day.intervals, desiredDefaultIntervals))
-    ) {
+    if (shouldPopulateLegacyStarts(day, desiredDefaultStarts)) {
       day.starts = desiredDefaultStarts;
       if (intervalsEqual(day.intervals, oldDefaultIntervals)) {
         day.intervals = desiredDefaultIntervals;
@@ -469,4 +472,5 @@ module.exports = {
   hoursToStarts,
   inferLegacySlotMinutes,
   reconcileLegacyIntervalEnds,
+  shouldPopulateLegacyStarts,
 };

@@ -714,6 +714,7 @@ async function availabilityForTechnician({ technicianId, slotStart }) {
   const technicianState = slot?.technicians?.find(
     (technician) => String(technician.id) === String(technicianId)
   );
+  const scheduleDiagnostics = day?.scheduleDiagnostics || {};
   const unavailableReason =
     technicianState?.unavailableReason ||
     (!slot
@@ -725,6 +726,13 @@ async function availabilityForTechnician({ technicianId, slotStart }) {
     slot,
     day,
     window,
+    diagnostics: {
+      ...scheduleDiagnostics,
+      requestedStart: window.time,
+      requestedEnd: moment(window.slotEnd)
+        .tz(TIMEZONE)
+        .format("HH:mm"),
+    },
   };
 }
 
@@ -859,6 +867,7 @@ async function findEligibleTechnicians({
         requestedDate: window.date,
         requestedTime: window.time,
         requestedEnd: window.slotEnd,
+        availabilityDiagnostics: availability.diagnostics || null,
       };
     })
   );

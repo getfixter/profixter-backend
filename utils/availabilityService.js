@@ -142,22 +142,51 @@ function scheduleForWeekday(template, weekday) {
   };
 }
 
+function startsWithinIntervals(starts, intervals, visitDurationMinutes = 90) {
+  if (!starts?.length || !intervals?.length) return [];
+  return starts.filter((entry) => {
+    const time = typeof entry === "string" ? entry : entry?.time;
+    const start = timeToMinutes(time);
+    if (start === null) return false;
+    return intervals.some((interval) => {
+      const intervalStart = timeToMinutes(interval.startTime);
+      const intervalEnd = timeToMinutes(interval.endTime);
+      return (
+        intervalStart !== null &&
+        intervalEnd !== null &&
+        start >= intervalStart &&
+        start + visitDurationMinutes <= intervalEnd
+      );
+    });
+  });
+}
+
 function applyAvailabilityOverride(baseSchedule, override) {
   if (!override) return baseSchedule;
   if (override.mode === "closed") return { starts: [], intervals: [] };
   if (override.mode === "custom_hours") {
+    const overrideStarts = override.starts || [];
+    const overrideIntervals = override.intervals || [];
     return {
-      starts: override.starts || [],
-      intervals: override.intervals || [],
+      starts:
+        overrideStarts.length > 0
+          ? overrideStarts
+          : startsWithinIntervals(baseSchedule.starts, overrideIntervals),
+      intervals: overrideIntervals,
     };
   }
   if (
     override.mode === "open" &&
     (override.starts?.length || override.intervals?.length)
   ) {
+    const overrideStarts = override.starts || [];
+    const overrideIntervals = override.intervals || [];
     return {
-      starts: override.starts || [],
-      intervals: override.intervals || [],
+      starts:
+        overrideStarts.length > 0
+          ? overrideStarts
+          : startsWithinIntervals(baseSchedule.starts, overrideIntervals),
+      intervals: overrideIntervals,
     };
   }
   return baseSchedule;
@@ -385,10 +414,22 @@ function calculateDayFromContext({
   for (const technician of technicians) {
     const id = String(technician._id);
     const template = templateByTechnician.get(id);
+    const technicianSchedule = template
+      ? scheduleForWeekday(template, weekday)
+      : null;
     const baseSchedule =
       !template || template.inheritCompanyHours
         ? companySchedule
-        : scheduleForWeekday(template, weekday);
+        : {
+            ...technicianSchedule,
+            starts:
+              technicianSchedule.starts.length > 0
+                ? technicianSchedule.starts
+                : startsWithinIntervals(
+                    companySchedule.starts,
+                    technicianSchedule.intervals
+                  ),
+          };
     const technicianOverride = dayAvailabilityOverrides.find(
       (override) =>
         override.scopeType === "technician" &&
@@ -587,6 +628,27 @@ function calculateDayFromContext({
     slots,
   };
   if (includeDetails) {
+    result.scheduleDiagnostics = {
+      weekday,
+      companyDayEnabled:
+        !!(companyTemplate.weeklySchedule || []).find(
+          (entry) => entry.weekday === weekday
+        )?.enabled,
+      configuredCompanyStarts: (companySchedule.starts || []).map(
+        (entry) => (typeof entry === "string" ? entry : entry.time)
+      ),
+      configuredCompanyIntervals: (companySchedule.intervals || []).map(
+        (entry) => ({
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+        })
+      ),
+      generatedCompanyStarts: slots.map((entry) => entry.time),
+      generatedCompanySlots: slots.map((entry) => ({
+        time: entry.time,
+        endTime: entry.endTime,
+      })),
+    };
     result.technicians = technicians.map((technician) => ({
       id: String(technician._id),
       name: technician.name,
@@ -697,6 +759,7 @@ module.exports = {
   intervalsForWeekday,
   startsForWeekday,
   scheduleForWeekday,
+  startsWithinIntervals,
   loadAvailabilityContext,
   timeOffOverlaps,
 };

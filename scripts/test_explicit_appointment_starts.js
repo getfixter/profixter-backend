@@ -75,6 +75,8 @@ async function run() {
   );
   assert.equal(day.slots[1].technicians[0].available, true);
   assert.equal(day.slots.some((slot) => slot.time === "09:30"), false);
+  assert.deepEqual(day.scheduleDiagnostics.configuredCompanyStarts, STARTS);
+  assert.deepEqual(day.scheduleDiagnostics.generatedCompanyStarts, STARTS);
 
   const customer = customerDayFromShadow({
     date: DATE,
@@ -83,6 +85,25 @@ async function run() {
     now: NOW,
   });
   assert.deepEqual(customer.slots, STARTS);
+
+  const legacyWindowOverride = calculate({
+    availabilityOverrides: [{
+      scopeType: "company",
+      date: DATE,
+      mode: "custom_hours",
+      starts: [],
+      intervals: [{ startTime: "08:00", endTime: "17:00" }],
+    }],
+  });
+  assert.deepEqual(
+    legacyWindowOverride.slots.map((slot) => slot.time),
+    STARTS,
+    "legacy day windows must retain real company starts"
+  );
+  assert.equal(
+    legacyWindowOverride.slots.some((slot) => slot.time === "08:30"),
+    false
+  );
 
   const closedStart = calculate({
     capacityOverrides: [{

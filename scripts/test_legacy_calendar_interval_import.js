@@ -3,6 +3,7 @@ const {
   hoursToIntervals,
   hoursToStarts,
   inferLegacySlotMinutes,
+  shouldPopulateLegacyStarts,
 } = require("../utils/availabilityBootstrap");
 const { generateSlots } = require("../utils/availabilityService");
 
@@ -29,6 +30,26 @@ function run() {
     { time: "13:00" },
     { time: "15:30" },
   ]);
+  assert.equal(
+    shouldPopulateLegacyStarts(
+      {
+        enabled: true,
+        starts: [],
+        intervals: [{ startTime: "07:00", endTime: "18:00" }],
+      },
+      hoursToStarts(["08:00", "10:30", "13:00", "15:30"])
+    ),
+    true,
+    "differently encoded legacy intervals must not block explicit-start migration"
+  );
+  assert.equal(
+    shouldPopulateLegacyStarts(
+      { enabled: true, starts: [{ time: "09:00" }], intervals: [] },
+      hoursToStarts(["08:00"])
+    ),
+    false,
+    "existing explicit Admin starts must not be overwritten"
+  );
 
   console.log("Legacy calendar interval import tests passed");
 }
