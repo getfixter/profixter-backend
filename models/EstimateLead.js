@@ -13,6 +13,7 @@ const EstimateLeadSchema = new mongoose.Schema(
         "both",
         "bathroom",
         "kitchen",
+        "full-house",
         "basement",
         "interior",
         "other",
