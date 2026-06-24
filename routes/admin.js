@@ -13,6 +13,7 @@ const Subscription = require("../models/Subscription");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const BookingHistory = require("../models/BookingHistory");
+const EmailLog = require("../models/EmailLog");
 const {
   snapshot: bookingSnapshot,
   logBookingChanges,
@@ -204,6 +205,356 @@ router.get(
 );
 
 // ✅ DELETE User by ID
+function titleCase(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeTimelineDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function bookingHistoryTitle(actionType) {
+  const titles = {
+    booking_created: "Booking created",
+    booking_confirmed: "Booking confirmed",
+    booking_canceled: "Booking canceled",
+    status_changed: "Booking status changed",
+    booking_edited: "Booking updated",
+    assigned_fixter_changed: "Fixter assignment changed",
+    note_added: "Booking note added",
+    reservation_created: "Booking reservation created",
+    reservation_released: "Booking reservation released",
+    reservation_moved: "Booking rescheduled",
+    reservation_backfilled: "Booking reservation backfilled",
+    reservation_conflict: "Booking reservation conflict",
+  };
+  return titles[String(actionType || "")] || titleCase(actionType || "Booking activity");
+}
+
+function timelineItem({
+  id,
+  type,
+  title,
+  description = "",
+  timestamp,
+  source,
+  actorName = "",
+  actorRole = "",
+  relatedBookingNumber = "",
+  status = "",
+}) {
+  const date = normalizeTimelineDate(timestamp);
+  if (!date) return null;
+  return {
+    id: String(id),
+    type: String(type || "activity"),
+    title: String(title || "Activity"),
+    description: String(description || ""),
+    timestamp: date.toISOString(),
+    source: String(source || ""),
+    actorName: String(actorName || ""),
+    actorRole: String(actorRole || ""),
+    relatedBookingNumber: String(relatedBookingNumber || ""),
+    status: String(status || ""),
+  };
+}
+
+// GET /api/admin/users/:userId/activity?limit=10|all
+router.get(
+  "/users/:userId/activity",
+  auth,
+  ...requirePermission(PERMISSIONS.MEMBERS_READ),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const limitParam = String(req.query.limit || "10").toLowerCase();
+      const limitAll = limitParam === "all";
+      const limit = limitAll
+        ? null
+        : Math.min(Math.max(Number.parseInt(limitParam, 10) || 10, 1), 100);
+
+      const user = await User.findById(userId).select("-password").lean();
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      const userObjectId = new mongoose.Types.ObjectId(String(user._id));
+      const email = String(user.email || "").toLowerCase().trim();
+
+      const bookings = await Booking.find({
+        $or: [{ user: userObjectId }, { userId: user.userId }],
+      })
+        .select("_id bookingNumber status service date scheduledStart createdAt updatedAt")
+        .sort({ createdAt: -1 })
+        .lean();
+      const bookingIds = bookings.map((booking) => booking._id);
+      const bookingIdStrings = bookingIds.map((id) => String(id));
+      const bookingById = new Map(bookings.map((booking) => [String(booking._id), booking]));
+
+      const [subscriptions, bookingHistory, emailLogs, blacklistEntries] = await Promise.all([
+        Subscription.find({
+          $or: [{ user: userObjectId }, { userId: user.userId }],
+        })
+          .select(
+            "subscriptionType billingCycle status accessStatus startDate createdAt updatedAt cancelAtPeriodEnd cancellationDate pendingPlan pendingBillingCycle pendingChangeEffectiveDate addressSnapshot"
+          )
+          .sort({ createdAt: -1 })
+          .lean(),
+        bookingIds.length
+          ? BookingHistory.find({ bookingId: { $in: bookingIds } })
+              .sort({ createdAt: -1 })
+              .populate("actorUserId", "name email role employeePosition")
+              .lean()
+          : [],
+        EmailLog.find({
+          $or: [
+            { userId: userObjectId },
+            { userId: String(user._id) },
+            { userId: user.userId },
+            ...(email ? [{ customerEmail: email }, { recipientEmail: email }] : []),
+            ...(bookingIds.length ? [{ bookingId: { $in: bookingIds } }] : []),
+            ...(bookingIdStrings.length ? [{ bookingId: { $in: bookingIdStrings } }] : []),
+          ],
+        })
+          .select(
+            "templateKey subject recipientEmail recipientName customerEmail customerName userId bookingId bookingNumber source emailType status sentAt failedAt createdAt errorMessage"
+          )
+          .sort({ createdAt: -1 })
+          .lean(),
+        Blacklist.find({
+          $or: [
+            { user: userObjectId },
+            { userId: user.userId },
+            ...(email ? [{ email }] : []),
+          ],
+        })
+          .select("user userId name email reason createdAt")
+          .sort({ createdAt: -1 })
+          .lean(),
+      ]);
+
+      const items = [
+        timelineItem({
+          id: `account-${user._id}`,
+          type: "account_created",
+          title: "Account created",
+          description: `${user.name || "Customer"} created a Profixter account.`,
+          timestamp: user.createdAt,
+          source: "user",
+          actorName: user.name || "",
+          actorRole: "customer",
+          status: "created",
+        }),
+      ];
+
+      for (const subscription of subscriptions) {
+        const plan = titleCase(subscription.subscriptionType);
+        const billing = subscription.billingCycle ? ` (${subscription.billingCycle})` : "";
+        const address = subscription.addressSnapshot
+          ? [
+              subscription.addressSnapshot.line1,
+              subscription.addressSnapshot.city,
+              subscription.addressSnapshot.state,
+              subscription.addressSnapshot.zip,
+            ]
+              .filter(Boolean)
+              .join(", ")
+          : "";
+
+        items.push(
+          timelineItem({
+            id: `subscription-purchased-${subscription._id}`,
+            type: "subscription_purchased",
+            title: "Subscription purchased",
+            description: `${plan}${billing}${address ? ` for ${address}` : ""}`,
+            timestamp: subscription.startDate || subscription.createdAt,
+            source: "subscription",
+            actorName: user.name || "",
+            actorRole: "customer",
+            status: subscription.status || subscription.accessStatus || "",
+          })
+        );
+
+        const createdAtMs = subscription.createdAt
+          ? new Date(subscription.createdAt).getTime()
+          : 0;
+        const updatedAtMs = subscription.updatedAt
+          ? new Date(subscription.updatedAt).getTime()
+          : 0;
+        const hasMeaningfulUpdate = updatedAtMs && createdAtMs && updatedAtMs - createdAtMs > 60 * 1000;
+        const hasSeparatePendingOrCancelEvent =
+          subscription.pendingPlan ||
+          subscription.cancelAtPeriodEnd ||
+          String(subscription.status).toLowerCase() === "canceled";
+
+        if (hasMeaningfulUpdate && !hasSeparatePendingOrCancelEvent) {
+          items.push(
+            timelineItem({
+              id: `subscription-updated-${subscription._id}`,
+              type: "subscription_changed",
+              title: "Subscription updated",
+              description: `${plan} membership record was updated.`,
+              timestamp: subscription.updatedAt,
+              source: "subscription",
+              actorName: "System",
+              actorRole: "system",
+              status: subscription.status || subscription.accessStatus || "",
+            })
+          );
+        }
+
+        if (subscription.pendingPlan) {
+          items.push(
+            timelineItem({
+              id: `subscription-change-${subscription._id}`,
+              type: "subscription_changed",
+              title: "Subscription change scheduled",
+              description: `Plan change pending: ${titleCase(subscription.pendingPlan)}${
+                subscription.pendingBillingCycle ? ` (${subscription.pendingBillingCycle})` : ""
+              }`,
+              timestamp: subscription.pendingChangeEffectiveDate || subscription.updatedAt,
+              source: "subscription",
+              actorName: "System",
+              actorRole: "system",
+              status: "pending",
+            })
+          );
+        }
+
+        if (subscription.cancelAtPeriodEnd || String(subscription.status).toLowerCase() === "canceled") {
+          items.push(
+            timelineItem({
+              id: `subscription-canceled-${subscription._id}`,
+              type: "subscription_canceled",
+              title: subscription.cancelAtPeriodEnd
+                ? "Subscription cancellation scheduled"
+                : "Subscription canceled",
+              description: `${plan} membership ${
+                subscription.cancelAtPeriodEnd ? "is scheduled to end" : "ended"
+              }.`,
+              timestamp: subscription.cancellationDate || subscription.updatedAt,
+              source: "subscription",
+              actorName: "System",
+              actorRole: "system",
+              status: subscription.status || "canceled",
+            })
+          );
+        }
+      }
+
+      for (const entry of bookingHistory) {
+        const booking = bookingById.get(String(entry.bookingId));
+        const actorUser =
+          entry.actorUserId && typeof entry.actorUserId === "object"
+            ? entry.actorUserId
+            : null;
+        const actorRole = String(entry.actorRole || actorUser?.role || "system");
+        const actorPosition = String(entry.actorPosition || actorUser?.employeePosition || "");
+        const actorName =
+          actorUser?.name ||
+          (actorRole.toLowerCase() === "customer" &&
+          ["customer", "unknown user"].includes(String(entry.actorName || "").trim().toLowerCase())
+            ? user.name
+            : entry.actorName) ||
+          "System";
+        const changeSummary =
+          Array.isArray(entry.changes) && entry.changes.length
+            ? ` Changes: ${entry.changes
+                .slice(0, 3)
+                .map(
+                  (change) =>
+                    `${change.label || change.field}: ${change.oldValue || "empty"} -> ${
+                      change.newValue || "empty"
+                    }`
+                )
+                .join("; ")}`
+            : "";
+
+        items.push(
+          timelineItem({
+            id: `booking-history-${entry._id}`,
+            type: entry.actionType,
+            title: bookingHistoryTitle(entry.actionType),
+            description: `${entry.summary || ""}${changeSummary}`,
+            timestamp: entry.createdAt,
+            source: "booking_history",
+            actorName,
+            actorRole: actorPosition || actorRole,
+            relatedBookingNumber: booking?.bookingNumber || "",
+            status: booking?.status || "",
+          })
+        );
+      }
+
+      for (const log of emailLogs) {
+        const timestamp = log.status === "failed"
+          ? log.failedAt || log.createdAt
+          : log.sentAt || log.createdAt;
+        items.push(
+          timelineItem({
+            id: `email-${log._id}`,
+            type: `email_${log.status}`,
+            title: log.status === "failed" ? "Email failed" : "Email sent",
+            description: `${log.templateKey || "email"}${
+              log.subject ? ` - ${log.subject}` : ""
+            }${log.status === "failed" && log.errorMessage ? ` (${log.errorMessage})` : ""}`,
+            timestamp,
+            source: log.source || "email_log",
+            actorName: "System",
+            actorRole: "system",
+            relatedBookingNumber: log.bookingNumber || "",
+            status: log.status,
+          })
+        );
+      }
+
+      for (const entry of blacklistEntries) {
+        items.push(
+          timelineItem({
+            id: `blacklist-${entry._id}`,
+            type: "blacklist_added",
+            title: "Customer blocked",
+            description: entry.reason ? `Reason: ${entry.reason}` : "Customer was added to the blacklist.",
+            timestamp: entry.createdAt,
+            source: "blacklist",
+            actorName: "Admin",
+            actorRole: "admin",
+            status: "blocked",
+          })
+        );
+      }
+
+      const sorted = items
+        .filter(Boolean)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      return res.json({
+        user: {
+          _id: String(user._id),
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+        },
+        limit: limitAll ? "all" : limit,
+        total: sorted.length,
+        items: limitAll ? sorted : sorted.slice(0, limit),
+        unavailableSources: [
+          "Historical admin customer/account action audit is only shown when it exists in booking history or current blacklist records.",
+          "Historical plan-change actor details are not stored separately yet; subscription records show current purchase/cancellation/pending-change state.",
+          "Removed blacklist entries are not retained after unblock.",
+        ],
+      });
+    } catch (err) {
+      console.error("Customer activity failed:", err);
+      return res.status(500).json({ message: "Failed to load customer activity" });
+    }
+  }
+);
+
 router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
   try {
     const user = await User.findByIdAndDelete(req.params.id);

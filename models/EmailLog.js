@@ -34,6 +34,7 @@ const EmailLogSchema = new mongoose.Schema(
 );
 
 EmailLogSchema.index({ createdAt: -1 });
+EmailLogSchema.index({ userId: 1, createdAt: -1 });
 EmailLogSchema.index({ templateKey: 1, createdAt: -1 });
 EmailLogSchema.index({ bookingNumber: 1, createdAt: -1 });
 EmailLogSchema.index({ customerEmail: 1, createdAt: -1 });
