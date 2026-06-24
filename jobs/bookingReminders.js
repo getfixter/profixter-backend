@@ -120,16 +120,15 @@ async function process24HourReminders(now, stats) {
   );
   const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
   const notSent = emptyField("reminder24hSentAt");
-  const notSkipped = emptyField("reminder24hSkippedAt");
   const lockAvailable = availableLock("reminder24hQueuedAt", staleBefore);
 
   const candidates = await Booking.find({
     status: /^confirmed$/i,
     date: { $gt: catchupFloor, $lte: windowCeiling },
-    $and: [notSent, notSkipped, lockAvailable],
+    $and: [notSent, lockAvailable],
   })
     .select(
-      "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt"
+      "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason"
     )
     .sort({ date: 1 })
     .limit(100)
@@ -170,7 +169,7 @@ async function process24HourReminders(now, stats) {
         _id: booking._id,
         status: /^confirmed$/i,
         date: { $gt: catchupFloor, $lte: windowCeiling },
-        $and: [notSent, notSkipped, lockAvailable],
+        $and: [notSent, lockAvailable],
       },
       { $set: { reminder24hQueuedAt: lockTime } }
     );
@@ -188,8 +187,9 @@ async function process24HourReminders(now, stats) {
       const stillConfirmed = await Booking.exists({
         _id: booking._id,
         status: /^confirmed$/i,
+        date: booking.date,
         reminder24hQueuedAt: lockTime,
-        $and: [notSent, notSkipped],
+        $and: [notSent],
       });
       if (!stillConfirmed) {
         await Booking.updateOne(
@@ -256,6 +256,7 @@ async function process24HourReminders(now, stats) {
     }
   }
 
+  const notSkipped = emptyField("reminder24hSkippedAt");
   const tooLate = await Booking.find({
     status: /^confirmed$/i,
     date: { $gt: now, $lte: catchupFloor },

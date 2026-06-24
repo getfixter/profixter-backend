@@ -56,9 +56,6 @@ function evaluate24HourReminder(booking, nowInput = new Date()) {
   if (hasValue(booking?.reminder24hSentAt)) {
     return { eligible: false, reason: "already_sent" };
   }
-  if (hasValue(booking?.reminder24hSkippedAt)) {
-    return { eligible: false, reason: "already_skipped" };
-  }
   if (startMs === null) {
     return { eligible: false, reason: "invalid_booking_date" };
   }

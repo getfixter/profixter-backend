@@ -74,8 +74,25 @@ function run() {
     evaluate24HourReminder(
       booking(5, { reminder24hSkippedAt: new Date() }),
       now
-    ).reason,
-    "already_skipped"
+    ).eligible,
+    true
+  );
+  assert.equal(
+    evaluate24HourReminder(
+      booking(5, {
+        reminder24hSkippedAt: new Date(),
+        reminder24hSkipReason: "legacy_false_skip",
+      }),
+      now
+    ).mode,
+    "catch_up"
+  );
+  assert.equal(
+    evaluate24HourReminder(
+      booking(1.5, { reminder24hSkippedAt: new Date() }),
+      now
+    ).eligible,
+    false
   );
   assert.equal(
     evaluate24HourReminder(booking(24 + 16 / 60), now).eligible,

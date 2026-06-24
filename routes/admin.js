@@ -20,6 +20,7 @@ const {
 const {
   evaluate24HourReminder,
   evaluate60MinuteReminder,
+  REMINDER_LOCK_STALE_MS,
 } = require("../utils/bookingReminderPolicy");
 const {
   evaluateReviewRequest,
@@ -774,6 +775,7 @@ router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), a
 router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) => {
   try {
     const now = new Date();
+    const lockStaleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
     const bookings = await Booking.find({
       status: /^confirmed$/i,
       date: { $gte: now },
@@ -781,7 +783,7 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
       .sort({ date: 1 })
       .limit(20)
       .select(
-        "_id bookingNumber status date email reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason reminder60mQueuedAt reminder60mSentAt"
+        "_id bookingNumber status name date email reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason reminder60mQueuedAt reminder60mSentAt"
       )
       .lean();
 
@@ -796,6 +798,14 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
         const reminder24h = evaluate24HourReminder(booking, now);
         const reminder60m = evaluate60MinuteReminder(booking, now);
         const bookingStartMs = new Date(booking.date).getTime();
+        const queuedAtMs = booking.reminder24hQueuedAt
+          ? new Date(booking.reminder24hQueuedAt).getTime()
+          : null;
+        const reminder24hLockExpiresAt =
+          Number.isFinite(queuedAtMs)
+            ? new Date(queuedAtMs + REMINDER_LOCK_STALE_MS)
+            : null;
+        const email = String(booking.email || "").trim().toLowerCase();
         const hoursUntilAppointment = Number.isFinite(bookingStartMs)
           ? Number(
               ((bookingStartMs - now.getTime()) / (60 * 60 * 1000)).toFixed(2)
@@ -804,6 +814,9 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
         return {
           bookingId: String(booking._id),
           bookingNumber: booking.bookingNumber,
+          customerName: booking.name || "",
+          customerEmailDomain: email.includes("@") ? email.split("@").pop() : "",
+          customerEmailExists: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
           status: booking.status,
           startDateTime: booking.date,
           hoursUntilAppointment,
@@ -811,12 +824,18 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
           reminder24hSentAt: booking.reminder24hSentAt || null,
           reminder24hSkippedAt: booking.reminder24hSkippedAt || null,
           reminder24hSkipReason: booking.reminder24hSkipReason || "",
+          reminder24hLockExpiresAt,
+          reminder24hLockIsStale:
+            !!booking.reminder24hQueuedAt &&
+            new Date(booking.reminder24hQueuedAt) <= lockStaleBefore,
           reminder24hEligible: reminder24h.eligible,
           reminder24hReason: reminder24h.reason,
+          reminder24hWouldSendNow: reminder24h.eligible,
           reminder60mQueuedAt: booking.reminder60mQueuedAt || null,
           reminder60mSentAt: booking.reminder60mSentAt || null,
           reminder60mEligible: reminder60m.eligible,
           reminder60mReason: reminder60m.reason,
+          reminder60mWouldSendNow: reminder60m.eligible,
         };
       }),
     });
@@ -825,6 +844,114 @@ router.get("/bookings/reminders/debug", auth, ...onlyAdmin, async (_req, res) =>
     return res.status(500).json({ message: "Failed to load reminder diagnostics" });
   }
 });
+
+router.post(
+  "/bookings/reminders/repair-24h",
+  auth,
+  ...onlyAdmin,
+  async (req, res) => {
+    try {
+      const now = new Date();
+      const dryRun =
+        String(req.query.dryRun || req.body?.dryRun || "").toLowerCase() ===
+        "true";
+      const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
+
+      const bookings = await Booking.find({
+        status: /^confirmed$/i,
+        date: { $gt: now },
+        $or: [
+          { reminder24hSentAt: { $exists: false } },
+          { reminder24hSentAt: null },
+        ],
+      })
+        .sort({ date: 1 })
+        .limit(500)
+        .select(
+          "_id bookingNumber status name date email reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason"
+        )
+        .lean();
+
+      const inspected = [];
+      const repaired = [];
+      const skipped = [];
+
+      for (const booking of bookings) {
+        const eligibility = evaluate24HourReminder(booking, now);
+        const hasStaleQueue =
+          !!booking.reminder24hQueuedAt &&
+          new Date(booking.reminder24hQueuedAt) <= staleBefore;
+        const hasSkipped = !!booking.reminder24hSkippedAt;
+        const unset = {};
+
+        if (hasStaleQueue) {
+          unset.reminder24hQueuedAt = 1;
+        }
+        if (hasSkipped && eligibility.eligible) {
+          unset.reminder24hSkippedAt = 1;
+          unset.reminder24hSkipReason = 1;
+        }
+
+        const action = {
+          bookingId: String(booking._id),
+          bookingNumber: booking.bookingNumber,
+          startDateTime: booking.date,
+          hoursUntilAppointment: Number(
+            ((new Date(booking.date).getTime() - now.getTime()) /
+              (60 * 60 * 1000)).toFixed(2)
+          ),
+          eligibleNow: eligibility.eligible,
+          reason: eligibility.reason,
+          clearedQueuedAt: !!unset.reminder24hQueuedAt,
+          clearedSkippedAt: !!unset.reminder24hSkippedAt,
+        };
+        inspected.push(action);
+
+        if (!Object.keys(unset).length) {
+          skipped.push(action);
+          continue;
+        }
+
+        if (!dryRun) {
+          await Booking.updateOne(
+            {
+              _id: booking._id,
+              status: /^confirmed$/i,
+              $or: [
+                { reminder24hSentAt: { $exists: false } },
+                { reminder24hSentAt: null },
+              ],
+            },
+            { $unset: unset }
+          );
+        }
+        repaired.push(action);
+      }
+
+      console.log("24h reminder repair completed", {
+        dryRun,
+        inspected: inspected.length,
+        repaired: repaired.length,
+        skipped: skipped.length,
+      });
+
+      return res.json({
+        dryRun,
+        serverTime: now.toISOString(),
+        inspectedCount: inspected.length,
+        repairedCount: repaired.length,
+        skippedCount: skipped.length,
+        repaired,
+        skipped,
+      });
+    } catch (error) {
+      console.error("24h reminder repair failed:", error);
+      return res.status(500).json({
+        message: "Failed to repair 24h reminder state",
+      });
+    }
+  }
+);
 
 router.get(
   "/bookings/review-requests/debug",
