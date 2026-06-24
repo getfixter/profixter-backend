@@ -4,6 +4,7 @@ const router = express.Router();
 const CalendarConfig = require("../models/CalendarConfig");
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
 // Load or create config doc
 async function getCfg() {
@@ -120,6 +121,20 @@ router.put("/", auth, ...requirePermission(PERMISSIONS.SCHEDULE_WRITE), async (r
     }
 
     await cfg.save();
+    await createAdminActivityLog(req, {
+      action: "Calendar Settings Changed",
+      entityType: "CalendarConfig",
+      entityId: cfg._id,
+      entityName: "Customer Calendar",
+      details: {
+        timezone: cfg.timezone,
+        slotMinutes: cfg.slotMinutes,
+        minLeadDays: cfg.minLeadDays,
+        maxConcurrent: cfg.maxConcurrent,
+        closedWeekdays: cfg.closedWeekdays,
+        holidaysCount: Array.isArray(cfg.holidays) ? cfg.holidays.length : 0,
+      },
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error("PUT /api/admin/calendar error:", err);

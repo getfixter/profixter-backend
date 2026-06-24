@@ -14,6 +14,11 @@ const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const BookingHistory = require("../models/BookingHistory");
 const EmailLog = require("../models/EmailLog");
+const AdminActivityLog = require("../models/AdminActivityLog");
+const {
+  createAdminActivityLog,
+  markAdminActivityLog,
+} = require("../utils/adminActivityLog");
 const {
   snapshot: bookingSnapshot,
   logBookingChanges,
@@ -90,6 +95,14 @@ const legacyOnlyAdmin = async (req, res, next) => {
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
 const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function terminalBookingStatuses() {
+  return ["completed", "cancelled", "canceled", "done", "failed", "no-show"];
+}
 void legacyOnlyAdmin;
 
 async function getAddressPlansForUser(user) {
@@ -219,6 +232,161 @@ function normalizeTimelineDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+const ISO_DATE_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})/g;
+
+function formatNYDateTime(value) {
+  const date = normalizeTimelineDate(value);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatNYTime(value) {
+  const date = normalizeTimelineDate(value);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatNYDateKey(value) {
+  const date = normalizeTimelineDate(value);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function formatNYRange(startValue, endValue) {
+  const start = formatNYDateTime(startValue);
+  const end = formatNYDateKey(startValue) === formatNYDateKey(endValue)
+    ? formatNYTime(endValue)
+    : formatNYDateTime(endValue);
+  return [start, end].filter(Boolean).join(" – ");
+}
+
+function extractReservationParts(value) {
+  const text = String(value || "").trim();
+  if (!text) return { fixterName: "", range: "" };
+
+  const matches = text.match(ISO_DATE_PATTERN) || [];
+  const firstIso = matches[0] || "";
+  const fixterName = firstIso
+    ? text
+        .slice(0, text.indexOf(firstIso))
+        .replace(/[·•|–—-]+\s*$/g, "")
+        .trim()
+    : "";
+
+  if (matches.length >= 2) {
+    return { fixterName, range: formatNYRange(matches[0], matches[1]) };
+  }
+
+  if (matches.length === 1) {
+    return { fixterName, range: formatNYDateTime(matches[0]) };
+  }
+
+  return { fixterName, range: text };
+}
+
+function containsIsoDate(value) {
+  ISO_DATE_PATTERN.lastIndex = 0;
+  const result = ISO_DATE_PATTERN.test(String(value || ""));
+  ISO_DATE_PATTERN.lastIndex = 0;
+  return result;
+}
+
+function cleanChangeValue(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.toLowerCase() === "empty" || text.toLowerCase() === "null") {
+    return "Unassigned";
+  }
+
+  const matches = text.match(ISO_DATE_PATTERN) || [];
+  if (matches.length >= 2) return formatNYRange(matches[0], matches[1]);
+  if (matches.length === 1) return formatNYDateTime(matches[0]);
+
+  return text;
+}
+
+function bookingHistoryDescriptionLines(entry) {
+  const actionType = String(entry?.actionType || "");
+  const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+  const reservationChange = changes.find((change) => {
+    const label = `${change?.label || ""} ${change?.field || ""}`.toLowerCase();
+    const values = `${change?.oldValue || ""} ${change?.newValue || ""}`;
+    return label.includes("reservation") || label.includes("appointment") || containsIsoDate(values);
+  });
+
+  if (actionType === "reservation_moved" && reservationChange) {
+    const from = extractReservationParts(reservationChange.oldValue);
+    const to = extractReservationParts(reservationChange.newValue);
+    const fixterName = to.fixterName || from.fixterName;
+    return [
+      from.range ? `From: ${from.range}` : "",
+      to.range ? `To: ${to.range}` : "",
+      fixterName ? `Fixter: ${fixterName}` : "",
+    ].filter(Boolean);
+  }
+
+  if (actionType === "reservation_created" && reservationChange) {
+    const reservation = extractReservationParts(reservationChange.newValue || reservationChange.oldValue);
+    return [
+      reservation.range ? `Appointment reserved for ${reservation.range}` : "Appointment reserved",
+      reservation.fixterName ? `Fixter: ${reservation.fixterName}` : "",
+    ].filter(Boolean);
+  }
+
+  if (actionType === "reservation_released" && reservationChange) {
+    const reservation = extractReservationParts(reservationChange.oldValue || reservationChange.newValue);
+    return [
+      "Appointment reservation released",
+      reservation.range ? `Previous time: ${reservation.range}` : "",
+      reservation.fixterName ? `Fixter: ${reservation.fixterName}` : "",
+    ].filter(Boolean);
+  }
+
+  const lines = changes
+    .map((change) => {
+      const label = titleCase(change?.label || change?.field || "Value");
+      const oldValue = cleanChangeValue(change?.oldValue);
+      const newValue = cleanChangeValue(change?.newValue);
+      const lowerLabel = label.toLowerCase();
+
+      if (lowerLabel.includes("status")) {
+        return `Status changed from ${oldValue} to ${newValue}`;
+      }
+      if (lowerLabel.includes("fixter") || lowerLabel.includes("assigned")) {
+        return `Fixter changed from ${oldValue} to ${newValue}`;
+      }
+      if (lowerLabel.includes("reservation") || lowerLabel.includes("appointment")) {
+        return `Appointment changed from ${oldValue} to ${newValue}`;
+      }
+      return `${label} changed from ${oldValue} to ${newValue}`;
+    })
+    .filter(Boolean);
+
+  if (lines.length) return lines.slice(0, 5);
+
+  const summary = String(entry?.summary || "").trim();
+  const title = bookingHistoryTitle(actionType);
+  if (summary && summary.toLowerCase() !== title.toLowerCase()) {
+    return [summary.replace(/\s*Changes:\s*/gi, " ").trim()];
+  }
+  return [];
+}
+
 function bookingHistoryTitle(actionType) {
   const titles = {
     booking_created: "Booking created",
@@ -228,11 +396,11 @@ function bookingHistoryTitle(actionType) {
     booking_edited: "Booking updated",
     assigned_fixter_changed: "Fixter assignment changed",
     note_added: "Booking note added",
-    reservation_created: "Booking reservation created",
-    reservation_released: "Booking reservation released",
-    reservation_moved: "Booking rescheduled",
-    reservation_backfilled: "Booking reservation backfilled",
-    reservation_conflict: "Booking reservation conflict",
+    reservation_created: "Appointment reserved",
+    reservation_released: "Appointment reservation released",
+    reservation_moved: "Appointment moved",
+    reservation_backfilled: "Appointment reservation backfilled",
+    reservation_conflict: "Appointment reservation conflict",
   };
   return titles[String(actionType || "")] || titleCase(actionType || "Booking activity");
 }
@@ -242,6 +410,7 @@ function timelineItem({
   type,
   title,
   description = "",
+  descriptionLines = [],
   timestamp,
   source,
   actorName = "",
@@ -255,7 +424,10 @@ function timelineItem({
     id: String(id),
     type: String(type || "activity"),
     title: String(title || "Activity"),
-    description: String(description || ""),
+    description: String(description || (Array.isArray(descriptionLines) ? descriptionLines.join("\n") : "")),
+    descriptionLines: Array.isArray(descriptionLines)
+      ? descriptionLines.filter(Boolean).map((line) => String(line))
+      : [],
     timestamp: date.toISOString(),
     source: String(source || ""),
     actorName: String(actorName || ""),
@@ -461,25 +633,14 @@ router.get(
             ? user.name
             : entry.actorName) ||
           "System";
-        const changeSummary =
-          Array.isArray(entry.changes) && entry.changes.length
-            ? ` Changes: ${entry.changes
-                .slice(0, 3)
-                .map(
-                  (change) =>
-                    `${change.label || change.field}: ${change.oldValue || "empty"} -> ${
-                      change.newValue || "empty"
-                    }`
-                )
-                .join("; ")}`
-            : "";
+        const descriptionLines = bookingHistoryDescriptionLines(entry);
 
         items.push(
           timelineItem({
             id: `booking-history-${entry._id}`,
             type: entry.actionType,
             title: bookingHistoryTitle(entry.actionType),
-            description: `${entry.summary || ""}${changeSummary}`,
+            descriptionLines,
             timestamp: entry.createdAt,
             source: "booking_history",
             actorName,
@@ -498,10 +659,15 @@ router.get(
           timelineItem({
             id: `email-${log._id}`,
             type: `email_${log.status}`,
-            title: log.status === "failed" ? "Email failed" : "Email sent",
-            description: `${log.templateKey || "email"}${
-              log.subject ? ` - ${log.subject}` : ""
-            }${log.status === "failed" && log.errorMessage ? ` (${log.errorMessage})` : ""}`,
+            title: log.status === "failed"
+              ? `Email failed: ${log.templateKey || "email"}`
+              : `Email sent: ${log.templateKey || "email"}`,
+            descriptionLines: [
+              log.subject ? `Subject: ${log.subject}` : "",
+              log.status === "failed" && log.errorMessage
+                ? `Error: ${String(log.errorMessage).slice(0, 180)}`
+                : "",
+            ].filter(Boolean),
             timestamp,
             source: log.source || "email_log",
             actorName: "System",
@@ -555,10 +721,151 @@ router.get(
   }
 );
 
+// GET /api/admin/activity-log
+router.get("/activity-log", auth, onlyAdmin, async (req, res) => {
+  try {
+    const page = Math.max(Number.parseInt(String(req.query.page || "1"), 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(Number.parseInt(String(req.query.limit || "50"), 10) || 50, 1),
+      200
+    );
+    const query = {};
+
+    if (req.query.actorUserId) query.actorUserId = req.query.actorUserId;
+    if (req.query.action) query.action = { $regex: escapeRegex(req.query.action), $options: "i" };
+    if (req.query.entityType) query.entityType = String(req.query.entityType);
+
+    if (req.query.dateFrom || req.query.dateTo) {
+      query.createdAt = {};
+      if (req.query.dateFrom) query.createdAt.$gte = new Date(String(req.query.dateFrom));
+      if (req.query.dateTo) query.createdAt.$lte = new Date(String(req.query.dateTo));
+    }
+
+    const search = String(req.query.search || "").trim();
+    if (search) {
+      const safe = escapeRegex(search);
+      query.$or = [
+        { action: { $regex: safe, $options: "i" } },
+        { entityName: { $regex: safe, $options: "i" } },
+        { entityId: { $regex: safe, $options: "i" } },
+        { actorName: { $regex: safe, $options: "i" } },
+        { "details.email": { $regex: safe, $options: "i" } },
+        { "details.customerEmail": { $regex: safe, $options: "i" } },
+        { "details.leadEmail": { $regex: safe, $options: "i" } },
+        { "details.projectNumber": { $regex: safe, $options: "i" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      AdminActivityLog.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      AdminActivityLog.countDocuments(query),
+    ]);
+
+    return res.json({
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.max(Math.ceil(total / limit), 1),
+    });
+  } catch (error) {
+    console.error("Fetch admin activity log failed:", error);
+    return res.status(500).json({ message: "Failed to load activity log" });
+  }
+});
+
+// GET /api/admin/activity-log/summary
+router.get("/activity-log/summary", auth, onlyAdmin, async (_req, res) => {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [usersDeleted, leadsDeleted, projectsDeleted] = await Promise.all([
+      AdminActivityLog.countDocuments({ action: "User Deleted", createdAt: { $gte: since } }),
+      AdminActivityLog.countDocuments({ action: "Lead Deleted", createdAt: { $gte: since } }),
+      AdminActivityLog.countDocuments({ action: "Project Deleted", createdAt: { $gte: since } }),
+    ]);
+    return res.json({
+      since: since.toISOString(),
+      usersDeleted,
+      leadsDeleted,
+      projectsDeleted,
+    });
+  } catch (error) {
+    console.error("Fetch admin activity summary failed:", error);
+    return res.status(500).json({ message: "Failed to load activity summary" });
+  }
+});
+
 router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
+    const user = await User.findById(req.params.id).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    const expectedConfirmation = `DELETE ${String(user.email || "").trim()}`;
+    if (String(req.body?.confirmation || "") !== expectedConfirmation) {
+      return res.status(400).json({
+        message: `Type ${expectedConfirmation} to delete this user.`,
+      });
+    }
+
+    const activeSubscription = await Subscription.findOne({
+      user: user._id,
+      status: { $in: ["active", "trialing", "past_due", "incomplete"] },
+    }).lean();
+    if (activeSubscription && subscriptionGrantsAccess(activeSubscription)) {
+      return res.status(409).json({
+        message: "This user has an active subscription. Cancel or resolve the subscription before deleting.",
+      });
+    }
+
+    const futureBooking = await Booking.findOne({
+      user: user._id,
+      date: { $gte: new Date() },
+      $expr: {
+        $not: {
+          $in: [{ $toLower: "$status" }, terminalBookingStatuses()],
+        },
+      },
+    })
+      .select("_id bookingNumber date status")
+      .lean();
+    if (futureBooking) {
+      return res.status(409).json({
+        message: "This user has future active bookings. Cancel or complete those bookings before deleting.",
+        bookingNumber: futureBooking.bookingNumber,
+      });
+    }
+
+    const audit = await createAdminActivityLog(req, {
+      action: "User Delete Started",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name || user.email || user.userId,
+      details: {
+        customerName: user.name,
+        email: user.email,
+        phone: user.phone,
+        userId: user.userId,
+      },
+    });
+
+    const deleted = await User.findByIdAndDelete(user._id);
+    if (!deleted) return res.status(404).json({ message: "User not found" });
+
+    await markAdminActivityLog(audit, {
+      action: "User Deleted",
+      details: {
+        customerName: user.name,
+        email: user.email,
+        phone: user.phone,
+        userId: user.userId,
+        deletedAt: new Date().toISOString(),
+      },
+    });
+
     res.json({ message: "User deleted" });
   } catch (err) {
     console.error("❌ Delete user error:", err);
@@ -630,7 +937,10 @@ router.put(
       const addr = user.addresses.id(addressId);
       if (!addr) return res.status(404).json({ message: "Address not found" });
 
-      const respond = async (message) => {
+      const respond = async (message, activityDetails = null) => {
+        if (activityDetails) {
+          await createAdminActivityLog(req, activityDetails);
+        }
         const uLean = await User.findById(user._id).lean();
         const addressesDetailed = await getAddressPlansForUser(uLean);
         return res.json({ message, addressesDetailed });
@@ -641,6 +951,7 @@ router.put(
         addressId: addrObjId,
         status: { $in: ["active", "trialing"] },
       }).sort({ updatedAt: -1 });
+      const previousAddressPlan = activeSub?.subscriptionType || "";
 
       const stripeSubscription = activeSub
         ? await resolveStripeSubscriptionForRecord({ subscription: activeSub, user })
@@ -680,7 +991,20 @@ router.put(
             addressIdHint: String(addrObjId),
           });
 
-          return respond("Address cancellation scheduled in Stripe");
+          return respond("Address cancellation scheduled in Stripe", {
+            action: "Subscription Canceled",
+            entityType: "Subscription",
+            entityId: activeSub._id,
+            entityName: `${user.name} - ${addr.line1}`,
+            details: {
+              customerName: user.name,
+              email: user.email,
+              addressId,
+              address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
+              previousPlan: previousAddressPlan,
+              source: "admin_panel_stripe",
+            },
+          });
         }
 
         if (shouldRequireStripeSync) {
@@ -733,7 +1057,20 @@ router.put(
           console.log("GHL subscription cancel automation error:", e.message);
         }
 
-        return respond("Address plan canceled");
+        return respond("Address plan canceled", {
+          action: "Subscription Canceled",
+          entityType: "Subscription",
+          entityId: activeSub?._id || addressId,
+          entityName: `${user.name} - ${addr.line1}`,
+          details: {
+            customerName: user.name,
+            email: user.email,
+            addressId,
+            address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
+            previousPlan: previousAddressPlan,
+            source: "admin_panel_db",
+          },
+        });
       }
 
       // 2) VALIDATE PLAN
@@ -802,7 +1139,23 @@ router.put(
         return respond(
           changeType === "upgrade"
             ? "Address plan updated in Stripe"
-            : "Address downgrade scheduled in Stripe"
+            : "Address downgrade scheduled in Stripe",
+          {
+            action: "Plan Changed",
+            entityType: "Subscription",
+            entityId: activeSub._id,
+            entityName: `${user.name} - ${addr.line1}`,
+            details: {
+              customerName: user.name,
+              email: user.email,
+              addressId,
+              address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
+              previousPlan: previousAddressPlan,
+              newPlan: planRaw,
+              changeType,
+              source: "admin_panel_stripe",
+            },
+          }
         );
       }
 
@@ -870,7 +1223,21 @@ router.put(
         console.log("GHL subscription add automation error:", e.message);
       }
 
-      return respond("Address plan updated");
+      return respond("Address plan updated", {
+        action: "Plan Changed",
+        entityType: "Subscription",
+        entityId: sub._id,
+        entityName: `${user.name} - ${addr.line1}`,
+        details: {
+          customerName: user.name,
+          email: user.email,
+          addressId,
+          address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
+          previousPlan: previousAddressPlan,
+          newPlan: planRaw,
+          source: "admin_panel_db",
+        },
+      });
     } catch (err) {
       console.error("❌ Per-address plan update error:", err.message);
       res.status(err?.statusCode || 500).json({ message: "Server error", error: err.message });
@@ -1735,6 +2102,24 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
       console.log("Mail status-change error:", e.message);
     }
 
+    if (prev.toLowerCase() !== "canceled" && status.toLowerCase() === "canceled") {
+      await createAdminActivityLog(req, {
+        action: "Booking Manually Canceled",
+        entityType: "Booking",
+        entityId: booking._id,
+        entityName: booking.bookingNumber || booking.name,
+        details: {
+          bookingNumber: booking.bookingNumber,
+          customerName: booking.name,
+          customerEmail: booking.email,
+          service: booking.service,
+          date: booking.date,
+          previousStatus: prev,
+          newStatus: status,
+        },
+      });
+    }
+
     res.json({ message: "Status updated", booking });
   } catch (err) {
     console.error("❌ Update booking status error:", err);
@@ -1907,6 +2292,21 @@ router.post("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
       reason: req.body.reason || "",
     });
 
+    await createAdminActivityLog(req, {
+      action: "Customer Blocked",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name || user.email || user.userId,
+      details: {
+        customerName: user.name,
+        email: user.email,
+        phone: user.phone,
+        userId: user.userId,
+        reason: req.body.reason || "",
+        blacklistId: entry._id,
+      },
+    });
+
     res.json({ message: "Added to blacklist", id: entry._id });
   } catch (e) {
     console.error("❌ blacklist POST:", e.message);
@@ -1918,15 +2318,46 @@ router.post("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
 router.delete("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    let removed = await Blacklist.findByIdAndDelete(id);
+    let target = await Blacklist.findById(id).lean();
 
-    if (!removed && /^[0-9a-fA-F]{24}$/.test(id)) {
-      removed = await Blacklist.findOneAndDelete({ user: id });
+    if (!target && /^[0-9a-fA-F]{24}$/.test(id)) {
+      target = await Blacklist.findOne({ user: id }).lean();
     }
 
+    if (!target) {
+      return res.status(404).json({ message: "Blacklist entry not found" });
+    }
+
+    const audit = await createAdminActivityLog(req, {
+      action: "Customer Unblock Started",
+      entityType: "Blacklist",
+      entityId: target._id,
+      entityName: target.name || target.email || target.userId || "Blacklist entry",
+      details: {
+        customerName: target.name,
+        email: target.email,
+        phone: target.phone,
+        userId: target.userId,
+        reason: target.reason || "",
+      },
+    });
+
+    const removed = await Blacklist.findByIdAndDelete(target._id);
     if (!removed) {
       return res.status(404).json({ message: "Blacklist entry not found" });
     }
+
+    await markAdminActivityLog(audit, {
+      action: "Customer Unblocked",
+      details: {
+        customerName: target.name,
+        email: target.email,
+        phone: target.phone,
+        userId: target.userId,
+        reason: target.reason || "",
+        unblockedAt: new Date().toISOString(),
+      },
+    });
 
     res.json({ message: "Removed from blacklist" });
   } catch (e) {
@@ -2024,6 +2455,66 @@ router.put("/requests/:id/status", auth, onlyAdmin, async (req, res) => {
   } catch (err) {
     console.error("❌ Failed to update request status:", err.message);
     res.status(500).json({ message: "Failed to update request status" });
+  }
+});
+
+// DELETE /api/admin/requests/:id
+router.delete("/requests/:id", auth, onlyAdmin, async (req, res) => {
+  try {
+    const rawId = String(req.params.id || "");
+    const isEstimateLead = rawId.startsWith("estimate:");
+    const actualId = isEstimateLead ? rawId.slice("estimate:".length) : rawId;
+
+    if (!mongoose.isValidObjectId(actualId)) {
+      return res.status(400).json({ message: "Invalid lead ID" });
+    }
+
+    const Model = isEstimateLead ? EstimateLead : Request;
+    const lead = await Model.findById(actualId).lean();
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+    const expectedConfirmation = String(lead.name || "").trim();
+    if (!expectedConfirmation || String(req.body?.confirmation || "") !== expectedConfirmation) {
+      return res.status(400).json({
+        message: `Type ${expectedConfirmation || "the lead name"} exactly to delete this lead.`,
+      });
+    }
+
+    const audit = await createAdminActivityLog(req, {
+      action: "Lead Delete Started",
+      entityType: "Lead",
+      entityId: rawId,
+      entityName: lead.name || lead.email || rawId,
+      details: {
+        leadName: lead.name,
+        leadEmail: lead.email,
+        leadPhone: lead.phone,
+        leadType: lead.serviceType || lead.service || lead.leadSource || "",
+        leadId: rawId,
+        source: isEstimateLead ? "EstimateLead" : "Request",
+      },
+    });
+
+    const deleted = await Model.findByIdAndDelete(actualId);
+    if (!deleted) return res.status(404).json({ message: "Lead not found" });
+
+    await markAdminActivityLog(audit, {
+      action: "Lead Deleted",
+      details: {
+        leadName: lead.name,
+        leadEmail: lead.email,
+        leadPhone: lead.phone,
+        leadType: lead.serviceType || lead.service || lead.leadSource || "",
+        leadId: rawId,
+        source: isEstimateLead ? "EstimateLead" : "Request",
+        deletedAt: new Date().toISOString(),
+      },
+    });
+
+    return res.json({ message: "Lead deleted" });
+  } catch (err) {
+    console.error("Failed to delete lead:", err);
+    return res.status(500).json({ message: "Failed to delete lead" });
   }
 });
 

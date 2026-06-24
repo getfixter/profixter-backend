@@ -38,6 +38,7 @@ function serviceLabel(service) {
       "full-house": "Full House Renovation",
       basement: "Basement Finishing",
       interior: "Interior Renovations",
+      "community-partnership": "Community Partnership",
       other: "Other Larger Project",
     }[service] || service
   );
@@ -74,6 +75,7 @@ router.post("/", async (req, res) => {
         "full-house",
         "basement",
         "interior",
+        "community-partnership",
         "other",
       ].includes(service)
     ) {

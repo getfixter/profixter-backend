@@ -24,6 +24,7 @@ const {
   assertEditableCalendarDate,
   dateForInstant,
 } = require("../utils/shadowCalendarDatePolicy");
+const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
 router.use(auth, ...requirePermission(PERMISSIONS.SCHEDULE_READ));
 const scheduleWrite = requirePermission(PERMISSIONS.SCHEDULE_WRITE);
@@ -303,6 +304,13 @@ router.delete(
       const { scopeType, technicianId } = scopeFromBody(req.query || {});
       const date = String(req.query.date || "");
       assertEditableCalendarDate(date);
+      await createAdminActivityLog(req, {
+        action: "Calendar Day Override Restored",
+        entityType: "AvailabilityOverride",
+        entityId: `${scopeType}:${technicianId || "company"}:${date}`,
+        entityName: date,
+        details: { scopeType, technicianId, date },
+      });
       await AvailabilityOverride.deleteOne({
         scopeType,
         technicianId,
@@ -334,6 +342,13 @@ router.post(
       let override = await findCapacityOverride(key);
 
       if (action === "open" || action === "restore") {
+        await createAdminActivityLog(req, {
+          action: "Calendar Capacity Override Restored",
+          entityType: "CapacityOverride",
+          entityId: `${scopeType}:${technicianId || "company"}:${date}:${startTime}-${endTime}`,
+          entityName: `${date} ${startTime}-${endTime}`,
+          details: key,
+        });
         await CapacityOverride.deleteMany(key);
         return res.json({ override: null, restored: true });
       }
@@ -345,6 +360,13 @@ router.post(
         if (override.mode === "block_spots" && override.value > 0) {
           override.value -= 1;
           if (override.value === 0) {
+            await createAdminActivityLog(req, {
+              action: "Calendar Capacity Override Restored",
+              entityType: "CapacityOverride",
+              entityId: `${scopeType}:${technicianId || "company"}:${date}:${startTime}-${endTime}`,
+              entityName: `${date} ${startTime}-${endTime}`,
+              details: { ...key, reason: "block_spots_zero" },
+            });
             await CapacityOverride.deleteMany(key);
             return res.json({ override: null, restored: true });
           }
@@ -358,6 +380,13 @@ router.post(
         if (override.mode === "adjust_capacity" && override.value > 0) {
           override.value -= 1;
           if (override.value === 0) {
+            await createAdminActivityLog(req, {
+              action: "Calendar Capacity Override Restored",
+              entityType: "CapacityOverride",
+              entityId: `${scopeType}:${technicianId || "company"}:${date}:${startTime}-${endTime}`,
+              entityName: `${date} ${startTime}-${endTime}`,
+              details: { ...key, reason: "adjust_capacity_zero" },
+            });
             await CapacityOverride.deleteMany(key);
             return res.json({ override: null, restored: true });
           }
@@ -456,6 +485,19 @@ router.delete(
     const entry = await TechnicianTimeOff.findById(req.params.id);
     if (!entry) return res.status(404).json({ message: "Time off not found" });
     assertEditableCalendarDate(dateForInstant(entry.startAt));
+    await createAdminActivityLog(req, {
+      action: "Technician Time Off Canceled",
+      entityType: "TechnicianTimeOff",
+      entityId: entry._id,
+      entityName: String(entry.reason || entry.type || entry._id),
+      details: {
+        technicianId: entry.technicianId,
+        startAt: entry.startAt,
+        endAt: entry.endAt,
+        type: entry.type,
+        reason: entry.reason,
+      },
+    });
     entry.status = "canceled";
     await entry.save();
     return res.json({ canceled: true });
@@ -470,6 +512,13 @@ router.put(
       assertEditableCalendarDate(req.params.date);
       const noteText = String(req.body.note || "").trim();
       if (!noteText) {
+        await createAdminActivityLog(req, {
+          action: "Calendar Day Note Deleted",
+          entityType: "CalendarDayNote",
+          entityId: req.params.date,
+          entityName: req.params.date,
+          details: { date: req.params.date, source: "empty_note_save" },
+        });
         await CalendarDayNote.deleteOne({ date: req.params.date });
         return res.json({ note: null });
       }
@@ -495,6 +544,13 @@ router.delete(
   ...scheduleWrite,
   asyncRoute(async (req, res) => {
     assertEditableCalendarDate(req.params.date);
+    await createAdminActivityLog(req, {
+      action: "Calendar Day Note Deleted",
+      entityType: "CalendarDayNote",
+      entityId: req.params.date,
+      entityName: req.params.date,
+      details: { date: req.params.date },
+    });
     await CalendarDayNote.deleteOne({ date: req.params.date });
     return res.json({ deleted: true });
   })

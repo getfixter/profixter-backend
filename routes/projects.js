@@ -5,6 +5,10 @@ const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const {
+  createAdminActivityLog,
+  markAdminActivityLog,
+} = require("../utils/adminActivityLog");
 
 const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -197,14 +201,51 @@ router.delete("/:id", async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: "Invalid project ID" });
     }
+    const project = await Project.findById(req.params.id).lean();
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    if (String(req.body?.confirmation || "") !== String(project.projectNumber || "")) {
+      return res.status(400).json({
+        message: `Type ${project.projectNumber} to delete this project.`,
+      });
+    }
+
     const hasEstimates = await Estimate.exists({ projectId: req.params.id });
     if (hasEstimates) {
       return res.status(409).json({
         message: "Delete this project's estimates before deleting the project",
       });
     }
-    const project = await Project.findByIdAndDelete(req.params.id);
-    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    const audit = await createAdminActivityLog(req, {
+      action: "Project Delete Started",
+      entityType: "Project",
+      entityId: project._id,
+      entityName: project.projectNumber,
+      details: {
+        projectNumber: project.projectNumber,
+        customer: project.customerName,
+        customerEmail: project.email,
+        projectType: project.projectType,
+        projectStatus: project.status,
+      },
+    });
+
+    const deleted = await Project.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: "Project not found" });
+
+    await markAdminActivityLog(audit, {
+      action: "Project Deleted",
+      details: {
+        projectNumber: project.projectNumber,
+        customer: project.customerName,
+        customerEmail: project.email,
+        projectType: project.projectType,
+        projectStatus: project.status,
+        deletedAt: new Date().toISOString(),
+      },
+    });
+
     return res.json({ message: "Project deleted" });
   } catch (error) {
     console.error("DELETE /admin/projects/:id failed:", error);

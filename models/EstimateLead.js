@@ -16,6 +16,7 @@ const EstimateLeadSchema = new mongoose.Schema(
         "full-house",
         "basement",
         "interior",
+        "community-partnership",
         "other",
       ],
       required: true,

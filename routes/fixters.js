@@ -11,6 +11,10 @@ const AvailabilityOverride = require("../models/AvailabilityOverride");
 const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
+const {
+  createAdminActivityLog,
+  markAdminActivityLog,
+} = require("../utils/adminActivityLog");
 
 const router = express.Router();
 const POSITIONS = ["Fixter", "General Fixter"];
@@ -375,6 +379,19 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
+    const audit = await createAdminActivityLog(req, {
+      action: "Fixter Delete Started",
+      entityType: "Fixter",
+      entityId: user._id,
+      entityName: user.name || user.email,
+      details: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        employeePosition: user.employeePosition,
+      },
+    });
+
     await Promise.all([
       TechnicianAvailabilityTemplate.deleteMany({
         technicianId: user._id,
@@ -390,6 +407,16 @@ router.delete("/:id", async (req, res) => {
       }),
     ]);
     await User.deleteOne({ _id: user._id, role: "employee" });
+    await markAdminActivityLog(audit, {
+      action: "Fixter Deleted",
+      details: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        employeePosition: user.employeePosition,
+        deletedAt: new Date().toISOString(),
+      },
+    });
     return res.json({ deleted: true, fixterId: String(user._id) });
   } catch (error) {
     console.error("Delete Fixter failed:", error);

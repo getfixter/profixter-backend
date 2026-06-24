@@ -5,6 +5,10 @@ const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const {
+  createAdminActivityLog,
+  markAdminActivityLog,
+} = require("../utils/adminActivityLog");
 
 const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -263,8 +267,33 @@ router.delete("/:id", async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: "Invalid estimate ID" });
     }
-    const estimate = await Estimate.findByIdAndDelete(req.params.id);
+    const estimate = await Estimate.findById(req.params.id).lean();
     if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+
+    const audit = await createAdminActivityLog(req, {
+      action: "Estimate Delete Started",
+      entityType: "Estimate",
+      entityId: estimate._id,
+      entityName: estimate.title || String(estimate._id),
+      details: {
+        title: estimate.title,
+        projectId: estimate.projectId,
+        status: estimate.status,
+      },
+    });
+
+    const deleted = await Estimate.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: "Estimate not found" });
+
+    await markAdminActivityLog(audit, {
+      action: "Estimate Deleted",
+      details: {
+        title: estimate.title,
+        projectId: estimate.projectId,
+        status: estimate.status,
+        deletedAt: new Date().toISOString(),
+      },
+    });
     return res.json({ message: "Estimate deleted" });
   } catch (error) {
     console.error("DELETE /admin/estimates/:id failed:", error);

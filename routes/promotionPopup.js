@@ -2,6 +2,7 @@ const express = require("express");
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const PromotionPopup = require("../models/PromotionPopup");
+const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
 const router = express.Router();
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
@@ -162,6 +163,19 @@ router.put(
         },
         { new: true, upsert: true, runValidators: true }
       );
+      await createAdminActivityLog(req, {
+        action: "Promotion Popup Updated",
+        entityType: "PromotionPopup",
+        entityId: popup._id,
+        entityName: popup.title || "Promotion Popup",
+        details: {
+          enabled: popup.enabled,
+          title: popup.title,
+          target: popup.target,
+          startAt: popup.startAt,
+          endAt: popup.endAt,
+        },
+      });
       return res.json({ popup });
     } catch (error) {
       return res
