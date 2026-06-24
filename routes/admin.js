@@ -1069,15 +1069,44 @@ router.get(
   async (req, res) => {
     try {
       const booking = await Booking.findById(req.params.bookingId)
-        .select("_id assignedFixterId")
+        .select("_id name email user")
         .lean();
       if (!booking) {
         return res.status(404).json({ message: "Booking not found" });
       }
       const history = await BookingHistory.find({ bookingId: booking._id })
         .sort({ createdAt: -1 })
+        .populate("actorUserId", "name email role employeePosition")
         .lean();
-      return res.json({ history });
+      const enrichedHistory = history.map((entry) => {
+        const actorUser =
+          entry.actorUserId && typeof entry.actorUserId === "object"
+            ? entry.actorUserId
+            : null;
+        const actorRole = String(entry.actorRole || actorUser?.role || "system");
+        const actorPosition = String(
+          entry.actorPosition || actorUser?.employeePosition || ""
+        );
+        const actorName =
+          actorUser?.name ||
+          (actorRole.toLowerCase() === "customer" &&
+          ["customer", "unknown user"].includes(
+            String(entry.actorName || "").trim().toLowerCase()
+          )
+            ? booking.name
+            : entry.actorName) ||
+          "System";
+
+        return {
+          ...entry,
+          actorUserId: actorUser?._id || entry.actorUserId || null,
+          actorName,
+          actorEmail: entry.actorEmail || actorUser?.email || "",
+          actorRole,
+          actorPosition,
+        };
+      });
+      return res.json({ history: enrichedHistory });
     } catch (error) {
       console.error("Load booking history failed:", error);
       return res.status(500).json({ message: "Failed to load booking history" });
@@ -1336,7 +1365,19 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
             service: booking.service,
             address,
           },
-          { bccAdmin: false }
+          {
+            bccAdmin: false,
+            logContext: {
+              bookingId: booking._id,
+              bookingNumber: booking.bookingNumber,
+              customerName: booking.name || u.name || "",
+              customerEmail: booking.email || u.email || "",
+              recipientName: booking.name || u.name || "",
+              recipientEmail: booking.email || u.email || "",
+              emailType: "transactional",
+              source: "adminBookingStatus",
+            },
+          }
         );
       }
     } catch (e) {

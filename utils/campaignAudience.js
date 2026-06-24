@@ -37,6 +37,11 @@ function userMatchesSegment(recipient, segment) {
   return recipient.plans.includes(segment);
 }
 
+function isCustomerLike(user) {
+  const role = String(user?.role || "").trim().toLowerCase();
+  return !role || role === "customer";
+}
+
 function buildEligibleRecipients({
   users,
   subscriptions,
@@ -59,7 +64,7 @@ function buildEligibleRecipients({
   for (const user of users) {
     const email = normalizeEmail(user.email);
     if (
-      user.role !== "customer" ||
+      !isCustomerLike(user) ||
       user.isActive === false ||
       !EMAIL_RE.test(email) ||
       email === normalizeEmail(adminEmail) ||
@@ -135,13 +140,62 @@ function buildEligibleRecipients({
   });
 }
 
-async function resolveAudience(segmentInput) {
+function normalizeExclusionSet(values = []) {
+  return new Set(
+    (Array.isArray(values) ? values : [values])
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function applyRecipientExclusions(recipients, options = {}) {
+  const excludedUserIds = normalizeExclusionSet(options.excludedUserIds);
+  const excludedEmails = normalizeExclusionSet(options.excludedEmails);
+  const included = [];
+  const excluded = [];
+
+  for (const recipient of recipients) {
+    const userId = String(recipient.id || recipient.userId || "").toLowerCase();
+    const email = normalizeEmail(recipient.email);
+    const excludedByAdmin =
+      excludedUserIds.has(userId) ||
+      excludedUserIds.has(String(recipient.userId || "").toLowerCase()) ||
+      excludedEmails.has(email);
+    if (excludedByAdmin) excluded.push({ ...recipient, excludedReason: "manual_exclusion" });
+    else included.push(recipient);
+  }
+
+  return { included, excluded };
+}
+
+function publicRecipient(recipient) {
+  return {
+    id: recipient.id,
+    userId: recipient.userId,
+    name: recipient.name || recipient.fullName || "",
+    email: recipient.email,
+    phone: recipient.phone || "",
+    plans: recipient.plans || [],
+    subscriptionStatuses: recipient.subscriptionStatuses || [],
+    address: recipient.address || "",
+    city: recipient.city || "",
+    state: recipient.state || "",
+    zip: recipient.zip || "",
+  };
+}
+
+async function resolveAudience(segmentInput, options = {}) {
   const segment = normalizeSegment(segmentInput);
   const adminEmail = normalizeEmail(process.env.MAIL_ADMIN || "getfixter@gmail.com");
 
   const [users, blacklist, suppressions] = await Promise.all([
     User.find({
-      role: "customer",
+      $or: [
+        { role: "customer" },
+        { role: { $exists: false } },
+        { role: null },
+        { role: "" },
+      ],
       isActive: { $ne: false },
       email: { $exists: true, $nin: [null, ""] },
     })
@@ -172,12 +226,19 @@ async function resolveAudience(segmentInput) {
     suppressions,
     adminEmail,
   });
+  const matchingRecipients = allEligible.filter((recipient) =>
+    userMatchesSegment(recipient, segment)
+  );
+  const { included, excluded } = applyRecipientExclusions(
+    matchingRecipients,
+    options
+  );
 
   return {
     segment,
-    recipients: allEligible.filter((recipient) =>
-      userMatchesSegment(recipient, segment)
-    ),
+    recipients: included,
+    excludedRecipients: excluded,
+    eligibleBeforeExclusions: matchingRecipients.length,
   };
 }
 
@@ -205,9 +266,11 @@ async function resolveAudienceCounts() {
 
 module.exports = {
   SEGMENTS,
+  applyRecipientExclusions,
   buildEligibleRecipients,
   normalizeEmail,
   normalizeSegment,
+  publicRecipient,
   resolveAudience,
   resolveAudienceCounts,
 };

@@ -1207,7 +1207,7 @@ async function createBookingWithReservation({
       await booking.save({ session });
       await writeBookingCreated({
         booking,
-        actorName: createdByType === "customer" ? "Customer" : "System",
+        actor: historyActor({ actorUser, createdByType }),
         session,
       });
       await writeReservationAction({

@@ -7,6 +7,7 @@ const Counter = require("../models/Counter");
 const EmailCampaign = require("../models/EmailCampaign");
 const {
   normalizeSegment,
+  publicRecipient,
   resolveAudience,
   resolveAudienceCounts,
 } = require("../utils/campaignAudience");
@@ -56,7 +57,19 @@ function validateCampaignInput(body = {}) {
     error.statusCode = 400;
     throw error;
   }
-  return { segment, subject, body: message, ctaText, ctaUrl };
+  return {
+    segment,
+    subject,
+    body: message,
+    ctaText,
+    ctaUrl,
+    excludedUserIds: Array.isArray(body.excludedUserIds)
+      ? body.excludedUserIds.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+    excludedEmails: Array.isArray(body.excludedEmails)
+      ? body.excludedEmails.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+      : [],
+  };
 }
 
 function segmentLabel(segment) {
@@ -137,10 +150,47 @@ router.get("/campaigns/variables", auth, ...onlyAdmin, (_req, res) => {
   return res.json({ groups: MERGE_TAG_GROUPS });
 });
 
+router.get("/campaigns/recipients", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const segment = normalizeSegment(req.query.segment || "all");
+    const excludedUserIds = String(req.query.excludedUserIds || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const excludedEmails = String(req.query.excludedEmails || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const {
+      recipients,
+      excludedRecipients,
+      eligibleBeforeExclusions,
+    } = await resolveAudience(segment, { excludedUserIds, excludedEmails });
+
+    return res.json({
+      segment,
+      includedCount: recipients.length,
+      excludedCount: excludedRecipients.length,
+      eligibleBeforeExclusions,
+      recipients: recipients.map(publicRecipient),
+      excludedRecipients: excludedRecipients.map(publicRecipient),
+    });
+  } catch (error) {
+    console.error("Load campaign recipients failed:", error);
+    return res
+      .status(error.statusCode || 500)
+      .json({ message: error.message || "Failed to load campaign recipients" });
+  }
+});
+
 router.post("/campaigns/preview", auth, ...onlyAdmin, async (req, res) => {
   try {
     const input = validateCampaignInput(req.body);
-    const { recipients } = await resolveAudience(input.segment);
+    const {
+      recipients,
+      excludedRecipients,
+      eligibleBeforeExclusions,
+    } = await resolveAudience(input.segment, input);
     const rendered = renderCampaignEmail({
       ...input,
       recipient: sampleRecipient(recipients),
@@ -152,6 +202,9 @@ router.post("/campaigns/preview", auth, ...onlyAdmin, async (req, res) => {
       html: rendered.html,
       text: rendered.text,
       sampleValues: valuesForRecipient(sampleRecipient(recipients)),
+      includedRecipients: recipients.map(publicRecipient),
+      excludedRecipientCount: excludedRecipients.length,
+      eligibleBeforeExclusions,
     });
   } catch (error) {
     return res
@@ -163,7 +216,10 @@ router.post("/campaigns/preview", auth, ...onlyAdmin, async (req, res) => {
 router.post("/campaigns/test", auth, ...onlyAdmin, async (req, res) => {
   try {
     const input = validateCampaignInput(req.body);
-    const { recipients } = await resolveAudience(input.segment);
+    const { recipients, excludedRecipients } = await resolveAudience(
+      input.segment,
+      input
+    );
     const timestamp = new Date().toLocaleString("en-US", {
       timeZone: "America/New_York",
       dateStyle: "medium",
@@ -180,11 +236,21 @@ router.post("/campaigns/test", auth, ...onlyAdmin, async (req, res) => {
         timestamp,
       }),
     });
-    const info = await sendPromo(ADMIN_EMAIL, rendered);
+    const info = await sendPromo(ADMIN_EMAIL, {
+      ...rendered,
+      logContext: {
+        templateKey: "campaign_test",
+        recipientEmail: ADMIN_EMAIL,
+        customerEmail: ADMIN_EMAIL,
+        emailType: "campaign",
+        source: "adminCampaignTest",
+      },
+    });
     return res.json({
       testOnly: true,
       recipient: ADMIN_EMAIL,
       estimatedRecipientCount: recipients.length,
+      excludedRecipientCount: excludedRecipients.length,
       providerMessageId: info?.messageId || "",
     });
   } catch (error) {
@@ -205,7 +271,11 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
     }
 
     const input = validateCampaignInput(req.body);
-    const { recipients } = await resolveAudience(input.segment);
+    const {
+      recipients,
+      excludedRecipients,
+      eligibleBeforeExclusions,
+    } = await resolveAudience(input.segment, input);
     const campaignNumber = await nextCampaignNumber();
     campaign = await EmailCampaign.create({
       campaignNumber,
@@ -214,7 +284,7 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
       ctaText: input.ctaText,
       ctaUrl: input.ctaUrl,
       selectedSegment: input.segment,
-      resolvedRecipientCount: recipients.length,
+      resolvedRecipientCount: eligibleBeforeExclusions,
       actorUserId: req.authUser?._id || req.user?.id || null,
       actorName: req.authUser?.name || "",
       actorEmail: req.authUser?.email || "",
@@ -239,7 +309,18 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
         timestamp,
       }),
     });
-    await sendPromo(ADMIN_EMAIL, adminRendered);
+    await sendPromo(ADMIN_EMAIL, {
+      ...adminRendered,
+      logContext: {
+        templateKey: "campaign_admin_copy",
+        campaignId: campaign._id,
+        campaignNumber,
+        recipientEmail: ADMIN_EMAIL,
+        customerEmail: ADMIN_EMAIL,
+        emailType: "campaign",
+        source: "adminCampaignSend",
+      },
+    });
     campaign.adminCopySent = true;
     await campaign.save();
 
@@ -259,6 +340,18 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
             const info = await sendPromo(recipient.email, {
               ...rendered,
               headers,
+              logContext: {
+                templateKey: "campaign",
+                campaignId: campaign._id,
+                campaignNumber,
+                recipientName: recipient.name || recipient.fullName || "",
+                recipientEmail: recipient.email,
+                customerName: recipient.name || recipient.fullName || "",
+                customerEmail: recipient.email,
+                userId: recipient._id || recipient.userId || null,
+                emailType: "campaign",
+                source: "adminCampaignSend",
+              },
             });
             return {
               email: recipient.email,
@@ -291,7 +384,7 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
 
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
-    campaign.skippedCount = 0;
+    campaign.skippedCount = excludedRecipients.length;
     campaign.status = failedCount ? "completed_with_errors" : "completed";
     campaign.errorsSummary = errorsSummary;
     campaign.recipientResults = results;
@@ -304,7 +397,8 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
       total: recipients.length,
       sent: sentCount,
       failed: failedCount,
-      skipped: 0,
+      skipped: excludedRecipients.length,
+      excluded: excludedRecipients.length,
       adminCopySent: true,
       status: campaign.status,
       errors: results

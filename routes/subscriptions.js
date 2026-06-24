@@ -419,7 +419,18 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
           accessEndDate: updatedSubscription.cancellationDate
             ? mail.formatNYCTime(updatedSubscription.cancellationDate.toISOString())
             : null,
-        }, { bccAdmin: false });
+        }, {
+          bccAdmin: false,
+          logContext: {
+            userId: user._id,
+            customerName: user.name || "",
+            customerEmail: user.email,
+            recipientName: user.name || "",
+            recipientEmail: user.email,
+            emailType: "billing",
+            source: "subscriptionSelfServe",
+          },
+        });
       } catch (emailErr) {
         console.error("subscription_cancellation_scheduled email failed:", emailErr.message);
       }

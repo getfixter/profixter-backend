@@ -368,7 +368,18 @@ async function handleCheckoutCompleted(session) {
         ? `${subscription.addressSnapshot.line1}, ${subscription.addressSnapshot.city}, ${subscription.addressSnapshot.state}`
         : null,
     },
-    { bccAdmin: false }
+    {
+      bccAdmin: false,
+      logContext: {
+        userId: user._id,
+        customerName: user.name || "",
+        customerEmail: user.email,
+        recipientName: user.name || "",
+        recipientEmail: user.email,
+        emailType: "billing",
+        source: "stripeWebhook",
+      },
+    }
   );
 
   await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
@@ -387,6 +398,15 @@ async function handleCheckoutCompleted(session) {
           : "No address assigned"
       }</p>
     `,
+    logContext: {
+      templateKey: "admin_subscription_started",
+      userId: user._id,
+      customerName: user.name || "",
+      customerEmail: user.email,
+      recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
+      emailType: "admin",
+      source: "stripeWebhook",
+    },
   });
 }
 
@@ -459,7 +479,18 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
         accessEndDate: subscription.cancellationDate
           ? mail.formatNYCTime(subscription.cancellationDate.toISOString())
           : null,
-      }, { bccAdmin: false });
+      }, {
+        bccAdmin: false,
+        logContext: {
+          userId: user._id,
+          customerName: user.name || "",
+          customerEmail: user.email,
+          recipientName: user.name || "",
+          recipientEmail: user.email,
+          emailType: "billing",
+          source: "stripeWebhook",
+        },
+      });
     } catch (emailErr) {
       console.error("subscription_cancellation_scheduled email failed:", emailErr.message);
     }
@@ -475,7 +506,18 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
         plan: planStr,
         address: addrStr,
         canceledDate: endedDate ? mail.formatNYCTime(endedDate.toISOString()) : null,
-      }, { bccAdmin: false });
+      }, {
+        bccAdmin: false,
+        logContext: {
+          userId: user._id,
+          customerName: user.name || "",
+          customerEmail: user.email,
+          recipientName: user.name || "",
+          recipientEmail: user.email,
+          emailType: "billing",
+          source: "stripeWebhook",
+        },
+      });
     } catch (emailErr) {
       console.error("subscription_canceled email failed:", emailErr.message);
     }
@@ -530,7 +572,18 @@ async function handleInvoicePaymentFailed(invoice) {
         plan,
         amount,
         billingDate,
-      }, { bccAdmin: false });
+      }, {
+        bccAdmin: false,
+        logContext: {
+          userId: user._id,
+          customerName: user.name || "",
+          customerEmail: user.email,
+          recipientName: user.name || "",
+          recipientEmail: user.email,
+          emailType: "billing",
+          source: "stripeWebhook",
+        },
+      });
     } catch (emailErr) {
       console.error("payment_failed email failed:", emailErr.message);
     }

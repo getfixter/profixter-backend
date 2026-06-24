@@ -5,6 +5,8 @@
 // -----------------------------------------------------------------------------
 
 const nodemailer = require("nodemailer");
+const mongoose = require("mongoose");
+const EmailLog = require("../models/EmailLog");
 const {
   createCustomerEmailTemplates,
 } = require("./customerEmailTemplates");
@@ -1045,6 +1047,88 @@ Object.assign(
 
 const BCC_ADMIN = new Set(["welcome", "subscription_started", "booking_created"]);
 
+const EMAIL_LOG_TRUNCATE = 2000;
+
+function truncateLogValue(value, max = EMAIL_LOG_TRUNCATE) {
+  if (value === undefined || value === null) return "";
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 0);
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function normalizeEmailValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function maybeObjectId(value) {
+  if (!value) return null;
+  const text = String(value);
+  return mongoose.Types.ObjectId.isValid(text) ? text : null;
+}
+
+function providerResponse(info) {
+  if (!info) return "";
+  return truncateLogValue({
+    response: info.response || "",
+    accepted: info.accepted || [],
+    rejected: info.rejected || [],
+    envelope: info.envelope || null,
+  });
+}
+
+function buildEmailLogPayload({
+  status,
+  to,
+  subject,
+  info,
+  error,
+  logContext = {},
+}) {
+  const now = new Date();
+  const recipientEmail = normalizeEmailValue(
+    logContext.recipientEmail || to
+  );
+  return {
+    templateKey: String(logContext.templateKey || "").trim(),
+    subject: String(subject || "").trim(),
+    recipientEmail,
+    recipientName: String(logContext.recipientName || "").trim(),
+    customerEmail: normalizeEmailValue(
+      logContext.customerEmail || logContext.recipientEmail || to
+    ),
+    customerName: String(logContext.customerName || "").trim(),
+    userId: logContext.userId || null,
+    bookingId: maybeObjectId(logContext.bookingId),
+    bookingNumber: String(logContext.bookingNumber || "").trim(),
+    campaignId: maybeObjectId(logContext.campaignId),
+    campaignNumber: String(logContext.campaignNumber || "").trim(),
+    source: String(logContext.source || "").trim(),
+    emailType: String(logContext.emailType || "").trim(),
+    status,
+    sentAt: status === "sent" ? now : null,
+    failedAt: status === "failed" ? now : null,
+    provider: String(logContext.provider || "nodemailer").trim(),
+    providerMessageId: String(info?.messageId || "").trim(),
+    providerResponse: status === "sent" ? providerResponse(info) : "",
+    errorMessage: error ? truncateLogValue(error?.message || error) : "",
+    errorCode: String(error?.code || "").trim(),
+    responseCode: String(error?.responseCode || "").trim(),
+  };
+}
+
+async function safeCreateEmailLog(payload) {
+  try {
+    await EmailLog.create(payload);
+  } catch (logError) {
+    console.warn("EmailLog write failed", {
+      message: logError?.message || "",
+      templateKey: payload?.templateKey || "",
+      recipientEmail: payload?.recipientEmail || "",
+      status: payload?.status || "",
+    });
+  }
+}
+
 async function sendRaw({
   to,
   subject,
@@ -1055,6 +1139,7 @@ async function sendRaw({
   replyTo = REPLY_TO,
   headers = {},
   attachments,
+  logContext = {},
 }) {
   const cleanTo = String(to || "").trim().toLowerCase();
 
@@ -1086,6 +1171,16 @@ async function sendRaw({
   try {
     const info = await transporter.sendMail(mail);
 
+    void safeCreateEmailLog(
+      buildEmailLogPayload({
+        status: "sent",
+        to: cleanTo,
+        subject,
+        info,
+        logContext,
+      })
+    );
+
     if (process.env.NODE_ENV !== "production") {
       console.log("Mail sent:", info.messageId, "to", cleanTo);
     }
@@ -1102,6 +1197,15 @@ async function sendRaw({
       responseCode: err?.responseCode || "",
       command: err?.command || "",
     });
+    void safeCreateEmailLog(
+      buildEmailLogPayload({
+        status: "failed",
+        to: cleanTo,
+        subject,
+        error: err,
+        logContext,
+      })
+    );
     throw err;
   }
 }
@@ -1111,10 +1215,21 @@ async function sendTx(key, to, vars = {}, opts = {}) {
   if (!t) throw new Error(`Unknown template: ${key}`);
   const { subject, html, text } = t(vars);
   const bccAdmin = opts.bccAdmin ?? BCC_ADMIN.has(key);
-  return sendRaw({ to, subject, html, text, bccAdmin });
+  return sendRaw({
+    to,
+    subject,
+    html,
+    text,
+    bccAdmin,
+    logContext: {
+      templateKey: key,
+      source: "sendTx",
+      ...opts.logContext,
+    },
+  });
 }
 
-async function sendPromo(to, { subject, html, text, headers = {} }) {
+async function sendPromo(to, { subject, html, text, headers = {}, logContext = {} }) {
   return sendRaw({
     to,
     subject,
@@ -1123,12 +1238,18 @@ async function sendPromo(to, { subject, html, text, headers = {} }) {
     headers,
     from: MARKETING_FROM,
     bccAdmin: false,
+    logContext: {
+      templateKey: "promo",
+      source: "sendPromo",
+      emailType: "marketing",
+      ...logContext,
+    },
   });
 }
 
 async function sendPromoMarkdown(
   to,
-  { subject, markdown, preheader = "", headers = {} }
+  { subject, markdown, preheader = "", headers = {}, logContext = {} }
 ) {
   const contentHtml = mdToHtml(markdown);
   const html = frame(contentHtml, { preheader });
@@ -1140,6 +1261,12 @@ async function sendPromoMarkdown(
     headers,
     from: MARKETING_FROM,
     bccAdmin: false,
+    logContext: {
+      templateKey: "promo_markdown",
+      source: "sendPromoMarkdown",
+      emailType: "marketing",
+      ...logContext,
+    },
   });
 }
 

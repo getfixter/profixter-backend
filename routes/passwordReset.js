@@ -26,7 +26,15 @@ router.post("/", async (req, res) => {
     const hash = await bcrypt.hash(otp, 12);
     await Otp.create({ email: cleanEmail, hash }); // TTL handled by model
 
-    await mail.sendTx("password_otp", cleanEmail, { otp }, { bccAdmin: false });
+    await mail.sendTx("password_otp", cleanEmail, { otp }, {
+      bccAdmin: false,
+      logContext: {
+        customerEmail: cleanEmail,
+        recipientEmail: cleanEmail,
+        emailType: "security",
+        source: "passwordReset",
+      },
+    });
 
     res.status(200).json({ message: "OTP sent" });
   } catch (err) {
@@ -91,7 +99,18 @@ router.post("/set-password", async (req, res) => {
     user.password = hashedPassword;
     await user.save();
 
-    await mail.sendTx("password_changed", email, { name: user.name }, { bccAdmin: false });
+    await mail.sendTx("password_changed", email, { name: user.name }, {
+      bccAdmin: false,
+      logContext: {
+        userId: user._id,
+        customerName: user.name || "",
+        customerEmail: email,
+        recipientName: user.name || "",
+        recipientEmail: email,
+        emailType: "security",
+        source: "passwordReset",
+      },
+    });
 
     return res.status(200).json({ message: "Password updated" });
   } catch (err) {

@@ -158,6 +158,7 @@ app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
+app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/email", require("./routes/email"));
@@ -196,7 +197,19 @@ if (process.env.WEEKLY_NUDGE_ENABLED === "true") {
 
         for (const group of chunk(notSubscribed, 10)) {
           await Promise.all(
-            group.map((u) => sendTx("nudge_subscribe", u.email, { name: u.name }))
+            group.map((u) =>
+              sendTx("nudge_subscribe", u.email, { name: u.name }, {
+                logContext: {
+                  userId: u._id,
+                  customerName: u.name || "",
+                  customerEmail: u.email,
+                  recipientName: u.name || "",
+                  recipientEmail: u.email,
+                  emailType: "marketing",
+                  source: "weeklyNudge",
+                },
+              })
+            )
           );
           await sleep(400); // ~25 msgs/sec safety
         }
@@ -235,7 +248,16 @@ if (process.env.CHATBOT_FOLLOWUPS_ENABLED === "true") {
 
         for (const lead of wave1) {
           try {
-            await sendTx("nudge_lead_v1", lead.email, { name: lead.name || "there" });
+            await sendTx("nudge_lead_v1", lead.email, { name: lead.name || "there" }, {
+              logContext: {
+                customerName: lead.name || "",
+                customerEmail: lead.email,
+                recipientName: lead.name || "",
+                recipientEmail: lead.email,
+                emailType: "marketing",
+                source: "chatbotFollowups",
+              },
+            });
             await Lead.updateOne({ _id: lead._id }, { $set: { followup1SentAt: new Date() } });
             await sleep(70); // ~14 emails/sec
           } catch (e) {
@@ -255,7 +277,16 @@ if (process.env.CHATBOT_FOLLOWUPS_ENABLED === "true") {
 
         for (const lead of wave2) {
           try {
-            await sendTx("nudge_lead_v2", lead.email, { name: lead.name || "there" });
+            await sendTx("nudge_lead_v2", lead.email, { name: lead.name || "there" }, {
+              logContext: {
+                customerName: lead.name || "",
+                customerEmail: lead.email,
+                recipientName: lead.name || "",
+                recipientEmail: lead.email,
+                emailType: "marketing",
+                source: "chatbotFollowups",
+              },
+            });
             await Lead.updateOne({ _id: lead._id }, { $set: { followup2SentAt: new Date() } });
             await sleep(70);
           } catch (e) {
@@ -321,7 +352,17 @@ if (process.env.NURTURE_ENABLED === "true") {
               });
               if (hasSub) continue;
 
-              await sendTx(key, user.email, { name: user.name || "there" });
+              await sendTx(key, user.email, { name: user.name || "there" }, {
+                logContext: {
+                  userId: user._id,
+                  customerName: user.name || "",
+                  customerEmail: user.email,
+                  recipientName: user.name || "",
+                  recipientEmail: user.email,
+                  emailType: "marketing",
+                  source: "nurtureSequence",
+                },
+              });
               await User.updateOne(
                 { _id: user._id },
                 { $set: { [`nurture.${field}`]: now } }

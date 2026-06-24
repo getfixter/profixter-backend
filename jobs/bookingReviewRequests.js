@@ -184,7 +184,19 @@ async function runBookingReviewRequestCycle(
           name: booking.name || "there",
           bookingNumber: booking.bookingNumber,
         },
-        { bccAdmin: false }
+        {
+          bccAdmin: false,
+          logContext: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+            customerName: booking.name || "",
+            customerEmail: safeEmail(booking.email),
+            recipientName: booking.name || "",
+            recipientEmail: safeEmail(booking.email),
+            emailType: "review",
+            source: "bookingReviewRequests",
+          },
+        }
       );
 
       const markedSent = await BookingModel.updateOne(

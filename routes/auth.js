@@ -278,7 +278,18 @@ router.post("/register", async (req, res) => {
         "welcome",
         user.email,
         { name: user.name || user.email.split("@")[0], userId: user.userId },
-        { bccAdmin: false }
+        {
+          bccAdmin: false,
+          logContext: {
+            userId: user._id,
+            customerName: user.name || "",
+            customerEmail: user.email,
+            recipientName: user.name || "",
+            recipientEmail: user.email,
+            emailType: "transactional",
+            source: "authRegister",
+          },
+        }
       );
     } catch (emailErr) {
       console.error("Welcome email failed after registration:", {
@@ -478,7 +489,17 @@ router.post("/google", async (req, res) => {
       await user.save();
 
       try {
-        await mail.sendTx("welcome", user.email, { name: user.name });
+        await mail.sendTx("welcome", user.email, { name: user.name }, {
+          logContext: {
+            userId: user._id,
+            customerName: user.name || "",
+            customerEmail: user.email,
+            recipientName: user.name || "",
+            recipientEmail: user.email,
+            emailType: "transactional",
+            source: "googleAuth",
+          },
+        });
       } catch (emailError) {
         console.log("Welcome email failed:", emailError.message);
       }

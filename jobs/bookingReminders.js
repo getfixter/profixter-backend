@@ -75,7 +75,18 @@ async function sendReminderEmail({ templateKey, booking, vars }) {
   }
 
   console.log(`Sending ${templateKey} email`, bookingLogShape(booking));
-  const info = await sendTx(templateKey, to, vars);
+  const info = await sendTx(templateKey, to, vars, {
+    logContext: {
+      bookingId: booking._id,
+      bookingNumber: booking.bookingNumber,
+      customerName: booking.name || "",
+      customerEmail: to,
+      recipientName: booking.name || "",
+      recipientEmail: to,
+      emailType: "reminder",
+      source: "bookingReminders",
+    },
+  });
   console.log(`${templateKey} email sent`, {
     ...bookingLogShape(booking),
     messageId: info?.messageId || "",

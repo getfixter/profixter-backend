@@ -253,6 +253,7 @@ async function cancelOrDelete(req, res) {
 
     let booking = await Booking.findOne({ _id: id, user: req.user.id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const me = await User.findById(req.user.id).lean();
     const before = bookingSnapshot(booking);
     const useReservationEngine = reservationEngineEnabled();
 
@@ -262,7 +263,7 @@ async function cancelOrDelete(req, res) {
     if (useReservationEngine) {
       const result = await cancelBookingWithReservation({
         bookingId: booking._id,
-        actorUser: null,
+        actorUser: me,
         createdByType: "customer",
         reason: "Canceled by customer",
       });
@@ -293,14 +294,18 @@ async function cancelOrDelete(req, res) {
         bookingId: booking._id,
         before,
         after: bookingSnapshot(booking),
-        req,
+        actor: {
+          actorUserId: me?._id || null,
+          actorName: me?.name || booking.name || "Customer",
+          actorEmail: me?.email || booking.email || "",
+          actorRole: "customer",
+          actorPosition: "",
+        },
       });
     }
 
     // GHL SMS automation hooks
     try {
-      const me = await User.findById(req.user.id).lean();
-
       const contactId = await createOrUpdateContact({
         name: booking.name || me?.name,
         email: booking.email || me?.email,
@@ -323,7 +328,6 @@ async function cancelOrDelete(req, res) {
 
     // emails on cancel (best effort)
     try {
-      const me = await User.findById(req.user.id).lean();
       const addressLine = buildAddressLineFromBooking(booking);
       const isoDate = booking?.date ? new Date(booking.date).toISOString() : null;
 
@@ -335,7 +339,19 @@ async function cancelOrDelete(req, res) {
             name: me.name || me.email.split("@")[0],
             bookingNumber: booking.bookingNumber,
           },
-          { bccAdmin: false }
+          {
+            bccAdmin: false,
+            logContext: {
+              bookingId: booking._id,
+              bookingNumber: booking.bookingNumber,
+              customerName: booking.name || me.name || "",
+              customerEmail: booking.email || me.email || "",
+              recipientName: me.name || booking.name || "",
+              recipientEmail: me.email,
+              emailType: "transactional",
+              source: "bookingCancel",
+            },
+          }
         );
       }
 
@@ -351,7 +367,19 @@ async function cancelOrDelete(req, res) {
           service: booking.service || "-",
           date: isoDate,
         },
-        { bccAdmin: false }
+        {
+          bccAdmin: false,
+          logContext: {
+            templateKey: "admin_booking_canceled",
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+            customerName: booking.name || me?.name || "",
+            customerEmail: booking.email || me?.email || "",
+            recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
+            emailType: "admin",
+            source: "bookingCancel",
+          },
+        }
       );
     } catch (e) {
       console.log("Mail booking_canceled/admin_booking_canceled error:", e.message);
@@ -663,7 +691,13 @@ router.post(
         await booking.save();
         await logBookingCreated({
           booking,
-          actorName: "System",
+          actor: {
+            actorUserId: me?._id || null,
+            actorName: me?.name || booking.name || "Customer",
+            actorEmail: me?.email || booking.email || "",
+            actorRole: "customer",
+            actorPosition: "",
+          },
         });
       }
       bookingCommitted = true;
@@ -717,7 +751,19 @@ router.post(
             service: booking.service,
             address: addressLine,
           },
-          { bccAdmin: false }
+          {
+            bccAdmin: false,
+            logContext: {
+              bookingId: booking._id,
+              bookingNumber: booking.bookingNumber,
+              customerName: me.name || booking.name || "",
+              customerEmail: me.email || booking.email || "",
+              recipientName: me.name || "",
+              recipientEmail: me.email,
+              emailType: "transactional",
+              source: "bookingCreate",
+            },
+          }
         );
 
         await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
@@ -734,6 +780,16 @@ router.post(
                 <li><strong>Booking #:</strong> ${booking.bookingNumber}</li>
               </ul>
             `,
+          logContext: {
+            templateKey: "admin_booking_created",
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+            customerName: me.name || booking.name || "",
+            customerEmail: me.email || booking.email || "",
+            recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
+            emailType: "admin",
+            source: "bookingCreate",
+          },
         });
       } catch (mailErr) {
         console.log("Mail booking_created error:", mailErr.message);

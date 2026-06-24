@@ -109,6 +109,15 @@ async function sendAdminLeadNotification(input, options = {}) {
     html: rendered.html,
     attachments: options.attachments,
     bccAdmin: false,
+    logContext: {
+      templateKey: "admin_lead_notification",
+      recipientEmail: recipients.join(", "),
+      customerName: input.name || "",
+      customerEmail: input.email || "",
+      source: input.sourcePage || "adminLeadNotification",
+      emailType: "admin",
+      ...options.logContext,
+    },
   });
 }
 

@@ -131,8 +131,8 @@ async function logBookingChanges({
   return entry;
 }
 
-async function logBookingCreated({ booking, req, actorName, session = null }) {
-  const actor = actorName
+async function logBookingCreated({ booking, req, actorName, actor = null, session = null }) {
+  const resolvedActor = actor || (actorName
     ? {
         actorUserId: null,
         actorName,
@@ -140,10 +140,10 @@ async function logBookingCreated({ booking, req, actorName, session = null }) {
         actorRole: "system",
         actorPosition: "",
       }
-    : actorFromRequest(req);
+    : actorFromRequest(req));
   const [entry] = await BookingHistory.create([{
     bookingId: booking._id,
-    ...actor,
+    ...resolvedActor,
     actionType: "booking_created",
     changes: [],
     summary: "Booking created",
