@@ -44,6 +44,9 @@ const {
   publicOneTimeVisitSettings,
   validateOneTimeTask,
 } = require("../utils/oneTimeVisitSettings");
+const {
+  ensureVisitEntitlementIndexesOnce,
+} = require("../utils/visitEntitlementIndexSafety");
 
 const BOOKINGS_ROUTE_VERSION = "v5.1-capacity-gated";
 console.log("Loaded routes/bookings.js", BOOKINGS_ROUTE_VERSION);
@@ -642,6 +645,8 @@ router.post(
         bookingNumber,
       });
       uploadedS3Keys.push(...uploadResult.uploadedS3Keys);
+
+      await ensureVisitEntitlementIndexesOnce();
 
       entitlement = await VisitEntitlement.create({
         user: me._id,

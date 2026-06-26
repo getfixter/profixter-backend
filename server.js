@@ -23,6 +23,9 @@ const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
   ensureCapacityOverrideIndexes,
 } = require("./utils/capacityOverrideIndexSafety");
+const {
+  ensureVisitEntitlementIndexesOnce,
+} = require("./utils/visitEntitlementIndexSafety");
 const path = require("path"); // <-- add this line
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_PREFIX = (process.env.S3_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
@@ -112,6 +115,7 @@ mongoose
       .catch(e => console.warn("⚠️ Could not sync User indexes:", e.message));
 
     await ensureCapacityOverrideIndexes();
+    await ensureVisitEntitlementIndexesOnce();
     try {
       await Promise.all([
         require("./models/BookingSlotReservation").init(),

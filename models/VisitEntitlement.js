@@ -79,8 +79,10 @@ VisitEntitlementSchema.index(
   { stripeCheckoutSessionId: 1 },
   {
     unique: true,
-    sparse: true,
     name: "visit_entitlement_unique_checkout_session",
+    partialFilterExpression: {
+      stripeCheckoutSessionId: { $type: "string" },
+    },
   }
 );
 
@@ -88,8 +90,10 @@ VisitEntitlementSchema.index(
   { stripePaymentIntentId: 1 },
   {
     unique: true,
-    sparse: true,
     name: "visit_entitlement_unique_payment_intent",
+    partialFilterExpression: {
+      stripePaymentIntentId: { $type: "string" },
+    },
   }
 );
 
