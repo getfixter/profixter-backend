@@ -3,10 +3,8 @@ const express = require("express");
 const router = express.Router();
 const fetch = require("node-fetch");
 const multer = require("multer");
-const jwt = require("jsonwebtoken");
 const Lead = require("../models/Lead");
 const Conversation = require("../models/Conversation");
-const User = require("../models/User");
 const knowledge = require("../data/chatbotKnowledge");
 const { getNextAvailableSlot } = require("../utils/getNextAvailableSlot");
 const {
@@ -17,10 +15,6 @@ const {
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const USE_STUB = !OPENAI_KEY;
 const HOME_SUPPORT_MODEL = process.env.HOME_SUPPORT_AI_MODEL || "gpt-4o-mini";
-const HOME_SUPPORT_RETENTION_DAYS = Math.max(
-  1,
-  Number(process.env.HOME_SUPPORT_AI_RETENTION_DAYS || 30)
-);
 const HOME_SUPPORT_MAX_TOTAL_UPLOAD_BYTES = 45 * 1024 * 1024;
 
 const homeSupportUpload = multer({
@@ -35,28 +29,33 @@ const homeSupportUpload = multer({
 });
 
 const SYSTEM_PROMPT = `
-You are the Profixter Assistant — a helpful, knowledgeable guide for Profixter, a Long Island home services company serving Nassau and Suffolk County, NY.
+You are the Profixter Assistant - a helpful, knowledgeable guide for Profixter, a modern AI-powered home platform and Long Island home services company serving Nassau and Suffolk County, NY.
 
-Profixter offers two paths:
-1. HOME CARE MEMBERSHIP — monthly home maintenance subscription (same trusted team, peace of mind, handyman visits up to 90 min each).
-2. HOME IMPROVEMENT PROJECTS — 1-Day Roof Replacement, Full Bathroom Remodeling, Full Kitchen Remodeling.
+Profixter has four customer products:
+1. PROFIXTER AI - free home-focused AI guidance.
+2. BOOK HANDYMAN - $99 One-Time Visits for predefined small handyman tasks, up to 90 minutes.
+3. MEMBERSHIP - ongoing home support for Members who need recurring help and better long-term value.
+4. RENOVATION - larger projects and estimates for roofing, siding, kitchens, bathrooms, full house renovation, build new house, additions, and other General Contractor work.
 
-TONE: Warm, direct, and confident. Like a knowledgeable team member, not a generic chatbot. Short replies (2–4 sentences) unless the user asks for detail. No fluff.
+TONE: Warm, direct, and confident. Like a knowledgeable team member, not a generic chatbot. Short replies (2-4 sentences) unless the user asks for detail. No fluff.
 
 NEVER SAY:
-- “unlimited visits”
-- “free trial”
-- “cancel anytime” (say: active through current billing period after cancellation)
-- “book every 3 days” or any specific booking frequency
+- "unlimited visits"
+- "free trial"
+- "cancel anytime" (say: active through current billing period after cancellation)
+- "book every 3 days" or any specific booking frequency
+- "Mr. Fixter"
 - Any overpromise about service availability or pricing
 
 ALWAYS:
 - Use the knowledge base facts for accurate answers.
-- For project pricing, direct to the free estimate: https://profixter.com/estimate
+- Use customer-facing words Membership, Member, and Become a Member. Avoid "subscription" unless the user asks about billing mechanics.
+- For one small predefined handyman task, direct to: https://profixter.com/book
 - For membership, direct to: https://profixter.com/membership
-- For booking/scheduling questions from non-subscribers, direct to sign up first.
-- If asked to cancel, confirm they are an active subscriber before sharing the cancellation phone number.
-- Keep the Profixter brand name consistent — never say “Mr. Fixter.”
+- For larger projects, direct to the Renovation Estimate: https://profixter.com/projects#estimate
+- If asked to cancel, confirm they are an active Member before sharing the cancellation phone number.
+- Never offer appliance repair as a Profixter service.
+- Keep the Profixter brand name consistent.
 `;
 
 const KNOWLEDGE_BLOCK = knowledge.toModelContext();
@@ -91,11 +90,18 @@ Contractor documents:
 - For contractor agreements, estimates, quotes, scopes, or PDFs, explain that you can give a practical homeowner opinion and questions to ask, but not legal advice.
 - Help identify unclear scope, missing exclusions, payment schedule concerns, material ambiguity, warranty questions, change-order language, permits, and red flags.
 
-Profixter services:
-- Book Handyman (/book): small scoped handyman tasks likely to fit a 90-minute visit.
-- Membership (/membership): recurring maintenance, multiple ongoing small tasks, seasonal checkups, and peace-of-mind home care.
-- Renovation Estimate (/projects): larger projects, roofing, full remodels, multi-day work, major electrical, plumbing remodels, structural work, or whole-room painting.
-- Recommend these naturally only when they are actually relevant. Do not spam or force a sale.
+Profixter company knowledge:
+- Profixter is a modern AI-powered home platform and local Long Island home service company based around four products: Profixter AI, Book Handyman, Membership, and Renovation.
+- Profixter serves Long Island homeowners in Nassau and Suffolk Counties, with local Babylon roots. Profixter is licensed and insured. License: HI-71484.
+- Profixter AI (/home-support): a free temporary AI assistant for home questions, photos, PDFs, contractor quotes, agreements, maintenance, repair planning, shopping lists, safety concerns, renovation research, and DIY-or-hire decisions.
+- Book Handyman (/book): a $99 One-Time Visit for one predefined small handyman task, up to 90 minutes. Customers choose task, date/time, notes/photos, then pay. Admin approval happens after payment. Customers can book multiple One-Time Visits as long as each is paid separately and the selected slot is available.
+- One-Time Visit examples include replacing a light fixture, replacing a faucet, patching a small hole, painting a door, TV mounting, caulking and sealing, shelves and mirrors, small furniture assembly, wall hangings, and small fixes.
+- Membership (/membership): better for ongoing home maintenance, recurring small jobs, seasonal care, more service flexibility, priority scheduling or rush benefits depending on plan, and better long-term value than paying $99 each visit. Use "Membership", "Member", and "Become a Member"; avoid "subscription" in customer-facing wording.
+- Members may receive discounts on larger projects. Some larger projects may qualify for up to 12 months of Membership.
+- Renovation Estimate (/projects#estimate): for roofing, siding, kitchens, bathrooms, full house renovation, build new house, additions, multi-day work, major electrical/plumbing remodels, structural work, or anything larger than a One-Time Visit. Profixter acts as a General Contractor for larger projects.
+- About Us (/about): use when someone wants the company story, trust, local background, founder story, or how Profixter works.
+- Phone: 631-599-1363.
+- Recommendations should feel like practical advice, not advertising. Recommend Book Handyman for one small repair, Membership for recurring jobs or ongoing maintenance, and Renovation Estimate for larger projects.
 
 Appliances:
 - Profixter does not offer appliance repair.
@@ -103,22 +109,22 @@ Appliances:
 - If the user asks about an appliance, suggest checking the manual, manufacturer support, warranty support, or an appliance repair specialist. You may still help with non-repair homeowner context, such as measuring space for a renovation or planning cabinet layout around an appliance.
 `;
 
-function conversationExpiryDate() {
-  return new Date(Date.now() + HOME_SUPPORT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-}
-
-async function optionalUserFromRequest(req) {
+function parseHomeSupportHistory(raw) {
   try {
-    const bearer = req.header("Authorization");
-    const token =
-      (bearer && bearer.replace(/^Bearer\s+/i, "")) ||
-      req.header("x-auth-token");
-    if (!token) return null;
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded?.id) return null;
-    return User.findById(decoded.id).lean();
+    const parsed = JSON.parse(String(raw || "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((message) =>
+        ["user", "assistant"].includes(String(message?.role || "")) &&
+        String(message?.content || "").trim()
+      )
+      .slice(-8)
+      .map((message) => ({
+        role: String(message.role),
+        content: String(message.content).trim().slice(0, 2000),
+      }));
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -127,15 +133,6 @@ function attachmentKind(file) {
   if (type.startsWith("image/")) return "image";
   if (type === "application/pdf") return "pdf";
   return "other";
-}
-
-function attachmentSummary(files = []) {
-  return files.map((file) => ({
-    filename: file.originalname,
-    contentType: file.mimetype,
-    size: file.size,
-    kind: attachmentKind(file),
-  }));
 }
 
 function outputTextFromResponse(data) {
@@ -215,7 +212,7 @@ async function callHomeSupportAI({ input, history, files }) {
 // ========== AI CALL (Streaming Support) ==========
 async function callOpenAI(history, onChunk) {
   if (USE_STUB) {
-    return `Got it! Profixter serves Nassau and Suffolk County, NY. You can explore membership plans at https://profixter.com/membership or get a free project estimate at https://profixter.com/estimate.`;
+    return `Got it! Profixter serves Nassau and Suffolk County, NY. You can explore Membership at https://profixter.com/membership or request a Renovation Estimate at https://profixter.com/projects#estimate.`;
   }
 
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -263,10 +260,10 @@ router.post(
   homeSupportUpload.array("files", 4),
   async (req, res) => {
     try {
-      const { visitorId, input, channel = "home_support" } = req.body || {};
+      const { input, history: rawHistory } = req.body || {};
       const trimmedInput = String(input || "").trim();
-      if (!visitorId || !trimmedInput) {
-        return res.status(400).json({ message: "Missing visitorId or input" });
+      if (!trimmedInput) {
+        return res.status(400).json({ message: "Missing input" });
       }
 
       const files = req.files || [];
@@ -289,54 +286,14 @@ router.post(
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-      const authUser = await optionalUserFromRequest(req);
-      const expiresAt = conversationExpiryDate();
-      let convo = await Conversation.findOne({
-        visitorId,
-        channel,
-        mode: "home_support",
-      });
-      if (!convo) {
-        convo = await Conversation.create({
-          visitorId,
-          channel,
-          mode: "home_support",
-          user: authUser?._id || null,
-          messages: [],
-          attachments: [],
-          lastMessageAt: new Date(),
-          expiresAt,
-        });
-      } else {
-        if (authUser?._id && !convo.user) convo.user = authUser._id;
-        convo.expiresAt = expiresAt;
-      }
-
-      const attachments = attachmentSummary(files);
-      convo.messages.push({
-        role: "user",
-        content: trimmedInput,
-        meta: attachments.length ? { attachments } : undefined,
-      });
-      convo.attachments.push(...attachments);
-      convo.lastMessageAt = new Date();
-      await convo.save();
+      const history = parseHomeSupportHistory(rawHistory);
 
       send({ status: "typing" });
       const replyText = await callHomeSupportAI({
         input: trimmedInput,
-        history: convo.messages.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+        history,
         files,
       });
-
-      convo.messages.push({ role: "assistant", content: replyText });
-      convo.lastMessageAt = new Date();
-      convo.expiresAt = expiresAt;
-      await convo.save();
 
       send({ token: replyText });
       send({ done: true });
