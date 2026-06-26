@@ -1,12 +1,24 @@
 const crypto = require("crypto");
 const User = require("../models/User");
+const Booking = require("../models/Booking");
 const Subscription = require("../models/Subscription");
+const VisitEntitlement = require("../models/VisitEntitlement");
 const StripeWebhookEvent = require("../models/StripeWebhookEvent");
+const BookingSlotReservation = require("../models/BookingSlotReservation");
+const ReservationTimeBucket = require("../models/ReservationTimeBucket");
+const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 const RepAttribution = require("../models/RepAttribution");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const mail = require("../utils/emailService");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
+const {
+  cancelBookingWithReservation,
+  promoteHeldReservationForBooking,
+  reservationEngineEnabled,
+} = require("../utils/slotReservationService");
+const CalendarConfig = require("../models/CalendarConfig");
+const SlotCounter = require("../models/SlotCounter");
 const {
   stripe,
   getPlanPrice,
@@ -15,6 +27,14 @@ const {
   syncCustomerFromStripe,
   handlePaymentFailure,
 } = require("../utils/subscriptionManagement");
+const {
+  applyOneTimePaymentSuccessToBooking,
+  applyOneTimePaymentSuccessToEntitlement,
+  oneTimeReservationProtectionExpiresAt,
+  reservationIssueFromPromotionError,
+} = require("../utils/oneTimeVisitPaymentFlow");
+
+const ONE_TIME_PRODUCT_KIND = "one_time_handyman_visit";
 
 function logWebhook(level, event, details = {}) {
   const payload = JSON.stringify({
@@ -226,7 +246,291 @@ async function findUserForStripeObject(stripeObject) {
   return null;
 }
 
+async function releaseLegacyBookingCapacity(booking) {
+  if (!booking?.date) return;
+  const cfg = await CalendarConfig.findOne().lean();
+  const tz = cfg?.timezone || "America/New_York";
+  const ymd = ymdInTZ(new Date(booking.date), tz);
+  const hh = hhmmInTZ(new Date(booking.date), tz);
+  await SlotCounter.updateOne({ ymd, time: hh }, { $inc: { count: -1 } });
+}
+
+async function sendOneTimePaymentEmails({ booking, user, entitlement }) {
+  const address = [booking.address, booking.city, booking.state, booking.zip]
+    .filter(Boolean)
+    .join(", ");
+
+  try {
+    await mail.sendTx(
+      "one_time_visit_payment_received",
+      booking.email || user.email,
+      {
+        name: booking.name || user.name || "there",
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        service: booking.service,
+        selectedTask: booking.selectedTask,
+        address,
+        price: `$${((entitlement?.priceCents || 9900) / 100).toFixed(0)}`,
+        durationMinutes: entitlement?.durationMinutes || 90,
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          customerName: booking.name || user.name || "",
+          customerEmail: booking.email || user.email || "",
+          recipientName: booking.name || user.name || "",
+          recipientEmail: booking.email || user.email || "",
+          emailType: "billing",
+          source: "stripeWebhookOneTime",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("one_time_visit_payment_received email failed:", error.message);
+  }
+
+  try {
+    await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
+      subject: `Paid One-Time Visit Pending Approval - ${booking.name || user.name || ""}`,
+      html: `
+        <h2>Paid One-Time Visit Pending Approval</h2>
+        <ul>
+          <li><strong>Booking #:</strong> ${booking.bookingNumber}</li>
+          <li><strong>Name:</strong> ${booking.name || user.name || "-"}</li>
+          <li><strong>Email:</strong> ${booking.email || user.email || "-"}</li>
+          <li><strong>Phone:</strong> ${booking.phone || user.phone || "-"}</li>
+          <li><strong>Task:</strong> ${booking.selectedTask || booking.service || "-"}</li>
+          <li><strong>Date:</strong> ${mail.formatNYCTime(booking.date)}</li>
+          <li><strong>Address:</strong> ${address || "-"}</li>
+          <li><strong>Payment:</strong> Paid</li>
+        </ul>
+      `,
+      logContext: {
+        templateKey: "admin_one_time_visit_paid",
+        bookingId: booking._id,
+        bookingNumber: booking.bookingNumber,
+        customerName: booking.name || user.name || "",
+        customerEmail: booking.email || user.email || "",
+        recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
+        emailType: "admin",
+        source: "stripeWebhookOneTime",
+      },
+    });
+  } catch (error) {
+    console.error("admin one-time payment email failed:", error.message);
+  }
+}
+
+async function preserveHeldReservationAfterPromotionFailure({ booking, error, session }) {
+  const holdExpiresAt = oneTimeReservationProtectionExpiresAt(booking?.date);
+  const issueMessage =
+    error?.message ||
+    "Stripe payment succeeded, but reservation promotion failed.";
+
+  const reservation = await BookingSlotReservation.findOneAndUpdate(
+    { bookingId: booking._id, status: "held" },
+    {
+      $set: {
+        holdExpiresAt,
+        releaseReason: `Payment received; admin reservation review required. ${issueMessage}`.slice(0, 500),
+      },
+    },
+    { new: true }
+  );
+
+  if (!reservation) {
+    logWebhook("error", "one_time_reservation_hold_missing_after_payment", {
+      stripeSessionId: session?.id || null,
+      bookingId: String(booking._id),
+      message: issueMessage,
+    });
+    return { holdExpiresAt: null, reservationId: null };
+  }
+
+  await Promise.all([
+    ReservationTimeBucket.updateMany(
+      { reservationId: reservation._id, status: "held" },
+      { $set: { expiresAt: holdExpiresAt } }
+    ),
+    ReservationCapacityBucket.updateMany(
+      { reservationId: reservation._id, status: "held" },
+      { $set: { expiresAt: holdExpiresAt } }
+    ),
+  ]);
+
+  logWebhook("error", "one_time_reservation_hold_preserved_for_admin_review", {
+    stripeSessionId: session?.id || null,
+    bookingId: String(booking._id),
+    reservationId: String(reservation._id),
+    holdExpiresAt,
+    message: issueMessage,
+    code: error?.code || null,
+  });
+
+  return { holdExpiresAt, reservationId: String(reservation._id) };
+}
+
+async function handleOneTimeCheckoutCompleted(session) {
+  const metadata = session.metadata || {};
+  const bookingId = metadata.bookingId || session.client_reference_id || null;
+  const entitlementId = metadata.entitlementId || null;
+
+  if (!bookingId) {
+    logWebhook("error", "one_time_checkout_missing_booking_id", {
+      stripeSessionId: session.id,
+    });
+    return null;
+  }
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking) {
+    logWebhook("error", "one_time_checkout_booking_not_found", {
+      stripeSessionId: session.id,
+      bookingId,
+    });
+    return null;
+  }
+
+  const user = await User.findById(booking.user);
+  if (!user) {
+    logWebhook("error", "one_time_checkout_user_not_found", {
+      stripeSessionId: session.id,
+      bookingId,
+    });
+    return null;
+  }
+
+  if (session.customer && !user.stripeCustomerId) {
+    user.stripeCustomerId = String(session.customer);
+    await user.save();
+  }
+
+  const entitlement =
+    (entitlementId && (await VisitEntitlement.findById(entitlementId))) ||
+    (await VisitEntitlement.findOne({ bookingId: booking._id }).sort({
+      updatedAt: -1,
+    }));
+
+  let reservationIssue = null;
+  if (reservationEngineEnabled()) {
+    try {
+      await promoteHeldReservationForBooking({
+        bookingId: booking._id,
+        actorUser: user,
+        createdByType: "system",
+      });
+    } catch (error) {
+      let protection = { holdExpiresAt: null, reservationId: null };
+      try {
+        protection = await preserveHeldReservationAfterPromotionFailure({
+          booking,
+          error,
+          session,
+        });
+      } catch (preserveError) {
+        logWebhook("error", "one_time_reservation_preserve_failed", {
+          stripeSessionId: session.id,
+          bookingId: String(booking._id),
+          promotionMessage: error.message,
+          preserveMessage: preserveError.message,
+        });
+      }
+      reservationIssue = reservationIssueFromPromotionError(
+        error,
+        session,
+        protection.holdExpiresAt
+      );
+      logWebhook("warn", "one_time_reservation_promote_failed", {
+        stripeSessionId: session.id,
+        bookingId: String(booking._id),
+        reservationId: protection.reservationId,
+        protectedUntil: protection.holdExpiresAt,
+        message: error.message,
+        code: error.code || null,
+      });
+    }
+  }
+
+  applyOneTimePaymentSuccessToBooking(booking, { session, reservationIssue });
+  await booking.save();
+
+  if (entitlement) {
+    applyOneTimePaymentSuccessToEntitlement(entitlement, session, booking._id);
+    await entitlement.save();
+  }
+
+  try {
+    const contactId = await createOrUpdateContact({
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+    });
+    if (contactId) {
+      await addTag(contactId, "one_time_visit_paid");
+    }
+  } catch (error) {
+    console.error("One-time GHL sync failed:", error.message);
+  }
+
+  await sendOneTimePaymentEmails({ booking, user, entitlement });
+  return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
+}
+
+async function handleOneTimeCheckoutExpired(session, status = "expired") {
+  const metadata = session.metadata || {};
+  const bookingId = metadata.bookingId || session.client_reference_id || null;
+  const entitlementId = metadata.entitlementId || null;
+  if (!bookingId) return null;
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking || booking.paymentState === "paid") return null;
+
+  if (reservationEngineEnabled()) {
+    try {
+      await cancelBookingWithReservation({
+        bookingId: booking._id,
+        createdByType: "system",
+        reason: "One-time payment not completed",
+      });
+    } catch (error) {
+      console.warn("Unable to release one-time reservation hold:", error.message);
+    }
+  } else {
+    try {
+      await releaseLegacyBookingCapacity(booking);
+    } catch (error) {
+      console.warn("Unable to release one-time legacy slot hold:", error.message);
+    }
+  }
+
+  booking.status = "Canceled";
+  booking.paymentState = status;
+  booking.paymentStatus = status === "expired" ? "Expired" : "Failed";
+  await booking.save();
+
+  const entitlement =
+    (entitlementId && (await VisitEntitlement.findById(entitlementId))) ||
+    (await VisitEntitlement.findOne({ bookingId: booking._id }).sort({
+      updatedAt: -1,
+    }));
+  if (entitlement && entitlement.status === "pending_payment") {
+    entitlement.status = status === "expired" ? "expired" : "payment_failed";
+    entitlement.stripeCheckoutSessionId =
+      session.id || entitlement.stripeCheckoutSessionId;
+    await entitlement.save();
+  }
+
+  return { bookingId: String(booking._id), status };
+}
+
 async function handleCheckoutCompleted(session) {
+  if (isOneTimeCheckoutSession(session)) {
+    return handleOneTimeCheckoutCompleted(session);
+  }
+
   let email = session.customer_email || session?.customer_details?.email || null;
 
   if (!email && session.customer) {
@@ -543,6 +847,23 @@ async function handleInvoicePaid(invoice) {
   return subscription;
 }
 
+const ymdInTZ = (d, tz) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
+const hhmmInTZ = (d, tz) =>
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+
+function isOneTimeCheckoutSession(session) {
+  return (
+    String(session?.mode || "").toLowerCase() === "payment" &&
+    session?.metadata?.productKind === ONE_TIME_PRODUCT_KIND
+  );
+}
+
 async function handleInvoicePaymentFailed(invoice) {
   if (!invoice?.subscription) return;
 
@@ -750,6 +1071,25 @@ module.exports = async (req, res) => {
     switch (event.type) {
       case "checkout.session.completed":
         syncResult = await handleCheckoutCompleted(event.data.object);
+        break;
+
+      case "checkout.session.expired":
+        if (isOneTimeCheckoutSession(event.data.object)) {
+          syncResult = await handleOneTimeCheckoutExpired(event.data.object, "expired");
+        }
+        break;
+
+      case "payment_intent.payment_failed":
+        if (event.data.object?.metadata?.productKind === ONE_TIME_PRODUCT_KIND) {
+          syncResult = await handleOneTimeCheckoutExpired(
+            {
+              id: event.data.object.metadata?.stripeCheckoutSessionId || null,
+              metadata: event.data.object.metadata,
+              client_reference_id: event.data.object.metadata?.bookingId || null,
+            },
+            "failed"
+          );
+        }
         break;
 
       case "customer.subscription.created":

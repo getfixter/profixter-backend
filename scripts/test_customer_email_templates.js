@@ -17,6 +17,16 @@ const sample = {
   billingDate: "June 20, 2026",
 };
 
+const oneTimeSample = {
+  ...sample,
+  service: "One-Time Handyman Visit",
+  bookingType: "one_time_handyman_visit",
+  accessType: "one_time",
+  selectedTask: "Fix a loose handrail",
+  price: "$99",
+  durationMinutes: 90,
+};
+
 const customerTemplateKeys = [
   "welcome",
   "subscription_started",
@@ -74,6 +84,36 @@ assert.match(completed.html, /https:\/\/www\.profixter\.com\/tip/);
 assert.match(completed.text, /https:\/\/www\.profixter\.com\/tip/);
 assert.doesNotMatch(completed.html, /profixter\.com\/review/i);
 assert.doesNotMatch(completed.text, /profixter\.com\/review/i);
+
+const oneTimeReceipt = TEMPLATES.one_time_visit_payment_received(oneTimeSample);
+assert.match(oneTimeReceipt.html, /\$99/);
+assert.match(oneTimeReceipt.html, /90-minute One-Time Visit/);
+assert.match(oneTimeReceipt.text, /admin review and final approval/i);
+assert.match(oneTimeReceipt.text, /631-599-1363/);
+assert.match(oneTimeReceipt.text, /does not offer appliance repair/i);
+assert.match(oneTimeReceipt.text, /Project Estimate/i);
+assert.doesNotMatch(`${oneTimeReceipt.html}\n${oneTimeReceipt.text}`, /subscription/i);
+
+const oneTimeConfirmed = TEMPLATES.booking_confirmed(oneTimeSample);
+assert.match(oneTimeConfirmed.html, /One-Time Visit/);
+assert.match(oneTimeConfirmed.html, /\$99 \/ 90 minutes/);
+assert.match(oneTimeConfirmed.text, /631-599-1363/);
+assert.match(oneTimeConfirmed.text, /does not offer appliance repair/i);
+assert.match(oneTimeConfirmed.text, /Project Estimate/i);
+assert.doesNotMatch(`${oneTimeConfirmed.html}\n${oneTimeConfirmed.text}`, /subscription/i);
+
+const oneTimeReminder24h = TEMPLATES.booking_reminder_24h(oneTimeSample);
+assert.match(oneTimeReminder24h.text, /Cancellation or reschedule requests require admin approval/i);
+assert.match(oneTimeReminder24h.text, /does not offer appliance repair/i);
+
+const oneTimeReminder60m = TEMPLATES.booking_reminder_60m(oneTimeSample);
+assert.match(oneTimeReminder60m.text, /If anything urgent changed, call 631-599-1363/i);
+assert.match(oneTimeReminder60m.text, /does not offer appliance repair/i);
+
+const oneTimeCompleted = TEMPLATES.booking_completed(oneTimeSample);
+assert.match(oneTimeCompleted.text, /Compare membership/);
+assert.match(oneTimeCompleted.text, /Book another visit/);
+assert.doesNotMatch(oneTimeCompleted.text, /subscription/i);
 
 const review = TEMPLATES.booking_review_request(sample);
 assert.match(review.html, /https:\/\/www\.profixter\.com\/review/);

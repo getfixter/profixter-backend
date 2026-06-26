@@ -22,6 +22,40 @@ const BookingSchema = new mongoose.Schema({
 
   // kept for display/legacy; not used for gating after create
   subscription: { type: String, required: true },
+  accessType: {
+    type: String,
+    enum: ["membership", "one_time", "free_first_visit", "admin"],
+    default: "membership",
+    index: true,
+  },
+  bookingType: {
+    type: String,
+    enum: ["membership_visit", "one_time_handyman_visit"],
+    default: "membership_visit",
+    index: true,
+  },
+  paymentState: {
+    type: String,
+    enum: ["not_required", "pending", "paid", "failed", "expired", "refunded"],
+    default: "not_required",
+    index: true,
+  },
+  entitlementId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "VisitEntitlement",
+    default: null,
+    index: true,
+  },
+  selectedTask: { type: String, trim: true, default: "" },
+  paymentHoldExpiresAt: { type: Date, default: null, index: true },
+  reservationIssue: {
+    status: { type: String, default: "" },
+    message: { type: String, default: "" },
+    code: { type: String, default: "" },
+    stripeCheckoutSessionId: { type: String, default: "" },
+    holdExpiresAt: { type: Date, default: null },
+    occurredAt: { type: Date, default: null },
+  },
     // ✅ Free first visit tracking (per address)
   isFreeFirstVisit: { type: Boolean, default: false },
   freeFirstVisitClaimedAt: { type: Date, default: null },

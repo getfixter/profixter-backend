@@ -96,7 +96,7 @@ async function runBookingReviewRequestCycle(
     $and: [notSent, notSkipped, availableLock(now)],
   })
     .select(
-      "_id bookingNumber status name email completedAt reviewRequestQueuedAt reviewRequestSentAt reviewRequestLockExpiresAt reviewRequestSkippedAt"
+      "_id bookingNumber status name email service bookingType accessType completedAt reviewRequestQueuedAt reviewRequestSentAt reviewRequestLockExpiresAt reviewRequestSkippedAt"
     )
     .sort({ completedAt: 1 })
     .limit(100)
@@ -183,6 +183,9 @@ async function runBookingReviewRequestCycle(
         {
           name: booking.name || "there",
           bookingNumber: booking.bookingNumber,
+          service: booking.service,
+          bookingType: booking.bookingType,
+          accessType: booking.accessType,
         },
         {
           bccAdmin: false,

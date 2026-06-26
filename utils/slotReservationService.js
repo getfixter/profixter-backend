@@ -1106,6 +1106,8 @@ async function createBookingWithReservation({
   bookingData,
   slotStart,
   technicianId = null,
+  reservationStatus = "reserved",
+  holdExpiresAt = null,
   createdByType = "customer",
   actorUser = null,
   assignmentSource = "automatic",
@@ -1181,8 +1183,8 @@ async function createBookingWithReservation({
           slotStart: window.slotStart,
           slotEnd: window.slotEnd,
           timezone: TIMEZONE,
-          status: "reserved",
-          holdExpiresAt: null,
+          status: reservationStatus,
+          holdExpiresAt,
           createdByType,
           createdBy: actorUser?._id || null,
         }],
@@ -1212,8 +1214,14 @@ async function createBookingWithReservation({
       });
       await writeReservationAction({
         bookingId: booking._id,
-        actionType: "reservation_created",
-        summary: "Reservation created",
+        actionType:
+          reservationStatus === "held"
+            ? "reservation_hold_created"
+            : "reservation_created",
+        summary:
+          reservationStatus === "held"
+            ? "Reservation hold created"
+            : "Reservation created",
         actor: historyActor({ actorUser, createdByType }),
         changes: [{
           field: "reservation",
@@ -1239,6 +1247,69 @@ async function createBookingWithReservation({
     }
     throw error;
   }
+}
+
+async function promoteHeldReservationForBooking({
+  bookingId,
+  actorUser = null,
+  createdByType = "system",
+}) {
+  if (!mongoose.isValidObjectId(bookingId)) {
+    throw serviceError("INVALID_BOOKING", "Booking id is invalid", 400);
+  }
+
+  return runReservationTransaction(async (session) => {
+    const booking = await Booking.findById(bookingId).session(session);
+    if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
+    if (isTerminalBookingStatus(booking.status)) {
+      throw serviceError("BOOKING_INACTIVE", "Canceled or completed bookings cannot be reserved");
+    }
+
+    const reservation = await BookingSlotReservation.findOne({
+      bookingId: booking._id,
+      status: { $in: ["held", "reserved"] },
+    }).session(session);
+    if (!reservation) {
+      throw serviceError("RESERVATION_NOT_FOUND", "Booking reservation hold was not found", 404);
+    }
+    if (reservation.status === "reserved") {
+      return { booking, reservation };
+    }
+
+    const oldValue = `${reservation.slotStart.toISOString()}-${reservation.slotEnd.toISOString()} (held)`;
+    reservation.status = "reserved";
+    reservation.holdExpiresAt = null;
+    await reservation.save({ session });
+
+    await ReservationTimeBucket.updateMany(
+      { reservationId: reservation._id },
+      { $set: { status: "reserved" }, $unset: { expiresAt: 1 } },
+      { session }
+    );
+    await ReservationCapacityBucket.updateMany(
+      { reservationId: reservation._id },
+      { $set: { status: "reserved" }, $unset: { expiresAt: 1 } },
+      { session }
+    );
+
+    await logReservationAction({
+      bookingId: booking._id,
+      actionType: "reservation_hold_paid",
+      summary: "Reservation hold converted after payment",
+      actor: historyActor({ actorUser, createdByType }),
+      changes: [
+        {
+          field: "reservation",
+          label: "Reservation",
+          oldValue,
+          newValue: `${reservation.slotStart.toISOString()}-${reservation.slotEnd.toISOString()} (reserved)`,
+        },
+      ],
+      session,
+    });
+
+    return { booking, reservation };
+  });
 }
 
 async function releaseReservationForBooking({
@@ -2181,6 +2252,7 @@ module.exports = {
   moveReservationForBooking,
   overlaps,
   planBucketMove,
+  promoteHeldReservationForBooking,
   normalizeBookingStatus,
   rankEligibleTechnicians,
   releaseExpiredHolds,

@@ -22,6 +22,7 @@
     "test:booking-reminders": "node scripts/test_booking_reminder_policy.js",
     "test:email-logging": "node scripts/test_email_logging.js",
     "test:customer-emails": "node scripts/test_customer_email_templates.js",
+    "test:one-time-visit-flow": "node scripts/test_one_time_visit_payment_flow.js",
     "test:booking-review-requests": "node scripts/test_booking_review_requests.js",
     "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js"
   },

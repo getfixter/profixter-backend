@@ -139,7 +139,7 @@ async function process24HourReminders(now, stats) {
     $and: [notSent, lockAvailable],
   })
     .select(
-      "status userId name email phone bookingNumber date service address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason"
+      "status userId name email phone bookingNumber date service selectedTask bookingType accessType address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason"
     )
     .sort({ date: 1 })
     .limit(100)
@@ -227,6 +227,9 @@ async function process24HourReminders(now, stats) {
           bookingNumber: booking.bookingNumber,
           date: booking.date,
           service: booking.service,
+          selectedTask: booking.selectedTask,
+          bookingType: booking.bookingType,
+          accessType: booking.accessType,
           address: buildAddress(booking),
         },
       });
@@ -318,7 +321,7 @@ async function process60MinuteReminders(now, stats) {
     $and: [notSent, lockAvailable],
   })
     .select(
-      "status userId name email phone bookingNumber date service address city state zip reminder60mQueuedAt reminder60mSentAt"
+      "status userId name email phone bookingNumber date service selectedTask bookingType accessType address city state zip reminder60mQueuedAt reminder60mSentAt"
     )
     .limit(50)
     .lean();
@@ -391,6 +394,11 @@ async function process60MinuteReminders(now, stats) {
         vars: {
           name: booking.name || "there",
           date: booking.date,
+          service: booking.service,
+          selectedTask: booking.selectedTask,
+          bookingType: booking.bookingType,
+          accessType: booking.accessType,
+          address: buildAddress(booking),
         },
       });
 

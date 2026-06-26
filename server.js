@@ -15,6 +15,9 @@ const { startBookingReminders } = require("./jobs/bookingReminders");
 const {
   startBookingReviewRequests,
 } = require("./jobs/bookingReviewRequests");
+const {
+  startOneTimeVisitHoldCleanup,
+} = require("./jobs/oneTimeVisitHolds");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
@@ -451,6 +454,8 @@ app.use((err, req, res, next) => {
 
 // ✅ 9. Start server
 const PORT = process.env.PORT || 5000;
+
+startOneTimeVisitHoldCleanup();
 
 if (process.env.BOOKING_REVIEW_REQUESTS_ENABLED !== "false") {
   startBookingReviewRequests();

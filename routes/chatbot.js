@@ -2,8 +2,11 @@
 const express = require("express");
 const router = express.Router();
 const fetch = require("node-fetch");
+const multer = require("multer");
+const jwt = require("jsonwebtoken");
 const Lead = require("../models/Lead");
 const Conversation = require("../models/Conversation");
+const User = require("../models/User");
 const knowledge = require("../data/chatbotKnowledge");
 const { getNextAvailableSlot } = require("../utils/getNextAvailableSlot");
 const {
@@ -13,6 +16,23 @@ const {
 // --- CONFIG ---
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const USE_STUB = !OPENAI_KEY;
+const HOME_SUPPORT_MODEL = process.env.HOME_SUPPORT_AI_MODEL || "gpt-4o-mini";
+const HOME_SUPPORT_RETENTION_DAYS = Math.max(
+  1,
+  Number(process.env.HOME_SUPPORT_AI_RETENTION_DAYS || 30)
+);
+const HOME_SUPPORT_MAX_TOTAL_UPLOAD_BYTES = 45 * 1024 * 1024;
+
+const homeSupportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Math.max(
+      1,
+      Number(process.env.HOME_SUPPORT_AI_MAX_UPLOAD_MB || 15)
+    ) * 1024 * 1024,
+    files: 4,
+  },
+});
 
 const SYSTEM_PROMPT = `
 You are the Profixter Assistant — a helpful, knowledgeable guide for Profixter, a Long Island home services company serving Nassau and Suffolk County, NY.
@@ -40,6 +60,144 @@ ALWAYS:
 `;
 
 const KNOWLEDGE_BLOCK = knowledge.toModelContext();
+
+const HOME_SUPPORT_PROMPT = `
+You are Profixter Home Support AI, a broad homeowner assistant for Nassau and Suffolk County homeowners.
+
+Help with maintenance planning, common home problems, images, PDFs, contractor agreement review, tools/materials lists, shopping lists, task difficulty, time estimates, and deciding whether to DIY or hire help.
+
+Always phrase guidance as recommendations and options, not absolute commands. Ask concise follow-up questions when the situation is unclear. Include safety warnings when relevant.
+
+For emergency danger, tell the user to contact 911, the utility company, or a licensed emergency provider as appropriate. Examples include active gas smell, sparking, fire risk, flooding, sewage backup, structural collapse risk, or shock risk.
+
+Refuse step-by-step instructions for dangerous electrical or plumbing work. You may recommend shutting off power/water only when it is safe to do so, keeping distance, documenting the issue, and contacting a licensed professional.
+
+For contractor agreements, estimates, quotes, or PDFs, explain that you can give a practical homeowner opinion and questions to ask, but not legal advice.
+
+Profixter offers:
+- Free Home Support AI
+- One-Time Handyman Visit for small scoped 90-minute handyman tasks
+- Profixter Membership for ongoing home maintenance
+- Home Projects / Request Estimate for larger work
+
+Profixter does not offer appliance repair, dangerous DIY electrical/plumbing, or emergency services.
+
+Never offer appliance repair or troubleshooting as a Profixter service. If the user asks about an appliance, suggest checking the manual, manufacturer support, warranty support, or an appliance repair specialist.
+
+Route naturally, not aggressively:
+- Recommend a One-Time Visit for small scoped tasks likely to fit a 90-minute handyman appointment.
+- Recommend Membership for recurring maintenance, multiple ongoing small tasks, seasonal checkups, or peace-of-mind home care.
+- Recommend Project Estimate for larger projects, roofing, full remodels, multi-day work, major electrical, plumbing remodels, structural work, or whole-room painting.
+`;
+
+function conversationExpiryDate() {
+  return new Date(Date.now() + HOME_SUPPORT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+
+async function optionalUserFromRequest(req) {
+  try {
+    const bearer = req.header("Authorization");
+    const token =
+      (bearer && bearer.replace(/^Bearer\s+/i, "")) ||
+      req.header("x-auth-token");
+    if (!token) return null;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded?.id) return null;
+    return User.findById(decoded.id).lean();
+  } catch {
+    return null;
+  }
+}
+
+function attachmentKind(file) {
+  const type = String(file?.mimetype || "").toLowerCase();
+  if (type.startsWith("image/")) return "image";
+  if (type === "application/pdf") return "pdf";
+  return "other";
+}
+
+function attachmentSummary(files = []) {
+  return files.map((file) => ({
+    filename: file.originalname,
+    contentType: file.mimetype,
+    size: file.size,
+    kind: attachmentKind(file),
+  }));
+}
+
+function outputTextFromResponse(data) {
+  if (data?.output_text) return String(data.output_text);
+  const chunks = [];
+  for (const item of data?.output || []) {
+    for (const content of item?.content || []) {
+      if (content?.text) chunks.push(content.text);
+      if (content?.type === "output_text" && content?.text) chunks.push(content.text);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+async function callHomeSupportAI({ input, history, files }) {
+  if (USE_STUB) {
+    return "I can help think this through. Based on what you shared, I would start with a safety check, then identify whether this is a small 90-minute task, an ongoing maintenance need, or a larger project. If you upload a photo or PDF when OpenAI is configured, I can review it more specifically.";
+  }
+
+  const content = [
+    {
+      type: "input_text",
+      text: [
+        "User question:",
+        input,
+        "",
+        "Recent conversation:",
+        history
+          .slice(-8)
+          .filter((message) => message.role !== "system")
+          .map((message) => `${message.role}: ${message.content}`)
+          .join("\n"),
+      ].join("\n"),
+    },
+  ];
+
+  for (const file of files || []) {
+    const base64 = file.buffer.toString("base64");
+    const kind = attachmentKind(file);
+    if (kind === "image") {
+      content.push({
+        type: "input_image",
+        image_url: `data:${file.mimetype};base64,${base64}`,
+      });
+    } else if (kind === "pdf") {
+      content.push({
+        type: "input_file",
+        filename: file.originalname || "document.pdf",
+        file_data: `data:application/pdf;base64,${base64}`,
+      });
+    }
+  }
+
+  const resp = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: HOME_SUPPORT_MODEL,
+      instructions: `${HOME_SUPPORT_PROMPT}\n\n${KNOWLEDGE_BLOCK}`,
+      input: [{ role: "user", content }],
+      max_output_tokens: 900,
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`OpenAI home support request failed: ${resp.status} ${text}`);
+  }
+
+  const data = await resp.json();
+  return outputTextFromResponse(data) || "I had trouble reviewing that. Please try again with a little more detail.";
+}
 
 // ========== AI CALL (Streaming Support) ==========
 async function callOpenAI(history, onChunk) {
@@ -86,6 +244,100 @@ async function callOpenAI(history, onChunk) {
   }
   return fullText.trim() || "Sorry, I had trouble replying.";
 }
+
+router.post(
+  "/home-support/message",
+  homeSupportUpload.array("files", 4),
+  async (req, res) => {
+    try {
+      const { visitorId, input, channel = "home_support" } = req.body || {};
+      const trimmedInput = String(input || "").trim();
+      if (!visitorId || !trimmedInput) {
+        return res.status(400).json({ message: "Missing visitorId or input" });
+      }
+
+      const files = req.files || [];
+      const totalBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+      if (totalBytes > HOME_SUPPORT_MAX_TOTAL_UPLOAD_BYTES) {
+        return res.status(400).json({
+          message: "Please upload less than 45 MB total across images and PDFs.",
+        });
+      }
+      const unsupported = files.find(
+        (file) => !["image", "pdf"].includes(attachmentKind(file))
+      );
+      if (unsupported) {
+        return res.status(400).json({
+          message: "Home Support AI accepts images and PDFs only.",
+        });
+      }
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+      const authUser = await optionalUserFromRequest(req);
+      const expiresAt = conversationExpiryDate();
+      let convo = await Conversation.findOne({
+        visitorId,
+        channel,
+        mode: "home_support",
+      });
+      if (!convo) {
+        convo = await Conversation.create({
+          visitorId,
+          channel,
+          mode: "home_support",
+          user: authUser?._id || null,
+          messages: [],
+          attachments: [],
+          lastMessageAt: new Date(),
+          expiresAt,
+        });
+      } else {
+        if (authUser?._id && !convo.user) convo.user = authUser._id;
+        convo.expiresAt = expiresAt;
+      }
+
+      const attachments = attachmentSummary(files);
+      convo.messages.push({
+        role: "user",
+        content: trimmedInput,
+        meta: attachments.length ? { attachments } : undefined,
+      });
+      convo.attachments.push(...attachments);
+      convo.lastMessageAt = new Date();
+      await convo.save();
+
+      send({ status: "typing" });
+      const replyText = await callHomeSupportAI({
+        input: trimmedInput,
+        history: convo.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        files,
+      });
+
+      convo.messages.push({ role: "assistant", content: replyText });
+      convo.lastMessageAt = new Date();
+      convo.expiresAt = expiresAt;
+      await convo.save();
+
+      send({ token: replyText });
+      send({ done: true });
+      return res.end();
+    } catch (err) {
+      console.error("Home Support AI error:", err);
+      if (!res.headersSent) {
+        return res.status(500).json({ message: "Home Support AI failed" });
+      }
+      res.write(`data: ${JSON.stringify({ error: "Home Support AI failed" })}\n\n`);
+      return res.end();
+    }
+  }
+);
 
 // ========== MAIN ENDPOINT ==========
 router.post("/message", async (req, res) => {

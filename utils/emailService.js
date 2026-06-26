@@ -410,6 +410,61 @@ const TEMPLATES = {
     `, { preheader: "We received your request and will confirm shortly." }),
   }),
 
+  one_time_visit_payment_received: ({
+    name = "there",
+    bookingNumber,
+    date,
+    service,
+    selectedTask,
+    address,
+    price,
+    durationMinutes,
+  }) => ({
+    subject: `Payment received - One-Time Visit #${bookingNumber || ""}`,
+    html: frame(`
+      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Thanks, ${name} - your One-Time Visit request is paid.</h2>
+
+      <p style="margin:0 0 12px">
+        We received your ${price || "$99"} payment for a ${durationMinutes || 90}-minute One-Time Visit. Your request is now waiting for admin review and final approval.
+      </p>
+
+      <div style="margin:14px 0; padding:14px 16px; background:${BRAND.gray100}; border-radius:10px; border:1px solid ${BRAND.border};">
+        <table cellpadding="0" cellspacing="0" border="0" style="font-size:15px; line-height:2.0;">
+          <tr><td><strong>Booking #:</strong>&nbsp;${bookingNumber || "-"}</td></tr>
+          <tr><td><strong>Visit:</strong>&nbsp;${service || "One-Time Handyman Visit"}</td></tr>
+          <tr><td><strong>Task:</strong>&nbsp;${selectedTask || "-"}</td></tr>
+          <tr><td><strong>Requested time:</strong>&nbsp;${date ? formatNYCTime(date) : "-"}</td></tr>
+          ${address ? `<tr><td><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>` : ""}
+        </table>
+      </div>
+
+      <p style="margin:0 0 12px">
+        We will review the details and confirm the appointment. If anything needs to change, please call
+        <a href="${URLS.supportTel}" style="color:#0b5cab;text-decoration:none;font-weight:700;">631-599-1363</a>.
+      </p>
+      <p style="margin:0 0 12px; font-size:14px; color:${BRAND.gray700};">
+        One-Time Visits are for small handyman jobs. Profixter does not offer appliance repair.
+        Larger work should start with a Project Estimate.
+      </p>
+    `, { preheader: "Your paid One-Time Visit request is waiting for final approval." }),
+    text: [
+      `Thanks, ${name} - your One-Time Visit request is paid.`,
+      "",
+      `We received your ${price || "$99"} payment for a ${durationMinutes || 90}-minute One-Time Visit. Your request is waiting for admin review and final approval.`,
+      "",
+      `Booking #: ${bookingNumber || "-"}`,
+      `Visit: ${service || "One-Time Handyman Visit"}`,
+      `Task: ${selectedTask || "-"}`,
+      `Requested time: ${date ? formatNYCTime(date) : "-"}`,
+      address ? `Address: ${address}` : "",
+      "",
+      "If anything needs to change, call 631-599-1363. Cancellation and reschedule requests require admin approval.",
+      "One-Time Visits are for small handyman jobs. Profixter does not offer appliance repair. Larger work should start with a Project Estimate.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  }),
+
   booking_confirmed: ({ name = "there", bookingNumber, date, service, address }) => ({
     subject: `Booking confirmed — #${bookingNumber || ""}`,
     html: frame(`

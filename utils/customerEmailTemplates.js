@@ -7,9 +7,18 @@ function createCustomerEmailTemplates({
   const TIP_URL = "https://www.profixter.com/tip";
   const REVIEW_URL = "https://www.profixter.com/review";
   const ACCOUNT_URL = "https://www.profixter.com/account";
+  const BOOK_URL = "https://www.profixter.com/book";
+  const MEMBERSHIP_URL = "https://www.profixter.com/membership";
+  const PROJECTS_URL = "https://www.profixter.com/projects";
+  const ONE_TIME_PHONE = "631-599-1363";
 
   const safe = (value, fallback = "") =>
     escapeHtml(String(value || fallback).trim());
+
+  const isOneTimeVisit = (vars = {}) =>
+    vars.bookingType === "one_time_handyman_visit" ||
+    vars.accessType === "one_time" ||
+    /one-time|one time/i.test(String(vars.service || ""));
 
   const button = (href, label) => `
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0 8px;">
@@ -202,57 +211,70 @@ function createCustomerEmailTemplates({
       });
     },
 
-    booking_confirmed: ({ name = "there", bookingNumber, date, service, address }) => {
+    booking_confirmed: (vars = {}) => {
+      const { name = "there", bookingNumber, date, service, selectedTask, address } = vars;
+      const oneTime = isOneTimeVisit(vars);
       const rows = [
         { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
         { label: "Service", value: service || "" },
+        { label: "Visit", value: oneTime ? "$99 / 90 minutes" : "" },
+        { label: "Task", value: oneTime ? selectedTask || "" : "" },
         { label: "Date and time", value: date ? formatNYCTime(date) : "" },
         { label: "Address", value: address || "" },
       ];
       return email({
         subject: `Your Profixter booking is confirmed${bookingNumber ? ` — #${bookingNumber}` : ""}`,
-        preheader: "Your Profixter appointment is confirmed.",
+        preheader: oneTime
+          ? "Your paid one-time handyman visit is confirmed."
+          : "Your Profixter appointment is confirmed.",
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your appointment is confirmed</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Your appointment is on the schedule. We will send a reminder before the visit.</p>
+          <p style="margin:0 0 16px;">${oneTime ? "Your paid One-Time Visit is approved and on the schedule." : "Your appointment is on the schedule."} We will send a reminder before the visit.</p>
           ${detailCard(rows)}
           <p style="margin:0 0 10px;font-weight:700;">Before we arrive</p>
           <ul style="margin:0;padding-left:20px;">
             <li style="margin-bottom:7px;">Clear the immediate work area when possible.</li>
             <li style="margin-bottom:7px;">Have fixtures or materials on site if the task requires them.</li>
-            <li>Reply to this email if the scope or access details change.</li>
-          </ul>`,
-        text: `${greeting(name)}\n\nYour Profixter appointment is confirmed.\n\n${textDetails(rows)}\n\nPlease have the work area and any required materials ready.\n\n${SUPPORT_EMAIL}`,
+            <li>${oneTime ? `For cancellation or reschedule requests, call ${ONE_TIME_PHONE} so admin can review the change.` : "Reply to this email if the scope or access details change."}</li>
+          </ul>
+          ${oneTime ? `<p class="email-muted" style="margin:16px 0 0;color:#64748b;font-size:14px;">This visit is for small handyman work. Profixter does not offer appliance repair. If the work is larger than one visit, start a Project Estimate at <a href="${PROJECTS_URL}" style="color:#1d4ed8;">${PROJECTS_URL}</a>.</p>` : ""}`,
+        text: `${greeting(name)}\n\n${oneTime ? "Your paid One-Time Visit is approved and confirmed." : "Your Profixter appointment is confirmed."}\n\n${textDetails(rows)}\n\nPlease have the work area and any required materials ready.${oneTime ? `\n\nFor cancellation or reschedule requests, call ${ONE_TIME_PHONE}.\n\nThis visit is for small handyman work. Profixter does not offer appliance repair. If the work is larger than one visit, start a Project Estimate: ${PROJECTS_URL}` : ""}\n\n${SUPPORT_EMAIL}`,
       });
     },
 
-    booking_completed: ({ name = "there", bookingNumber }) =>
-      email({
+    booking_completed: (vars = {}) => {
+      const { name = "there", bookingNumber } = vars;
+      const oneTime = isOneTimeVisit(vars);
+      return email({
         subject: `Your Profixter appointment is complete${bookingNumber ? ` — #${bookingNumber}` : ""}`,
         preheader: "Your Profixter appointment has been marked complete.",
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Appointment complete</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Thank you for inviting Profixter into your home. Booking ${bookingNumber ? `<strong>#${safe(bookingNumber)}</strong>` : ""} has been marked complete.</p>
+          <p style="margin:0 0 16px;">Thank you for inviting Profixter into your home. ${oneTime ? "Your One-Time Visit" : "Booking"} ${bookingNumber ? `<strong>#${safe(bookingNumber)}</strong>` : ""} has been marked complete.</p>
           <p style="margin:0 0 16px;">If notes or photos were added to your appointment, they may be available with your booking information.</p>
-          <p style="margin:0;">If you would like to thank your Fixter, leaving a tip is always optional.</p>
-          ${button(TIP_URL, "Leave an optional tip")}`,
-        text: `${greeting(name)}\n\nYour Profixter appointment${bookingNumber ? ` #${bookingNumber}` : ""} is complete. Thank you for choosing us.\n\nIf notes or photos were added, they may be available with your booking information.\n\nOptional tip: ${TIP_URL}\n\n${SUPPORT_EMAIL}`,
-      }),
+          <p style="margin:0;">${oneTime ? "Need more ongoing help? You can book another visit or compare membership when it makes sense." : "If you would like to thank your Fixter, leaving a tip is always optional."}</p>
+          ${oneTime ? button(MEMBERSHIP_URL, "Compare membership") : button(TIP_URL, "Leave an optional tip")}`,
+        text: `${greeting(name)}\n\nYour Profixter appointment${bookingNumber ? ` #${bookingNumber}` : ""} is complete. Thank you for choosing us.\n\nIf notes or photos were added, they may be available with your booking information.\n\n${oneTime ? `Compare membership: ${MEMBERSHIP_URL}\nBook another visit: ${BOOK_URL}` : `Optional tip: ${TIP_URL}`}\n\n${SUPPORT_EMAIL}`,
+      });
+    },
 
-    booking_review_request: ({ name = "there", bookingNumber }) =>
-      email({
+    booking_review_request: (vars = {}) => {
+      const { name = "there", bookingNumber } = vars;
+      const oneTime = isOneTimeVisit(vars);
+      return email({
         subject: "How did we do?",
         preheader: "We would appreciate your honest feedback.",
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">How did we do?</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Thank you again for choosing Profixter${bookingNumber ? ` for booking <strong>#${safe(bookingNumber)}</strong>` : ""}.</p>
+          <p style="margin:0 0 16px;">Thank you again for choosing Profixter${oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking <strong>#${safe(bookingNumber)}</strong>` : ""}.</p>
           <p style="margin:0;">If you have a moment, we would appreciate an honest review. Your feedback helps us improve and helps local homeowners find dependable home service.</p>
           ${button(REVIEW_URL, "Share your feedback")}`,
-        text: `${greeting(name)}\n\nThank you again for choosing Profixter${bookingNumber ? ` for booking #${bookingNumber}` : ""}. We would appreciate your honest feedback.\n\nReviews help us improve and help local homeowners find dependable service.\n\nShare your feedback: ${REVIEW_URL}\n\n${SUPPORT_EMAIL}`,
-      }),
+        text: `${greeting(name)}\n\nThank you again for choosing Profixter${oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking #${bookingNumber}` : ""}. We would appreciate your honest feedback.\n\nReviews help us improve and help local homeowners find dependable service.\n\nShare your feedback: ${REVIEW_URL}\n\n${SUPPORT_EMAIL}`,
+      });
+    },
 
     booking_canceled: ({ name = "there", bookingNumber, address }) => {
       const rows = [
@@ -273,13 +295,9 @@ function createCustomerEmailTemplates({
       });
     },
 
-    booking_reminder_24h: ({
-      name = "there",
-      bookingNumber,
-      date,
-      service,
-      address,
-    }) => {
+    booking_reminder_24h: (vars = {}) => {
+      const { name = "there", bookingNumber, date, service, address } = vars;
+      const oneTime = isOneTimeVisit(vars);
       const rows = [
         { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
         { label: "Service", value: service || "" },
@@ -287,36 +305,40 @@ function createCustomerEmailTemplates({
         { label: "Address", value: address || "" },
       ];
       return email({
-        subject: "Reminder: your Profixter appointment is tomorrow",
-        preheader: "A reminder about your upcoming Profixter appointment.",
+        subject: `Reminder: your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is tomorrow`,
+        preheader: `A reminder about your upcoming ${oneTime ? "one-time handyman visit" : "Profixter appointment"}.`,
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Appointment reminder</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">This is a reminder that your Profixter appointment is coming up tomorrow.</p>
+          <p style="margin:0 0 16px;">This is a reminder that your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is coming up tomorrow.</p>
           ${detailCard(rows)}
-          <p style="margin:0;">Please have the work area accessible and any required materials ready.</p>
+          <p style="margin:0;">Please have the work area accessible and any required materials ready.${oneTime ? ` Cancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}</p>
           ${button(urls.schedule, "Manage your appointment")}`,
-        text: `${greeting(name)}\n\nThis is a reminder that your Profixter appointment is tomorrow.\n\n${textDetails(rows)}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nThis is a reminder that your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is tomorrow.\n\n${textDetails(rows)}\n\nPlease have the work area accessible and any required materials ready.${oneTime ? `\n\nCancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
       });
     },
 
-    booking_reminder_60m: ({ name = "there", date }) =>
-      email({
-        subject: "Your Profixter appointment is coming up",
-        preheader: "Your Profixter appointment begins soon.",
+    booking_reminder_60m: (vars = {}) => {
+      const { name = "there", date } = vars;
+      const oneTime = isOneTimeVisit(vars);
+      return email({
+        subject: `Your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is coming up`,
+        preheader: `Your ${oneTime ? "one-time handyman visit" : "Profixter appointment"} begins soon.`,
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">We will see you soon</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Your Profixter appointment is scheduled for <strong>${safe(date ? formatNYCTime(date) : "")}</strong>.</p>
+          <p style="margin:0 0 16px;">Your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is scheduled for <strong>${safe(date ? formatNYCTime(date) : "")}</strong>.</p>
           <p style="margin:0 0 10px;font-weight:700;">A quick checklist</p>
           <ul style="margin:0 0 18px;padding-left:20px;">
             <li style="margin-bottom:7px;">Clear the immediate work area if possible.</li>
             <li style="margin-bottom:7px;">Keep pets safely away from the work area.</li>
             <li>Have any required fixtures or materials ready.</li>
           </ul>
+          ${oneTime ? `<p class="email-muted" style="margin:0 0 16px;color:#64748b;font-size:14px;">If anything urgent changed, call ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.</p>` : ""}
           ${button(urls.schedule, "Manage your appointment")}`,
-        text: `${greeting(name)}\n\nYour Profixter appointment is scheduled for ${date ? formatNYCTime(date) : "soon"}.\n\nPlease clear the work area, keep pets safe, and have any required materials ready.\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
-      }),
+        text: `${greeting(name)}\n\nYour ${oneTime ? "One-Time Visit" : "Profixter appointment"} is scheduled for ${date ? formatNYCTime(date) : "soon"}.\n\nPlease clear the work area, keep pets safe, and have any required materials ready.${oneTime ? `\n\nIf anything urgent changed, call ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+      });
+    },
 
     subscription_cancellation_scheduled: ({
       name = "there",

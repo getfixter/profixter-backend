@@ -10,6 +10,7 @@ const moment = require("moment-timezone");
 const Booking = require("../models/Booking");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
+const VisitEntitlement = require("../models/VisitEntitlement");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const {
@@ -24,6 +25,9 @@ const mail = require("../utils/emailService");
 const { deletePublicObjects, putPublicObject } = require("../utils/s3");
 const {
   subscriptionGrantsAccess,
+  hasStripeSecretKey,
+  resolveUserStripeCustomerId,
+  stripe,
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 const {
@@ -35,9 +39,15 @@ const {
 const {
   suggestNextAvailableSlots,
 } = require("../utils/customerCalendarService");
+const {
+  getOneTimeVisitSettings,
+  publicOneTimeVisitSettings,
+  validateOneTimeTask,
+} = require("../utils/oneTimeVisitSettings");
 
 const BOOKINGS_ROUTE_VERSION = "v5.1-capacity-gated";
 console.log("Loaded routes/bookings.js", BOOKINGS_ROUTE_VERSION);
+const CLIENT_URL = process.env.CLIENT_URL || "https://www.profixter.com";
 
 router.get("/__version", (_req, res) => res.json({ v: BOOKINGS_ROUTE_VERSION }));
 
@@ -66,6 +76,90 @@ const safeName = (name) =>
     .replace(/[^\w.\-]+/g, "_")
     .replace(/_+/g, "_")
     .slice(0, 120);
+
+async function uploadBookingImages({ files = [], bookingDate, bookingNumber }) {
+  const images = [];
+  const uploadedS3Keys = [];
+  const yyyy = bookingDate.getFullYear();
+  const mm = String(bookingDate.getMonth() + 1).padStart(2, "0");
+  const dd = String(bookingDate.getDate()).padStart(2, "0");
+  const formattedDate = `${yyyy}-${mm}-${dd}`;
+
+  if (S3_BUCKET) {
+    const baseKey = `${S3_PREFIX}/${formattedDate}/booking-${bookingNumber}`;
+
+    for (const f of files || []) {
+      const ext = path.extname(f.originalname).toLowerCase();
+      const stem = safeName(path.basename(f.originalname, ext));
+      let finalBuffer = f.buffer;
+      let finalExt = ext;
+      let finalContentType = f.mimetype || "application/octet-stream";
+
+      const needsConversion =
+        [".heic", ".heif", ".png", ".bmp", ".tiff", ".tif"].includes(ext) ||
+        [
+          "image/heic",
+          "image/heif",
+          "image/png",
+          "image/bmp",
+          "image/tiff",
+        ].includes(f.mimetype);
+
+      if (needsConversion) {
+        finalBuffer = await sharp(f.buffer)
+          .rotate()
+          .resize(1600, 1600, {
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .jpeg({
+            quality: 75,
+            chromaSubsampling: "4:2:0",
+            mozjpeg: true,
+          })
+          .toBuffer();
+        finalExt = ".jpg";
+        finalContentType = "image/jpeg";
+      } else if ([".jpg", ".jpeg"].includes(ext)) {
+        finalBuffer = await sharp(f.buffer)
+          .rotate()
+          .resize(1600, 1600, {
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .jpeg({
+            quality: 75,
+            chromaSubsampling: "4:2:0",
+            mozjpeg: true,
+          })
+          .toBuffer();
+      }
+
+      const key = `${baseKey}/${Date.now()}-${stem}${finalExt}`;
+      const url = await putPublicObject({
+        Bucket: S3_BUCKET,
+        Key: key,
+        Body: finalBuffer,
+        ContentType: finalContentType,
+      });
+      uploadedS3Keys.push(key);
+      images.push(url);
+    }
+  } else {
+    for (const f of files || []) {
+      images.push(`local://${safeName(f.originalname)}`);
+    }
+  }
+
+  return { images, uploadedS3Keys };
+}
+
+async function releaseLegacySlotCounter(bookingDate, cfg) {
+  const tz = cfg?.timezone || "America/New_York";
+  const ymd = ymdInTZ(new Date(bookingDate), tz);
+  const hh = hhmmInTZ(new Date(bookingDate), tz);
+  await SlotCounter.updateOne({ ymd, time: hh }, { $inc: { count: -1 } });
+}
 
 /* ---------- TZ helpers ---------- */
 const ymdInTZ = (d, tz) =>
@@ -398,6 +492,353 @@ router.post("/cancel/:id", auth, cancelOrDelete);
 router.delete("/:id", auth, cancelOrDelete);
 router.post("/:id/cancel", auth, cancelOrDelete);
 
+/* ---------- GET /api/bookings/one-time/config ---------- */
+router.get("/one-time/config", async (_req, res) => {
+  try {
+    const settings = await getOneTimeVisitSettings();
+    return res.json(publicOneTimeVisitSettings(settings));
+  } catch (error) {
+    console.error("One-time settings load error:", error.message);
+    return res.status(500).json({ message: "Unable to load one-time visit settings." });
+  }
+});
+
+/* ---------- POST /api/bookings/one-time/checkout ---------- */
+router.post(
+  "/one-time/checkout",
+  auth,
+  ensureNotBlacklisted,
+  upload.array("images", 10),
+  async (req, res) => {
+    let booking = null;
+    let entitlement = null;
+    let counterStamped = null;
+    const uploadedS3Keys = [];
+    let legacyCfg = null;
+
+    try {
+      if (!hasStripeSecretKey()) {
+        return res.status(503).json({
+          message: "Secure checkout is temporarily unavailable. Please try again shortly.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+      }
+
+      const oneTimeSettings = await getOneTimeVisitSettings();
+      if (!oneTimeSettings.enabled) {
+        return res.status(503).json({
+          message: "One-Time Handyman Visit booking is temporarily unavailable.",
+          code: "ONE_TIME_VISIT_DISABLED",
+        });
+      }
+
+      const priceId = oneTimeSettings.stripePriceId;
+      if (!priceId) {
+        return res.status(503).json({
+          message: "One-Time Handyman Visit checkout is not configured yet.",
+          code: "ONE_TIME_PRICE_NOT_CONFIGURED",
+        });
+      }
+
+      const me = await User.findById(req.user.id);
+      if (!me) {
+        return res.status(401).json({ message: "User not found or session expired." });
+      }
+
+      const { addressId, selectedTask, note, date, requestedDate, requestedTime } = req.body;
+      if (!addressId || !mongoose.isValidObjectId(addressId)) {
+        return res.status(400).json({ message: "Please choose an address for this booking." });
+      }
+      if (!note || String(note).trim().split(/\s+/).filter(Boolean).length < 3) {
+        return res.status(400).json({ message: "Describe the task in at least a few words." });
+      }
+      if (!req.files?.length) {
+        return res.status(400).json({ message: "Add at least one photo so our team can prepare." });
+      }
+
+      const scope = validateOneTimeTask(oneTimeSettings, selectedTask, note);
+      if (!scope.ok) {
+        return res.status(400).json({
+          message: scope.message,
+          code: scope.code,
+          redirectTo: "/projects",
+        });
+      }
+
+      const subdoc = me.addresses?.id?.(addressId);
+      if (!subdoc) {
+        return res.status(400).json({ message: "Address not found on your account." });
+      }
+
+      const useReservationEngine = reservationEngineEnabled();
+      const requestedStart =
+        useReservationEngine &&
+        /^\d{4}-\d{2}-\d{2}$/.test(String(requestedDate || "")) &&
+        /^\d{2}:\d{2}$/.test(String(requestedTime || ""))
+          ? moment.tz(
+              `${requestedDate} ${requestedTime}`,
+              "YYYY-MM-DD HH:mm",
+              true,
+              "America/New_York"
+            )
+          : null;
+      const bookingDate = requestedStart?.isValid()
+        ? requestedStart.toDate()
+        : new Date(date);
+      if (Number.isNaN(bookingDate.getTime())) {
+        return res.status(400).json({ message: "Invalid date." });
+      }
+
+      const activeAddressBookings = await Booking.find({
+        user: req.user.id,
+        addressId: subdoc._id,
+        date: { $gte: new Date() },
+      })
+        .select("status")
+        .lean();
+      const activeCount = activeAddressBookings.filter(
+        (entry) => !isTerminalBookingStatus(entry.status)
+      ).length;
+      if (activeCount >= 1) {
+        return res.status(400).json({
+          message:
+            "This address already has an active booking. Please complete or cancel it before scheduling a One-Time Visit.",
+        });
+      }
+
+      const holdExpiresAt = new Date(
+        Date.now() + oneTimeSettings.holdMinutes * 60 * 1000
+      );
+      legacyCfg = useReservationEngine ? null : await CalendarConfig.findOne().lean();
+      if (!useReservationEngine) {
+        const capacity = Math.max(1, Number(legacyCfg?.maxConcurrent ?? 1));
+        const ymd = ymdInTZ(bookingDate, legacyCfg?.timezone || "America/New_York");
+        const hh = hhmmInTZ(bookingDate, legacyCfg?.timezone || "America/New_York");
+        const gate = await SlotCounter.findOneAndUpdate(
+          {
+            ymd,
+            time: hh,
+            $or: [{ count: { $lt: capacity } }, { count: { $exists: false } }],
+          },
+          {
+            $inc: { count: 1 },
+            $setOnInsert: { ymd, time: hh },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        if (!gate || gate.count > capacity) {
+          return res.status(409).json({
+            code: "SLOT_UNAVAILABLE",
+            message: "This time is fully booked. Please choose another time.",
+          });
+        }
+        counterStamped = { ymd, time: hh };
+      }
+
+      const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
+      const uploadResult = await uploadBookingImages({
+        files: req.files || [],
+        bookingDate,
+        bookingNumber,
+      });
+      uploadedS3Keys.push(...uploadResult.uploadedS3Keys);
+
+      entitlement = await VisitEntitlement.create({
+        user: me._id,
+        userId: me.userId,
+        addressId: subdoc._id,
+        addressSnapshot: {
+          line1: subdoc.line1 || "",
+          city: subdoc.city || "",
+          state: subdoc.state || "",
+          zip: subdoc.zip || "",
+          county: subdoc.county || "",
+        },
+        status: "pending_payment",
+        priceCents: oneTimeSettings.priceCents,
+        currency: oneTimeSettings.currency,
+        durationMinutes: oneTimeSettings.durationMinutes,
+        holdExpiresAt,
+      });
+
+      const bookingData = {
+        bookingNumber,
+        date: bookingDate,
+        service: "One-Time Handyman Visit",
+        selectedTask: scope.selectedTask,
+        user: req.user.id,
+        userId: me.userId,
+        name: me.name,
+        phone: me.phone,
+        email: me.email,
+        addressId: subdoc._id,
+        address: subdoc.line1 || "",
+        city: subdoc.city || "",
+        state: subdoc.state || "",
+        zip: subdoc.zip || "",
+        county: subdoc.county || "",
+        subscription: "One-Time Visit",
+        accessType: "one_time",
+        bookingType: "one_time_handyman_visit",
+        paymentState: "pending",
+        paymentStatus: "Pending",
+        entitlementId: entitlement._id,
+        paymentHoldExpiresAt: holdExpiresAt,
+        isFreeFirstVisit: false,
+        note: String(note || "").trim(),
+        images: uploadResult.images,
+        status: "Pending",
+      };
+
+      if (useReservationEngine) {
+        const result = await createBookingWithReservation({
+          bookingData,
+          slotStart: bookingDate,
+          createdByType: "customer",
+          actorUser: me,
+          assignmentSource: "automatic",
+          reservationStatus: "held",
+          holdExpiresAt,
+        });
+        booking = result.booking;
+      } else {
+        booking = new Booking(bookingData);
+        await booking.save();
+        await logBookingCreated({
+          booking,
+          actor: {
+            actorUserId: me?._id || null,
+            actorName: me?.name || booking.name || "Customer",
+            actorEmail: me?.email || booking.email || "",
+            actorRole: "customer",
+            actorPosition: "",
+          },
+        });
+      }
+
+      entitlement.bookingId = booking._id;
+      await entitlement.save();
+
+      const stripeCustomerId = await resolveUserStripeCustomerId(me);
+      const sessionConfig = {
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [{ price: priceId, quantity: 1 }],
+        client_reference_id: String(booking._id),
+        metadata: {
+          productKind: "one_time_handyman_visit",
+          bookingId: String(booking._id),
+          entitlementId: String(entitlement._id),
+          userMongoId: String(me._id),
+          userId: String(me.userId || me._id),
+          addressId: String(subdoc._id),
+        },
+        payment_intent_data: {
+          metadata: {
+            productKind: "one_time_handyman_visit",
+            bookingId: String(booking._id),
+            entitlementId: String(entitlement._id),
+            userMongoId: String(me._id),
+            userId: String(me.userId || me._id),
+            addressId: String(subdoc._id),
+          },
+        },
+        success_url: `${CLIENT_URL}/book/confirmation?booking_id=${booking._id}&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${CLIENT_URL}/book?canceled=true&booking_id=${booking._id}`,
+        expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
+      };
+
+      if (stripeCustomerId) {
+        sessionConfig.customer = stripeCustomerId;
+      } else {
+        sessionConfig.customer_email = me.email;
+      }
+
+      const checkoutSession = await stripe.checkout.sessions.create(sessionConfig);
+      if (!checkoutSession?.url) {
+        throw new Error("Stripe checkout did not return a redirect URL");
+      }
+
+      entitlement.stripeCheckoutSessionId = checkoutSession.id;
+      entitlement.stripeCustomerId = checkoutSession.customer
+        ? String(checkoutSession.customer)
+        : stripeCustomerId || null;
+      await entitlement.save();
+
+      return res.json({
+        url: checkoutSession.url,
+        bookingId: String(booking._id),
+        entitlementId: String(entitlement._id),
+        holdExpiresAt,
+      });
+    } catch (error) {
+      console.error("One-time checkout booking error:", error.stack || error.message);
+      try {
+        if (booking?._id) {
+          if (reservationEngineEnabled()) {
+            await cancelBookingWithReservation({
+              bookingId: booking._id,
+              actorUser: req.authUser || null,
+              createdByType: "system",
+              reason: "One-time checkout setup failed",
+            });
+          } else {
+            booking.status = "Canceled";
+            booking.paymentState = "failed";
+            await booking.save();
+          }
+          await Booking.updateOne(
+            { _id: booking._id },
+            {
+              $set: {
+                status: "Canceled",
+                paymentState: "failed",
+                paymentStatus: "Failed",
+              },
+            }
+          );
+        }
+      } catch (cleanupError) {
+        console.error("One-time booking cleanup failed:", cleanupError.message);
+      }
+      try {
+        if (counterStamped) {
+          await SlotCounter.updateOne(
+            { ymd: counterStamped.ymd, time: counterStamped.time },
+            { $inc: { count: -1 } }
+          );
+        }
+      } catch (_) {}
+      try {
+        if (entitlement?._id) {
+          entitlement.status = "payment_failed";
+          await entitlement.save();
+        }
+      } catch (_) {}
+      try {
+        if (uploadedS3Keys.length) {
+          await deletePublicObjects({ Bucket: S3_BUCKET, Keys: uploadedS3Keys });
+        }
+      } catch (_) {}
+
+      if (
+        ["SLOT_UNAVAILABLE", "SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(
+          error?.code
+        )
+      ) {
+        return res.status(409).json({
+          code: "SLOT_UNAVAILABLE",
+          message: "This time is no longer available. Please choose another time.",
+        });
+      }
+      return res.status(error?.statusCode || 500).json({
+        message: error.message || "Unable to start one-time checkout.",
+        code: error.code || "ONE_TIME_CHECKOUT_FAILED",
+      });
+    }
+  }
+);
+
 /* ---------- POST /api/bookings (create) ---------- */
 router.post(
   "/",
@@ -670,6 +1111,9 @@ router.post(
         subscription: usingFreeFirstVisit
           ? "Free visit"
           : activeSub.subscriptionType,
+        accessType: usingFreeFirstVisit ? "free_first_visit" : "membership",
+        bookingType: "membership_visit",
+        paymentState: "not_required",
         isFreeFirstVisit: usingFreeFirstVisit,
         freeFirstVisitClaimedAt: usingFreeFirstVisit ? new Date() : null,
         note,

@@ -39,6 +39,10 @@ const {
   reservationEngineEnabled,
   transitionBookingWithReservation,
 } = require("../utils/slotReservationService");
+const {
+  getOneTimeVisitSettings,
+  upsertOneTimeVisitSettings,
+} = require("../utils/oneTimeVisitSettings");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -96,6 +100,18 @@ const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
 const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 
+const ONE_TIME_SETTING_FIELDS = new Set([
+  "enabled",
+  "priceCents",
+  "durationMinutes",
+  "stripePriceId",
+  "holdMinutes",
+  "cancellationPhone",
+  "allowedServices",
+  "excludedServices",
+  "promoNote",
+]);
+
 function escapeRegex(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -104,6 +120,33 @@ function terminalBookingStatuses() {
   return ["completed", "cancelled", "canceled", "done", "failed", "no-show"];
 }
 void legacyOnlyAdmin;
+
+router.get("/one-time-visit-settings", auth, ...onlyAdmin, async (_req, res) => {
+  try {
+    const settings = await getOneTimeVisitSettings();
+    return res.json(settings);
+  } catch (error) {
+    console.error("One-time visit settings load failed:", error.message);
+    return res.status(500).json({ message: "Failed to load one-time visit settings" });
+  }
+});
+
+router.put("/one-time-visit-settings", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const patch = {};
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (ONE_TIME_SETTING_FIELDS.has(key)) patch[key] = value;
+    }
+
+    const settings = await upsertOneTimeVisitSettings(patch);
+    return res.json(settings);
+  } catch (error) {
+    console.error("One-time visit settings update failed:", error.message);
+    return res.status(400).json({
+      message: error.message || "Failed to update one-time visit settings",
+    });
+  }
+});
 
 async function getAddressPlansForUser(user) {
   const candidates = await Subscription.find({
@@ -2081,6 +2124,9 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
             bookingNumber: booking.bookingNumber,
             date: booking.date,
             service: booking.service,
+            selectedTask: booking.selectedTask,
+            bookingType: booking.bookingType,
+            accessType: booking.accessType,
             address,
           },
           {
