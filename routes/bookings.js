@@ -592,23 +592,6 @@ router.post(
         return res.status(400).json({ message: "Invalid date." });
       }
 
-      const activeAddressBookings = await Booking.find({
-        user: req.user.id,
-        addressId: subdoc._id,
-        date: { $gte: new Date() },
-      })
-        .select("status")
-        .lean();
-      const activeCount = activeAddressBookings.filter(
-        (entry) => !isTerminalBookingStatus(entry.status)
-      ).length;
-      if (activeCount >= 1) {
-        return res.status(400).json({
-          message:
-            "This address already has an active booking. Please complete or cancel it before scheduling a One-Time Visit.",
-        });
-      }
-
       const holdExpiresAt = new Date(
         Date.now() + oneTimeSettings.holdMinutes * 60 * 1000
       );
