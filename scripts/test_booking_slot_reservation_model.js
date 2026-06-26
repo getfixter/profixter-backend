@@ -61,6 +61,8 @@ async function run() {
     BookingHistory.schema.path("actionType").options.enum || [];
   for (const action of [
     "reservation_created",
+    "reservation_hold_created",
+    "reservation_hold_paid",
     "reservation_released",
     "reservation_moved",
     "reservation_backfilled",
@@ -68,6 +70,17 @@ async function run() {
   ]) {
     assert(historyActions.includes(action), `Missing history action ${action}`);
   }
+
+  for (const actionType of ["reservation_hold_created", "reservation_hold_paid"]) {
+    const history = new BookingHistory({
+      bookingId,
+      actorName: "System",
+      actionType,
+      summary: actionType,
+    });
+    await history.validate();
+  }
+
   const bucketIndexes = ReservationTimeBucket.schema.indexes();
   assert(
     bucketIndexes.some(

@@ -383,10 +383,23 @@ function bookingHistoryDescriptionLines(entry) {
     ].filter(Boolean);
   }
 
-  if (actionType === "reservation_created" && reservationChange) {
+  if (
+    (actionType === "reservation_created" ||
+      actionType === "reservation_hold_created" ||
+      actionType === "reservation_hold_paid") &&
+    reservationChange
+  ) {
     const reservation = extractReservationParts(reservationChange.newValue || reservationChange.oldValue);
+    const isHold = actionType === "reservation_hold_created";
+    const isPaidHold = actionType === "reservation_hold_paid";
     return [
-      reservation.range ? `Appointment reserved for ${reservation.range}` : "Appointment reserved",
+      reservation.range
+        ? `${isHold ? "Appointment hold created for" : isPaidHold ? "Paid hold reserved for" : "Appointment reserved for"} ${reservation.range}`
+        : isHold
+          ? "Appointment hold created"
+          : isPaidHold
+            ? "Paid hold reserved"
+            : "Appointment reserved",
       reservation.fixterName ? `Fixter: ${reservation.fixterName}` : "",
     ].filter(Boolean);
   }
@@ -440,6 +453,8 @@ function bookingHistoryTitle(actionType) {
     assigned_fixter_changed: "Fixter assignment changed",
     note_added: "Booking note added",
     reservation_created: "Appointment reserved",
+    reservation_hold_created: "Appointment hold created",
+    reservation_hold_paid: "Paid hold reserved",
     reservation_released: "Appointment reservation released",
     reservation_moved: "Appointment moved",
     reservation_backfilled: "Appointment reservation backfilled",

@@ -39,6 +39,8 @@ const BookingHistorySchema = new mongoose.Schema(
         "booking_created",
         "note_added",
         "reservation_created",
+        "reservation_hold_created",
+        "reservation_hold_paid",
         "reservation_released",
         "reservation_moved",
         "reservation_backfilled",
