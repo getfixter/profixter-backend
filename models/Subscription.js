@@ -76,6 +76,18 @@ const SubscriptionSchema = new mongoose.Schema(
     cancelAtPeriodEnd: { type: Boolean, default: false },
     cancellationDate: { type: Date, default: null },
     cancellationReason: { type: String, default: null },
+    retentionOffer: {
+      offeredAt: { type: Date, default: null },
+      declinedAt: { type: Date, default: null },
+      acceptedAt: { type: Date, default: null },
+      stripeCouponId: { type: String, default: null },
+      stripeDiscountId: { type: String, default: null },
+      discountAmountCents: { type: Number, default: null },
+      discountCurrency: { type: String, default: null },
+      discountDescription: { type: String, default: null },
+      lastErrorAt: { type: Date, default: null },
+      lastErrorMessage: { type: String, default: null },
+    },
     pendingPlan: {
       type: String,
       enum: ["basic", "plus", "premium", "elite", null],

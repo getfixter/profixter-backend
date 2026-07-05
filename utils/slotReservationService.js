@@ -65,6 +65,28 @@ function blockingReservationFilter(now = new Date()) {
   };
 }
 
+function appointmentTimeChanged(previousDate, nextDate) {
+  const previousMs = new Date(previousDate).getTime();
+  const nextMs = new Date(nextDate).getTime();
+  if (!Number.isFinite(previousMs) || !Number.isFinite(nextMs)) return false;
+  return previousMs !== nextMs;
+}
+
+function clearBookingReminderEmailState(booking) {
+  booking.reminder24hQueuedAt = undefined;
+  booking.reminder24hSentAt = undefined;
+  booking.reminder24hSkippedAt = undefined;
+  booking.reminder24hSkipReason = "";
+  booking.reminder60mQueuedAt = undefined;
+  booking.reminder60mSentAt = undefined;
+}
+
+function resetBookingReminderEmailStateForDateChange(booking, nextDate) {
+  if (!appointmentTimeChanged(booking?.date, nextDate)) return false;
+  clearBookingReminderEmailState(booking);
+  return true;
+}
+
 function reservationEngineEnabled() {
   return String(process.env.ENABLE_RESERVATION_ENGINE || "false").toLowerCase() === "true";
 }
@@ -1050,6 +1072,10 @@ async function reserveSlotForBooking({
         transactionalBooking,
         assignmentFields(technician, reservation, assignmentSource)
       );
+      resetBookingReminderEmailStateForDateChange(
+        transactionalBooking,
+        window.slotStart
+      );
       transactionalBooking.date = window.slotStart;
       await transactionalBooking.save({ session });
 
@@ -1576,6 +1602,10 @@ async function moveReservationForBooking({
       Object.assign(
         transactionalBooking,
         assignmentFields(technician, reservation, assignmentSource)
+      );
+      resetBookingReminderEmailStateForDateChange(
+        transactionalBooking,
+        window.slotStart
       );
       transactionalBooking.date = window.slotStart;
       await transactionalBooking.save({ session });
@@ -2253,6 +2283,7 @@ module.exports = {
   overlaps,
   planBucketMove,
   promoteHeldReservationForBooking,
+  resetBookingReminderEmailStateForDateChange,
   normalizeBookingStatus,
   rankEligibleTechnicians,
   releaseExpiredHolds,

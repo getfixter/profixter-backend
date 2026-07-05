@@ -2,6 +2,9 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const mail = require("../utils/emailService");
+const {
+  sendAdminEventNotification,
+} = require("../utils/adminLeadNotification");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const {
@@ -21,6 +24,17 @@ const {
   subscriptionGrantsAccess,
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
+const {
+  applyRetentionCouponToStripe,
+  buildRetentionAcceptedAdminSections,
+  calculateRetentionDiscountCents,
+  describeCouponDiscount,
+  evaluateRetentionOfferAcceptance,
+  evaluateRetentionOfferDisplay,
+  getRetentionCouponId,
+  getStripeDiscountId,
+  planPriceToCents,
+} = require("../utils/subscriptionRetentionOffer");
 
 const router = express.Router();
 
@@ -34,6 +48,22 @@ function logPlanChange(level, event, details = {}) {
   if (level === "error") console.error(payload);
   else if (level === "warn") console.warn(payload);
   else console.log(payload);
+}
+
+function formatAddressParts(parts = {}) {
+  return [
+    parts.line1 || parts.address,
+    parts.city,
+    parts.state,
+    parts.zip,
+    parts.county,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function setRetentionOfferValue(subscription, field, value) {
+  subscription.set(`retentionOffer.${field}`, value);
 }
 
 async function getOwnedAddress(userId, addressId) {
@@ -356,9 +386,243 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
   }
 });
 
+router.post("/manage/address/:addressId/retention-offer", auth, async (req, res) => {
+  try {
+    const { addressId } = req.params;
+    if (!mongoose.isValidObjectId(addressId)) {
+      return res.status(400).json({ message: "Invalid addressId" });
+    }
+
+    const { user, address } = await getOwnedAddress(req.user.id, addressId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!address) return res.status(404).json({ message: "Address not found" });
+
+    const subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_retention_offer"
+    );
+
+    if (!subscription) {
+      return res.json({
+        eligible: false,
+        reason: "active_subscription_not_found",
+      });
+    }
+
+    const availability = evaluateRetentionOfferDisplay(subscription, process.env);
+    if (!availability.eligible) {
+      return res.json(availability);
+    }
+
+    const stripeSubscription = await resolveStripeSubscriptionForRecord({ subscription, user });
+    if (!stripeSubscription) {
+      return res.json({
+        eligible: false,
+        reason: "stripe_subscription_unavailable",
+      });
+    }
+
+    if (
+      stripeSubscription.cancel_at_period_end ||
+      String(stripeSubscription.status || "").toLowerCase() === "canceled"
+    ) {
+      return res.json({
+        eligible: false,
+        reason: "stripe_subscription_cancellation_unavailable",
+      });
+    }
+
+    const now = new Date();
+    setRetentionOfferValue(
+      subscription,
+      "offeredAt",
+      subscription.retentionOffer?.offeredAt || now
+    );
+    setRetentionOfferValue(subscription, "lastErrorAt", null);
+    setRetentionOfferValue(subscription, "lastErrorMessage", null);
+    await subscription.save();
+
+    return res.json({
+      eligible: true,
+      reason: "eligible",
+      offer: {
+        title: "Before you cancel...",
+        discountLabel: "30% off your next monthly renewal",
+        offeredAt: now,
+      },
+      subscription: serializeSubscription(subscription, address),
+    });
+  } catch (err) {
+    console.error("POST /subscriptions/manage/address/:addressId/retention-offer error:", err);
+    return res.status(500).json({
+      message: "Unable to check retention offer right now",
+    });
+  }
+});
+
+router.post("/manage/address/:addressId/retention-offer/accept", auth, async (req, res) => {
+  try {
+    const { addressId } = req.params;
+    if (!mongoose.isValidObjectId(addressId)) {
+      return res.status(400).json({ message: "Invalid addressId" });
+    }
+
+    const { user, address } = await getOwnedAddress(req.user.id, addressId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!address) return res.status(404).json({ message: "Address not found" });
+
+    const subscription = await getAccessibleOwnedSubscription(
+      user,
+      address,
+      "subscription_retention_accept"
+    );
+
+    if (!subscription) {
+      return res.status(404).json({ message: "No active subscription found for this address" });
+    }
+
+    const acceptability = evaluateRetentionOfferAcceptance(subscription, process.env);
+    if (!acceptability.eligible) {
+      return res.status(409).json({
+        message: "This retention offer is no longer available.",
+        reason: acceptability.reason,
+      });
+    }
+
+    const stripeSubscription = await resolveStripeSubscriptionForRecord({ subscription, user });
+    if (!stripeSubscription) {
+      return res.status(409).json({
+        message:
+          "We could not safely link this subscription to Stripe. Please contact support.",
+      });
+    }
+
+    if (
+      stripeSubscription.cancel_at_period_end ||
+      String(stripeSubscription.status || "").toLowerCase() === "canceled"
+    ) {
+      return res.status(409).json({
+        message: "This membership is already scheduled to cancel.",
+        reason: "stripe_subscription_cancellation_unavailable",
+      });
+    }
+
+    const couponId = getRetentionCouponId(process.env);
+    let coupon;
+    let updatedStripeSubscription;
+
+    try {
+      coupon = await stripe.coupons.retrieve(couponId);
+      updatedStripeSubscription = await applyRetentionCouponToStripe({
+        stripeClient: stripe,
+        stripeSubscriptionId: stripeSubscription.id,
+        couponId,
+      });
+    } catch (stripeErr) {
+      const now = new Date();
+      setRetentionOfferValue(subscription, "lastErrorAt", now);
+      setRetentionOfferValue(
+        subscription,
+        "lastErrorMessage",
+        stripeErr?.message || "Unable to apply retention coupon"
+      );
+      await subscription.save();
+
+      console.error("subscription retention coupon apply failed:", {
+        message: stripeErr?.message,
+        type: stripeErr?.type,
+        code: stripeErr?.code,
+        stripeSubscriptionId: stripeSubscription.id,
+        subscriptionId: String(subscription._id),
+      });
+
+      return res.status(stripeErr?.statusCode || stripeErr?.status || 502).json({
+        message:
+          "We couldn't apply the discount right now. You can try again or continue with cancellation.",
+        reason: "retention_coupon_apply_failed",
+      });
+    }
+
+    const acceptedAt = new Date();
+    const planPriceCents = planPriceToCents(subscription.planPrice);
+    const discountAmountCents = calculateRetentionDiscountCents(coupon, planPriceCents);
+    const discountCurrency = coupon?.currency || "usd";
+    const discountDescription = describeCouponDiscount(
+      coupon,
+      discountAmountCents,
+      discountCurrency
+    );
+
+    setRetentionOfferValue(
+      subscription,
+      "offeredAt",
+      subscription.retentionOffer?.offeredAt || acceptedAt
+    );
+    setRetentionOfferValue(subscription, "acceptedAt", acceptedAt);
+    setRetentionOfferValue(subscription, "stripeCouponId", couponId);
+    setRetentionOfferValue(
+      subscription,
+      "stripeDiscountId",
+      getStripeDiscountId(updatedStripeSubscription)
+    );
+    setRetentionOfferValue(subscription, "discountAmountCents", discountAmountCents);
+    setRetentionOfferValue(subscription, "discountCurrency", discountCurrency);
+    setRetentionOfferValue(subscription, "discountDescription", discountDescription);
+    setRetentionOfferValue(subscription, "lastErrorAt", null);
+    setRetentionOfferValue(subscription, "lastErrorMessage", null);
+    await subscription.save();
+
+    try {
+      await sendAdminEventNotification({
+        subject: "RETENTION OFFER ACCEPTED",
+        heading: "RETENTION OFFER ACCEPTED",
+        templateKey: "admin_retention_offer_accepted",
+        replyToEmail: user.email,
+        customerName: user.name || "",
+        customerEmail: user.email,
+        source: "subscriptionRetentionOffer",
+        sections: buildRetentionAcceptedAdminSections({
+          user,
+          address,
+          subscription,
+          stripeSubscription: updatedStripeSubscription,
+          coupon,
+          couponId,
+          acceptedAt,
+        }),
+      }, {
+        logContext: {
+          userId: user._id,
+          subscriptionId: subscription._id,
+        },
+      });
+    } catch (emailErr) {
+      console.error("admin retention offer accepted email failed:", emailErr.message);
+    }
+
+    return res.json({
+      message:
+        "You're all set! Your next renewal will automatically receive 30% off. After that, your membership returns to the regular monthly price.",
+      subscription: serializeSubscription(subscription, address),
+      retentionOffer: {
+        acceptedAt,
+        nextRenewalDate: subscription.currentPeriodEnd || subscription.nextPaymentDate || null,
+        discountDescription,
+      },
+    });
+  } catch (err) {
+    console.error("POST /subscriptions/manage/address/:addressId/retention-offer/accept error:", err);
+    return res.status(500).json({
+      message: "Unable to apply retention offer right now",
+    });
+  }
+});
+
 router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
   try {
     const { addressId } = req.params;
+    const retentionOfferDeclined = req.body?.retentionOfferDeclined === true;
     if (!mongoose.isValidObjectId(addressId)) {
       return res.status(400).json({ message: "Invalid addressId" });
     }
@@ -405,6 +669,22 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
       addressIdHint: String(address._id),
     });
 
+    if (
+      retentionOfferDeclined &&
+      updatedSubscription &&
+      !updatedSubscription.retentionOffer?.acceptedAt &&
+      !updatedSubscription.retentionOffer?.declinedAt
+    ) {
+      const declinedAt = new Date();
+      setRetentionOfferValue(
+        updatedSubscription,
+        "offeredAt",
+        updatedSubscription.retentionOffer?.offeredAt || declinedAt
+      );
+      setRetentionOfferValue(updatedSubscription, "declinedAt", declinedAt);
+      await updatedSubscription.save();
+    }
+
     // Send cancellation scheduled email — self-serve path.
     // The webhook will skip this email because cancelAtPeriodEnd is already true locally.
     if (updatedSubscription?.cancelAtPeriodEnd) {
@@ -434,6 +714,64 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
       } catch (emailErr) {
         console.error("subscription_cancellation_scheduled email failed:", emailErr.message);
       }
+    }
+
+    try {
+      const accessEndDate =
+        updatedSubscription?.cancellationDate ||
+        updatedSubscription?.currentPeriodEnd ||
+        updatedSubscription?.nextPaymentDate ||
+        null;
+      const addressSnapshot = updatedSubscription?.addressSnapshot || {
+        line1: address.line1,
+        city: address.city,
+        state: address.state,
+        zip: address.zip,
+        county: address.county,
+      };
+
+      await sendAdminEventNotification({
+        subject: "SUBSCRIPTION CANCELED",
+        heading: "SUBSCRIPTION CANCELED",
+        templateKey: "admin_subscription_canceled",
+        replyToEmail: user.email,
+        customerName: user.name || "",
+        customerEmail: user.email,
+        source: "subscriptionSelfServe",
+        fields: [
+          ["Customer full name", user.name],
+          ["Email", user.email],
+          ["Phone", user.phone],
+          ["Service address", formatAddressParts(addressSnapshot)],
+          ["City", addressSnapshot.city],
+          ["State", addressSnapshot.state],
+          ["Zip", addressSnapshot.zip],
+          ["County", addressSnapshot.county],
+          ["Plan name", updatedSubscription?.subscriptionType],
+          ["Stripe subscription ID", canceledStripeSubscription?.id || updatedSubscription?.stripeSubscriptionId],
+          ["Cancellation date", mail.formatNYCTime(new Date().toISOString())],
+          ["Access/termination date", accessEndDate ? mail.formatNYCTime(accessEndDate) : ""],
+          [
+            "Cancellation timing",
+            updatedSubscription?.cancelAtPeriodEnd
+              ? "Scheduled at period end"
+              : "Immediate",
+          ],
+          ["Current subscription status", updatedSubscription?.status],
+          ["User Mongo ID", user._id],
+          ["Customer user ID", user.userId],
+          ["Address ID", address._id],
+          ["Subscription Mongo ID", updatedSubscription?._id || subscription._id],
+          ["Stripe customer ID", canceledStripeSubscription?.customer || updatedSubscription?.stripeCustomerId],
+        ],
+      }, {
+        logContext: {
+          userId: user._id,
+          subscriptionId: updatedSubscription?._id || subscription._id,
+        },
+      });
+    } catch (emailErr) {
+      console.error("admin subscription cancellation email failed:", emailErr.message);
     }
 
     return res.json({

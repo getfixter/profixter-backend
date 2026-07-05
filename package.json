@@ -27,7 +27,8 @@
     "test:visit-entitlement-indexes": "node scripts/test_visit_entitlement_indexes.js",
     "repair:visit-entitlement-indexes": "node scripts/repair_visit_entitlement_indexes.js",
     "test:booking-review-requests": "node scripts/test_booking_review_requests.js",
-    "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js"
+    "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js",
+    "test:subscription-retention": "node scripts/test_subscription_retention_offer.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

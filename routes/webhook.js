@@ -33,6 +33,9 @@ const {
   oneTimeReservationProtectionExpiresAt,
   reservationIssueFromPromotionError,
 } = require("../utils/oneTimeVisitPaymentFlow");
+const {
+  sendAdminEventNotification,
+} = require("../utils/adminLeadNotification");
 
 const ONE_TIME_PRODUCT_KIND = "one_time_handyman_visit";
 
@@ -255,7 +258,415 @@ async function releaseLegacyBookingCapacity(booking) {
   await SlotCounter.updateOne({ ymd, time: hh }, { $inc: { count: -1 } });
 }
 
-async function sendOneTimePaymentEmails({ booking, user, entitlement }) {
+function formatAdminMoney(amount, currency = "usd") {
+  if (amount === undefined || amount === null || amount === "") return "Not available";
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return String(amount);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: String(currency || "usd").toUpperCase(),
+  }).format(numeric / 100);
+}
+
+function formatAddressParts(parts = {}) {
+  return [
+    parts.line1 || parts.address,
+    parts.city,
+    parts.state,
+    parts.zip,
+    parts.county,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+const ADMIN_NOT_AVAILABLE = "Not Available";
+const NO_PROMOTION_USED = "No Promotion Used";
+
+function adminDate(value) {
+  if (!value) return ADMIN_NOT_AVAILABLE;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? mail.formatNYCTime(date)
+    : ADMIN_NOT_AVAILABLE;
+}
+
+function titleCaseWords(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function stripeId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  return value.id ? String(value.id) : "";
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function subscriptionItem(stripeSubscription) {
+  return stripeSubscription?.items?.data?.[0] || null;
+}
+
+function subscriptionPrice(stripeSubscription) {
+  const item = subscriptionItem(stripeSubscription);
+  return item?.price || item?.plan || null;
+}
+
+function subscriptionPriceCents(stripeSubscription, fallbackPlan) {
+  const price = subscriptionPrice(stripeSubscription);
+  return firstNumber(
+    price?.unit_amount,
+    price?.amount,
+    price?.unit_amount_decimal,
+    getPlanPrice(fallbackPlan) ? getPlanPrice(fallbackPlan) * 100 : null
+  );
+}
+
+function subscriptionCurrency(stripeSubscription, session, fallback = "usd") {
+  const price = subscriptionPrice(stripeSubscription);
+  return String(
+    session?.currency ||
+      price?.currency ||
+      stripeSubscription?.currency ||
+      fallback ||
+      "usd"
+  ).toUpperCase();
+}
+
+function subscriptionInterval(stripeSubscription, billingCycle) {
+  const price = subscriptionPrice(stripeSubscription);
+  const interval = price?.recurring?.interval || price?.interval || "";
+  if (interval) return interval === "year" ? "year" : "month";
+  return String(billingCycle || "").toLowerCase() === "annual" ? "year" : "month";
+}
+
+function intervalLabel(interval) {
+  return interval === "year" ? "year" : "month";
+}
+
+function formatAdminMoneyValue(amount, currency = "usd") {
+  const value = formatAdminMoney(amount, currency);
+  return value === "Not available" ? ADMIN_NOT_AVAILABLE : value;
+}
+
+function formatRecurringAmount(cents, currency, interval) {
+  if (cents === undefined || cents === null) return ADMIN_NOT_AVAILABLE;
+  return `${formatAdminMoneyValue(cents, currency)}/${intervalLabel(interval)}`;
+}
+
+function formatDiscountApplied(cents, currency) {
+  if (cents === undefined || cents === null) return ADMIN_NOT_AVAILABLE;
+  const numeric = Number(cents);
+  if (!Number.isFinite(numeric)) return ADMIN_NOT_AVAILABLE;
+  if (numeric === 0) return formatAdminMoneyValue(0, currency);
+  return `-${formatAdminMoneyValue(Math.abs(numeric), currency)}`;
+}
+
+function expandedInvoice(stripeSubscription) {
+  return stripeSubscription?.latest_invoice &&
+    typeof stripeSubscription.latest_invoice !== "string"
+    ? stripeSubscription.latest_invoice
+    : null;
+}
+
+function expandedPaymentIntent(invoice) {
+  return invoice?.payment_intent && typeof invoice.payment_intent !== "string"
+    ? invoice.payment_intent
+    : null;
+}
+
+async function retrieveCheckoutLineItemsForAdmin(sessionId) {
+  if (!sessionId) return [];
+  try {
+    const result = await stripe.checkout.sessions.listLineItems(String(sessionId), {
+      limit: 10,
+      expand: [
+        "data.discounts.discount.coupon",
+        "data.discounts.discount.promotion_code",
+      ],
+    });
+    return result?.data || [];
+  } catch (error) {
+    logWebhook("warn", "admin_member_line_items_expand_failed", {
+      stripeSessionId: sessionId,
+      message: error?.message || "Unable to expand checkout line item discounts",
+    });
+    try {
+      const result = await stripe.checkout.sessions.listLineItems(String(sessionId), {
+        limit: 10,
+      });
+      return result?.data || [];
+    } catch (fallbackError) {
+      logWebhook("warn", "admin_member_line_items_failed", {
+        stripeSessionId: sessionId,
+        message: fallbackError?.message || "Unable to retrieve checkout line items",
+      });
+      return [];
+    }
+  }
+}
+
+function pushDiscountEntry(entries, value, amount = null) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => pushDiscountEntry(entries, entry, amount));
+    return;
+  }
+  const discount = value.discount || value;
+  entries.push({
+    raw: value,
+    discount,
+    amount: firstNumber(value.amount, value.amount_discount, amount),
+  });
+}
+
+function collectDiscountEntries({ session, stripeSubscription, invoice, lineItems }) {
+  const entries = [];
+  pushDiscountEntry(entries, session?.discounts);
+  pushDiscountEntry(entries, session?.total_details?.breakdown?.discounts);
+  pushDiscountEntry(entries, stripeSubscription?.discount);
+  pushDiscountEntry(entries, stripeSubscription?.discounts);
+  pushDiscountEntry(entries, invoice?.discount);
+  pushDiscountEntry(entries, invoice?.discounts);
+  for (const amount of invoice?.total_discount_amounts || []) {
+    pushDiscountEntry(entries, amount.discount, amount.amount);
+  }
+  for (const lineItem of lineItems || []) {
+    pushDiscountEntry(entries, lineItem.discounts);
+  }
+  return entries;
+}
+
+function discountObjectValue(value, fallbackKey) {
+  if (!value) return null;
+  if (typeof value === "string") return { id: value };
+  if (typeof value === "object") return value[fallbackKey] || value;
+  return null;
+}
+
+function discountDetailsFromEntry(entry) {
+  const discount = entry?.discount || {};
+  const promotionCode = discountObjectValue(
+    discount.promotion_code || entry?.raw?.promotion_code,
+    "promotion_code"
+  );
+  const coupon = discountObjectValue(
+    discount.coupon || entry?.raw?.coupon,
+    "coupon"
+  );
+  return { promotionCode, coupon };
+}
+
+function discountTypeAndValue(coupon, amountDiscount, currency) {
+  if (coupon?.percent_off !== undefined && coupon?.percent_off !== null) {
+    return {
+      type: "Percentage",
+      value: `${coupon.percent_off}%`,
+    };
+  }
+  if (coupon?.amount_off !== undefined && coupon?.amount_off !== null) {
+    return {
+      type: "Fixed Amount",
+      value: formatAdminMoneyValue(coupon.amount_off, coupon.currency || currency),
+    };
+  }
+  if (amountDiscount > 0) {
+    return {
+      type: "Fixed Amount",
+      value: formatAdminMoneyValue(amountDiscount, currency),
+    };
+  }
+  return {
+    type: ADMIN_NOT_AVAILABLE,
+    value: ADMIN_NOT_AVAILABLE,
+  };
+}
+
+function promotionDetails({ session, stripeSubscription, invoice, lineItems, currency }) {
+  const entries = collectDiscountEntries({
+    session,
+    stripeSubscription,
+    invoice,
+    lineItems,
+  });
+  const lineItemDiscountTotal = (lineItems || []).reduce((sum, item) => {
+    const itemDiscount = (item.discounts || []).reduce(
+      (inner, discount) => inner + Number(discount.amount || 0),
+      0
+    );
+    return sum + itemDiscount;
+  }, 0);
+  const invoiceDiscountTotal = (invoice?.total_discount_amounts || []).reduce(
+    (sum, item) => sum + Number(item.amount || 0),
+    0
+  );
+  const amountDiscount = firstNumber(
+    session?.total_details?.amount_discount,
+    invoiceDiscountTotal || null,
+    lineItemDiscountTotal || null,
+    0
+  );
+  const firstDetailedEntry = entries.find((entry) => {
+    const details = discountDetailsFromEntry(entry);
+    return stripeId(details.promotionCode) || stripeId(details.coupon);
+  }) || entries[0] || null;
+  const { promotionCode, coupon } = discountDetailsFromEntry(firstDetailedEntry);
+  const metadataCode =
+    session?.metadata?.promoCode ||
+    session?.metadata?.promotionCode ||
+    session?.metadata?.discountCode ||
+    "";
+  const used =
+    Number(amountDiscount || 0) > 0 ||
+    !!stripeId(promotionCode) ||
+    !!stripeId(coupon) ||
+    !!metadataCode;
+  const typeValue = used
+    ? discountTypeAndValue(coupon, amountDiscount, currency)
+    : { type: NO_PROMOTION_USED, value: NO_PROMOTION_USED };
+
+  return {
+    used,
+    status: used ? "Promotion Applied" : NO_PROMOTION_USED,
+    promotionCodeUsed:
+      promotionCode?.code || metadataCode || (used ? ADMIN_NOT_AVAILABLE : NO_PROMOTION_USED),
+    stripePromotionCode:
+      stripeId(promotionCode) || (used ? ADMIN_NOT_AVAILABLE : NO_PROMOTION_USED),
+    stripeCouponId: stripeId(coupon) || (used ? ADMIN_NOT_AVAILABLE : NO_PROMOTION_USED),
+    discountType: typeValue.type,
+    discountValue: typeValue.value,
+    amountDiscount: amountDiscount ?? null,
+  };
+}
+
+async function buildNewMemberAdminSections({
+  session,
+  stripeSubscription,
+  subscription,
+  user,
+  plan,
+  billingCycle,
+  prevPurchase,
+  now,
+}) {
+  const invoice = expandedInvoice(stripeSubscription);
+  const paymentIntent = expandedPaymentIntent(invoice);
+  const lineItems = await retrieveCheckoutLineItemsForAdmin(session.id);
+  const currency = subscriptionCurrency(stripeSubscription, session, subscription?.currency || "usd");
+  const priceCents = subscriptionPriceCents(stripeSubscription, plan);
+  const interval = subscriptionInterval(stripeSubscription, billingCycle);
+  const promotion = promotionDetails({
+    session,
+    stripeSubscription,
+    invoice,
+    lineItems,
+    currency,
+  });
+  const amountChargedToday = firstNumber(
+    session.amount_total,
+    invoice?.amount_paid,
+    invoice?.amount_due
+  );
+  const paymentStatus = [
+    session.payment_status,
+    invoice?.status ? `invoice ${invoice.status}` : "",
+    paymentIntent?.status ? `payment ${paymentIntent.status}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+  const address = subscription.addressSnapshot || {};
+
+  return [
+    {
+      title: "CUSTOMER",
+      fields: [
+        ["Full Name", user.name],
+        ["Phone", user.phone],
+        ["Email", user.email],
+      ],
+    },
+    {
+      title: "SERVICE PROPERTY",
+      fields: [
+        ["Street Address", address.line1],
+        ["City", address.city],
+        ["State", address.state],
+        ["ZIP", address.zip],
+        ["County", address.county],
+      ],
+    },
+    {
+      title: "MEMBERSHIP",
+      fields: [
+        ["Plan Name", plan ? `${titleCaseWords(plan)} Membership` : subscription.subscriptionType],
+        ["Membership Price", formatRecurringAmount(priceCents, currency, interval)],
+        ["Membership Started", adminDate(subscription.startDate || now)],
+        ["Renewal Date", adminDate(subscription.currentPeriodEnd || subscription.nextPaymentDate)],
+        ["Current Status", subscription.status || stripeSubscription.status],
+      ],
+    },
+    {
+      title: "PAYMENT",
+      fields: [
+        ["Original Plan Price", formatAdminMoneyValue(priceCents, currency)],
+        ["Discount Applied", formatDiscountApplied(promotion.amountDiscount, currency)],
+        ["Amount Charged Today", formatAdminMoneyValue(amountChargedToday, currency)],
+        ["Recurring Renewal Amount", formatRecurringAmount(priceCents, currency, interval)],
+        ["Currency", currency],
+        ["Payment Status", paymentStatus],
+      ],
+    },
+    {
+      title: "PROMOTION",
+      fields: [
+        ["Promotion", promotion.status],
+        ["Promotion Code Used", promotion.promotionCodeUsed],
+        ["Stripe Promotion Code", promotion.stripePromotionCode],
+        ["Stripe Coupon ID", promotion.stripeCouponId],
+        ["Discount Type", promotion.discountType],
+        ["Discount Value", promotion.discountValue],
+      ],
+    },
+    {
+      title: "STRIPE",
+      fields: [
+        ["Stripe Customer ID", session.customer || subscription.stripeCustomerId],
+        ["Stripe Subscription ID", stripeSubscription.id || subscription.stripeSubscriptionId],
+        ["Stripe Checkout Session ID", session.id],
+        ["Stripe Payment Intent ID (if available)", stripeId(paymentIntent) || session.payment_intent],
+        ["Invoice ID (if available)", invoice?.id || session.invoice || subscription.latestInvoiceId],
+      ],
+    },
+    {
+      title: "SYSTEM",
+      fields: [
+        ["Customer ID", user.userId],
+        ["Registration Date", adminDate(user.createdAt)],
+        ["IP Address (if already available)", prevPurchase?.clientIp],
+        ["Referral / Source (if already tracked)", prevPurchase?.sourceUrl || session.metadata?.source_url],
+        ["User Mongo ID", user._id],
+        ["Subscription Mongo ID", subscription._id],
+        ["Address ID", subscription.addressId],
+      ],
+    },
+  ];
+}
+
+async function sendOneTimePaymentEmails({ booking, user, entitlement, session }) {
   const address = [booking.address, booking.city, booking.state, booking.zip]
     .filter(Boolean)
     .join(", ");
@@ -293,30 +704,43 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement }) {
   }
 
   try {
-    await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
-      subject: `Paid One-Time Visit Pending Approval - ${booking.name || user.name || ""}`,
-      html: `
-        <h2>Paid One-Time Visit Pending Approval</h2>
-        <ul>
-          <li><strong>Booking #:</strong> ${booking.bookingNumber}</li>
-          <li><strong>Name:</strong> ${booking.name || user.name || "-"}</li>
-          <li><strong>Email:</strong> ${booking.email || user.email || "-"}</li>
-          <li><strong>Phone:</strong> ${booking.phone || user.phone || "-"}</li>
-          <li><strong>Task:</strong> ${booking.selectedTask || booking.service || "-"}</li>
-          <li><strong>Date:</strong> ${mail.formatNYCTime(booking.date)}</li>
-          <li><strong>Address:</strong> ${address || "-"}</li>
-          <li><strong>Payment:</strong> Paid</li>
-        </ul>
-      `,
+    await sendAdminEventNotification({
+      subject: "ONE TIME CALL",
+      heading: "ONE TIME CALL",
+      templateKey: "admin_one_time_visit_paid",
+      replyToEmail: booking.email || user.email || "",
+      customerName: booking.name || user.name || "",
+      customerEmail: booking.email || user.email || "",
+      source: "stripeWebhookOneTime",
+      fields: [
+        ["Customer full name", booking.name || user.name],
+        ["Email", booking.email || user.email],
+        ["Phone", booking.phone || user.phone],
+        ["Service address", formatAddressParts({
+          address: booking.address,
+          city: booking.city,
+          state: booking.state,
+          zip: booking.zip,
+          county: booking.county,
+        })],
+        ["Requested date/time", booking.date ? mail.formatNYCTime(booking.date) : ""],
+        ["Service/task type", booking.selectedTask || booking.service],
+        ["Notes/message", booking.note],
+        ["Booking ID", booking._id],
+        ["Booking #", booking.bookingNumber],
+        ["Booking status", booking.status],
+        ["Payment state", booking.paymentState],
+        ["Payment status", booking.paymentStatus],
+        ["Amount paid", formatAdminMoney(session?.amount_total ?? entitlement?.priceCents, session?.currency || entitlement?.currency || "usd")],
+        ["Stripe checkout/session ID", session?.id],
+        ["Stripe payment intent ID", session?.payment_intent],
+        ["Entitlement ID", entitlement?._id],
+        ["Reservation issue", booking.reservationIssue?.message || ""],
+      ],
+    }, {
       logContext: {
-        templateKey: "admin_one_time_visit_paid",
         bookingId: booking._id,
         bookingNumber: booking.bookingNumber,
-        customerName: booking.name || user.name || "",
-        customerEmail: booking.email || user.email || "",
-        recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
-        emailType: "admin",
-        source: "stripeWebhookOneTime",
       },
     });
   } catch (error) {
@@ -475,7 +899,7 @@ async function handleOneTimeCheckoutCompleted(session) {
     console.error("One-time GHL sync failed:", error.message);
   }
 
-  await sendOneTimePaymentEmails({ booking, user, entitlement });
+  await sendOneTimePaymentEmails({ booking, user, entitlement, session });
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
 
@@ -686,30 +1110,29 @@ async function handleCheckoutCompleted(session) {
     }
   );
 
-  await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
-    subject: `New Subscription: ${plan.toUpperCase()} - ${user.name || email}`,
-    html: `
-      <h2>New Subscription Activated</h2>
-      <p><strong>Plan:</strong> ${plan.toUpperCase()} ($${value})</p>
-      <p><strong>Billing:</strong> ${billingCycle.toUpperCase()}</p>
-      <p><strong>Name:</strong> ${user.name || ""}</p>
-      <p><strong>Phone:</strong> ${user.phone || "-"}</p>
-      <p><strong>Email:</strong> ${user.email}</p>
-      <p><strong>User ID:</strong> ${user.userId}</p>
-      <p><strong>Address:</strong> ${
-        subscription.addressSnapshot
-          ? `${subscription.addressSnapshot.line1}, ${subscription.addressSnapshot.city}, ${subscription.addressSnapshot.state} ${subscription.addressSnapshot.zip}`
-          : "No address assigned"
-      }</p>
-    `,
+  const newMemberSections = await buildNewMemberAdminSections({
+    session,
+    stripeSubscription,
+    subscription,
+    user,
+    plan,
+    billingCycle,
+    prevPurchase: prevLP,
+    now,
+  });
+
+  await sendAdminEventNotification({
+    subject: "NEW MEMBER",
+    heading: "NEW MEMBER",
+    templateKey: "admin_subscription_started",
+    replyToEmail: user.email,
+    customerName: user.name || "",
+    customerEmail: user.email,
+    source: "stripeWebhook",
+    sections: newMemberSections,
+  }, {
     logContext: {
-      templateKey: "admin_subscription_started",
       userId: user._id,
-      customerName: user.name || "",
-      customerEmail: user.email,
-      recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
-      emailType: "admin",
-      source: "stripeWebhook",
     },
   });
 }

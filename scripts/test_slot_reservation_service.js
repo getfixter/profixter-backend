@@ -6,9 +6,32 @@ const {
   findEligibleTechnicians,
   overlaps,
   rankEligibleTechnicians,
+  resetBookingReminderEmailStateForDateChange,
   reservationEngineEnabled,
   reservationWindow,
 } = require("../utils/slotReservationService");
+
+function bookingWithReminderState(date) {
+  return {
+    status: "Confirmed",
+    date: new Date(date),
+    reminder24hQueuedAt: new Date("2026-06-30T12:00:00Z"),
+    reminder24hSentAt: new Date("2026-06-30T12:01:00Z"),
+    reminder24hSkippedAt: new Date("2026-06-30T12:02:00Z"),
+    reminder24hSkipReason: "legacy_skip",
+    reminder60mQueuedAt: new Date("2026-07-01T12:00:00Z"),
+    reminder60mSentAt: new Date("2026-07-01T12:01:00Z"),
+  };
+}
+
+function assertReminderStateCleared(booking) {
+  assert.equal(booking.reminder24hQueuedAt, undefined);
+  assert.equal(booking.reminder24hSentAt, undefined);
+  assert.equal(booking.reminder24hSkippedAt, undefined);
+  assert.equal(booking.reminder24hSkipReason, "");
+  assert.equal(booking.reminder60mQueuedAt, undefined);
+  assert.equal(booking.reminder60mSentAt, undefined);
+}
 
 async function run() {
   const window = reservationWindow("2026-07-01T10:00:00-04:00");
@@ -31,6 +54,42 @@ async function run() {
     ),
     false
   );
+
+  const movedBooking = bookingWithReminderState("2026-07-01T14:00:00Z");
+  assert.equal(
+    resetBookingReminderEmailStateForDateChange(
+      movedBooking,
+      new Date("2026-07-02T14:00:00Z")
+    ),
+    true
+  );
+  assertReminderStateCleared(movedBooking);
+
+  const reassignedBooking = bookingWithReminderState("2026-07-01T14:00:00Z");
+  assert.equal(
+    resetBookingReminderEmailStateForDateChange(
+      reassignedBooking,
+      new Date("2026-07-01T14:00:00Z")
+    ),
+    false
+  );
+  assert.ok(reassignedBooking.reminder24hSentAt instanceof Date);
+  assert.equal(reassignedBooking.reminder24hSkipReason, "legacy_skip");
+  assert.ok(reassignedBooking.reminder60mSentAt instanceof Date);
+
+  const equivalentInstantBooking = bookingWithReminderState(
+    "2026-07-01T14:00:00Z"
+  );
+  assert.equal(
+    resetBookingReminderEmailStateForDateChange(
+      equivalentInstantBooking,
+      "2026-07-01T10:00:00-04:00"
+    ),
+    false
+  );
+  assert.ok(equivalentInstantBooking.reminder24hSentAt instanceof Date);
+  assert.ok(equivalentInstantBooking.reminder60mSentAt instanceof Date);
+
   await assert.rejects(
     assertNoTechnicianOverlap({
       technicianId: "tech-1",
