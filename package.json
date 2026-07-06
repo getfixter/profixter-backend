@@ -28,6 +28,7 @@
     "repair:visit-entitlement-indexes": "node scripts/repair_visit_entitlement_indexes.js",
     "test:booking-review-requests": "node scripts/test_booking_review_requests.js",
     "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js",
+    "test:chatbot-lead-rules": "node scripts/test_chatbot_lead_rules.js",
     "test:subscription-retention": "node scripts/test_subscription_retention_offer.js"
   },
   "dependencies": {

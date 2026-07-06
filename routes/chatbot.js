@@ -6,10 +6,21 @@ const multer = require("multer");
 const Lead = require("../models/Lead");
 const Conversation = require("../models/Conversation");
 const knowledge = require("../data/chatbotKnowledge");
-const { getNextAvailableSlot } = require("../utils/getNextAvailableSlot");
 const {
   sendAdminLeadNotification,
 } = require("../utils/adminLeadNotification");
+const {
+  buildCallbackConfirmationPrompt,
+  buildRoutingReply,
+  confirmsPhoneCall,
+  declinesPhoneCall,
+  extractPhoneNumber,
+  getRoutingRecommendation,
+  hasCallbackNotification,
+  isAwaitingCallbackConfirmation,
+  shouldRouteToProductPage,
+  wantsPhoneCall,
+} = require("../utils/chatbotLeadRules");
 
 // --- CONFIG ---
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
@@ -53,6 +64,8 @@ ALWAYS:
 - For one small predefined handyman task, direct to: https://profixter.com/book
 - For membership, direct to: https://profixter.com/membership
 - For larger projects, direct to the Renovation Estimate: https://profixter.com/projects#estimate
+- If the user is trying to book, schedule, find availability, or make an appointment, route them to the correct page instead of collecting an admin lead.
+- Only treat a phone call as an admin callback request after the user explicitly confirms they want a phone call. If they are just trying to book, send them to the booking page.
 - If asked to cancel, confirm they are an active Member before sharing the cancellation phone number.
 - Never offer appliance repair as a Profixter service.
 - Keep the Profixter brand name consistent.
@@ -102,6 +115,8 @@ Profixter company knowledge:
 - About Us (/about): use when someone wants the company story, trust, local background, founder story, or how Profixter works.
 - Phone: 631-599-1363.
 - Recommendations should feel like practical advice, not advertising. Recommend Book Handyman for one small repair, Membership for recurring jobs or ongoing maintenance, and Renovation Estimate for larger projects.
+- If a user is trying to book, schedule, find availability, or make an appointment, navigate them to the proper page instead of treating it as a call lead: Book Handyman (/book), Membership (/membership), or Renovation Estimate (/projects#estimate).
+- If a user asks for a phone call, verify first. Ask them to confirm with "Yes, call me" and provide the best phone number if needed. Do not imply the team has been notified until that confirmation is clear.
 
 Appliances:
 - Profixter does not offer appliance repair.
@@ -145,6 +160,71 @@ function outputTextFromResponse(data) {
     }
   }
   return chunks.join("\n").trim();
+}
+
+function sendSseReply(res, text) {
+  res.write(`data: ${JSON.stringify({ token: text })}\n\n`);
+  res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+  return res.end();
+}
+
+function leadAddress(leadDoc) {
+  if (!leadDoc) return "";
+  return [
+    leadDoc.address_line1,
+    leadDoc.city,
+    leadDoc.state,
+    leadDoc.zip,
+    leadDoc.county,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function phoneFromMessages(messages = []) {
+  for (const message of [...messages].reverse()) {
+    const phone = extractPhoneNumber(message?.content);
+    if (phone) return phone;
+  }
+  return "";
+}
+
+async function sendAiCallbackAdminEmail({
+  leadDoc,
+  input,
+  channel,
+  visitorId,
+  sourcePage,
+  phoneOverride,
+}) {
+  const phone = phoneOverride || leadDoc?.phone || extractPhoneNumber(input);
+  await sendAdminLeadNotification({
+    subject: "AI CALL REQUEST",
+    leadId: leadDoc?._id ? String(leadDoc._id) : "",
+    leadType: "AI Callback Request",
+    service: "Phone call requested from AI assistant",
+    name: leadDoc?.name,
+    email: leadDoc?.email,
+    phone,
+    address: leadAddress(leadDoc),
+    message: [
+      String(input || "").trim(),
+      visitorId ? `Visitor ID: ${visitorId}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    contactPref: "phone",
+    sourcePage: sourcePage || `chatbot:${channel || "web"}`,
+    submittedAt: new Date(),
+  });
+}
+
+async function saveAssistantBranch(convo, input, reply, meta = {}) {
+  if (!convo) return;
+  convo.messages.push({ role: "user", content: input });
+  convo.messages.push({ role: "assistant", content: reply, meta });
+  convo.lastMessageAt = new Date();
+  await convo.save();
 }
 
 async function callHomeSupportAI({ input, history, files }) {
@@ -287,6 +367,42 @@ router.post(
       res.setHeader("Connection", "keep-alive");
       const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
       const history = parseHomeSupportHistory(rawHistory);
+      const awaitingCallback = isAwaitingCallbackConfirmation(history);
+      const phone = extractPhoneNumber(trimmedInput) || phoneFromMessages(history);
+
+      if (awaitingCallback && confirmsPhoneCall(trimmedInput)) {
+        if (!phone) {
+          return sendSseReply(
+            res,
+            "Yes, I can help with that. Please send the best phone number for the callback, then I can pass it to the Profixter team."
+          );
+        }
+        await sendAiCallbackAdminEmail({
+          input: trimmedInput,
+          sourcePage: "/home-support",
+          phoneOverride: phone,
+        });
+        return sendSseReply(
+          res,
+          "Confirmed. I sent your callback request to the Profixter team. If you were trying to book a visit, you can still use https://profixter.com/book any time."
+        );
+      }
+
+      if (awaitingCallback && declinesPhoneCall(trimmedInput)) {
+        return sendSseReply(
+          res,
+          "No problem. If you are trying to book or request service, use the right page: Book Handyman https://profixter.com/book, Membership https://profixter.com/membership, or Renovation Estimate https://profixter.com/projects#estimate."
+        );
+      }
+
+      if (wantsPhoneCall(trimmedInput)) {
+        return sendSseReply(res, buildCallbackConfirmationPrompt());
+      }
+
+      const recommendation = getRoutingRecommendation(trimmedInput);
+      if (shouldRouteToProductPage(trimmedInput, recommendation)) {
+        return sendSseReply(res, buildRoutingReply(recommendation));
+      }
 
       send({ status: "typing" });
       const replyText = await callHomeSupportAI({
@@ -315,11 +431,16 @@ router.post("/message", async (req, res) => {
 
   try {
     const { visitorId, channel = "web", input, lead } = req.body;
+    const trimmedInput = String(input || "").trim();
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (!trimmedInput) {
+      send({ error: "Missing input" });
+      return res.end();
+    }
 
     // 1️⃣ Save lead if provided
     let leadDoc = null;
@@ -328,9 +449,6 @@ router.post("/message", async (req, res) => {
         lead.email ? { email: String(lead.email).trim().toLowerCase() } : null,
         lead.phone ? { phone: String(lead.phone).trim() } : null,
       ].filter(Boolean);
-      const existingLead = identity.length
-        ? await Lead.findOne({ $or: identity }).lean()
-        : null;
       const countyGuess = (lead.county || lead.city || "").toLowerCase();
       let detectedCounty = null;
       let status = "engaged";
@@ -352,35 +470,6 @@ router.post("/message", async (req, res) => {
         },
         { upsert: true, new: true }
       );
-
-      if (!existingLead) {
-        try {
-          await sendAdminLeadNotification({
-            leadId: String(leadDoc._id),
-            leadType: "Chatbot Lead",
-            service: "Chatbot inquiry",
-            name: leadDoc.name,
-            email: leadDoc.email,
-            phone: leadDoc.phone,
-            address: [
-              leadDoc.address_line1,
-              leadDoc.city,
-              leadDoc.state,
-              leadDoc.zip,
-            ]
-              .filter(Boolean)
-              .join(", "),
-            message: input,
-            sourcePage: leadDoc.source || `chatbot:${channel}`,
-            submittedAt: leadDoc.createdAt,
-          });
-        } catch (emailErr) {
-          console.error("⚠️ Chatbot notification failed; lead was saved:", {
-            leadId: leadDoc._id,
-            message: emailErr.message,
-          });
-        }
-      }
     }
 
     // 2️⃣ Load or create conversation
@@ -399,62 +488,80 @@ router.post("/message", async (req, res) => {
 
 
 
-    // 4️⃣ Detect appointment-related question
-    const appointmentRegex = /(available|appointment|book|schedule|slot|next time|next opening)/i;
-    const isAppointmentQuery = appointmentRegex.test(input);
+    // Route service requests or confirm callback intent before normal AI.
+    const awaitingCallback = isAwaitingCallbackConfirmation(convo.messages);
+    const alreadyNotified = hasCallbackNotification(convo.messages);
+    const phone =
+      leadDoc?.phone || extractPhoneNumber(trimmedInput) || phoneFromMessages(convo.messages);
 
-    const User = require("../models/User"); // ✅ add this near the top if not present
+    if (awaitingCallback && confirmsPhoneCall(trimmedInput)) {
+      let reply;
+      let meta = {};
 
-if (isAppointmentQuery) {
-  const userDoc = leadDoc?.email
-    ? await require("../models/User").findOne({ email: leadDoc.email })
-    : null;
+      if (alreadyNotified) {
+        reply =
+          "I already sent your callback request to the Profixter team. If you are trying to book instead, use https://profixter.com/book.";
+      } else if (!phone) {
+        reply =
+          "Yes, I can help with that. Please send the best phone number for the callback, then I can pass it to the Profixter team.";
+        meta = { kind: "callback_confirmation_prompt" };
+      } else {
+        try {
+          await sendAiCallbackAdminEmail({
+            leadDoc,
+            input: trimmedInput,
+            channel,
+            visitorId,
+            phoneOverride: phone,
+          });
+          reply =
+            "Confirmed. I sent your callback request to the Profixter team. If you were trying to book a visit, you can still use https://profixter.com/book any time.";
+          meta = {
+            kind: "callback_admin_notified",
+            notifiedAt: new Date().toISOString(),
+          };
+        } catch (emailErr) {
+          console.error("AI callback notification failed:", {
+            leadId: leadDoc?._id,
+            visitorId,
+            message: emailErr.message,
+          });
+          reply =
+            "I could not send the callback request right now. Please call Profixter directly at 631-599-1363, or use https://profixter.com/book to book online.";
+        }
+      }
 
-  const isSubscribed = userDoc?.subscription && userDoc.subscription !== "none";
+      await saveAssistantBranch(convo, trimmedInput, reply, meta);
+      return sendSseReply(res, reply);
+    }
 
-  console.log("🧪 Appointment Query =", {
-    input,
-    email: leadDoc?.email,
-    isSubscribed,
-  });
+    if (awaitingCallback && declinesPhoneCall(trimmedInput)) {
+      const reply =
+        "No problem. If you are trying to book or request service, use the right page: Book Handyman https://profixter.com/book, Membership https://profixter.com/membership, or Renovation Estimate https://profixter.com/projects#estimate.";
+      await saveAssistantBranch(convo, trimmedInput, reply);
+      return sendSseReply(res, reply);
+    }
 
-  if (!isSubscribed) {
-    send({
-      token:
-        "Once you subscribe, you can view and book the next available appointment 😊. Want to get started? 👉 https://profixter.com/register",
-    });
-    send({ done: true });
-    return res.end();
-  }
+    if (wantsPhoneCall(trimmedInput)) {
+      const reply = buildCallbackConfirmationPrompt();
+      await saveAssistantBranch(convo, trimmedInput, reply, {
+        kind: "callback_confirmation_prompt",
+      });
+      return sendSseReply(res, reply);
+    }
 
-  const nextSlot = await getNextAvailableSlot();
-  if (nextSlot) {
-    const dateText = new Date(nextSlot).toLocaleString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      timeZone: "America/New_York",
-    });
-    send({
-      token: `Our next available appointment is **${dateText}** 🗓️. You can book it here 👉 https://profixter.com`,
-    });
-  } else {
-    send({
-      token:
-        "We’re currently fully booked for the next few weeks, but new slots open daily! Please check 👉 https://profixter.com",
-    });
-  }
+    const recommendation = getRoutingRecommendation(trimmedInput);
+    if (shouldRouteToProductPage(trimmedInput, recommendation)) {
+      const reply = buildRoutingReply(recommendation);
+      await saveAssistantBranch(convo, trimmedInput, reply, {
+        kind: "product_route",
+        routeType: recommendation.type,
+        routeUrl: recommendation.url,
+      });
+      return sendSseReply(res, reply);
+    }
 
-  send({ done: true });
-  return res.end();
-}
-
-
-
-    // 5️⃣ Append user message and proceed normally
-    convo.messages.push({ role: "user", content: input });
+    convo.messages.push({ role: "user", content: trimmedInput });
     await convo.save();
 
     let replyText = "";
