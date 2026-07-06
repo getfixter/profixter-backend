@@ -5,6 +5,10 @@ const mail = require("../utils/emailService");
 const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
+const {
+  buildSubscriptionCanceledAdminFields,
+  shouldSendSubscriptionCanceledAdminEmail,
+} = require("../utils/subscriptionCancellationAdminEmail");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const {
@@ -31,6 +35,7 @@ const {
   describeCouponDiscount,
   evaluateRetentionOfferAcceptance,
   evaluateRetentionOfferDisplay,
+  buildRetentionOfferDebug,
   getRetentionCouponId,
   getStripeDiscountId,
   planPriceToCents,
@@ -48,18 +53,6 @@ function logPlanChange(level, event, details = {}) {
   if (level === "error") console.error(payload);
   else if (level === "warn") console.warn(payload);
   else console.log(payload);
-}
-
-function formatAddressParts(parts = {}) {
-  return [
-    parts.line1 || parts.address,
-    parts.city,
-    parts.state,
-    parts.zip,
-    parts.county,
-  ]
-    .filter(Boolean)
-    .join(", ");
 }
 
 function setRetentionOfferValue(subscription, field, value) {
@@ -404,22 +397,37 @@ router.post("/manage/address/:addressId/retention-offer", auth, async (req, res)
     );
 
     if (!subscription) {
+      const reason = "active_subscription_not_found";
       return res.json({
         eligible: false,
-        reason: "active_subscription_not_found",
+        reason,
+        debug: buildRetentionOfferDebug({ reason, env: process.env }),
       });
     }
 
     const availability = evaluateRetentionOfferDisplay(subscription, process.env);
     if (!availability.eligible) {
-      return res.json(availability);
+      return res.json({
+        ...availability,
+        debug: buildRetentionOfferDebug({
+          subscription,
+          reason: availability.reason,
+          env: process.env,
+        }),
+      });
     }
 
     const stripeSubscription = await resolveStripeSubscriptionForRecord({ subscription, user });
     if (!stripeSubscription) {
+      const reason = "stripe_subscription_unavailable";
       return res.json({
         eligible: false,
-        reason: "stripe_subscription_unavailable",
+        reason,
+        debug: buildRetentionOfferDebug({
+          subscription,
+          reason,
+          env: process.env,
+        }),
       });
     }
 
@@ -427,9 +435,16 @@ router.post("/manage/address/:addressId/retention-offer", auth, async (req, res)
       stripeSubscription.cancel_at_period_end ||
       String(stripeSubscription.status || "").toLowerCase() === "canceled"
     ) {
+      const reason = "stripe_subscription_cancellation_unavailable";
       return res.json({
         eligible: false,
-        reason: "stripe_subscription_cancellation_unavailable",
+        reason,
+        debug: buildRetentionOfferDebug({
+          subscription,
+          stripeSubscription,
+          reason,
+          env: process.env,
+        }),
       });
     }
 
@@ -452,11 +467,21 @@ router.post("/manage/address/:addressId/retention-offer", auth, async (req, res)
         offeredAt: now,
       },
       subscription: serializeSubscription(subscription, address),
+      debug: buildRetentionOfferDebug({
+        subscription,
+        stripeSubscription,
+        reason: "eligible",
+        env: process.env,
+      }),
     });
   } catch (err) {
     console.error("POST /subscriptions/manage/address/:addressId/retention-offer error:", err);
     return res.status(500).json({
       message: "Unable to check retention offer right now",
+      debug: buildRetentionOfferDebug({
+        reason: "server_error",
+        env: process.env,
+      }),
     });
   }
 });
@@ -641,6 +666,17 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
       return res.status(404).json({ message: "No active subscription found for this address" });
     }
 
+    const previousSubscriptionSnapshot = {
+      _id: subscription._id,
+      status: subscription.status,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      retentionOffer: {
+        offeredAt: subscription.retentionOffer?.offeredAt || null,
+        declinedAt: subscription.retentionOffer?.declinedAt || null,
+        acceptedAt: subscription.retentionOffer?.acceptedAt || null,
+      },
+    };
+
     const stripeSubscription = await resolveStripeSubscriptionForRecord({ subscription, user });
     if (!stripeSubscription) {
       return res.status(409).json({
@@ -651,6 +687,13 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
 
     const activeStripeSubscription = await clearStripeSubscriptionSchedule(stripeSubscription);
     const cancellationTarget = activeStripeSubscription || stripeSubscription;
+    const stripeSubscriptionBeforeSnapshot = {
+      id: cancellationTarget.id,
+      customer: cancellationTarget.customer,
+      status: cancellationTarget.status,
+      cancel_at_period_end: !!cancellationTarget.cancel_at_period_end,
+    };
+    const cancellationRequestedAt = new Date();
 
     const canceledStripeSubscription = await stripe.subscriptions.update(cancellationTarget.id, {
       cancel_at_period_end: true,
@@ -716,62 +759,46 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
       }
     }
 
-    try {
-      const accessEndDate =
-        updatedSubscription?.cancellationDate ||
-        updatedSubscription?.currentPeriodEnd ||
-        updatedSubscription?.nextPaymentDate ||
-        null;
-      const addressSnapshot = updatedSubscription?.addressSnapshot || {
-        line1: address.line1,
-        city: address.city,
-        state: address.state,
-        zip: address.zip,
-        county: address.county,
-      };
+    if (shouldSendSubscriptionCanceledAdminEmail({
+      previousSubscription: previousSubscriptionSnapshot,
+      updatedSubscription,
+      stripeSubscriptionBefore: stripeSubscriptionBeforeSnapshot,
+    })) {
+      try {
+        const accessEndDate =
+          updatedSubscription?.cancellationDate ||
+          updatedSubscription?.currentPeriodEnd ||
+          updatedSubscription?.nextPaymentDate ||
+          null;
 
-      await sendAdminEventNotification({
-        subject: "SUBSCRIPTION CANCELED",
-        heading: "SUBSCRIPTION CANCELED",
-        templateKey: "admin_subscription_canceled",
-        replyToEmail: user.email,
-        customerName: user.name || "",
-        customerEmail: user.email,
-        source: "subscriptionSelfServe",
-        fields: [
-          ["Customer full name", user.name],
-          ["Email", user.email],
-          ["Phone", user.phone],
-          ["Service address", formatAddressParts(addressSnapshot)],
-          ["City", addressSnapshot.city],
-          ["State", addressSnapshot.state],
-          ["Zip", addressSnapshot.zip],
-          ["County", addressSnapshot.county],
-          ["Plan name", updatedSubscription?.subscriptionType],
-          ["Stripe subscription ID", canceledStripeSubscription?.id || updatedSubscription?.stripeSubscriptionId],
-          ["Cancellation date", mail.formatNYCTime(new Date().toISOString())],
-          ["Access/termination date", accessEndDate ? mail.formatNYCTime(accessEndDate) : ""],
-          [
-            "Cancellation timing",
-            updatedSubscription?.cancelAtPeriodEnd
-              ? "Scheduled at period end"
-              : "Immediate",
-          ],
-          ["Current subscription status", updatedSubscription?.status],
-          ["User Mongo ID", user._id],
-          ["Customer user ID", user.userId],
-          ["Address ID", address._id],
-          ["Subscription Mongo ID", updatedSubscription?._id || subscription._id],
-          ["Stripe customer ID", canceledStripeSubscription?.customer || updatedSubscription?.stripeCustomerId],
-        ],
-      }, {
-        logContext: {
-          userId: user._id,
-          subscriptionId: updatedSubscription?._id || subscription._id,
-        },
-      });
-    } catch (emailErr) {
-      console.error("admin subscription cancellation email failed:", emailErr.message);
+        await sendAdminEventNotification({
+          subject: "SUBSCRIPTION CANCELED",
+          heading: "SUBSCRIPTION CANCELED",
+          templateKey: "admin_subscription_canceled",
+          replyToEmail: user.email,
+          customerName: user.name || "",
+          customerEmail: user.email,
+          source: "subscriptionSelfServe",
+          fields: buildSubscriptionCanceledAdminFields({
+            user,
+            address,
+            subscription: updatedSubscription || subscription,
+            stripeSubscription: canceledStripeSubscription,
+            requestedAt: cancellationRequestedAt,
+            accessEndDate,
+            retentionOfferDeclined,
+            formatDateTime: (value) =>
+              mail.formatNYCTime(value instanceof Date ? value.toISOString() : value),
+          }),
+        }, {
+          logContext: {
+            userId: user._id,
+            subscriptionId: updatedSubscription?._id || subscription._id,
+          },
+        });
+      } catch (emailErr) {
+        console.error("admin subscription cancellation email failed:", emailErr.message);
+      }
     }
 
     return res.json({

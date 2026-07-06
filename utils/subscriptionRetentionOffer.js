@@ -28,6 +28,47 @@ function getRetentionCouponId(env = process.env) {
   return String(env[RETENTION_COUPON_ENV] || "").trim();
 }
 
+function isoOrNull(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function buildRetentionOfferDebug({
+  subscription = null,
+  stripeSubscription = null,
+  env = process.env,
+  reason = null,
+} = {}) {
+  const offer = retentionOffer(subscription || {});
+  const hasSubscription = !!subscription;
+
+  return {
+    route: "POST /api/subscriptions/manage/address/:addressId/retention-offer",
+    apiResponseReason: reason || null,
+    couponEnvPresent: hasRetentionCoupon(env),
+    subscriptionId: hasSubscription && subscription._id ? String(subscription._id) : null,
+    addressId:
+      hasSubscription && subscription.addressId ? String(subscription.addressId) : null,
+    status: hasSubscription ? String(subscription.status || "") || null : null,
+    cancelAtPeriodEnd: hasSubscription ? !!subscription.cancelAtPeriodEnd : null,
+    stripeSubscriptionId:
+      stripeSubscription?.id ||
+      (hasSubscription && subscription.stripeSubscriptionId
+        ? String(subscription.stripeSubscriptionId)
+        : null),
+    stripeStatus: stripeSubscription ? String(stripeSubscription.status || "") || null : null,
+    stripeCancelAtPeriodEnd: stripeSubscription
+      ? !!stripeSubscription.cancel_at_period_end
+      : null,
+    retentionOffer: {
+      offeredAt: isoOrNull(offer.offeredAt),
+      acceptedAt: isoOrNull(offer.acceptedAt),
+      declinedAt: isoOrNull(offer.declinedAt),
+    },
+  };
+}
+
 function evaluateRetentionOfferDisplay(subscription = {}, env = process.env) {
   const offer = retentionOffer(subscription);
 
@@ -249,6 +290,7 @@ module.exports = {
   NOT_AVAILABLE,
   RETENTION_COUPON_ENV,
   applyRetentionCouponToStripe,
+  buildRetentionOfferDebug,
   buildRetentionAcceptedAdminSections,
   calculateRetentionDiscountCents,
   clean,

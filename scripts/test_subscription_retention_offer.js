@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const {
   applyRetentionCouponToStripe,
+  buildRetentionOfferDebug,
   buildRetentionAcceptedAdminSections,
   calculateRetentionDiscountCents,
   describeCouponDiscount,
@@ -98,6 +99,33 @@ async function run() {
     ).reason,
     "retention_offer_already_declined"
   );
+
+  const debug = buildRetentionOfferDebug({
+    subscription: activeSubscription({
+      retentionOffer: {
+        offeredAt: new Date("2026-07-05T14:00:00.000Z"),
+      },
+    }),
+    stripeSubscription: {
+      id: "sub_123",
+      status: "active",
+      cancel_at_period_end: false,
+    },
+    env,
+    reason: "eligible",
+  });
+
+  assert.equal(debug.apiResponseReason, "eligible");
+  assert.equal(debug.couponEnvPresent, true);
+  assert.equal(debug.subscriptionId, "submongo_123");
+  assert.equal(debug.status, "active");
+  assert.equal(debug.cancelAtPeriodEnd, false);
+  assert.equal(debug.stripeSubscriptionId, "sub_123");
+  assert.equal(debug.stripeStatus, "active");
+  assert.equal(debug.stripeCancelAtPeriodEnd, false);
+  assert.equal(debug.retentionOffer.offeredAt, "2026-07-05T14:00:00.000Z");
+  assert.equal(debug.retentionOffer.acceptedAt, null);
+  assert.equal(debug.retentionOffer.declinedAt, null);
 
   let capturedUpdate;
   const stripeClient = {
