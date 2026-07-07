@@ -2,8 +2,18 @@ const { getLocationId, request } = require("./ghlClient");
 const { cleanString } = require("./ghlActions");
 
 const READ_TIMEOUT_MS = Number(process.env.JARVIS_GHL_READ_TIMEOUT_MS || 15000);
+const CONTACT_READ_TIMEOUT_MS = Number(
+  process.env.JARVIS_GHL_CONTACT_READ_TIMEOUT_MS || Math.min(READ_TIMEOUT_MS, 8000)
+);
 const CONTACT_PAGE_LIMIT = 100;
 const CONTACT_MAX_PAGES = Number(process.env.JARVIS_CONTACT_READ_MAX_PAGES || 10);
+const CONTACT_COUNT_SCAN_PAGES = Math.max(
+  1,
+  Math.min(
+    CONTACT_MAX_PAGES,
+    Number(process.env.JARVIS_CONTACT_COUNT_SCAN_PAGES || 1)
+  )
+);
 const OPPORTUNITY_PAGE_LIMIT = 100;
 const OPPORTUNITY_MAX_PAGES = Number(process.env.JARVIS_OPPORTUNITY_READ_MAX_PAGES || 10);
 const CONVERSATION_PAGE_LIMIT = 100;
@@ -90,6 +100,7 @@ async function readContactsPage({ limit = CONTACT_PAGE_LIMIT, page = 0, query = 
   const result = await readRequest({
     method: "GET",
     path: "/contacts/",
+    timeoutMs: CONTACT_READ_TIMEOUT_MS,
     query: compact({
       locationId,
       limit,
@@ -105,8 +116,53 @@ async function readContactsPage({ limit = CONTACT_PAGE_LIMIT, page = 0, query = 
   };
 }
 
+function readErrorSummary(error) {
+  const message = cleanString(error?.message || error);
+  const status = error?.ghlStatus || error?.statusCode || error?.status || null;
+  const timedOut =
+    /timeout|timed out|etimedout|socket hang up|network timeout|abort/i.test(message) ||
+    error?.type === "request-timeout";
+
+  return {
+    message,
+    status,
+    timedOut,
+  };
+}
+
+function contactCountPartialAnswer({ scanned, error, sources = ["GHL contacts"] }) {
+  const summary = readErrorSummary(error);
+  const prefix = summary.timedOut
+    ? "I could not finish counting contacts because GHL took too long."
+    : "I could not finish counting contacts because GHL did not return a complete contact count.";
+
+  return {
+    intent: "read",
+    answer: scanned > 0
+      ? `${prefix} I scanned the first ${formatNumber(scanned)} contacts. Exact full count requires pagination.`
+      : `${prefix} I could not scan any contacts before the request stopped.`,
+    data: {
+      total: null,
+      scanned,
+      partial: true,
+      limited: true,
+      exactCountAvailable: false,
+      reason: summary.timedOut ? "timeout" : "ghl_read_failed",
+      ghlStatus: summary.status,
+      message: summary.message,
+    },
+    sources,
+  };
+}
+
 async function countContacts() {
-  const firstPage = await readContactsPage({ limit: CONTACT_PAGE_LIMIT, page: 0 });
+  let firstPage;
+  try {
+    firstPage = await readContactsPage({ limit: CONTACT_PAGE_LIMIT, page: 0 });
+  } catch (error) {
+    return contactCountPartialAnswer({ scanned: 0, error });
+  }
+
   let counted = firstPage.contacts.length;
   const knownTotal =
     firstNumber(
@@ -131,22 +187,30 @@ async function countContacts() {
   }
 
   let limited = firstPage.contacts.length >= CONTACT_PAGE_LIMIT;
-  for (let page = 1; page < CONTACT_MAX_PAGES && limited; page += 1) {
-    const nextPage = await readContactsPage({ limit: CONTACT_PAGE_LIMIT, page });
+  for (let page = 1; page < CONTACT_COUNT_SCAN_PAGES && limited; page += 1) {
+    let nextPage;
+    try {
+      nextPage = await readContactsPage({ limit: CONTACT_PAGE_LIMIT, page });
+    } catch (error) {
+      return contactCountPartialAnswer({ scanned: counted, error });
+    }
     counted += nextPage.contacts.length;
     limited = nextPage.contacts.length >= CONTACT_PAGE_LIMIT;
   }
 
-  const limit = CONTACT_PAGE_LIMIT * CONTACT_MAX_PAGES;
+  const limit = CONTACT_PAGE_LIMIT * CONTACT_COUNT_SCAN_PAGES;
   return {
     intent: "read",
     answer: limited
-      ? `I checked GHL. I safely counted at least ${formatNumber(counted)} contacts before hitting the ${formatNumber(limit)} contact read limit.`
+      ? `I checked GHL. I scanned the first ${formatNumber(counted)} contacts. Exact full count requires pagination.`
       : `I checked GHL. You currently have ${formatNumber(counted)} contacts in GHL.`,
     data: {
-      total: counted,
+      total: limited ? null : counted,
+      scanned: counted,
+      partial: limited,
       limited,
       limit,
+      exactCountAvailable: !limited,
     },
     sources: ["GHL contacts"],
   };

@@ -5,6 +5,7 @@ const ghlClientPath = require.resolve("../src/aiCommanderGhl/ghlClient");
 
 const ghlRequests = [];
 const plannedMessages = [];
+let contactReadMode = "success";
 
 require.cache[ghlClientPath] = {
   id: ghlClientPath,
@@ -15,6 +16,11 @@ require.cache[ghlClientPath] = {
     request: async (input) => {
       ghlRequests.push(input);
       if (input.method === "GET" && input.path === "/contacts/") {
+        if (contactReadMode === "timeout") {
+          const error = new Error("network timeout at: https://services.leadconnectorhq.com/contacts/");
+          error.type = "request-timeout";
+          throw error;
+        }
         return {
           status: 200,
           data: {
@@ -63,6 +69,7 @@ require.cache[servicePath] = {
 const { askJarvis } = require("../src/aiCommanderGhl/jarvisIntentRouter");
 
 async function testReadContactCount() {
+  contactReadMode = "success";
   const result = await askJarvis({
     message: "How many contacts do we have in GHL?",
     adminUserId: "admin-1",
@@ -77,6 +84,23 @@ async function testReadContactCount() {
   assert.equal(ghlRequests.length, 1);
   assert.equal(ghlRequests[0].method, "GET");
   assert.equal(ghlRequests[0].path, "/contacts/");
+}
+
+async function testContactCountTimeoutDoesNotThrow() {
+  contactReadMode = "timeout";
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "How many contacts do we have?",
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.partial, true);
+  assert.equal(result.data.reason, "timeout");
+  assert.match(result.answer, /GHL took too long/i);
+  assert.equal(plannedMessages.length, beforePlans);
+  contactReadMode = "success";
 }
 
 async function testAdviceRequest() {
@@ -109,6 +133,7 @@ async function testWriteStillRequiresApproval() {
 
 async function run() {
   await testReadContactCount();
+  await testContactCountTimeoutDoesNotThrow();
   await testAdviceRequest();
   await testWriteStillRequiresApproval();
   console.log("Jarvis intent router tests passed");
