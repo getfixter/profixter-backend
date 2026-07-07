@@ -226,6 +226,7 @@ Supported executable actionType values:
 - remove_contact_from_workflow: DELETE /contacts/:contactId/workflow/:workflowId
 - get_pipelines: GET /opportunities/pipelines
 - create_opportunity: POST /opportunities/
+- upsert_opportunity: POST /opportunities/upsert
 - create_pipeline: POST /opportunities/pipelines
 - send_conversation_message: POST /conversations/messages
 - create_calendar_appointment: POST /calendars/events/appointments

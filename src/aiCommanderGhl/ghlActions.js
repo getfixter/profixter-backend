@@ -51,6 +51,12 @@ function compactBody(body) {
   );
 }
 
+function optionalNumber(value) {
+  if (value === "" || value === null || value === undefined) return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 function getContactId(action, executionContext) {
   const target = action?.target || {};
   const direct = cleanString(target.contactId);
@@ -541,10 +547,7 @@ const ACTION_DEFINITIONS = {
           pipelineStageId: cleanString(payload.pipelineStageId),
           status: cleanString(payload.status) || "open",
           contactId,
-          monetaryValue:
-            payload.monetaryValue === "" || payload.monetaryValue === null
-              ? undefined
-              : Number(payload.monetaryValue),
+          monetaryValue: optionalNumber(payload.monetaryValue),
           assignedTo: cleanString(payload.assignedTo),
           source: cleanString(payload.source),
         })
@@ -556,6 +559,42 @@ const ACTION_DEFINITIONS = {
         );
       }
       return { method: "POST", path: "/opportunities/", body };
+    },
+    extract(data) {
+      return {
+        opportunityId: firstResultId(data, ["opportunity.id", "id"]),
+      };
+    },
+  }),
+
+  upsert_opportunity: actionDoc({
+    method: "POST",
+    endpoint: "/opportunities/upsert",
+    riskLevel: "medium",
+    description: "Create or update a GHL opportunity linked to a contact.",
+    docs: "https://marketplace.gohighlevel.com/docs/ghl/opportunities/upsert-opportunity",
+    build(action, executionContext) {
+      const payload = action.payload || {};
+      const contactId = getRequiredContactId(action, executionContext);
+      const body = ensureLocationId(
+        compactBody({
+          pipelineId: cleanString(payload.pipelineId),
+          name: cleanString(payload.opportunityName) || cleanString(payload.name),
+          pipelineStageId: cleanString(payload.pipelineStageId),
+          status: cleanString(payload.status) || "open",
+          contactId,
+          monetaryValue: optionalNumber(payload.monetaryValue),
+          assignedTo: cleanString(payload.assignedTo),
+          source: cleanString(payload.source),
+        })
+      );
+      if (!body.pipelineId || !body.name || !body.status || !body.contactId) {
+        throw Object.assign(
+          new Error("pipelineId, opportunityName, status, and contactId are required"),
+          { statusCode: 400 }
+        );
+      }
+      return { method: "POST", path: "/opportunities/upsert", body };
     },
     extract(data) {
       return {

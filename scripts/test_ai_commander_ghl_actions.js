@@ -49,6 +49,35 @@ function testCreateContactPayload() {
   });
 }
 
+function testUpsertOpportunityPayload() {
+  const request = buildRequestForAction({
+    actionId: "action_2",
+    actionType: "upsert_opportunity",
+    target: {
+      contactId: "contact-123",
+    },
+    payload: {
+      pipelineId: "pipeline-123",
+      pipelineStageId: "stage-123",
+      opportunityName: "Roofing/Siding Lead - AI Test Contact",
+      status: "open",
+      source: "Roofing Sales Agent v1",
+    },
+  });
+
+  assert.equal(request.method, "POST");
+  assert.equal(request.path, "/opportunities/upsert");
+  assert.deepEqual(request.body, {
+    pipelineId: "pipeline-123",
+    name: "Roofing/Siding Lead - AI Test Contact",
+    pipelineStageId: "stage-123",
+    status: "open",
+    contactId: "contact-123",
+    source: "Roofing Sales Agent v1",
+    locationId: "test-location",
+  });
+}
+
 async function testDefaultGhlVersionHeader() {
   const originalInfo = console.info;
   const originalError = console.error;
@@ -69,6 +98,7 @@ async function testDefaultGhlVersionHeader() {
 
 async function run() {
   testCreateContactPayload();
+  testUpsertOpportunityPayload();
   await testDefaultGhlVersionHeader();
   console.log("AI Commander GHL action payload tests passed");
 }

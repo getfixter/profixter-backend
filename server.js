@@ -68,7 +68,12 @@ app.use(
 
     credentials: true,
 methods: "GET,POST,PUT,PATCH,DELETE",
-    allowedHeaders: ["Authorization", "Content-Type", "x-ghl-secret"],
+    allowedHeaders: [
+      "Authorization",
+      "Content-Type",
+      "x-ghl-secret",
+      "x-jarvis-ghl-webhook-secret",
+    ],
   })
 );
 
@@ -178,6 +183,10 @@ app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 app.use(
   "/api/admin/ai-commander/ghl",
   require("./src/aiCommanderGhl/aiCommanderGhl.routes")
+);
+app.use(
+  "/api",
+  require("./src/jarvisSkills/roofingSalesAgent/roofingSalesAgent.routes")
 );
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin", require("./routes/admin"));
