@@ -17,29 +17,59 @@ Use an admin JWT for the requests below. The route is protected by the existing 
 
 ## 1. Plan Only
 
+Windows PowerShell:
+
+```powershell
+$body = @{
+  message = "Create a test GHL contact named AI Test Contact, phone 6315991363, tag ai-test."
+} | ConvertTo-Json
+
+curl.exe -X POST "http://localhost:5000/api/admin/ai-commander/ghl/plan" `
+  -H "Authorization: Bearer ADMIN_JWT_HERE" `
+  -H "Content-Type: application/json" `
+  --data-raw $body
+```
+
+macOS/Linux/Git Bash:
+
 ```bash
 curl -X POST http://localhost:5000/api/admin/ai-commander/ghl/plan \
   -H "Authorization: Bearer ADMIN_JWT_HERE" \
   -H "Content-Type: application/json" \
-  -d "{\"message\":\"Create a test GHL contact named AI Test Contact, phone 6310000000, tag ai-test.\"}"
+  --data-raw '{"message":"Create a test GHL contact named AI Test Contact, phone 6315991363, tag ai-test."}'
 ```
 
 Expected result:
 
 - Response includes `confirmationId`.
 - Response includes a `create_contact` planned API action.
-- Response shows contact name `AI Test Contact`, phone `+16310000000`, and tag `ai-test`.
+- Response shows contact name `AI Test Contact`, phone `+16315991363`, and tag `ai-test`.
 - Nothing is created in GHL yet.
 
 ## 2. Execute After Approval
 
 Use the returned `confirmationId` within 30 minutes:
 
+Windows PowerShell:
+
+```powershell
+$body = @{
+  confirmationId = "PASTE_CONFIRMATION_ID_HERE"
+} | ConvertTo-Json
+
+curl.exe -X POST "http://localhost:5000/api/admin/ai-commander/ghl/execute" `
+  -H "Authorization: Bearer ADMIN_JWT_HERE" `
+  -H "Content-Type: application/json" `
+  --data-raw $body
+```
+
+macOS/Linux/Git Bash:
+
 ```bash
 curl -X POST http://localhost:5000/api/admin/ai-commander/ghl/execute \
   -H "Authorization: Bearer ADMIN_JWT_HERE" \
   -H "Content-Type: application/json" \
-  -d "{\"confirmationId\":\"PASTE_CONFIRMATION_ID_HERE\"}"
+  --data-raw '{"confirmationId":"PASTE_CONFIRMATION_ID_HERE"}'
 ```
 
 Expected result:
@@ -53,7 +83,17 @@ Expected result:
 Open the configured GHL sub-account and search Contacts for:
 
 - Name: `AI Test Contact`
-- Phone: `6310000000` or `+16310000000`
+- Phone: `6315991363` or `+16315991363`
 - Tag: `ai-test`
 
 The audit record is saved in MongoDB in the `aicommanderghlaudits` collection.
+
+## Dev Body Parser Check
+
+Run this without OpenAI, GHL, MongoDB, or an admin JWT:
+
+```powershell
+npm run test:ai-commander-body
+```
+
+It verifies that the plan controller accepts a normal `application/json` object body and that malformed JSON returns `400 Invalid JSON request body`.

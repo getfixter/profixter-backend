@@ -23,6 +23,27 @@ function outputTextFromResponse(data) {
   return chunks.join("\n").trim();
 }
 
+function parsedOutputFromResponse(data) {
+  if (data?.output_parsed && typeof data.output_parsed === "object") {
+    return data.output_parsed;
+  }
+  for (const item of data?.output || []) {
+    for (const content of item?.content || []) {
+      if (content?.parsed && typeof content.parsed === "object") {
+        return content.parsed;
+      }
+    }
+  }
+  return null;
+}
+
+function previewText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
 async function generateGhlPlan(message) {
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) {
@@ -83,6 +104,9 @@ async function generateGhlPlan(message) {
     throw error;
   }
 
+  const parsed = parsedOutputFromResponse(data);
+  if (parsed) return parsed;
+
   const text = outputTextFromResponse(data);
   if (!text) {
     const error = new Error("OpenAI planner returned an empty plan");
@@ -93,7 +117,7 @@ async function generateGhlPlan(message) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    error.message = `OpenAI planner returned invalid JSON: ${error.message}`;
+    error.message = `OpenAI planner returned invalid JSON: ${error.message}. Output preview: ${previewText(text)}`;
     error.statusCode = 502;
     throw error;
   }
@@ -102,4 +126,5 @@ async function generateGhlPlan(message) {
 module.exports = {
   generateGhlPlan,
   outputTextFromResponse,
+  parsedOutputFromResponse,
 };

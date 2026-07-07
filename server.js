@@ -97,6 +97,15 @@ app.use(express.json({
 
 app.use(express.urlencoded({ extended: true, limit: "500mb" }));
 
+function isJsonBodyParseError(err) {
+  return (
+    err?.type === "entity.parse.failed" ||
+    (err instanceof SyntaxError &&
+      err.status === 400 &&
+      Object.prototype.hasOwnProperty.call(err, "body"))
+  );
+}
+
 
 // ✅ 5. MongoDB Connect
 const mongoURI = process.env.MONGO_URI;
@@ -420,6 +429,32 @@ if (process.env.STRIPE_RECONCILIATION_ENABLED !== "false") {
     { timezone: "UTC" }
   );
 }
+app.use((err, req, res, next) => {
+  const status = Number(err?.statusCode || err?.status || 500);
+  const safeStatus = status >= 400 && status < 600 ? status : 500;
+
+  console.error("Server Error:", {
+    method: req.method,
+    path: req.originalUrl,
+    statusCode: safeStatus,
+    type: err?.type || null,
+    message: err?.message || String(err),
+    stack: err?.stack || null,
+  });
+
+  if (isJsonBodyParseError(err)) {
+    return res.status(400).json({
+      message: "Invalid JSON request body",
+      error: err.message,
+    });
+  }
+
+  return res.status(safeStatus).json({
+    message: safeStatus === 500 ? "Internal Server Error" : err.message,
+    error: err.message,
+  });
+});
+
 /* ============================================================================ */
 
 /* ================= Nightly DB-only subscription auto-cancel ================= */
