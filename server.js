@@ -166,6 +166,10 @@ app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
+app.use(
+  "/api/admin/ai-commander/ghl",
+  require("./src/aiCommanderGhl/aiCommanderGhl.routes")
+);
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/email", require("./routes/email"));

@@ -4,7 +4,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const RepAttribution = require("../models/RepAttribution");
-const { normalizeEmail, normalizePhone } = require("../utils/identity");
+const { normalizeEmail, normalizePhone, normalizePhoneE164 } = require("../utils/identity");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
@@ -200,18 +200,11 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ message: "Invalid email format" });
     }
 
-    const rawPhoneDigits = String(phone || "").replace(/\D/g, "");
-    let normalizedPhone = rawPhoneDigits;
+    const e164Phone = normalizePhoneE164(phone);
 
-    if (normalizedPhone.length === 10) normalizedPhone = "1" + normalizedPhone;
-
-    const phoneOk = normalizedPhone.length === 11 && normalizedPhone.startsWith("1");
-
-    if (!phoneOk) {
+    if (!e164Phone) {
       return res.status(400).json({ message: "Phone must be a valid US number." });
     }
-
-    const e164Phone = "+" + normalizedPhone;
 
     const existing = await User.findOne({ email: cleanEmail });
     if (existing) return res.status(400).json({ message: "User already exists" });

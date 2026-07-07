@@ -1,18 +1,10 @@
 const mongoose = require("mongoose");
 const User = require("../models/User");
+const { normalizePhoneE164 } = require("../utils/identity");
 require("dotenv").config();
 
 function normalizeUSPhone(phone) {
-  let digits = String(phone || "").replace(/\D/g, "");
-  if (!digits) return "";
-
-  if (digits.length === 10) digits = "1" + digits;
-
-  if (digits.length === 11 && digits.startsWith("1")) {
-    return "+" + digits;
-  }
-
-  return "";
+  return normalizePhoneE164(phone) || "";
 }
 
 async function run() {
