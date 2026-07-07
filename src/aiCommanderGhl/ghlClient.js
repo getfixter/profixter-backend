@@ -1,7 +1,7 @@
 const fetch = require("node-fetch");
 
 const BASE_URL = "https://services.leadconnectorhq.com";
-const DEFAULT_GHL_VERSION = "2021-07-28";
+const DEFAULT_GHL_VERSION = "v3";
 
 class GhlApiError extends Error {
   constructor(message, details = {}) {
@@ -45,7 +45,9 @@ function getTokenDiagnostics() {
 function getHeaders(token = getAccessToken()) {
   return {
     Authorization: `Bearer ${token}`,
-    Version: String(process.env.GHL_API_VERSION || DEFAULT_GHL_VERSION).trim(),
+    Version: String(
+      process.env.AI_COMMANDER_GHL_API_VERSION || DEFAULT_GHL_VERSION
+    ).trim(),
     "Content-Type": "application/json",
     Accept: "application/json",
   };

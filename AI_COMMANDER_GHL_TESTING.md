@@ -11,6 +11,7 @@ OPENAI_API_KEY=
 GHL_AI_COMMANDER_TOKEN=
 GHL_LOCATION_ID=
 AI_COMMANDER_GHL_ENABLED=true
+AI_COMMANDER_GHL_API_VERSION=v3
 ```
 
 Use an admin JWT for the requests below. The route is protected by the existing admin permission middleware.

@@ -1,8 +1,29 @@
 const assert = require("assert");
+const Module = require("module");
 
 process.env.GHL_LOCATION_ID = "test-location";
+process.env.GHL_AI_COMMANDER_TOKEN = "pit-test-token";
+delete process.env.AI_COMMANDER_GHL_API_VERSION;
+
+let lastFetchCall = null;
+const originalLoad = Module._load;
+Module._load = function loadWithMockedFetch(request, parent, isMain) {
+  if (request === "node-fetch") {
+    return async function mockFetch(url, options) {
+      lastFetchCall = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "" },
+        text: async () => JSON.stringify({ ok: true }),
+      };
+    };
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
 
 const { buildRequestForAction } = require("../src/aiCommanderGhl/ghlActions");
+const { request } = require("../src/aiCommanderGhl/ghlClient");
 
 function testCreateContactPayload() {
   const request = buildRequestForAction({
@@ -28,6 +49,31 @@ function testCreateContactPayload() {
   });
 }
 
-testCreateContactPayload();
+async function testDefaultGhlVersionHeader() {
+  const originalInfo = console.info;
+  const originalError = console.error;
+  console.info = () => {};
+  console.error = () => {};
 
-console.log("AI Commander GHL action payload tests passed");
+  try {
+    await request({ method: "GET", path: "/contacts/mock-contact" });
+  } finally {
+    console.info = originalInfo;
+    console.error = originalError;
+  }
+
+  assert.ok(lastFetchCall);
+  assert.equal(lastFetchCall.options.headers.Authorization, "Bearer pit-test-token");
+  assert.equal(lastFetchCall.options.headers.Version, "v3");
+}
+
+async function run() {
+  testCreateContactPayload();
+  await testDefaultGhlVersionHeader();
+  console.log("AI Commander GHL action payload tests passed");
+}
+
+run().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
