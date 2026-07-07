@@ -258,7 +258,7 @@ Hard planning rules:
 - Use "unsupported" actionType only for non-executable explanation rows.
 - If an action needs an existing GHL id and the user did not provide it, make that clear in exactPlan and mark the action unsupported rather than inventing an id.
 - For a newly created contact followed by another action, put the create action first and set target.contactIdFromActionId on the dependent action to the create actionId.
-- For the command "Create a test GHL contact named AI Test Contact, phone 6310000000, tag ai-test.", use create_contact with payload.name, payload.phone, and payload.tags ["ai-test"].
+- For the command "Create a test GHL contact named AI Test Contact, phone 6315991363, tag ai-test.", use create_contact with payload.name, payload.phone, and payload.tags ["ai-test"].
 
 Risk rules:
 - low: read-only, create one contact, add one tag, create one note/task.

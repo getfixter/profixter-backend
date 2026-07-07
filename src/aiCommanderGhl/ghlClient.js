@@ -23,9 +23,9 @@ function getLocationId() {
 }
 
 function getAccessToken() {
-  const token = String(process.env.GHL_API_TOKEN || "").trim();
+  const token = String(process.env.GHL_AI_COMMANDER_TOKEN || "").trim();
   if (!token) {
-    throw new GhlApiError("Missing GHL_API_TOKEN", { statusCode: 500 });
+    throw new GhlApiError("Missing GHL_AI_COMMANDER_TOKEN", { statusCode: 500 });
   }
   return token;
 }
@@ -108,6 +108,11 @@ async function request({ method, path, query, body }) {
   };
 
   if (!response.ok) {
+    console.error("GHL AI Commander API request failed:", {
+      status: response.status,
+      request: result.request,
+      response: data,
+    });
     throw new GhlApiError(`GHL API request failed with ${response.status}`, {
       statusCode: 502,
       ghlStatus: response.status,

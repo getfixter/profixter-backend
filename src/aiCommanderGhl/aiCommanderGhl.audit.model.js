@@ -29,7 +29,7 @@ const AiCommanderGhlAuditSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
-    errors: { type: [String], default: [] },
+    errors: { type: [mongoose.Schema.Types.Mixed], default: [] },
     executedAt: { type: Date, default: null },
     expiresAt: { type: Date, required: true, index: true },
   },

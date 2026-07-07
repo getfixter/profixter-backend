@@ -8,7 +8,7 @@ Set these backend environment variables:
 
 ```bash
 OPENAI_API_KEY=
-GHL_API_TOKEN=
+GHL_AI_COMMANDER_TOKEN=
 GHL_LOCATION_ID=
 AI_COMMANDER_GHL_ENABLED=true
 ```

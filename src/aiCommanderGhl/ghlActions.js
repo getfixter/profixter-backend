@@ -139,11 +139,13 @@ const ACTION_DEFINITIONS = {
     build(action) {
       const payload = action.payload || {};
       const nameParts = splitName(payload.name);
+      const firstName = cleanString(payload.firstName) || nameParts.firstName;
+      const lastName = cleanString(payload.lastName) || nameParts.lastName;
       const body = ensureLocationId(
         compactBody({
-          firstName: cleanString(payload.firstName) || nameParts.firstName,
-          lastName: cleanString(payload.lastName) || nameParts.lastName,
-          name: cleanString(payload.name),
+          firstName,
+          lastName,
+          name: firstName ? "" : cleanString(payload.name),
           email: cleanString(payload.email).toLowerCase(),
           phone: payload.phone ? normalizePhone(payload.phone) : "",
           address1: cleanString(payload.address1),
@@ -152,15 +154,6 @@ const ACTION_DEFINITIONS = {
           postalCode: cleanString(payload.postalCode),
           source: cleanString(payload.source),
           tags: cleanList(payload.tags),
-          customFields: Array.isArray(payload.customFields)
-            ? payload.customFields
-                .map((field) => ({
-                  key: cleanString(field?.key),
-                  field_value: field?.value ?? "",
-                  value: field?.value ?? "",
-                }))
-                .filter((field) => field.key)
-            : [],
         })
       );
 

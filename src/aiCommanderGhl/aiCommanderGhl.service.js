@@ -87,8 +87,8 @@ function assertConfigured() {
   if (!String(process.env.OPENAI_API_KEY || "").trim()) {
     throw errorWithStatus("Missing OPENAI_API_KEY", 500);
   }
-  if (!String(process.env.GHL_API_TOKEN || "").trim()) {
-    throw errorWithStatus("Missing GHL_API_TOKEN", 500);
+  if (!String(process.env.GHL_AI_COMMANDER_TOKEN || "").trim()) {
+    throw errorWithStatus("Missing GHL_AI_COMMANDER_TOKEN", 500);
   }
   if (!String(process.env.GHL_LOCATION_ID || "").trim()) {
     throw errorWithStatus("Missing GHL_LOCATION_ID", 500);
@@ -231,6 +231,14 @@ function publicPlanFromModel({
 
 function responseError(error) {
   if (!error) return "Unknown error";
+  if (error.ghlStatus || error.response || error.request) {
+    return {
+      message: cleanString(error.message || "GHL API request failed"),
+      ghlStatus: error.ghlStatus || null,
+      request: error.request || null,
+      response: error.response || null,
+    };
+  }
   return cleanString(error.message || error);
 }
 
