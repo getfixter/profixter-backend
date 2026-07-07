@@ -32,7 +32,8 @@
     "test:subscription-retention": "node scripts/test_subscription_retention_offer.js",
     "test:ai-commander-body": "node scripts/test_ai_commander_body_parser.js",
     "test:ai-commander-ghl-actions": "node scripts/test_ai_commander_ghl_actions.js",
-    "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js"
+    "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
+    "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

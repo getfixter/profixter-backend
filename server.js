@@ -184,6 +184,7 @@ app.use(
   "/api/admin/ai-commander/ghl",
   require("./src/aiCommanderGhl/aiCommanderGhl.routes")
 );
+app.use("/api/admin/jarvis", require("./routes/jarvisUploads"));
 app.use(
   "/api",
   require("./src/jarvisSkills/roofingSalesAgent/roofingSalesAgent.routes")

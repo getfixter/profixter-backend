@@ -89,7 +89,7 @@ function buildUrl(path, query = {}) {
   return url;
 }
 
-async function request({ method, path, query, body }) {
+async function request({ method, path, query, body, timeoutMs }) {
   const upperMethod = String(method || "GET").toUpperCase();
   const url = buildUrl(path, query);
   const tokenInfo = getTokenDiagnostics();
@@ -132,6 +132,7 @@ async function request({ method, path, query, body }) {
     body: ["GET", "HEAD"].includes(upperMethod)
       ? undefined
       : JSON.stringify(body || {}),
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
   });
 
   const text = await response.text();
