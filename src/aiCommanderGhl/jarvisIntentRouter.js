@@ -15,14 +15,43 @@ function looksLikeAdvice(message) {
 }
 
 function looksLikeRead(message) {
-  return (
-    /\b(how many|count|total|number of|show me|show all|list|what .*exist|what workflows|what tags|what pipelines|scan|summarize|summary|overview)\b/i.test(
+  const readSubject =
+    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?|tags?|opportunit|pipelines?|stages?|conversations?|messages?|workflows?|calendars?|appointments?|users?|team|custom fields?|campaigns?|forms?|surveys?|locations?|account)\b/i.test(
       message
-    ) &&
-    /\b(ghl|gohighlevel|highlevel|contacts?|tags?|opportunit|pipelines?|stages?|conversations?|workflows?)\b/i.test(
+    );
+  const informationRequest =
+    /\b(how many|count|total|number of|show me|show all|list|what .*exist|what workflows|what tags|what pipelines|what .*access|access do you have|capabilities|capability|scan|summarize|summary|overview)\b/i.test(
       message
-    )
-  );
+    );
+  const diagnosticRequest =
+    /\b(check|verify|diagnos|test)\b/i.test(message) &&
+    /\b(connection|access|permission|read|endpoint)\b/i.test(message);
+
+  return readSubject && (informationRequest || diagnosticRequest);
+}
+
+function sanitizedReadFailure(error, action) {
+  const message = cleanString(error?.message || error)
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]");
+  const timedOut = /timeout|timed out|etimedout|socket hang up|abort/i.test(message);
+
+  return {
+    intent: "read",
+    answer: timedOut
+      ? "I could not finish that GHL read because GHL took too long."
+      : "I could not finish that GHL read from the available endpoint.",
+    data: {
+      readAction: action,
+      error: {
+        statusCode: error?.statusCode || null,
+        ghlStatus: error?.ghlStatus || null,
+        message: message || "GHL read failed",
+      },
+    },
+    sources: ["GHL"],
+    requiresApproval: false,
+  };
 }
 
 function looksLikeWrite(message) {
@@ -135,7 +164,7 @@ async function askJarvis({ message, adminUserId }) {
         readAction: readAction.action,
         status: "failed",
       });
-      throw error;
+      return sanitizedReadFailure(error, readAction.action);
     }
   }
 

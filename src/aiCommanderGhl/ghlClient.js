@@ -42,6 +42,45 @@ function getTokenDiagnostics() {
   };
 }
 
+function redactSecretString(value) {
+  return String(value || "")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
+    .replace(
+      /("(?:authorization|x-auth-token|api[-_]?key|secret|token|jwt|password|access[-_]?token|refresh[-_]?token)"\s*:\s*")[^"]+(")/gi,
+      "$1[REDACTED]$2"
+    )
+    .replace(
+      /((?:api[-_]?key|token|secret|jwt|access[-_]?token|refresh[-_]?token)=)[^&\s"']+/gi,
+      "$1[REDACTED]"
+    );
+}
+
+function getSafeTokenDiagnostics() {
+  const tokenInfo = getTokenDiagnostics();
+  return {
+    source: tokenInfo.source || "missing",
+    hasToken: !!tokenInfo.token,
+    length: tokenInfo.length,
+    hasLegacyGhlApiToken: tokenInfo.hasLegacyGhlApiToken,
+    legacyLength: tokenInfo.legacyLength,
+    apiVersion: String(
+      process.env.AI_COMMANDER_GHL_API_VERSION || DEFAULT_GHL_VERSION
+    ).trim(),
+  };
+}
+
+function getSafeGhlDiagnostics() {
+  const token = getSafeTokenDiagnostics();
+  const locationId = String(process.env.GHL_LOCATION_ID || "").trim();
+  return {
+    baseUrl: BASE_URL,
+    apiVersion: token.apiVersion,
+    locationIdUsed: locationId || null,
+    token,
+  };
+}
+
 function getHeaders(token = getAccessToken()) {
   return {
     Authorization: `Bearer ${token}`,
@@ -64,6 +103,7 @@ function redactHeaders(headers) {
 
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
+  if (typeof value === "string") return redactSecretString(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
@@ -89,7 +129,7 @@ function buildUrl(path, query = {}) {
   return url;
 }
 
-async function request({ method, path, query, body, timeoutMs }) {
+async function request({ method, path, query, body, timeoutMs, logResponseBody = true }) {
   const upperMethod = String(method || "GET").toUpperCase();
   const url = buildUrl(path, query);
   const tokenInfo = getTokenDiagnostics();
@@ -148,7 +188,7 @@ async function request({ method, path, query, body, timeoutMs }) {
     status: response.status,
     data,
     request: redact(requestShape),
-    responseBody: data,
+    responseBody: redact(data),
     rateLimit: {
       dailyLimit: response.headers.get("x-ratelimit-limit-daily") || "",
       dailyRemaining: response.headers.get("x-ratelimit-daily-remaining") || "",
@@ -160,19 +200,19 @@ async function request({ method, path, query, body, timeoutMs }) {
 
   console.info("GHL AI Commander response diagnostics:", {
     status: response.status,
-    body: data,
+    body: logResponseBody ? redact(data) : "[REDACTED_RESPONSE_BODY]",
   });
 
   if (!response.ok) {
     console.error("GHL AI Commander API request failed:", {
       status: response.status,
       request: result.request,
-      responseBody: data,
+      responseBody: logResponseBody ? redact(data) : "[REDACTED_RESPONSE_BODY]",
     });
     throw new GhlApiError(`GHL API request failed with ${response.status}`, {
       statusCode: 502,
       ghlStatus: response.status,
-      response: data,
+      response: redact(data),
       request: result.request,
     });
   }
@@ -181,8 +221,12 @@ async function request({ method, path, query, body, timeoutMs }) {
 }
 
 module.exports = {
+  BASE_URL,
   GhlApiError,
   getLocationId,
+  getSafeGhlDiagnostics,
+  getSafeTokenDiagnostics,
   request,
   redact,
+  redactSecretString,
 };
