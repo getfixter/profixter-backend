@@ -523,6 +523,11 @@ async function createContactOwnerAssignmentPlan({ message, adminUserId }) {
   const ownerName = cleanString(prepared.owner?.name || prepared.owner?.requestedName);
   const ownerId = cleanString(prepared.owner?.id);
   const tagName = cleanString(prepared.audience?.tagName);
+  const dryRunEndpoint = cleanString(
+    prepared.ownerUpdateDryRun?.summary ||
+      prepared.ownerUpdateDryRun?.request?.endpoint ||
+      prepared.ownerUpdateDryRun?.path
+  );
   const previewLines = prepared.preview.map((contact) => {
     const label = cleanString(contact.name || contact.email || contact.phone || contact.id);
     const details = [contact.email, contact.phone].map(cleanString).filter(Boolean).join(" / ");
@@ -552,6 +557,7 @@ async function createContactOwnerAssignmentPlan({ message, adminUserId }) {
           endpointUsed: prepared.audience?.endpointUsed,
           preview: prepared.preview,
           contacts: prepared.contacts,
+          dryRun: prepared.ownerUpdateDryRun,
         },
       },
       0
@@ -569,6 +575,9 @@ async function createContactOwnerAssignmentPlan({ message, adminUserId }) {
       `Search GHL contacts where tag equals "${tagName}".`,
       `Count matches: ${contactCount.toLocaleString("en-US")} contacts.`,
       "Preview the first 10 contacts before approval.",
+      dryRunEndpoint
+        ? `Dry-run validated the contact owner update payload: ${dryRunEndpoint}.`
+        : "No contact update dry-run was needed because the audience is empty.",
       "After approval, loop through the saved contact list.",
       `Update each contact with assignedTo = ${ownerId}.`,
       "Skip contacts that already have this owner.",
@@ -604,6 +613,7 @@ async function createContactOwnerAssignmentPlan({ message, adminUserId }) {
         audience: prepared.audience,
         contactCount,
         preview: prepared.preview,
+        ownerUpdateDryRun: prepared.ownerUpdateDryRun,
       },
     },
     confirmationId,

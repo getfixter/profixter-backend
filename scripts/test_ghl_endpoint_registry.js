@@ -48,6 +48,22 @@ function testDeprecatedEndpointsDisabled() {
   deprecated.forEach((endpoint) => assert.equal(endpoint.enabled, false));
 }
 
+function testUsersSearchUsesCompanyId() {
+  const usersSearch = findEndpoint({ method: "GET", path: "/users/search" }).endpoint;
+  assert.equal(usersSearch.requiresLocationId, false);
+  assert.equal(usersSearch.payloadSchema.companyId, "string");
+
+  const locationUsers = findEndpoint({ method: "GET", path: "/users/" }).endpoint;
+  assert.equal(locationUsers.enabled, true);
+  assert.equal(locationUsers.requiresLocationId, true);
+
+  const invalidLocationUsers = findEndpoint({
+    method: "GET",
+    path: "/locations/test-location/users",
+  }).endpoint;
+  assert.equal(invalidLocationUsers.enabled, false);
+}
+
 function testRegistryStats() {
   const stats = registryStats();
   assert.ok(stats.enabled > 20);
@@ -63,6 +79,7 @@ function main() {
   testEveryEndpointHasControlMetadata();
   testRiskPhrases();
   testDeprecatedEndpointsDisabled();
+  testUsersSearchUsesCompanyId();
   testRegistryStats();
   console.log("GHL endpoint registry tests passed.");
 }

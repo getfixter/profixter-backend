@@ -1,4 +1,6 @@
 const {
+  extractCompanyId,
+  getCompanyIdFromEnv,
   getLocationId,
   getSafeGhlDiagnostics,
   request,
@@ -109,9 +111,10 @@ function buildTimeRange() {
   };
 }
 
-function buildCapabilityDefinitions(locationId) {
+function buildCapabilityDefinitions(locationId, companyId = "") {
   const encodedLocationId = encodeURIComponent(locationId);
   const eventRange = buildTimeRange();
+  const cleanCompanyId = cleanString(companyId);
 
   return [
     {
@@ -216,9 +219,16 @@ function buildCapabilityDefinitions(locationId) {
       label: "Users and team members",
       collectionKeys: ["users", "teamMembers", "data", "items"],
       requests: [
-        { method: "GET", path: "/users/search", query: { locationId, limit: 1 } },
-        { method: "GET", path: `/locations/${encodedLocationId}/users` },
-        { method: "GET", path: "/users/", query: { locationId, limit: 1 } },
+        ...(cleanCompanyId
+          ? [
+              {
+                method: "GET",
+                path: "/users/search",
+                query: { companyId: cleanCompanyId, limit: 1 },
+              },
+            ]
+          : []),
+        { method: "GET", path: "/users/", query: { locationId } },
       ],
     },
     {
@@ -288,6 +298,24 @@ function summarizeResult(capability, result, requestInput) {
 
 async function probeCapability(capability) {
   let lastError = null;
+  if (!capability.requests.length) {
+    return {
+      key: capability.key,
+      label: capability.label,
+      status: "failing",
+      endpointUsed: "",
+      reason: "configuration_missing_company_id",
+      error: {
+        type: "configuration_missing_company_id",
+        statusCode: 500,
+        ghlStatus: null,
+        code: "",
+        message: "GHL user search requires companyId.",
+        retryable: false,
+      },
+    };
+  }
+
   for (const requestInput of capability.requests) {
     try {
       const result = await readOnlyRequest(requestInput);
@@ -306,6 +334,21 @@ async function probeCapability(capability) {
     reason: error.type,
     error,
   };
+}
+
+async function resolveCompanyIdForCapabilities(locationId) {
+  const configured = getCompanyIdFromEnv();
+  if (configured) return configured;
+
+  try {
+    const result = await readOnlyRequest({
+      method: "GET",
+      path: `/locations/${encodeURIComponent(locationId)}`,
+    });
+    return extractCompanyId(result.data);
+  } catch {
+    return "";
+  }
 }
 
 async function auditGhlCapabilities() {
@@ -330,7 +373,8 @@ async function auditGhlCapabilities() {
     };
   }
 
-  const definitions = buildCapabilityDefinitions(locationId);
+  const companyId = await resolveCompanyIdForCapabilities(locationId);
+  const definitions = buildCapabilityDefinitions(locationId, companyId);
   const settled = await Promise.all(definitions.map((capability) => probeCapability(capability)));
   const working = settled.filter((item) => item.status === "working");
   const failing = settled.filter((item) => item.status !== "working");

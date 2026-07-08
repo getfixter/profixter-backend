@@ -1,5 +1,10 @@
 const { cleanString } = require("./ghlActions");
-const { getLocationId, redact } = require("./ghlClient");
+const {
+  extractCompanyId,
+  getCompanyIdFromEnv,
+  getLocationId,
+  redact,
+} = require("./ghlClient");
 const { executeGhlRequest } = require("./ghlUniversalExecutor");
 
 const CONTACT_PAGE_LIMIT = 100;
@@ -76,6 +81,34 @@ function normalizeTag(value) {
 
 function responseData(result) {
   return result?.response || result?.data || {};
+}
+
+function errorResponseMessage(error) {
+  const response = error?.response || {};
+  const message = response.message;
+  if (Array.isArray(message)) return message.map(cleanString).filter(Boolean).join("; ");
+  return cleanString(message || response.error || response.code || error?.message || error);
+}
+
+function friendlyGhlReason(error) {
+  const message = errorResponseMessage(error);
+  if (/companyId must be a string|companyId should not be empty|companyId.*required/i.test(message)) {
+    return "companyId is required";
+  }
+  return message || "GHL rejected the request";
+}
+
+function throwOwnerLookupError(error) {
+  const wrapped = new Error(`GHL rejected user lookup: ${friendlyGhlReason(error)}`);
+  wrapped.statusCode = error?.statusCode || 502;
+  wrapped.ghlStatus = error?.ghlStatus || null;
+  wrapped.request = redact(error?.request || null);
+  wrapped.response = redact(error?.response || null);
+  throw wrapped;
+}
+
+function isUnsupportedUserSearchAuth(error) {
+  return /AuthClass is not yet supported/i.test(errorResponseMessage(error));
 }
 
 function defaultApiCall(requestShape, options = {}) {
@@ -207,27 +240,67 @@ async function fetchUsers({ apiCall, adminUserId, userRequest } = {}) {
   const call =
     apiCall ||
     ((requestShape) => defaultApiCall(requestShape, { adminUserId, userRequest }));
-  const requests = [
-    { method: "GET", path: "/users/search", query: { locationId, limit: 100 } },
-    { method: "GET", path: `/locations/${encodeURIComponent(locationId)}/users` },
-  ];
-  let lastError = null;
-  for (const requestShape of requests) {
+  const companyId = await resolveCompanyIdForUserLookup({
+    locationId,
+    call,
+  });
+
+  try {
+    const result = await call({
+      method: "GET",
+      path: "/users/search",
+      query: { companyId, limit: 100 },
+      reason: "Resolve GHL user for contact owner assignment",
+    });
+    return collectionFrom(responseData(result), ["users", "teamMembers", "data", "items"])
+      .map(normalizeUser)
+      .filter((user) => user.id);
+  } catch (error) {
+    if (!isUnsupportedUserSearchAuth(error)) throwOwnerLookupError(error);
     try {
-      const result = await call({
-        ...requestShape,
-        reason: "Resolve GHL user for contact owner assignment",
+      const fallbackResult = await call({
+        method: "GET",
+        path: "/users/",
+        query: { locationId },
+        reason: "Resolve GHL location users for contact owner assignment",
       });
-      const users = collectionFrom(responseData(result), ["users", "teamMembers", "data", "items"])
+      return collectionFrom(responseData(fallbackResult), ["users", "teamMembers", "data", "items"])
         .map(normalizeUser)
         .filter((user) => user.id);
-      if (users.length) return users;
-    } catch (error) {
-      lastError = error;
+    } catch (fallbackError) {
+      throwOwnerLookupError(fallbackError);
     }
   }
-  if (lastError) throw lastError;
-  return [];
+}
+
+async function resolveCompanyIdForUserLookup({ locationId, call }) {
+  const configuredCompanyId = getCompanyIdFromEnv();
+  if (configuredCompanyId) return configuredCompanyId;
+
+  try {
+    const result = await call({
+      method: "GET",
+      path: `/locations/${encodeURIComponent(locationId)}`,
+      reason: "Resolve GHL company ID for user lookup",
+    });
+    const companyId = extractCompanyId(responseData(result));
+    if (companyId) return companyId;
+  } catch (error) {
+    const wrapped = new Error(
+      `GHL rejected user lookup: could not resolve companyId from the configured location`
+    );
+    wrapped.statusCode = error?.statusCode || 502;
+    wrapped.ghlStatus = error?.ghlStatus || null;
+    wrapped.request = redact(error?.request || null);
+    wrapped.response = redact(error?.response || null);
+    throw wrapped;
+  }
+
+  const error = new Error(
+    "GHL rejected user lookup: companyId is required. Set GHL_COMPANY_ID or make sure the configured location endpoint returns companyId."
+  );
+  error.statusCode = 500;
+  throw error;
 }
 
 function resolveUserByName(users, ownerName) {
@@ -414,6 +487,13 @@ async function prepareContactOwnerAssignment({ message, adminUserId, apiCall } =
     adminUserId,
     userRequest: message,
   });
+  const ownerUpdateDryRun = await dryRunOwnerUpdatePayload({
+    owner,
+    contact: audience.contacts[0],
+    apiCall,
+    adminUserId,
+    userRequest: message,
+  });
   return {
     capability: "contact_owner_assignment",
     owner,
@@ -428,8 +508,32 @@ async function prepareContactOwnerAssignment({ message, adminUserId, apiCall } =
     contactCount: audience.contacts.length,
     totalMatched: audience.total,
     preview: previewContacts(audience.contacts),
+    ownerUpdateDryRun,
     nothingChanged: true,
   };
+}
+
+async function dryRunOwnerUpdatePayload({
+  owner,
+  contact,
+  apiCall,
+  adminUserId,
+  userRequest,
+} = {}) {
+  const ownerId = cleanString(owner?.id);
+  const contactId = cleanString(contact?.id);
+  if (!ownerId || !contactId) return null;
+
+  const call =
+    apiCall ||
+    ((requestShape) => defaultApiCall(requestShape, { adminUserId, userRequest }));
+  return call({
+    method: "PUT",
+    path: `/contacts/${encodeURIComponent(contactId)}`,
+    body: { assignedTo: ownerId },
+    dryRun: true,
+    reason: "Dry-run contact owner assignment update payload",
+  });
 }
 
 function defaultReport({ ownerName, ownerId, tagName, contacts, startedAt }) {
@@ -461,6 +565,7 @@ function defaultReport({ ownerName, ownerId, tagName, contacts, startedAt }) {
       tagName,
       endpointCalls: [
         "GET /users/search",
+        "GET /users/",
         "GET /locations/:locationId/tags",
         "POST /contacts/search",
         "PUT /contacts/:contactId",

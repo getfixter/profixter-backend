@@ -1,6 +1,7 @@
 const assert = require("assert");
 
 process.env.GHL_LOCATION_ID = "test-location";
+process.env.GHL_COMPANY_ID = "company-test";
 
 const {
   executeContactOwnerAssignment,
@@ -8,10 +9,12 @@ const {
   looksLikeContactOwnerAssignmentRequest,
   parseContactOwnerAssignmentRequest,
   prepareContactOwnerAssignment,
+  resolveOwner,
 } = require("../src/aiCommanderGhl/jarvisContactOwnerAssignment");
 
 const requests = [];
 let searchMode = "withTotal";
+let userSearchMode = "success";
 
 function makeContact(index, extra = {}) {
   return {
@@ -28,6 +31,19 @@ async function apiCall(input) {
   requests.push(input);
 
   if (input.method === "GET" && input.path === "/users/search") {
+    assert.equal(input.query.companyId, "company-test");
+    assert.equal(input.query.locationId, undefined);
+    if (userSearchMode === "authUnsupported") {
+      const error = new Error("GHL API request failed with 401");
+      error.statusCode = 502;
+      error.ghlStatus = 401;
+      error.response = {
+        message: "E-102. This AuthClass is not yet supported!",
+        error: "Unauthorized",
+        statusCode: 401,
+      };
+      throw error;
+    }
     return {
       response: {
         users: [
@@ -35,7 +51,20 @@ async function apiCall(input) {
           { id: "user-sergey", name: "Sergey Fixter", email: "sergey@example.com" },
         ],
       },
-      request: { endpoint: "GET /users/search?locationId=test-location" },
+      request: { endpoint: "GET /users/search?companyId=company-test&limit=100" },
+    };
+  }
+
+  if (input.method === "GET" && input.path === "/users/") {
+    assert.equal(input.query.locationId, "test-location");
+    return {
+      response: {
+        users: [
+          { id: "user-taras", name: "Taras Bandura", email: "taras@example.com" },
+          { id: "user-sergey", name: "Sergey Fixter", email: "sergey@example.com" },
+        ],
+      },
+      request: { endpoint: "GET /users/?locationId=test-location" },
     };
   }
 
@@ -75,6 +104,18 @@ async function apiCall(input) {
         total: 3,
       },
       request: { endpoint: "POST /contacts/search" },
+    };
+  }
+
+  if (input.method === "PUT" && input.dryRun === true) {
+    assert.equal(input.path, "/contacts/contact-1");
+    assert.deepEqual(input.body, { assignedTo: "user-taras" });
+    return {
+      dryRun: true,
+      method: "PUT",
+      path: input.path,
+      body: input.body,
+      summary: "Jarvis would call PUT /contacts/contact-1 for Update one contact.",
     };
   }
 
@@ -125,9 +166,15 @@ async function testPrepareAndExecute() {
   assert.equal(prepared.contactCount, 3);
   assert.equal(prepared.preview.length, 3);
   assert.equal(prepared.preview[0].name, "Website Contact 1");
+  assert.equal(prepared.ownerUpdateDryRun.dryRun, true);
   assert.equal(prepared.nothingChanged, true);
-  assert.ok(requests.some((request) => request.path === "/users/search"));
+  const userLookup = requests.find((request) => request.path === "/users/search");
+  assert.ok(userLookup);
+  assert.equal(userLookup.query.companyId, "company-test");
+  assert.equal(userLookup.query.locationId, undefined);
+  assert.ok(!requests.some((request) => request.path === "/locations/test-location/users"));
   assert.ok(requests.some((request) => request.path === "/contacts/search"));
+  assert.ok(requests.some((request) => request.method === "PUT" && request.dryRun === true));
 
   requests.length = 0;
   const progress = [];
@@ -172,10 +219,42 @@ async function testContactSearchPaginatesWithoutTotal() {
   searchMode = "withTotal";
 }
 
+async function testOwnerResolvesByEmail() {
+  requests.length = 0;
+  const owner = await resolveOwner({
+    ownerName: "taras@example.com",
+    apiCall,
+  });
+
+  assert.equal(owner.id, "user-taras");
+  assert.equal(owner.email, "taras@example.com");
+  const userLookup = requests.find((request) => request.path === "/users/search");
+  assert.ok(userLookup);
+  assert.equal(userLookup.query.companyId, "company-test");
+  assert.ok(!requests.some((request) => request.path === "/locations/test-location/users"));
+}
+
+async function testOwnerLookupFallsBackWhenUserSearchAuthUnsupported() {
+  requests.length = 0;
+  userSearchMode = "authUnsupported";
+  const owner = await resolveOwner({
+    ownerName: "Taras Bandura",
+    apiCall,
+  });
+
+  assert.equal(owner.id, "user-taras");
+  assert.ok(requests.some((request) => request.path === "/users/search"));
+  assert.ok(requests.some((request) => request.path === "/users/"));
+  assert.ok(!requests.some((request) => request.path === "/locations/test-location/users"));
+  userSearchMode = "success";
+}
+
 async function run() {
   await testParse();
   await testPrepareAndExecute();
   await testContactSearchPaginatesWithoutTotal();
+  await testOwnerResolvesByEmail();
+  await testOwnerLookupFallsBackWhenUserSearchAuthUnsupported();
   console.log("Jarvis contact owner assignment tests passed");
 }
 

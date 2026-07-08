@@ -4,6 +4,7 @@ const path = require("path");
 
 const uploadRoot = path.join(__dirname, "tmp-jarvis-intent-csv");
 process.env.JARVIS_UPLOAD_TMP_DIR = uploadRoot;
+process.env.GHL_COMPANY_ID = "company-test";
 
 const servicePath = require.resolve("../src/aiCommanderGhl/aiCommanderGhl.service");
 const ghlClientPath = require.resolve("../src/aiCommanderGhl/ghlClient");
@@ -74,6 +75,8 @@ require.cache[ghlClientPath] = {
   loaded: true,
   exports: {
     getLocationId: () => "test-location",
+    getCompanyIdFromEnv: () => process.env.GHL_COMPANY_ID || "",
+    extractCompanyId: (value) => value?.location?.companyId || value?.companyId || "",
     getSafeTokenDiagnostics: () => ({
       source: "GHL_AI_COMMANDER_TOKEN",
       hasToken: true,
@@ -270,10 +273,12 @@ require.cache[ghlClientPath] = {
         };
       }
       if (input.method === "GET" && input.path === "/users/search") {
+        assert.equal(input.query.companyId, "company-test");
+        assert.equal(input.query.locationId, undefined);
         return {
           status: 200,
           data: { users: [{ id: "user-1", name: "Taras" }] },
-          request: { endpoint: "GET /users/search?locationId=test-location" },
+          request: { endpoint: "GET /users/search?companyId=company-test&limit=1" },
           rateLimit: {},
         };
       }

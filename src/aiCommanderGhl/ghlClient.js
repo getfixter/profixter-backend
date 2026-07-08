@@ -27,6 +27,24 @@ function getLocationId() {
   return locationId;
 }
 
+function getCompanyIdFromEnv() {
+  return String(process.env.GHL_COMPANY_ID || "").trim();
+}
+
+function extractCompanyId(value) {
+  const data = value && typeof value === "object" ? value : {};
+  const location = data.location && typeof data.location === "object" ? data.location : data;
+  return String(
+    location.companyId ||
+      location.company_id ||
+      location.agencyId ||
+      location.agency_id ||
+      data.companyId ||
+      data.company_id ||
+      ""
+  ).trim();
+}
+
 function getAccessToken() {
   const token = String(process.env.GHL_AI_COMMANDER_TOKEN || "").trim();
   if (!token) {
@@ -78,10 +96,12 @@ function getSafeTokenDiagnostics() {
 function getSafeGhlDiagnostics() {
   const token = getSafeTokenDiagnostics();
   const locationId = String(process.env.GHL_LOCATION_ID || "").trim();
+  const companyId = getCompanyIdFromEnv();
   return {
     baseUrl: BASE_URL,
     apiVersion: token.apiVersion,
     locationIdUsed: locationId || null,
+    companyIdConfigured: !!companyId,
     token,
   };
 }
@@ -340,6 +360,8 @@ async function request({
 module.exports = {
   BASE_URL,
   GhlApiError,
+  extractCompanyId,
+  getCompanyIdFromEnv,
   getLocationId,
   getSafeGhlDiagnostics,
   getSafeTokenDiagnostics,
