@@ -1,5 +1,6 @@
 const {
   createCampaignTemplatePlan,
+  createContactOwnerAssignmentPlan,
   createEstimateCsvSyncPlan,
   createPlan,
 } = require("./aiCommanderGhl.service");
@@ -9,6 +10,7 @@ const {
   runInternalCapability,
 } = require("./jarvisInternalCapabilityRouter");
 const { looksLikeCampaignBuilderRequest } = require("./jarvisCampaignBuilder.service");
+const { looksLikeContactOwnerAssignmentRequest } = require("./jarvisContactOwnerAssignment");
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
 
 const OUTSIDE_GHL_WORKSPACE_ANSWER = "This is outside my GHL workspace. Ask ChatGPT.";
@@ -222,6 +224,8 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
       ? await createEstimateCsvSyncPlan({ message: clean, adminUserId, files, uploadBatchId })
       : looksLikeCampaignBuilderRequest(clean)
         ? await createCampaignTemplatePlan({ message: clean, adminUserId, files, uploadBatchId })
+      : looksLikeContactOwnerAssignmentRequest(clean)
+        ? await createContactOwnerAssignmentPlan({ message: clean, adminUserId })
       : await createPlan({ message: clean, adminUserId });
     logJarvisRequest({ adminUserId, message: clean, intent, status: "planned" });
     return {

@@ -897,6 +897,36 @@ const ACTION_DEFINITIONS = {
       return { campaign: data?.campaign || data };
     },
   }),
+
+  contact_owner_assignment: actionDoc({
+    method: "WORKFLOW",
+    endpoint: "jarvis://contacts/owner-assignment",
+    riskLevel: "medium",
+    description:
+      "Assign one resolved GHL owner to a saved set of tagged contacts after approval.",
+    docs: "internal Jarvis contact owner assignment workflow",
+    build(action) {
+      const payload = action.payload || {};
+      const contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+      return {
+        method: "WORKFLOW",
+        path: "jarvis://contacts/owner-assignment",
+        body: {
+          ownerName: cleanString(payload.ownerName),
+          ownerId: cleanString(payload.ownerId),
+          audienceType: cleanString(payload.audienceType || "tag"),
+          tagName: cleanString(payload.tagName),
+          contactCount: contacts.length || Number(payload.contactCount || 0),
+          preview: Array.isArray(payload.preview) ? payload.preview.slice(0, 10) : [],
+          approvalRequired: true,
+          updates: "PUT /contacts/:contactId with assignedTo",
+        },
+      };
+    },
+    extract(data) {
+      return { report: data };
+    },
+  }),
 };
 
 function isSupportedAction(actionType) {

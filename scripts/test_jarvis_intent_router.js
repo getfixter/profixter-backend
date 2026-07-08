@@ -12,6 +12,7 @@ const ghlRequests = [];
 const plannedMessages = [];
 const csvSyncPlans = [];
 const campaignTemplatePlans = [];
+const contactOwnerAssignmentPlans = [];
 let contactReadMode = "success";
 let tagMode = "plain";
 
@@ -389,6 +390,34 @@ require.cache[servicePath] = {
             supported: true,
             method: "INTERNAL",
             endpoint: "jarvis://campaigns/templates",
+          },
+        ],
+        riskLevel: "medium",
+        destructive: false,
+        requiresApproval: true,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    },
+    createContactOwnerAssignmentPlan: async ({ message, adminUserId }) => {
+      contactOwnerAssignmentPlans.push({ message, adminUserId });
+      return {
+        confirmationId: "contact-owner-confirmation",
+        summary:
+          'I found 123 contacts with tag "website_registered". Owner: Taras Bandura. Nothing has been changed. Approve to assign this owner and skip contacts already assigned.',
+        exactPlan: [
+          'Resolve owner "Taras Bandura" to GHL user ID user-taras.',
+          'Search GHL contacts where tag equals "website_registered".',
+          "Preview the first 10 contacts before approval.",
+        ],
+        objectsAffected: ['123 contacts tagged "website_registered"', "Owner: Taras Bandura"],
+        messagesToSendOrCreate: [],
+        plannedApiActions: [
+          {
+            actionId: "contact_owner_assignment",
+            actionType: "contact_owner_assignment",
+            supported: true,
+            method: "WORKFLOW",
+            endpoint: "jarvis://contacts/owner-assignment",
           },
         ],
         riskLevel: "medium",
@@ -798,6 +827,27 @@ async function testCampaignTemplateRequestRequiresApproval() {
   assert.equal(campaignTemplatePlans.length, beforePlans + 1);
 }
 
+async function testContactOwnerAssignmentRequiresApproval() {
+  resetReads();
+  const beforeGenericPlans = plannedMessages.length;
+  const beforeOwnerPlans = contactOwnerAssignmentPlans.length;
+  const result = await askJarvis({
+    message:
+      'Assign the owner "Taras Bandura" to every contact that currently has the tag "website_registered".',
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "write");
+  assert.equal(result.requiresApproval, true);
+  assert.equal(result.plan.requiresApproval, true);
+  assert.equal(result.plan.confirmationId, "contact-owner-confirmation");
+  assert.equal(result.plan.plannedApiActions[0].actionType, "contact_owner_assignment");
+  assert.match(result.plan.summary, /123 contacts with tag "website_registered"/i);
+  assert.match(result.plan.summary, /Nothing has been changed/i);
+  assert.equal(contactOwnerAssignmentPlans.length, beforeOwnerPlans + 1);
+  assert.equal(plannedMessages.length, beforeGenericPlans);
+}
+
 async function run() {
   try {
     await testReadContactCount();
@@ -820,6 +870,7 @@ async function run() {
     await testGeneralOutsideWorkspaceRequest();
     await testWriteStillRequiresApproval();
     await testCampaignTemplateRequestRequiresApproval();
+    await testContactOwnerAssignmentRequiresApproval();
     console.log("Jarvis intent router tests passed");
   } finally {
     await fs.remove(uploadRoot);
