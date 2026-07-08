@@ -14,6 +14,16 @@ const { looksLikeContactOwnerAssignmentRequest } = require("./jarvisContactOwner
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
 
 const OUTSIDE_GHL_WORKSPACE_ANSWER = "This is outside my GHL workspace. Ask ChatGPT.";
+const ROUTER_TRACE_VERSION = "jarvis-intent-router-contact-owner-assignment-debug-v1";
+
+console.info("Jarvis intent router loaded", {
+  routerTraceVersion: ROUTER_TRACE_VERSION,
+  registeredCapabilities: {
+    contactOwnerAssignment:
+      typeof looksLikeContactOwnerAssignmentRequest === "function" &&
+      typeof createContactOwnerAssignmentPlan === "function",
+  },
+});
 
 function hasCsvFiles(context = {}) {
   return (Array.isArray(context.files) ? context.files : []).some((file) => {
@@ -67,6 +77,34 @@ function looksLikeRead(message, context = {}) {
   return readSubject && (informationRequest || diagnosticRequest);
 }
 
+function explainLooksLikeRead(message, context = {}) {
+  const readSubjectRegex =
+    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?|rows?|files?|csv|tags?|opportunit|pipelines?|stages?|conversations?|messages?|workflows?|calendars?|appointments?|users?|team|custom fields?|campaigns?|forms?|surveys?|locations?|account)\b/i;
+  const informationRequestRegex =
+    /\b(how many|count|total|number of|show me|show all|list|what .*exist|what workflows|what tags|what pipelines|what .*access|access do you have|capabilities|capability|scan|summarize|summary|overview)\b/i;
+  const diagnosticVerbRegex = /\b(check|verify|diagnos|test)\b/i;
+  const diagnosticTargetRegex = /\b(connection|access|permission|read|endpoint)\b/i;
+  const readSubject = readSubjectRegex.test(message) || hasCsvFiles(context);
+  const informationRequest = informationRequestRegex.test(message);
+  const diagnosticRequest =
+    diagnosticVerbRegex.test(message) && diagnosticTargetRegex.test(message);
+
+  return {
+    matched: readSubject && (informationRequest || diagnosticRequest),
+    readSubject,
+    informationRequest,
+    diagnosticRequest,
+    regexes: {
+      readSubject:
+        "\\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?|rows?|files?|csv|tags?|...)\\b",
+      informationRequest:
+        "\\b(how many|count|total|number of|show me|show all|list|what .*exist|...)\\b",
+      diagnosticRequest:
+        "\\b(check|verify|diagnos|test)\\b + \\b(connection|access|permission|read|endpoint)\\b",
+    },
+  };
+}
+
 function sanitizedReadFailure(error, action) {
   const message = cleanString(error?.message || error)
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
@@ -118,6 +156,17 @@ function looksLikeWrite(message, context = {}) {
   );
 }
 
+function explainLooksLikeWrite(message, context = {}) {
+  const matched = looksLikeWrite(message, context);
+  return {
+    matched,
+    csvSync: looksLikeCsvSync(message, context),
+    adviceQuestionSkipped: looksLikeAdvice(message) && isQuestion(message),
+    regex:
+      "\\b(create|add|send|launch|start|build|update|change|move|delete|archive|remove|assign|...)\\b",
+  };
+}
+
 function classifyIntent(message, context = {}) {
   const clean = cleanString(message);
   if (!clean) {
@@ -127,6 +176,7 @@ function classifyIntent(message, context = {}) {
   }
 
   if (looksOutsideGhlWorkspace(clean, context)) return "advice";
+  if (looksLikeContactOwnerAssignmentRequest(clean)) return "write";
   if (looksLikeCsvSync(clean, context)) return "write";
   if (looksLikeCsvAudit(clean, context)) return "read";
   if (looksLikeRead(clean, context)) return "read";
@@ -175,100 +225,301 @@ function adviceAnswerFor(message) {
   ].join(" ");
 }
 
-function logJarvisRequest({ adminUserId, message, intent, readAction, status }) {
-  console.info("Jarvis intent request", {
+function buildRouteTrace({ message, context, internalCapability = null }) {
+  const clean = cleanString(message);
+  return {
+    routerTraceVersion: ROUTER_TRACE_VERSION,
+    rawUserMessage: message,
+    normalizedMessage: clean,
+    registeredCapabilities: {
+      contactOwnerAssignment:
+        typeof looksLikeContactOwnerAssignmentRequest === "function" &&
+        typeof createContactOwnerAssignmentPlan === "function",
+    },
+    evaluationOrder: [
+      "outside_workspace",
+      "contact_owner_assignment",
+      "internal_capability",
+      "classify_intent",
+      "write_planners",
+      "read_actions",
+      "advice",
+    ],
+    checks: {
+      outsideWorkspace: looksOutsideGhlWorkspace(clean, context),
+      contactOwnerAssignment: looksLikeContactOwnerAssignmentRequest(clean),
+      internalCapability: internalCapability
+        ? {
+            action: internalCapability.action,
+            label: internalCapability.label,
+          }
+        : null,
+      csvSync: looksLikeCsvSync(clean, context),
+      csvAudit: looksLikeCsvAudit(clean, context),
+      read: explainLooksLikeRead(clean, context),
+      write: explainLooksLikeWrite(clean, context),
+      advice: looksLikeAdvice(clean),
+      question: isQuestion(clean),
+    },
+    matchedIntent: "",
+    matchedCapability: "",
+    matchedRoute: "",
+    fallbackReason: "",
+  };
+}
+
+function logJarvisRequest({
+  adminUserId,
+  message,
+  intent,
+  matchedIntent,
+  matchedCapability,
+  matchedRoute,
+  fallbackReason,
+  readAction,
+  status,
+  trace,
+  error,
+}) {
+  console.info("Jarvis intent trace", {
     adminUserId: adminUserId || null,
+    routerTraceVersion: ROUTER_TRACE_VERSION,
+    rawUserMessage: cleanString(message),
     intent,
+    matchedIntent: matchedIntent || trace?.matchedIntent || intent || null,
+    matchedCapability: matchedCapability || trace?.matchedCapability || null,
+    matchedRoute: matchedRoute || trace?.matchedRoute || null,
+    fallbackReason: fallbackReason || trace?.fallbackReason || "",
     readAction: readAction || null,
     status,
     messagePreview: cleanString(message).slice(0, 240),
+    registeredCapabilities: trace?.registeredCapabilities || {
+      contactOwnerAssignment:
+        typeof looksLikeContactOwnerAssignmentRequest === "function" &&
+        typeof createContactOwnerAssignmentPlan === "function",
+    },
+    evaluationOrder: trace?.evaluationOrder || [],
+    checks: trace?.checks || {},
+    error: error
+      ? {
+          message: cleanString(error?.message || error),
+          statusCode: error?.statusCode || null,
+          ghlStatus: error?.ghlStatus || null,
+        }
+      : null,
   });
 }
 
 async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" }) {
   const clean = cleanString(message);
   const context = { files, uploadBatchId, adminUserId, userRequest: clean };
-  if (looksOutsideGhlWorkspace(clean, context)) {
-    logJarvisRequest({ adminUserId, message: clean, intent: "advice", status: "outside_workspace" });
-    return {
-      intent: "advice",
-      answer: OUTSIDE_GHL_WORKSPACE_ANSWER,
-      requiresApproval: false,
-    };
-  }
-
   const internalCapability = resolveInternalCapability(clean, context);
-  if (internalCapability) {
-    const result = await runInternalCapability({
-      capability: internalCapability,
-      context,
-    });
-    logJarvisRequest({
-      adminUserId,
-      message: clean,
-      intent: "read",
-      readAction: `internal:${internalCapability.action}`,
-      status: result?.data?.status === "partial" ? "partial" : "answered",
-    });
-    return {
-      ...result,
-      intent: "read",
-      requiresApproval: false,
-    };
-  }
+  const trace = buildRouteTrace({ message: clean, context, internalCapability });
 
-  const intent = classifyIntent(clean, context);
-
-  if (intent === "write") {
-    const plan = looksLikeCsvSync(clean, context)
-      ? await createEstimateCsvSyncPlan({ message: clean, adminUserId, files, uploadBatchId })
-      : looksLikeCampaignBuilderRequest(clean)
-        ? await createCampaignTemplatePlan({ message: clean, adminUserId, files, uploadBatchId })
-      : looksLikeContactOwnerAssignmentRequest(clean)
-        ? await createContactOwnerAssignmentPlan({ message: clean, adminUserId })
-      : await createPlan({ message: clean, adminUserId });
-    logJarvisRequest({ adminUserId, message: clean, intent, status: "planned" });
-    return {
-      intent: "write",
-      plan,
-      requiresApproval: true,
-    };
-  }
-
-  if (intent === "read") {
-    const readAction = resolveReadAction(clean, context);
-    try {
-      const result = await runReadAction(clean, context);
+  try {
+    if (looksOutsideGhlWorkspace(clean, context)) {
+      trace.matchedIntent = "outside_workspace";
+      trace.matchedCapability = "outside_workspace";
+      trace.matchedRoute = "advice:outside_workspace";
+      trace.fallbackReason =
+        "looksOutsideGhlWorkspace matched before GHL workspace routes.";
       logJarvisRequest({
         adminUserId,
         message: clean,
-        intent,
-        readAction: readAction.action,
-        status: "answered",
+        intent: "advice",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        status: "outside_workspace",
+        trace,
+      });
+      return {
+        intent: "advice",
+        answer: OUTSIDE_GHL_WORKSPACE_ANSWER,
+        requiresApproval: false,
+      };
+    }
+
+    if (looksLikeContactOwnerAssignmentRequest(clean)) {
+      trace.matchedIntent = "contact_owner_assignment";
+      trace.matchedCapability = "jarvisContactOwnerAssignment";
+      trace.matchedRoute = "approval_workflow:contact_owner_assignment";
+      trace.fallbackReason =
+        "Matched before internal capabilities, generic read actions, and generic write planning.";
+      const plan = await createContactOwnerAssignmentPlan({ message: clean, adminUserId });
+      logJarvisRequest({
+        adminUserId,
+        message: clean,
+        intent: "write",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        status: "planned",
+        trace,
+      });
+      return {
+        intent: "write",
+        plan,
+        requiresApproval: true,
+      };
+    }
+
+    if (internalCapability) {
+      trace.matchedIntent = `internal:${internalCapability.action}`;
+      trace.matchedCapability = internalCapability.label;
+      trace.matchedRoute = `internal_capability:${internalCapability.action}`;
+      trace.fallbackReason =
+        "Internal capability matched before generic read/write routing.";
+      const result = await runInternalCapability({
+        capability: internalCapability,
+        context,
+      });
+      logJarvisRequest({
+        adminUserId,
+        message: clean,
+        intent: "read",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        readAction: `internal:${internalCapability.action}`,
+        status: result?.data?.status === "partial" ? "partial" : "answered",
+        trace,
       });
       return {
         ...result,
         intent: "read",
         requiresApproval: false,
       };
-    } catch (error) {
+    }
+
+    const intent = classifyIntent(clean, context);
+
+    if (intent === "write") {
+      const plannerRoute = looksLikeCsvSync(clean, context)
+        ? "approval_workflow:csv_sync"
+        : looksLikeCampaignBuilderRequest(clean)
+          ? "approval_workflow:campaign_template"
+          : "approval_workflow:generic_ai_commander";
+      trace.matchedIntent = plannerRoute.replace("approval_workflow:", "");
+      trace.matchedCapability =
+        plannerRoute === "approval_workflow:csv_sync"
+          ? "jarvisCsvGhlSync"
+          : plannerRoute === "approval_workflow:campaign_template"
+            ? "jarvisCampaignBuilder"
+            : "aiCommanderGhl";
+      trace.matchedRoute = plannerRoute;
+      trace.fallbackReason =
+        plannerRoute === "approval_workflow:generic_ai_commander"
+          ? "No specialized Jarvis workflow matched, so the request fell back to generic AI Commander planning."
+          : "";
+      const plan = looksLikeCsvSync(clean, context)
+        ? await createEstimateCsvSyncPlan({ message: clean, adminUserId, files, uploadBatchId })
+        : looksLikeCampaignBuilderRequest(clean)
+          ? await createCampaignTemplatePlan({ message: clean, adminUserId, files, uploadBatchId })
+        : await createPlan({ message: clean, adminUserId });
       logJarvisRequest({
         adminUserId,
         message: clean,
         intent,
-        readAction: readAction.action,
-        status: "failed",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        status: "planned",
+        trace,
       });
-      return sanitizedReadFailure(error, readAction.action);
+      return {
+        intent: "write",
+        plan,
+        requiresApproval: true,
+      };
     }
-  }
 
-  logJarvisRequest({ adminUserId, message: clean, intent, status: "answered" });
-  return {
-    intent: "advice",
-    answer: adviceAnswerFor(clean),
-    requiresApproval: false,
-  };
+    if (intent === "read") {
+      const readAction = resolveReadAction(clean, context);
+      trace.matchedIntent = readAction.action;
+      trace.matchedCapability = "jarvisReadActions";
+      trace.matchedRoute = `read_action:${readAction.action}`;
+      trace.fallbackReason =
+        readAction.action === "count_contacts"
+          ? "looksLikeRead matched and resolveReadAction selected count_contacts. Check trace.checks.read for the regex flags that made this a read request."
+          : "";
+      const result = await runReadAction(clean, context);
+      logJarvisRequest({
+        adminUserId,
+        message: clean,
+        intent,
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        readAction: readAction.action,
+        status: "answered",
+        trace,
+      });
+      return {
+        ...result,
+        intent: "read",
+        requiresApproval: false,
+      };
+    }
+
+    trace.matchedIntent = "advice";
+    trace.matchedCapability = "jarvisAdvice";
+    trace.matchedRoute = "advice";
+    trace.fallbackReason =
+      "No specialized Jarvis workflow, internal capability, write route, or read action matched.";
+    logJarvisRequest({
+      adminUserId,
+      message: clean,
+      intent,
+      matchedIntent: trace.matchedIntent,
+      matchedCapability: trace.matchedCapability,
+      matchedRoute: trace.matchedRoute,
+      fallbackReason: trace.fallbackReason,
+      status: "answered",
+      trace,
+    });
+    return {
+      intent: "advice",
+      answer: adviceAnswerFor(clean),
+      requiresApproval: false,
+    };
+  } catch (error) {
+    if (trace.matchedRoute?.startsWith("read_action:")) {
+      logJarvisRequest({
+        adminUserId,
+        message: clean,
+        intent: "read",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        readAction: trace.matchedIntent,
+        status: "failed",
+        trace,
+        error,
+      });
+      return sanitizedReadFailure(error, trace.matchedIntent);
+    }
+
+    logJarvisRequest({
+      adminUserId,
+      message: clean,
+      intent: trace.matchedRoute?.startsWith("approval_workflow:") ? "write" : "unknown",
+      matchedIntent: trace.matchedIntent,
+      matchedCapability: trace.matchedCapability,
+      matchedRoute: trace.matchedRoute,
+      fallbackReason: trace.fallbackReason,
+      status: "failed",
+      trace,
+      error,
+    });
+    throw error;
+  }
 }
 
 module.exports = {

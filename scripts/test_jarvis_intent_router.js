@@ -429,7 +429,7 @@ require.cache[servicePath] = {
   },
 };
 
-const { askJarvis } = require("../src/aiCommanderGhl/jarvisIntentRouter");
+const { askJarvis, classifyIntent } = require("../src/aiCommanderGhl/jarvisIntentRouter");
 
 async function testReadContactCount() {
   resetReads();
@@ -831,9 +831,11 @@ async function testContactOwnerAssignmentRequiresApproval() {
   resetReads();
   const beforeGenericPlans = plannedMessages.length;
   const beforeOwnerPlans = contactOwnerAssignmentPlans.length;
+  const message =
+    'Assign the owner "Taras Bandura" to every contact that currently has the tag "website_registered".';
+  assert.equal(classifyIntent(message, { files: [] }), "write");
   const result = await askJarvis({
-    message:
-      'Assign the owner "Taras Bandura" to every contact that currently has the tag "website_registered".',
+    message,
     adminUserId: "admin-1",
   });
 
