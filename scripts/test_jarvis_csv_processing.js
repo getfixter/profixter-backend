@@ -82,6 +82,10 @@ const {
   syncEstimateCsvWithGhl,
 } = require("../src/aiCommanderGhl/jarvisCsvGhlSync");
 
+function findDownload(report, filename) {
+  return (report.downloads || []).find((download) => download.filename === filename);
+}
+
 async function writeSampleCsv() {
   await fs.ensureDir(uploadRoot);
   const fileName = "sample-estimates.csv";
@@ -140,6 +144,21 @@ async function testSyncEstimateCsvWithGhl() {
   assert.equal(report.errors.length, 0);
   assert.equal(report.createdContacts, 0);
   assert.equal(report.missingContacts[0].name, "Bob Missing");
+  assert.equal(report.summary.title, "Roofing/Siding Sync Completed");
+  assert.match(report.summary.aiSummary, /I checked all 3 estimate contacts/);
+  assert.equal(report.stats.csvContactsProcessed, 3);
+  assert.equal(report.stats.contactsFoundInGhl, 2);
+  assert.equal(report.stats.missingContacts, 1);
+  assert.equal(report.stats.newRoofingSidingTagsAdded, 1);
+  assert.equal(report.stats.alreadyTagged, 1);
+  assert.equal(report.stats.errors, 0);
+  assert.ok(report.executionTime.label);
+  assert.ok(findDownload(report, "Missing Contacts.csv").content.includes("Bob Missing"));
+  assert.ok(findDownload(report, "Audit Report.json").content.includes("Roofing/Siding Sync Completed"));
+  assert.ok(report.recommendations.some((item) => /Import the 1 missing contacts/.test(item)));
+  assert.ok(report.recommendations.some((item) => /Launch the Roofing\/Siding campaign/.test(item)));
+  assert.equal(report.developerDetails.apiCalls[0].path, "/contacts/search");
+  assert.ok(report.developerDetails.workflowLog.some((event) => event.message === "Finished."));
   assert.equal(report.workflow.name, "csv_ghl_tag_sync");
   assert.ok(report.workflow.progress.some((event) => event.message === "Reading CSV..."));
   assert.ok(report.workflow.progress.some((event) => event.message === "Finished."));
@@ -157,6 +176,16 @@ async function testAuditEstimateCsvAgainstGhlDoesNotMutate() {
   assert.equal(report.notFoundInGhl, 1);
   assert.equal(report.newlyTagged, 0);
   assert.equal(report.alreadyTagged, 0);
+  assert.equal(report.summary.title, "CSV Audit Completed");
+  assert.match(report.summary.aiSummary, /No GHL records were changed/);
+  assert.equal(report.stats.csvContactsProcessed, 3);
+  assert.equal(report.stats.contactsFoundInGhl, 2);
+  assert.equal(report.stats.missingContacts, 1);
+  assert.equal(report.stats.newRoofingSidingTagsAdded, 0);
+  assert.ok(report.warnings.some((warning) => /read-only audit/.test(warning)));
+  assert.ok(findDownload(report, "Missing Contacts.csv").content.includes("Bob Missing"));
+  assert.ok(findDownload(report, "Audit Report.json").content.includes("CSV Audit Completed"));
+  assert.ok(report.recommendations.some((item) => /Run the Roofing\/Siding tag sync/.test(item)));
   assert.equal(report.workflow.name, "csv_ghl_audit");
   assert.ok(report.workflow.progress.some((event) => event.message === "Audit complete."));
   assert.ok(!ghlRequests.some((request) => /\/tags$/.test(request.path)));
@@ -193,6 +222,9 @@ async function testSyncResumeSkipsCompletedRowsAndPersistsEachRemainingRow() {
   assert.equal(report.notFoundInGhl, 1);
   assert.equal(report.newlyTagged, 1);
   assert.equal(report.alreadyTagged, 1);
+  assert.equal(report.summary.title, "Roofing/Siding Sync Completed");
+  assert.equal(report.stats.csvContactsProcessed, 3);
+  assert.ok(findDownload(report, "Missing Contacts.csv").content.includes("Bob Missing"));
   assert.equal(saves.length, 2);
   assert.ok(saves.at(-1).completedIndexes.includes(0));
   assert.ok(saves.at(-1).completedIndexes.includes(1));

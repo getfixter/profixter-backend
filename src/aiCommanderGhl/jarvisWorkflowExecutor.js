@@ -156,6 +156,16 @@ async function executeWorkflow({
     errors: [],
     report: {},
     stepCount: 0,
+    stepStats: {
+      total: 0,
+      byType: {},
+      apiCalls: 0,
+      loopIterations: 0,
+      conditionsPassed: 0,
+      conditionsFailed: 0,
+      reportsGenerated: 0,
+      errors: 0,
+    },
   };
 
   const emitProgress = async (message, meta = {}) => {
@@ -201,6 +211,9 @@ async function executeWorkflow({
     }
 
     const type = stepType(step);
+    const statType = type || "unknown";
+    state.stepStats.total += 1;
+    state.stepStats.byType[statType] = Number(state.stepStats.byType[statType] || 0) + 1;
     try {
       if (type === "progress") {
         await emitProgress(await resolveValue(step.message, helpers), step.meta || {});
@@ -223,6 +236,7 @@ async function executeWorkflow({
       }
 
       if (type === "api_call" || type === "api") {
+        state.stepStats.apiCalls += 1;
         const result = await helpers.apiCall({
           method: await resolveValue(step.method, helpers),
           path: await resolveValue(step.path, helpers),
@@ -290,6 +304,8 @@ async function executeWorkflow({
 
       if (type === "condition" || type === "if") {
         const passed = await evaluateCondition(step.if || step.condition || step.test, helpers);
+        if (passed) state.stepStats.conditionsPassed += 1;
+        else state.stepStats.conditionsFailed += 1;
         await runSteps(passed ? step.then || [] : step.else || []);
         return passed;
       }
@@ -302,6 +318,7 @@ async function executeWorkflow({
         const progressEvery = Math.max(0, Number(step.progressEvery || 0));
 
         for (let index = 0; index < list.length; index += 1) {
+          state.stepStats.loopIterations += 1;
           state.variables[itemVar] = list[index];
           state.variables[indexVar] = index;
           state.variables[`${indexVar}Display`] = index + 1;
@@ -331,6 +348,7 @@ async function executeWorkflow({
       }
 
       if (type === "report") {
+        state.stepStats.reportsGenerated += 1;
         const report = await resolveValue(step.value, helpers);
         state.report = report && typeof report === "object" ? redact(report) : { value: report };
         return state.report;
@@ -340,6 +358,7 @@ async function executeWorkflow({
       error.statusCode = 400;
       throw error;
     } catch (error) {
+      state.stepStats.errors += 1;
       if (step.continueOnError === true) {
         state.errors.push(workflowError(error, step));
         return null;
@@ -366,6 +385,7 @@ async function executeWorkflow({
     errors: state.errors,
     report: state.report,
     stepCount: state.stepCount,
+    stepStats: state.stepStats,
   };
 }
 

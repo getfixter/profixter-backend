@@ -96,6 +96,36 @@ function sanitizeError(error) {
   });
 }
 
+function csvCell(value) {
+  const text = cleanString(value);
+  if (!/[",\r\n]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function csvFromRows(rows, columns) {
+  return [
+    columns.map((column) => csvCell(column.label)).join(","),
+    ...rows.map((row) =>
+      columns.map((column) => csvCell(row[column.key])).join(",")
+    ),
+  ].join("\n");
+}
+
+function durationLabel(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function successRate(report) {
+  const processed = Number(report.processedRows || 0);
+  if (!processed) return "100%";
+  const errors = Number(report.errors?.length || 0);
+  return `${(((processed - errors) / processed) * 100).toFixed(1)}%`;
+}
+
 function workflowConcurrency() {
   const value = Number(
     process.env.JARVIS_WORKFLOW_CONCURRENCY ||
@@ -226,6 +256,55 @@ function missingPreview(row, reason) {
   };
 }
 
+function contactDownloadRow(row, reason) {
+  return {
+    rowNumber: row.rowNumber,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    address: row.address,
+    jobType: row.jobType,
+    estimateAmount: row.estimateAmount ?? "",
+    reason,
+  };
+}
+
+function defaultStepStats(parsedFiles) {
+  return {
+    csvRead: {
+      files: parsedFiles.length,
+      totalRows: parsedFiles.reduce((total, file) => total + file.totalRows, 0),
+      validContacts: parsedFiles.reduce((total, file) => total + file.validContacts, 0),
+      invalidRows: parsedFiles.reduce((total, file) => total + file.invalidRows, 0),
+    },
+    contactMatching: {
+      processed: 0,
+      found: 0,
+      missing: 0,
+      multipleMatches: 0,
+      errors: 0,
+    },
+    tagging: {
+      checked: 0,
+      newlyTagged: 0,
+      alreadyTagged: 0,
+      failed: 0,
+    },
+  };
+}
+
+function mergeStepStats(parsedFiles, savedStepStats = {}) {
+  const defaults = defaultStepStats(parsedFiles);
+  return {
+    csvRead: { ...defaults.csvRead, ...(savedStepStats.csvRead || {}) },
+    contactMatching: {
+      ...defaults.contactMatching,
+      ...(savedStepStats.contactMatching || {}),
+    },
+    tagging: { ...defaults.tagging, ...(savedStepStats.tagging || {}) },
+  };
+}
+
 function initializeReport(parsedFiles, rowsToProcess, limited, initialReport = null) {
   if (initialReport && typeof initialReport === "object") {
     return {
@@ -237,6 +316,10 @@ function initializeReport(parsedFiles, rowsToProcess, limited, initialReport = n
       missingContacts: Array.isArray(initialReport.missingContacts)
         ? initialReport.missingContacts
         : [],
+      missingContactsDownload: Array.isArray(initialReport.missingContactsDownload)
+        ? initialReport.missingContactsDownload
+        : [],
+      stepStats: mergeStepStats(parsedFiles, initialReport.stepStats || {}),
     };
   }
 
@@ -251,6 +334,7 @@ function initializeReport(parsedFiles, rowsToProcess, limited, initialReport = n
     multipleMatches: 0,
     errors: [],
     missingContacts: [],
+    missingContactsDownload: [],
     files: parsedFiles.map((file) => ({
       fileName: file.file.originalName,
       totalRows: file.totalRows,
@@ -260,6 +344,7 @@ function initializeReport(parsedFiles, rowsToProcess, limited, initialReport = n
     limited,
     limit: SYNC_MAX_ROWS,
     createdContacts: 0,
+    stepStats: defaultStepStats(parsedFiles),
   };
 }
 
@@ -268,10 +353,16 @@ function shouldEmitRowProgress(done, total) {
 }
 
 async function processCsvRow({ row, report, applyTags, helpers, options }) {
+  let phase = "matching";
   try {
+    report.stepStats.contactMatching.processed += 1;
     const match = await findContact(row, helpers, options);
     if (match.status === "multiple") {
       report.multipleMatches += 1;
+      report.stepStats.contactMatching.multipleMatches += 1;
+      report.missingContactsDownload.push(
+        contactDownloadRow(row, `multiple ${match.matchMethod} matches`)
+      );
       if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
         report.missingContacts.push(missingPreview(row, `multiple ${match.matchMethod} matches`));
       }
@@ -279,6 +370,8 @@ async function processCsvRow({ row, report, applyTags, helpers, options }) {
     }
     if (match.status !== "found" || !match.contact?.id) {
       report.notFoundInGhl += 1;
+      report.stepStats.contactMatching.missing += 1;
+      report.missingContactsDownload.push(contactDownloadRow(row, "not found in GHL"));
       if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
         report.missingContacts.push(missingPreview(row, "not found in GHL"));
       }
@@ -286,8 +379,11 @@ async function processCsvRow({ row, report, applyTags, helpers, options }) {
     }
 
     report.foundInGhl += 1;
+    report.stepStats.contactMatching.found += 1;
     if (!applyTags) return;
 
+    phase = "tagging";
+    report.stepStats.tagging.checked += 1;
     const tagResult = await addMissingTags(
       match.contact,
       desiredTagsForRow(row),
@@ -296,10 +392,17 @@ async function processCsvRow({ row, report, applyTags, helpers, options }) {
     );
     if (tagResult.alreadyTagged) {
       report.alreadyTagged += 1;
+      report.stepStats.tagging.alreadyTagged += 1;
     } else {
       report.newlyTagged += 1;
+      report.stepStats.tagging.newlyTagged += 1;
     }
   } catch (error) {
+    if (phase === "tagging") {
+      report.stepStats.tagging.failed += 1;
+    } else {
+      report.stepStats.contactMatching.errors += 1;
+    }
     report.errors.push({
       rowNumber: row.rowNumber,
       fileName: row.fileName,
@@ -308,7 +411,163 @@ async function processCsvRow({ row, report, applyTags, helpers, options }) {
   }
 }
 
+function buildCsvWorkflowReport({ report, applyTags, executionMs }) {
+  const title = applyTags ? "Roofing/Siding Sync Completed" : "CSV Audit Completed";
+  const missingCount = Number(report.notFoundInGhl || 0);
+  const errorCount = Number(report.errors?.length || 0);
+  const stats = {
+    csvContactsProcessed: Number(report.processedRows || 0),
+    contactsFoundInGhl: Number(report.foundInGhl || 0),
+    missingContacts: missingCount,
+    newRoofingSidingTagsAdded: Number(report.newlyTagged || 0),
+    alreadyTagged: Number(report.alreadyTagged || 0),
+    multipleMatches: Number(report.multipleMatches || 0),
+    errors: errorCount,
+    successRate: successRate(report),
+  };
+  const warnings = [];
+
+  if (!applyTags) {
+    warnings.push("This was a read-only audit. No GHL records were changed.");
+  } else if (report.foundInGhl > 0 && report.newlyTagged === 0) {
+    warnings.push(
+      `${report.foundInGhl.toLocaleString("en-US")} contacts were already tagged. No new tags were required.`
+    );
+  } else if (report.foundInGhl === 0) {
+    warnings.push("No matching GHL contacts were found, so no tags were added.");
+  }
+  if (report.limited) {
+    warnings.push(`The workflow processed the first ${report.limit.toLocaleString("en-US")} valid contacts due to the configured safety limit.`);
+  }
+  if (report.multipleMatches > 0) {
+    warnings.push(`${report.multipleMatches.toLocaleString("en-US")} rows had multiple possible GHL matches and were not changed.`);
+  }
+
+  const missingRows = Array.isArray(report.missingContactsDownload)
+    ? report.missingContactsDownload
+    : [];
+  const errorRows = (Array.isArray(report.errors) ? report.errors : []).map((item) => ({
+    rowNumber: item.rowNumber,
+    fileName: item.fileName,
+    message: item.error?.message || "",
+    ghlStatus: item.error?.ghlStatus || "",
+    statusCode: item.error?.statusCode || "",
+  }));
+  const auditPayload = {
+    summary: title,
+    stats,
+    warnings,
+    files: report.files,
+    stepStats: report.stepStats,
+    missingContacts: missingRows,
+    errors: report.errors,
+  };
+
+  const downloads = [
+    {
+      label: "Download Audit Report.json",
+      filename: "Audit Report.json",
+      contentType: "application/json",
+      content: JSON.stringify(auditPayload, null, 2),
+    },
+  ];
+  if (missingRows.length) {
+    downloads.unshift({
+      label: "Download Missing Contacts.csv",
+      filename: "Missing Contacts.csv",
+      contentType: "text/csv",
+      content: csvFromRows(missingRows, [
+        { key: "rowNumber", label: "Row Number" },
+        { key: "name", label: "Name" },
+        { key: "phone", label: "Phone" },
+        { key: "email", label: "Email" },
+        { key: "address", label: "Address" },
+        { key: "jobType", label: "Job Type" },
+        { key: "estimateAmount", label: "Estimate Amount" },
+        { key: "reason", label: "Reason" },
+      ]),
+    });
+  }
+  if (errorRows.length) {
+    downloads.splice(missingRows.length ? 1 : 0, 0, {
+      label: "Download Error Report.csv",
+      filename: "Error Report.csv",
+      contentType: "text/csv",
+      content: csvFromRows(errorRows, [
+        { key: "rowNumber", label: "Row Number" },
+        { key: "fileName", label: "File" },
+        { key: "message", label: "Error" },
+        { key: "ghlStatus", label: "GHL Status" },
+        { key: "statusCode", label: "Status Code" },
+      ]),
+    });
+  }
+
+  const recommendations = [];
+  if (missingCount > 0) {
+    recommendations.push(`Import the ${missingCount.toLocaleString("en-US")} missing contacts into GHL.`);
+    recommendations.push("Re-run the sync after import.");
+  }
+  if (!applyTags && report.foundInGhl > 0) {
+    recommendations.push("Run the Roofing/Siding tag sync for the matched contacts.");
+  }
+  if (applyTags && report.foundInGhl > 0) {
+    recommendations.push("Create Opportunities for these leads.");
+    recommendations.push("Launch the Roofing/Siding campaign.");
+  }
+  if (!recommendations.length) {
+    recommendations.push("No follow-up action is required right now.");
+  }
+
+  const aiSummary = applyTags
+    ? `I checked all ${stats.csvContactsProcessed.toLocaleString("en-US")} estimate contacts. ${stats.contactsFoundInGhl.toLocaleString("en-US")} already existed in GHL. ${stats.newRoofingSidingTagsAdded.toLocaleString("en-US")} required new Roofing/Siding tags. ${stats.missingContacts.toLocaleString("en-US")} contacts were not found and were prepared for import. ${stats.errors === 0 ? "No API errors occurred." : `${stats.errors.toLocaleString("en-US")} API errors occurred and were prepared for review.`}`
+    : `I checked all ${stats.csvContactsProcessed.toLocaleString("en-US")} CSV contacts against GHL. ${stats.contactsFoundInGhl.toLocaleString("en-US")} were found, ${stats.missingContacts.toLocaleString("en-US")} were missing, and ${stats.multipleMatches.toLocaleString("en-US")} had multiple possible matches. No GHL records were changed.`;
+
+  return {
+    summary: {
+      title,
+      status: "completed",
+      aiSummary,
+    },
+    stats,
+    warnings,
+    downloads,
+    recommendations,
+    executionTime: {
+      ms: executionMs,
+      label: durationLabel(executionMs),
+    },
+    developerDetails: {
+      stepStats: report.stepStats,
+      apiCalls: [
+        {
+          method: "POST",
+          path: "/contacts/search",
+          purpose: "Search contacts by phone, email, then name and address.",
+          mutating: false,
+        },
+        ...(applyTags
+          ? [
+              {
+                method: "POST",
+                path: "/contacts/:contactId/tags",
+                purpose: "Add missing Roofing/Siding tags to matched contacts.",
+                mutating: true,
+              },
+            ]
+          : []),
+      ],
+      workflowLog: report.workflow?.progress || [],
+      executionTimeline: report.workflow?.progress || [],
+      files: report.files,
+    },
+  };
+}
+
 async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
+  const startedAtMs = context.startedAt
+    ? new Date(context.startedAt).getTime()
+    : Date.now();
   const parsedFiles = await parseCsvContext(context);
   const rows = parsedFiles.flatMap((file) =>
     file.contacts.filter((contact) => contact.valid).map((contact) => ({
@@ -395,8 +654,9 @@ async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
       { type: "report", value: "$.report" },
     ],
   });
+  const executionMs = Date.now() - (Number.isFinite(startedAtMs) ? startedAtMs : Date.now());
 
-  return {
+  const finalReport = {
     ...report,
     workflow: {
       name: workflow.name,
@@ -406,6 +666,16 @@ async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
       stepCount: workflow.stepCount,
       approvalRequired: workflow.approvalRequired,
     },
+  };
+  const structuredReport = buildCsvWorkflowReport({
+    report: finalReport,
+    applyTags,
+    executionMs,
+  });
+
+  return {
+    ...finalReport,
+    ...structuredReport,
   };
 }
 

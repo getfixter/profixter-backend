@@ -14,6 +14,22 @@ function cleanString(value) {
   return String(value ?? "").trim();
 }
 
+function titleCase(value) {
+  return cleanString(value)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function durationLabel(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function newWorkflowJobId() {
   return `wf_${crypto.randomBytes(10).toString("hex")}`;
 }
@@ -193,6 +209,7 @@ async function runCsvWorkflowJob(job) {
     approved: true,
     adminUserId: job.adminUserId,
     userRequest: job.originalMessage,
+    startedAt: job.startedAt,
     completedIndexes: job.completedIndexes || [],
     initialReport: job.report,
     onRowComplete: (state) => persistRowProgress(job.jobId, state),
@@ -207,7 +224,7 @@ async function runCsvWorkflowJob(job) {
 
 async function runGenericWorkflowJob(job) {
   const workflow = parseJsonObjectText(job.payload?.workflowJson, "workflowJson");
-  return executeWorkflow({
+  const result = await executeWorkflow({
     name: cleanString(job.payload?.workflowName || workflow.name || job.name),
     steps: Array.isArray(workflow.steps) ? workflow.steps : [],
     context: workflow.context && typeof workflow.context === "object" ? workflow.context : {},
@@ -219,6 +236,48 @@ async function runGenericWorkflowJob(job) {
     userRequest: job.originalMessage,
     onProgress: (event) => appendProgress(job.jobId, event.message, event.meta),
   });
+  if (result?.summary && result?.stats && result?.recommendations && result?.executionTime) {
+    return result;
+  }
+
+  const executionMs = Date.now() - new Date(job.startedAt || Date.now()).getTime();
+  const title = `${titleCase(result?.name || job.name || "Workflow")} Completed`;
+  return {
+    ...result,
+    summary: {
+      title,
+      status: result?.status || "completed",
+      aiSummary: `I completed the ${titleCase(result?.name || job.name || "workflow")} workflow. ${Number(result?.stepCount || 0).toLocaleString("en-US")} workflow steps ran and ${Number(result?.errors?.length || 0).toLocaleString("en-US")} errors were recorded.`,
+    },
+    stats: {
+      workflowStepsExecuted: Number(result?.stepCount || 0),
+      apiCalls: Number(result?.stepStats?.apiCalls || 0),
+      loopIterations: Number(result?.stepStats?.loopIterations || 0),
+      errors: Number(result?.errors?.length || 0),
+      successRate: result?.errors?.length ? "0.0%" : "100.0%",
+    },
+    warnings: result?.errors?.length ? ["Some workflow steps recorded errors. Review the workflow log."] : [],
+    downloads: [
+      {
+        label: "Download Audit Report.json",
+        filename: "Audit Report.json",
+        contentType: "application/json",
+        content: JSON.stringify(redact(result || {}), null, 2),
+      },
+    ],
+    recommendations: result?.errors?.length
+      ? ["Review failed steps before re-running the workflow."]
+      : ["No follow-up action is required right now."],
+    executionTime: {
+      ms: executionMs,
+      label: durationLabel(executionMs),
+    },
+    developerDetails: {
+      stepStats: result?.stepStats || {},
+      workflowLog: result?.progress || [],
+      executionTimeline: result?.progress || [],
+    },
+  };
 }
 
 async function runWorkflowJob(jobId) {

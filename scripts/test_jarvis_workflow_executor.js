@@ -96,6 +96,10 @@ async function testWorkflowPrimitivesAndApiCall() {
   assert.equal(fetchCalls.length, 1);
   assert.match(fetchCalls[0].url, /locationId=test-location/);
   assert.deepEqual(result.report.activeNames, ["Roofing"]);
+  assert.equal(result.stepStats.apiCalls, 1);
+  assert.equal(result.stepStats.byType.api_call, 1);
+  assert.equal(result.stepStats.loopIterations, 1);
+  assert.equal(result.stepStats.reportsGenerated, 1);
   assert.ok(result.progress.some((event) => event.message === "Reading tags..."));
   assert.ok(result.progress.some((event) => event.message === "Active tags found."));
 }
@@ -127,6 +131,8 @@ async function testLoopContinueOnError() {
   assert.equal(result.status, "completed_with_errors");
   assert.deepEqual(result.report.processed, [1, 3]);
   assert.equal(result.errors.length, 1);
+  assert.equal(result.stepStats.loopIterations, 3);
+  assert.equal(result.stepStats.errors, 1);
   assert.match(result.errors[0].message, /row failed/);
 }
 
@@ -153,6 +159,38 @@ function testWorkflowJobExecutionResponseShape() {
   assert.equal(response.workflowJob.progress.processed, 50);
   assert.equal(response.workflowJob.progress.total, 462);
   assert.equal(response.workflowJob.progress.percent, 11);
+
+  const completedResponse = executionResponseFromJob({
+    jobId: "wf_done",
+    name: "csv_ghl_tag_sync",
+    actionType: "sync_estimate_csv_with_ghl",
+    status: "completed",
+    processedItems: 462,
+    totalItems: 462,
+    percent: 100,
+    currentMessage: "Finished.",
+    progressEvents: [{ message: "Finished." }],
+    payload: { actionId: "sync_estimate_csv_with_ghl" },
+    report: {
+      summary: { title: "Roofing/Siding Sync Completed" },
+      stats: { csvContactsProcessed: 462 },
+      warnings: [],
+      downloads: [],
+      recommendations: ["Import missing contacts."],
+      executionTime: { label: "2m 14s" },
+    },
+    errors: [],
+  });
+
+  assert.equal(completedResponse.status, "executed");
+  assert.equal(
+    completedResponse.workflowJob.report.summary.title,
+    "Roofing/Siding Sync Completed"
+  );
+  assert.equal(
+    completedResponse.results[0].response.summary.title,
+    "Roofing/Siding Sync Completed"
+  );
 }
 
 async function run() {
