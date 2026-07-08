@@ -5,16 +5,20 @@ process.env.GHL_LOCATION_ID = "test-location";
 process.env.GHL_AI_COMMANDER_TOKEN = "pit-test-token";
 process.env.JARVIS_GHL_UNIVERSAL_RETRIES = "1";
 process.env.JARVIS_GHL_UNIVERSAL_TIMEOUT_MS = "2000";
+process.env.JARVIS_GHL_RETRY_BASE_MS = "0";
+process.env.JARVIS_GHL_RETRY_MAX_MS = "10";
 
 const fetchCalls = [];
 const fetchQueue = [];
 const originalLoad = Module._load;
 
-function mockResponse(status, data) {
+function mockResponse(status, data, headers = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: () => "" },
+    headers: {
+      get: (name) => headers[String(name || "").toLowerCase()] || "",
+    },
     text: async () => JSON.stringify(data || {}),
   };
 }
@@ -186,7 +190,7 @@ async function testLocationMismatchRejected() {
 
 async function testRetriesRateLimitedRequest() {
   reset();
-  fetchQueue.push(mockResponse(429, { message: "Too many requests" }));
+  fetchQueue.push(mockResponse(429, { message: "Too many requests" }, { "retry-after": "0" }));
   fetchQueue.push(mockResponse(200, { tags: [{ id: "tag-1", name: "Roofing" }] }));
 
   const result = await executeGhlRequest({
@@ -197,6 +201,8 @@ async function testRetriesRateLimitedRequest() {
 
   assert.equal(fetchCalls.length, 2);
   assert.equal(result.status, 200);
+  assert.equal(result.rateLimit.retryAfter, "");
+  assert.equal(result.attempts, 2);
 }
 
 async function run() {

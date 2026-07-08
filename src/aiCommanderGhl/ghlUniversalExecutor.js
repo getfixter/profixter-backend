@@ -10,7 +10,7 @@ const {
 
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const DEFAULT_TIMEOUT_MS = 300000;
-const DEFAULT_RETRIES = 2;
+const DEFAULT_RETRIES = 5;
 
 function cleanString(value) {
   return String(value ?? "").trim();
@@ -30,13 +30,9 @@ function methodIsWrite(method) {
   return WRITE_METHODS.has(cleanString(method).toUpperCase());
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function getRetryCount() {
   const retries = Number(process.env.JARVIS_GHL_UNIVERSAL_RETRIES);
-  if (Number.isFinite(retries) && retries >= 0 && retries <= 5) return retries;
+  if (Number.isFinite(retries) && retries >= 0 && retries <= 10) return retries;
   return DEFAULT_RETRIES;
 }
 
@@ -55,14 +51,6 @@ function assertSupportedApiVersion() {
     error.statusCode = 500;
     throw error;
   }
-}
-
-function shouldRetry(error) {
-  const status = Number(error?.ghlStatus || 0);
-  if (status === 429 || status >= 500) return true;
-  return /timeout|timed out|etimedout|socket hang up|econnreset/i.test(
-    cleanString(error?.message || error?.type)
-  );
 }
 
 function ensureConfiguredLocation(locationId) {
@@ -167,24 +155,12 @@ async function writeAudit(record) {
 }
 
 async function requestWithRetry(requestShape) {
-  const maxRetries = getRetryCount();
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    try {
-      return await request({
-        ...requestShape,
-        timeoutMs: requestShape.timeoutMs || getTimeoutMs(),
-        logResponseBody: false,
-      });
-    } catch (error) {
-      lastError = error;
-      if (attempt >= maxRetries || !shouldRetry(error)) break;
-      await wait(300 * (attempt + 1));
-    }
-  }
-
-  throw lastError;
+  return request({
+    ...requestShape,
+    timeoutMs: requestShape.timeoutMs || getTimeoutMs(),
+    logResponseBody: false,
+    retryCount: getRetryCount(),
+  });
 }
 
 async function executeGhlRequest({
@@ -326,6 +302,7 @@ async function executeGhlRequest({
       response,
       request: result.request,
       rateLimit: result.rateLimit || {},
+      attempts: result.attempts || 1,
       summary,
       riskLevel: endpoint.riskLevel,
       destructive: endpoint.destructive,

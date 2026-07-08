@@ -2,6 +2,9 @@ const fetch = require("node-fetch");
 
 const BASE_URL = "https://services.leadconnectorhq.com";
 const DEFAULT_GHL_VERSION = "v3";
+const DEFAULT_RETRIES = 5;
+const DEFAULT_RETRY_BASE_MS = 500;
+const DEFAULT_RETRY_MAX_MS = 30000;
 
 class GhlApiError extends Error {
   constructor(message, details = {}) {
@@ -11,6 +14,8 @@ class GhlApiError extends Error {
     this.ghlStatus = details.ghlStatus || null;
     this.response = details.response || null;
     this.request = details.request || null;
+    this.rateLimit = details.rateLimit || null;
+    this.retryAfterMs = Number.isFinite(details.retryAfterMs) ? details.retryAfterMs : null;
   }
 }
 
@@ -129,7 +134,67 @@ function buildUrl(path, query = {}) {
   return url;
 }
 
-async function request({ method, path, query, body, timeoutMs, logResponseBody = true }) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (Number.isFinite(number) && number >= min && number <= max) return number;
+  return fallback;
+}
+
+function getDefaultRetryCount() {
+  return boundedNumber(
+    process.env.JARVIS_GHL_MAX_RETRIES || process.env.JARVIS_GHL_RETRIES,
+    DEFAULT_RETRIES,
+    0,
+    10
+  );
+}
+
+function parseRetryAfter(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return null;
+  const seconds = Number(clean);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const dateMs = Date.parse(clean);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return null;
+}
+
+function retryDelayMs(error, attempt, options = {}) {
+  const retryAfterMs = Number(error?.retryAfterMs);
+  const maxMs = boundedNumber(
+    options.retryMaxMs ?? process.env.JARVIS_GHL_RETRY_MAX_MS,
+    DEFAULT_RETRY_MAX_MS,
+    0,
+    120000
+  );
+  if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
+    return Math.min(maxMs, retryAfterMs);
+  }
+
+  const baseMs = boundedNumber(
+    options.retryBaseMs ?? process.env.JARVIS_GHL_RETRY_BASE_MS,
+    DEFAULT_RETRY_BASE_MS,
+    0,
+    60000
+  );
+  const jitterMax = Math.max(0, Math.min(250, baseMs));
+  const jitter = jitterMax ? Math.floor(Math.random() * (jitterMax + 1)) : 0;
+  return Math.min(maxMs, baseMs * 2 ** Math.max(0, attempt) + jitter);
+}
+
+function shouldRetryError(error) {
+  const status = Number(error?.ghlStatus || error?.status || 0);
+  if (status === 429 || status >= 500) return true;
+  return /timeout|timed out|etimedout|socket hang up|econnreset|network/i.test(
+    String(error?.message || error?.type || "")
+  );
+}
+
+async function requestOnce({ method, path, query, body, timeoutMs, logResponseBody = true }) {
   const upperMethod = String(method || "GET").toUpperCase();
   const url = buildUrl(path, query);
   const tokenInfo = getTokenDiagnostics();
@@ -166,14 +231,22 @@ async function request({ method, path, query, body, timeoutMs, logResponseBody =
     body: redact(requestShape.body),
   });
 
-  const response = await fetch(url.toString(), {
-    method: upperMethod,
-    headers,
-    body: ["GET", "HEAD"].includes(upperMethod)
-      ? undefined
-      : JSON.stringify(body || {}),
-    ...(timeoutMs ? { timeout: timeoutMs } : {}),
-  });
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      method: upperMethod,
+      headers,
+      body: ["GET", "HEAD"].includes(upperMethod)
+        ? undefined
+        : JSON.stringify(body || {}),
+      ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    });
+  } catch (error) {
+    throw new GhlApiError(error?.message || "GHL request failed", {
+      statusCode: 502,
+      request: requestShape,
+    });
+  }
 
   const text = await response.text();
   let data = {};
@@ -183,19 +256,25 @@ async function request({ method, path, query, body, timeoutMs, logResponseBody =
     data = { raw: text };
   }
 
+  const retryAfter = response.headers.get("retry-after") || "";
+  const retryAfterMs = parseRetryAfter(retryAfter);
+  const rateLimit = {
+    dailyLimit: response.headers.get("x-ratelimit-limit-daily") || "",
+    dailyRemaining: response.headers.get("x-ratelimit-daily-remaining") || "",
+    intervalMs: response.headers.get("x-ratelimit-interval-milliseconds") || "",
+    intervalLimit: response.headers.get("x-ratelimit-max") || "",
+    intervalRemaining: response.headers.get("x-ratelimit-remaining") || "",
+    retryAfter,
+    retryAfterMs,
+  };
+
   const result = {
     ok: response.ok,
     status: response.status,
     data,
     request: redact(requestShape),
     responseBody: redact(data),
-    rateLimit: {
-      dailyLimit: response.headers.get("x-ratelimit-limit-daily") || "",
-      dailyRemaining: response.headers.get("x-ratelimit-daily-remaining") || "",
-      intervalMs: response.headers.get("x-ratelimit-interval-milliseconds") || "",
-      intervalLimit: response.headers.get("x-ratelimit-max") || "",
-      intervalRemaining: response.headers.get("x-ratelimit-remaining") || "",
-    },
+    rateLimit,
   };
 
   console.info("GHL AI Commander response diagnostics:", {
@@ -214,10 +293,48 @@ async function request({ method, path, query, body, timeoutMs, logResponseBody =
       ghlStatus: response.status,
       response: redact(data),
       request: result.request,
+      rateLimit,
+      retryAfterMs,
     });
   }
 
   return result;
+}
+
+async function request({
+  retryCount,
+  retryBaseMs,
+  retryMaxMs,
+  ...requestShape
+}) {
+  const maxRetries = boundedNumber(retryCount, getDefaultRetryCount(), 0, 10);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const result = await requestOnce(requestShape);
+      return {
+        ...result,
+        attempts: attempt + 1,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxRetries || !shouldRetryError(error)) break;
+      const delayMs = retryDelayMs(error, attempt, { retryBaseMs, retryMaxMs });
+      console.warn("GHL AI Commander retrying request", {
+        attempt: attempt + 1,
+        maxRetries,
+        delayMs,
+        statusCode: error?.statusCode || null,
+        ghlStatus: error?.ghlStatus || null,
+        retryAfterMs: error?.retryAfterMs || null,
+        request: redact(error?.request || null),
+      });
+      if (delayMs > 0) await wait(delayMs);
+    }
+  }
+
+  throw lastError;
 }
 
 module.exports = {
@@ -227,6 +344,9 @@ module.exports = {
   getSafeGhlDiagnostics,
   getSafeTokenDiagnostics,
   request,
+  parseRetryAfter,
   redact,
   redactSecretString,
+  retryDelayMs,
+  shouldRetryError,
 };

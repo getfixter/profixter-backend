@@ -7,6 +7,7 @@ process.env.JARVIS_UPLOAD_TMP_DIR = uploadRoot;
 
 const ghlClientPath = require.resolve("../src/aiCommanderGhl/ghlClient");
 const ghlRequests = [];
+let retrySearchFailuresRemaining = 0;
 
 require.cache[ghlClientPath] = {
   id: ghlClientPath,
@@ -18,6 +19,31 @@ require.cache[ghlClientPath] = {
       ghlRequests.push(input);
       if (input.method === "POST" && input.path === "/contacts/search") {
         const query = String(input.body?.query || "").toLowerCase();
+        if (query.includes("5559990000") || query.includes("+15559990000")) {
+          if (retrySearchFailuresRemaining > 0) {
+            retrySearchFailuresRemaining -= 1;
+            const error = new Error("GHL API request failed with 429");
+            error.statusCode = 502;
+            error.ghlStatus = 429;
+            error.response = { statusCode: 429, message: "Too Many Requests" };
+            throw error;
+          }
+          return {
+            status: 200,
+            data: {
+              contacts: [
+                {
+                  id: "contact-retry",
+                  name: "Rachel Retry",
+                  phone: "+15559990000",
+                  tags: ["Roofing/Siding", "sal-roofing"],
+                },
+              ],
+            },
+            request: { endpoint: "POST /contacts/search" },
+            rateLimit: {},
+          };
+        }
         if (query.includes("6315551111") || query.includes("+16315551111")) {
           return {
             status: 200,
@@ -102,6 +128,30 @@ async function writeSampleCsv() {
   );
   return {
     uploadId: "upload-1",
+    originalName: fileName,
+    displayName: fileName,
+    mimeType: "text/csv",
+    extension: "csv",
+    size: (await fs.stat(absolute)).size,
+    storage: "local",
+    tempRef: `local:${fileName}`,
+    storageKey: fileName,
+  };
+}
+
+async function writeRetryCsv() {
+  await fs.ensureDir(uploadRoot);
+  const fileName = "retry-estimates.csv";
+  const absolute = path.join(uploadRoot, fileName);
+  await fs.writeFile(
+    absolute,
+    [
+      "Customer Name,Phone,Email,Address,Service,Estimate Amount",
+      "Rachel Retry,5559990000,,9 Retry Rd,Roofing,$900",
+    ].join("\n")
+  );
+  return {
+    uploadId: "upload-retry",
     originalName: fileName,
     displayName: fileName,
     mimeType: "text/csv",
@@ -233,12 +283,47 @@ async function testSyncResumeSkipsCompletedRowsAndPersistsEachRemainingRow() {
   assert.ok(!ghlRequests.some((request) => request.path === "/contacts/contact-1/tags"));
 }
 
+async function testFailedRowRetryResolvesRateLimitedSearch() {
+  ghlRequests.length = 0;
+  retrySearchFailuresRemaining = 1;
+  const file = await writeRetryCsv();
+  const report = await syncEstimateCsvWithGhl({ files: [file], approved: true });
+
+  assert.equal(report.totalRows, 1);
+  assert.equal(report.validContacts, 1);
+  assert.equal(report.foundInGhl, 1);
+  assert.equal(report.notFoundInGhl, 0);
+  assert.equal(report.errors.length, 0);
+  assert.equal(report.resolvedAfterRetry, 1);
+  assert.equal(report.resolvedAfterRetryFound, 1);
+  assert.equal(report.stepStats.contactMatching.errors, 0);
+  assert.equal(report.stepStats.contactMatching.resolvedAfterRetry, 1);
+  assert.equal(report.stats.contactsFoundInGhl, 1);
+  assert.equal(report.stats.resolvedAfterRetry, 1);
+  assert.equal(report.stats.unresolvedErrors, 0);
+  assert.equal(report.stats.errors, 0);
+  assert.ok(!findDownload(report, "Error Report.csv"));
+  assert.ok(report.warnings.some((warning) => /resolved after retry/.test(warning)));
+  assert.ok(
+    report.workflow.progress.some((event) =>
+      /Failed-row retry resolved 1 \/ 1/.test(event.message)
+    )
+  );
+  assert.equal(
+    ghlRequests.filter((request) =>
+      String(request.body?.query || "").includes("+15559990000")
+    ).length,
+    2
+  );
+}
+
 async function run() {
   try {
     await testCountCsvContacts();
     await testAuditEstimateCsvAgainstGhlDoesNotMutate();
     await testSyncEstimateCsvWithGhl();
     await testSyncResumeSkipsCompletedRowsAndPersistsEachRemainingRow();
+    await testFailedRowRetryResolvesRateLimitedSearch();
     console.log("Jarvis CSV processing tests passed");
   } finally {
     await fs.remove(uploadRoot);
