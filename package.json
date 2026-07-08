@@ -32,6 +32,8 @@
     "test:subscription-retention": "node scripts/test_subscription_retention_offer.js",
     "test:ai-commander-body": "node scripts/test_ai_commander_body_parser.js",
     "test:ai-commander-ghl-actions": "node scripts/test_ai_commander_ghl_actions.js",
+    "test:ghl-universal-executor": "node scripts/test_ghl_universal_executor.js",
+    "test:jarvis-csv-processing": "node scripts/test_jarvis_csv_processing.js",
     "test:jarvis-ghl-security": "node scripts/test_jarvis_ghl_security.js",
     "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
     "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js"
@@ -42,6 +44,7 @@
     "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "csv-parse": "^7.0.1",
     "dotenv": "^16.4.7",
     "express": "^4.18.2",
     "express-list-routes": "^1.2.4",

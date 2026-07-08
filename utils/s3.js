@@ -1,6 +1,7 @@
 // backend/utils/s3.js
 const {
   DeleteObjectsCommand,
+  GetObjectCommand,
   S3Client,
   PutObjectCommand,
 } = require("@aws-sdk/client-s3");
@@ -48,4 +49,18 @@ async function deletePublicObjects({ Bucket = BUCKET, Keys = [] }) {
   return { deleted: uniqueKeys.length };
 }
 
-module.exports = { deletePublicObjects, putPublicObject };
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function getObjectBuffer({ Bucket = BUCKET, Key }) {
+  if (!Key) throw new Error("getObjectBuffer requires Key");
+  const response = await s3.send(new GetObjectCommand({ Bucket, Key }));
+  return streamToBuffer(response.Body);
+}
+
+module.exports = { deletePublicObjects, getObjectBuffer, putPublicObject };

@@ -1,5 +1,6 @@
 const { getLocationId, getSafeTokenDiagnostics, request } = require("./ghlClient");
 const { cleanString } = require("./ghlActions");
+const { countCsvContacts: countCsvContactsFromContext, csvFilesFromContext } = require("./jarvisCsvProcessor");
 const { auditGhlCapabilities } = require("./ghlReadCapabilities");
 
 const READ_TIMEOUT_MS = Number(process.env.JARVIS_GHL_READ_TIMEOUT_MS || 15000);
@@ -1119,8 +1120,41 @@ async function diagnoseGhlAccess() {
   };
 }
 
-function resolveReadAction(message) {
+function hasCsvFiles(context = {}) {
+  return csvFilesFromContext(context).length > 0;
+}
+
+async function countCsvContacts(context = {}) {
+  const summary = await countCsvContactsFromContext(context);
+  const fileNames = summary.files.map((file) => file.file.originalName).join(", ");
+  const firstHeaders = summary.files[0]?.sampleHeaders || [];
+
+  return {
+    intent: "read",
+    answer: summary.files.length === 1
+      ? `I checked the CSV. ${fileNames} has ${formatNumber(summary.validContacts)} valid contact rows out of ${formatNumber(summary.totalRows)} total rows.`
+      : `I checked the CSV files. They have ${formatNumber(summary.validContacts)} valid contact rows out of ${formatNumber(summary.totalRows)} total rows.`,
+    data: {
+      totalRows: summary.totalRows,
+      validContacts: summary.validContacts,
+      invalidRows: summary.invalidRows,
+      sampleHeaders: firstHeaders,
+      files: summary.files,
+    },
+    sources: ["Uploaded CSV"],
+  };
+}
+
+function resolveReadAction(message, context = {}) {
   const text = cleanString(message).toLowerCase();
+
+  if (
+    hasCsvFiles(context) &&
+    /\b(csv|file|uploaded|attached|contacts?|customers?|leads?|rows?)\b/.test(text) &&
+    /\b(how many|count|total|number of|analyze|scan)\b/.test(text)
+  ) {
+    return { action: "count_csv_contacts" };
+  }
 
   if (
     /\b(check|diagnos|test|verify)\b/.test(text) &&
@@ -1223,10 +1257,11 @@ function resolveReadAction(message) {
   return { action: "scan_summary" };
 }
 
-async function runReadAction(message) {
-  const resolved = resolveReadAction(message);
+async function runReadAction(message, context = {}) {
+  const resolved = resolveReadAction(message, context);
   const action = resolved.action;
 
+  if (action === "count_csv_contacts") return countCsvContacts(context);
   if (action === "count_contacts") return countContacts();
   if (action === "list_tags") return listTags();
   if (action === "count_opportunities") return countOpportunities();
@@ -1251,6 +1286,7 @@ async function runReadAction(message) {
 
 module.exports = {
   countContacts,
+  countCsvContacts,
   countConversationsWaiting,
   countOpportunities,
   countPotentialCustomers,

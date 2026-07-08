@@ -163,7 +163,7 @@ async function request({ method, path, query, body, timeoutMs, logResponseBody =
     endpoint: requestShape.endpoint,
     url: requestShape.url,
     headers: requestShape.headers,
-    body: requestShape.body,
+    body: redact(requestShape.body),
   });
 
   const response = await fetch(url.toString(), {

@@ -252,6 +252,8 @@ router.post(
       const result = await askJarvis({
         message: req.body.message,
         adminUserId: req.user.id,
+        uploadBatchId: req.body.uploadBatchId,
+        files: Array.isArray(req.body.files) ? req.body.files : [],
       });
       return res.json(result);
     } catch (error) {

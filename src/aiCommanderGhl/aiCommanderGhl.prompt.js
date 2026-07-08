@@ -1,4 +1,8 @@
 const { supportedActionTypes } = require("./ghlActions");
+const {
+  DESTRUCTIVE_CONFIRMATION_PHRASE,
+  registrySummary,
+} = require("./ghlEndpointRegistry");
 
 const SUPPORTED_ACTION_TYPES = supportedActionTypes();
 const ACTION_TYPE_ENUM = [...SUPPORTED_ACTION_TYPES, "unsupported"];
@@ -36,6 +40,12 @@ const EMPTY_STRING_FIELDS = [
   "endTime",
   "appointmentTitle",
   "appointmentStatus",
+  "universalMethod",
+  "universalPath",
+  "universalQueryJson",
+  "universalBodyJson",
+  "universalReason",
+  "confirmationPhrase",
 ];
 
 const payloadProperties = Object.fromEntries(
@@ -72,6 +82,7 @@ payloadProperties.stages = {
   },
 };
 payloadProperties.completed = { type: "boolean" };
+payloadProperties.dryRun = { type: "boolean" };
 payloadProperties.useOpportunityProbability = { type: "boolean" };
 payloadProperties.monetaryValue = { type: "number" };
 
@@ -183,6 +194,7 @@ const PLAN_SCHEMA = {
               "customFields",
               "stages",
               "completed",
+              "dryRun",
               "useOpportunityProbability",
               "monetaryValue",
             ],
@@ -231,6 +243,10 @@ Supported executable actionType values:
 - send_conversation_message: POST /conversations/messages
 - create_calendar_appointment: POST /calendars/events/appointments
 - get_workflows: GET /workflows/
+- universal_ghl_request: one registry-approved endpoint through Jarvis's controlled universal GHL executor
+
+Universal GHL endpoint registry:
+${registrySummary()}
 `.trim();
 
 function buildPlannerPrompt() {
@@ -255,6 +271,11 @@ Hard planning rules:
 - Creating workflows or editing workflow steps is not supported by the implemented endpoint set. Adding or removing one contact from an existing workflow is supported.
 - Creating forms/surveys is not supported by the implemented endpoint set.
 - Creating custom field definitions is not supported here; updating custom field values on a known contact is supported.
+- If a GHL task is not covered by a hand-built actionType but is covered by the Universal GHL endpoint registry, use universal_ghl_request.
+- For universal_ghl_request payloads, set universalMethod, universalPath, universalReason, universalQueryJson, universalBodyJson, dryRun, and confirmationPhrase. The query/body fields must be JSON object strings like "{}"; never include secrets.
+- Use only endpoints listed in the Universal GHL endpoint registry. Deprecated or disabled endpoints are not available; do not use GET /contacts/.
+- Universal write requests still require approval because the normal plan/execute flow controls execution.
+- Delete, bulk SMS/email, workflow changes, permission/user changes, and calendar availability changes require the exact confirmation phrase "${DESTRUCTIVE_CONFIRMATION_PHRASE}". If the user did not provide it, mark the action unsupported and ask for exact criteria plus that phrase.
 - If any requested action cannot be performed by a supported actionType, include unsupportedActions and use this exact reason when applicable: "This action is not supported by the available GHL API endpoint."
 - Use "unsupported" actionType only for non-executable explanation rows.
 - If an action needs an existing GHL id and the user did not provide it, make that clear in exactPlan and mark the action unsupported rather than inventing an id.

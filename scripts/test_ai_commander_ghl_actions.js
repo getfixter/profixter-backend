@@ -78,6 +78,33 @@ function testUpsertOpportunityPayload() {
   });
 }
 
+function testUniversalRequestPreviewRedactsSecrets() {
+  const request = buildRequestForAction({
+    actionId: "action_3",
+    actionType: "universal_ghl_request",
+    target: {},
+    payload: {
+      universalMethod: "POST",
+      universalPath: "/contacts/search",
+      universalQueryJson: "{}",
+      universalBodyJson: JSON.stringify({
+        page: 1,
+        pageLimit: 1,
+        Authorization: "Bearer secret-token",
+      }),
+      universalReason: "Count contacts",
+      dryRun: false,
+      confirmationPhrase: "",
+    },
+  });
+
+  assert.equal(request.method, "UNIVERSAL");
+  assert.equal(request.path, "jarvis://ghl/universal");
+  assert.equal(request.body.method, "POST");
+  assert.equal(request.body.path, "/contacts/search");
+  assert.equal(request.body.body.Authorization, "[REDACTED]");
+}
+
 async function testDefaultGhlVersionHeader() {
   const originalInfo = console.info;
   const originalError = console.error;
@@ -99,6 +126,7 @@ async function testDefaultGhlVersionHeader() {
 async function run() {
   testCreateContactPayload();
   testUpsertOpportunityPayload();
+  testUniversalRequestPreviewRedactsSecrets();
   await testDefaultGhlVersionHeader();
   console.log("AI Commander GHL action payload tests passed");
 }

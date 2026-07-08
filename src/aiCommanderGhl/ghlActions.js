@@ -1,4 +1,4 @@
-const { getLocationId, request } = require("./ghlClient");
+const { getLocationId, request, redact } = require("./ghlClient");
 
 const UNSUPPORTED_MESSAGE =
   "This action is not supported by the available GHL API endpoint.";
@@ -55,6 +55,25 @@ function optionalNumber(value) {
   if (value === "" || value === null || value === undefined) return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function parseJsonObjectText(value, fieldName) {
+  const text = cleanString(value);
+  if (!text) return {};
+  let parsed = {};
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw Object.assign(new Error(`${fieldName} must be valid JSON.`), {
+      statusCode: 400,
+    });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw Object.assign(new Error(`${fieldName} must be a JSON object.`), {
+      statusCode: 400,
+    });
+  }
+  return parsed;
 }
 
 function getContactId(action, executionContext) {
@@ -735,6 +754,71 @@ const ACTION_DEFINITIONS = {
       return { method: "GET", path: "/workflows/", query: { locationId: getLocationId() } };
     },
   }),
+
+  sync_estimate_csv_with_ghl: actionDoc({
+    method: "INTERNAL",
+    endpoint: "jarvis://csv/sync-estimate-csv-with-ghl",
+    riskLevel: "medium",
+    description:
+      "Process an uploaded estimate CSV, find existing GHL contacts, and add missing roofing/siding tags after approval. Missing contacts are reported, not created.",
+    docs: "internal Jarvis CSV processor",
+    build(action) {
+      const files = Array.isArray(action.payload?.files) ? action.payload.files : [];
+      return {
+        method: "INTERNAL",
+        path: "jarvis://csv/sync-estimate-csv-with-ghl",
+        body: {
+          files: files.map((file) => ({
+            uploadId: cleanString(file?.uploadId),
+            originalName: cleanString(file?.originalName),
+            extension: cleanString(file?.extension),
+            size: Number(file?.size || 0),
+          })),
+          createMissingContacts: false,
+        },
+      };
+    },
+    extract(data) {
+      return { report: data };
+    },
+  }),
+
+  universal_ghl_request: actionDoc({
+    method: "UNIVERSAL",
+    endpoint: "jarvis://ghl/universal",
+    riskLevel: "high",
+    description:
+      "Execute one registry-approved GHL endpoint through Jarvis's universal executor after approval when required.",
+    docs: "internal Jarvis universal GHL executor",
+    build(action) {
+      const payload = action.payload || {};
+      const method = cleanString(payload.universalMethod).toUpperCase();
+      const path = cleanString(payload.universalPath);
+      if (!method || !path) {
+        throw Object.assign(new Error("universalMethod and universalPath are required"), {
+          statusCode: 400,
+        });
+      }
+      const query = parseJsonObjectText(payload.universalQueryJson, "universalQueryJson");
+      const body = parseJsonObjectText(payload.universalBodyJson, "universalBodyJson");
+      return {
+        method: "UNIVERSAL",
+        path: "jarvis://ghl/universal",
+        body: {
+          method,
+          path,
+          query: redact(query),
+          body: redact(body),
+          reason: cleanString(payload.universalReason),
+          dryRun: payload.dryRun === true,
+          confirmationPhrase: cleanString(payload.confirmationPhrase) ? "[PROVIDED]" : "",
+        },
+      };
+    },
+    extract(data) {
+      return { report: data };
+    },
+  }),
 };
 
 function isSupportedAction(actionType) {
@@ -839,6 +923,7 @@ module.exports = {
   executeAction,
   getActionDefinition,
   isSupportedAction,
+  parseJsonObjectText,
   plannedCallForAction,
   riskMax,
   supportedActionTypes,

@@ -1,10 +1,16 @@
 const assert = require("assert");
+const fs = require("fs-extra");
+const path = require("path");
+
+const uploadRoot = path.join(__dirname, "tmp-jarvis-intent-csv");
+process.env.JARVIS_UPLOAD_TMP_DIR = uploadRoot;
 
 const servicePath = require.resolve("../src/aiCommanderGhl/aiCommanderGhl.service");
 const ghlClientPath = require.resolve("../src/aiCommanderGhl/ghlClient");
 
 const ghlRequests = [];
 const plannedMessages = [];
+const csvSyncPlans = [];
 let contactReadMode = "success";
 let tagMode = "plain";
 
@@ -33,6 +39,31 @@ function mockContacts(count, extra = {}) {
     tags: tagMode === "potential" ? ["Potential Customer"] : ["Roofing"],
     ...extra,
   }));
+}
+
+async function writeRouterCsv() {
+  await fs.ensureDir(uploadRoot);
+  const fileName = "router-sample.csv";
+  const absolute = path.join(uploadRoot, fileName);
+  await fs.writeFile(
+    absolute,
+    [
+      "Customer Name,Phone,Email,Address,Service,Estimate Amount",
+      "John Roofer,6315551111,john@example.com,1 Roof St,Roofing,$1200",
+      "Sally Siding,,sally@example.com,2 Side Ave,Siding,$2200",
+    ].join("\n")
+  );
+  return {
+    uploadId: "router-upload-1",
+    originalName: fileName,
+    displayName: fileName,
+    mimeType: "text/csv",
+    extension: "csv",
+    size: (await fs.stat(absolute)).size,
+    storage: "local",
+    tempRef: `local:${fileName}`,
+    storageKey: fileName,
+  };
 }
 
 require.cache[ghlClientPath] = {
@@ -285,6 +316,30 @@ require.cache[servicePath] = {
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
       };
     },
+    createEstimateCsvSyncPlan: async ({ message, adminUserId, files }) => {
+      csvSyncPlans.push({ message, adminUserId, files });
+      return {
+        confirmationId: "csv-sync-confirmation",
+        summary:
+          "2 valid CSV contact rows will be checked against GHL. Existing contacts will receive missing roofing/siding tags. Missing contacts will only be reported, not created.",
+        exactPlan: ["Parse CSV", "Search GHL", "Tag existing contacts only"],
+        objectsAffected: ["2 CSV contact rows", "Existing GHL contacts only"],
+        messagesToSendOrCreate: [],
+        plannedApiActions: [
+          {
+            actionId: "sync_estimate_csv_with_ghl",
+            actionType: "sync_estimate_csv_with_ghl",
+            supported: true,
+            method: "INTERNAL",
+            endpoint: "jarvis://csv/sync-estimate-csv-with-ghl",
+          },
+        ],
+        riskLevel: "medium",
+        destructive: false,
+        requiresApproval: true,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    },
   },
 };
 
@@ -430,6 +485,45 @@ async function testCapabilitiesDiagnosticSanitizesFailures() {
   assert.doesNotMatch(text, /secret-admin-jwt|secret-api-key|Bearer\s+(?!\[REDACTED\])/i);
 }
 
+async function testCsvCountUsesUploadedFileNotGhl() {
+  resetReads();
+  const file = await writeRouterCsv();
+  const result = await askJarvis({
+    message: "How many contacts are in this file?",
+    adminUserId: "admin-1",
+    files: [file],
+    uploadBatchId: "batch-1",
+  });
+
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.totalRows, 2);
+  assert.equal(result.data.validContacts, 2);
+  assert.deepEqual(result.data.sampleHeaders.slice(0, 2), ["Customer Name", "Phone"]);
+  assert.equal(ghlRequests.length, 0);
+  assert.match(result.answer, /2 valid contact rows/i);
+}
+
+async function testCsvSyncCreatesApprovalPlan() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const beforeCsvPlans = csvSyncPlans.length;
+  const file = await writeRouterCsv();
+  const result = await askJarvis({
+    message: "Find these contacts in GHL and tag roofing/siding leads.",
+    adminUserId: "admin-1",
+    files: [file],
+    uploadBatchId: "batch-1",
+  });
+
+  assert.equal(result.intent, "write");
+  assert.equal(result.requiresApproval, true);
+  assert.equal(result.plan.confirmationId, "csv-sync-confirmation");
+  assert.equal(csvSyncPlans.length, beforeCsvPlans + 1);
+  assert.equal(csvSyncPlans.at(-1).files.length, 1);
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
 async function testLeadsByPipelineUsesOpportunityRead() {
   resetReads();
   const result = await askJarvis({
@@ -459,6 +553,22 @@ async function testAdviceRequest() {
   assert.equal(plannedMessages.length, 0);
 }
 
+async function testGeneralOutsideWorkspaceRequest() {
+  resetReads();
+  const beforeReads = ghlRequests.length;
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Write marketing copy for my website homepage.",
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "advice");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.answer, "This is outside my GHL workspace. Ask ChatGPT.");
+  assert.equal(ghlRequests.length, beforeReads);
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
 async function testWriteStillRequiresApproval() {
   resetReads();
   const result = await askJarvis({
@@ -475,18 +585,25 @@ async function testWriteStillRequiresApproval() {
 }
 
 async function run() {
-  await testReadContactCount();
-  await testContactCountTimeoutDoesNotThrow();
-  await testContactCountPartialResult();
-  await testContactUnavailableDoesNotClaimZero();
-  await testContactsConnectionDiagnostic();
-  await testPotentialCustomersAskForDefinition();
-  await testPotentialCustomersUsesConfiguredTag();
-  await testCapabilitiesDiagnosticSanitizesFailures();
-  await testLeadsByPipelineUsesOpportunityRead();
-  await testAdviceRequest();
-  await testWriteStillRequiresApproval();
-  console.log("Jarvis intent router tests passed");
+  try {
+    await testReadContactCount();
+    await testContactCountTimeoutDoesNotThrow();
+    await testContactCountPartialResult();
+    await testContactUnavailableDoesNotClaimZero();
+    await testContactsConnectionDiagnostic();
+    await testPotentialCustomersAskForDefinition();
+    await testPotentialCustomersUsesConfiguredTag();
+    await testCapabilitiesDiagnosticSanitizesFailures();
+    await testCsvCountUsesUploadedFileNotGhl();
+    await testCsvSyncCreatesApprovalPlan();
+    await testLeadsByPipelineUsesOpportunityRead();
+    await testAdviceRequest();
+    await testGeneralOutsideWorkspaceRequest();
+    await testWriteStillRequiresApproval();
+    console.log("Jarvis intent router tests passed");
+  } finally {
+    await fs.remove(uploadRoot);
+  }
 }
 
 run().catch((error) => {

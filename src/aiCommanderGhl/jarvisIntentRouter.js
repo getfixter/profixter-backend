@@ -1,6 +1,32 @@
-const { createPlan } = require("./aiCommanderGhl.service");
+const { createEstimateCsvSyncPlan, createPlan } = require("./aiCommanderGhl.service");
 const { cleanString } = require("./ghlActions");
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
+
+const OUTSIDE_GHL_WORKSPACE_ANSWER = "This is outside my GHL workspace. Ask ChatGPT.";
+
+function hasCsvFiles(context = {}) {
+  return (Array.isArray(context.files) ? context.files : []).some((file) => {
+    const extension = cleanString(file?.extension || file?.originalName).toLowerCase();
+    const mimeType = cleanString(file?.mimeType).toLowerCase();
+    return extension.endsWith(".csv") || extension === "csv" || mimeType.includes("csv");
+  });
+}
+
+function hasGhlWorkspaceSignal(message, context = {}) {
+  return (
+    /\b(ghl|gohighlevel|highlevel|account|contacts?|customers?|leads?|campaigns?|tasks?|notes?|tags?|opportunit|pipelines?|stages?|conversations?|messages?|sms|email|workflows?|calendars?|appointments?|users?|team|custom fields?|forms?|surveys?|locations?)\b/i.test(
+      message
+    ) || hasCsvFiles(context)
+  );
+}
+
+function looksOutsideGhlWorkspace(message, context = {}) {
+  return (
+    /\b(strategy|business|copy|marketing|code|programming|website|landing page|seo|blog|brand|logo|ad creative|ad copy)\b/i.test(
+      message
+    ) && !hasGhlWorkspaceSignal(message, context)
+  );
+}
 
 function isQuestion(message) {
   return /\?|\b(how|what|which|why|when|where|who|should|can you tell|do we have)\b/i.test(
@@ -14,11 +40,11 @@ function looksLikeAdvice(message) {
   );
 }
 
-function looksLikeRead(message) {
+function looksLikeRead(message, context = {}) {
   const readSubject =
-    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?|tags?|opportunit|pipelines?|stages?|conversations?|messages?|workflows?|calendars?|appointments?|users?|team|custom fields?|campaigns?|forms?|surveys?|locations?|account)\b/i.test(
+    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?|rows?|files?|csv|tags?|opportunit|pipelines?|stages?|conversations?|messages?|workflows?|calendars?|appointments?|users?|team|custom fields?|campaigns?|forms?|surveys?|locations?|account)\b/i.test(
       message
-    );
+    ) || hasCsvFiles(context);
   const informationRequest =
     /\b(how many|count|total|number of|show me|show all|list|what .*exist|what workflows|what tags|what pipelines|what .*access|access do you have|capabilities|capability|scan|summarize|summary|overview)\b/i.test(
       message
@@ -54,7 +80,16 @@ function sanitizedReadFailure(error, action) {
   };
 }
 
-function looksLikeWrite(message) {
+function looksLikeCsvSync(message, context = {}) {
+  return (
+    hasCsvFiles(context) &&
+    /\b(sync|tag|find|match|check|process|update)\b/i.test(message) &&
+    /\b(ghl|gohighlevel|highlevel|contacts?|leads?|roofing|siding|tags?)\b/i.test(message)
+  );
+}
+
+function looksLikeWrite(message, context = {}) {
+  if (looksLikeCsvSync(message, context)) return true;
   if (looksLikeAdvice(message) && isQuestion(message)) return false;
 
   return (
@@ -64,7 +99,7 @@ function looksLikeWrite(message) {
   );
 }
 
-function classifyIntent(message) {
+function classifyIntent(message, context = {}) {
   const clean = cleanString(message);
   if (!clean) {
     const error = new Error("message is required");
@@ -72,14 +107,18 @@ function classifyIntent(message) {
     throw error;
   }
 
-  if (looksLikeRead(clean)) return "read";
-  if (looksLikeWrite(clean)) return "write";
+  if (looksOutsideGhlWorkspace(clean, context)) return "advice";
+  if (looksLikeCsvSync(clean, context)) return "write";
+  if (looksLikeRead(clean, context)) return "read";
+  if (looksLikeWrite(clean, context)) return "write";
   if (looksLikeAdvice(clean) || isQuestion(clean)) return "advice";
   return "write";
 }
 
 function adviceAnswerFor(message) {
   const text = cleanString(message).toLowerCase();
+
+  if (looksOutsideGhlWorkspace(text)) return OUTSIDE_GHL_WORKSPACE_ANSWER;
 
   if (/\bcampaign\b/.test(text)) {
     return [
@@ -126,12 +165,24 @@ function logJarvisRequest({ adminUserId, message, intent, readAction, status }) 
   });
 }
 
-async function askJarvis({ message, adminUserId }) {
+async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" }) {
   const clean = cleanString(message);
-  const intent = classifyIntent(clean);
+  const context = { files, uploadBatchId };
+  if (looksOutsideGhlWorkspace(clean, context)) {
+    logJarvisRequest({ adminUserId, message: clean, intent: "advice", status: "outside_workspace" });
+    return {
+      intent: "advice",
+      answer: OUTSIDE_GHL_WORKSPACE_ANSWER,
+      requiresApproval: false,
+    };
+  }
+
+  const intent = classifyIntent(clean, context);
 
   if (intent === "write") {
-    const plan = await createPlan({ message: clean, adminUserId });
+    const plan = looksLikeCsvSync(clean, context)
+      ? await createEstimateCsvSyncPlan({ message: clean, adminUserId, files, uploadBatchId })
+      : await createPlan({ message: clean, adminUserId });
     logJarvisRequest({ adminUserId, message: clean, intent, status: "planned" });
     return {
       intent: "write",
@@ -141,9 +192,9 @@ async function askJarvis({ message, adminUserId }) {
   }
 
   if (intent === "read") {
-    const readAction = resolveReadAction(clean);
+    const readAction = resolveReadAction(clean, context);
     try {
-      const result = await runReadAction(clean);
+      const result = await runReadAction(clean, context);
       logJarvisRequest({
         adminUserId,
         message: clean,
@@ -180,6 +231,10 @@ module.exports = {
   adviceAnswerFor,
   askJarvis,
   classifyIntent,
+  hasGhlWorkspaceSignal,
   looksLikeRead,
+  looksLikeCsvSync,
   looksLikeWrite,
+  looksOutsideGhlWorkspace,
+  OUTSIDE_GHL_WORKSPACE_ANSWER,
 };

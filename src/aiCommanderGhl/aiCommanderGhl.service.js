@@ -1,13 +1,17 @@
 const crypto = require("crypto");
 
 const AiCommanderGhlAudit = require("./aiCommanderGhl.audit.model");
+const { executeGhlRequest } = require("./ghlUniversalExecutor");
 const { generateGhlPlan } = require("./ghlPlanner");
+const { countCsvContacts } = require("./jarvisCsvProcessor");
+const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
 const {
   UNSUPPORTED_MESSAGE,
   cleanString,
   executeAction,
   getActionDefinition,
   isSupportedAction,
+  parseJsonObjectText,
   plannedCallForAction,
   riskMax,
 } = require("./ghlActions");
@@ -59,10 +63,17 @@ const DEFAULT_PAYLOAD = Object.freeze({
   endTime: "",
   appointmentTitle: "",
   appointmentStatus: "",
+  universalMethod: "",
+  universalPath: "",
+  universalQueryJson: "",
+  universalBodyJson: "",
+  universalReason: "",
+  confirmationPhrase: "",
   tags: [],
   customFields: [],
   stages: [],
   completed: false,
+  dryRun: false,
   useOpportunityProbability: false,
   monetaryValue: 0,
 });
@@ -87,6 +98,10 @@ function assertConfigured() {
   if (!String(process.env.OPENAI_API_KEY || "").trim()) {
     throw errorWithStatus("Missing OPENAI_API_KEY", 500);
   }
+  assertGhlConfigured();
+}
+
+function assertGhlConfigured() {
   if (!String(process.env.GHL_AI_COMMANDER_TOKEN || "").trim()) {
     throw errorWithStatus("Missing GHL_AI_COMMANDER_TOKEN", 500);
   }
@@ -133,6 +148,7 @@ function normalizeAction(rawAction, index) {
         ? rawAction.payload.stages
         : [],
       completed: rawAction?.payload?.completed === true,
+      dryRun: rawAction?.payload?.dryRun === true,
       useOpportunityProbability:
         rawAction?.payload?.useOpportunityProbability === true,
       monetaryValue: Number(rawAction?.payload?.monetaryValue || 0),
@@ -284,6 +300,156 @@ async function createPlan({ message, adminUserId }) {
   return publicPlan;
 }
 
+async function createEstimateCsvSyncPlan({ message, adminUserId, files, uploadBatchId }) {
+  assertCommanderEnabled();
+  assertGhlConfigured();
+  await markExpiredPlans();
+
+  const originalMessage = cleanString(message);
+  if (!originalMessage) {
+    throw errorWithStatus("message is required", 400);
+  }
+
+  const csvSummary = await countCsvContacts({ files, uploadBatchId });
+  if (!csvSummary.validContacts) {
+    throw errorWithStatus("The attached CSV does not contain valid contact rows.", 400);
+  }
+
+  const confirmationId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + PLAN_TTL_MS);
+  const actions = [
+    normalizeAction(
+      {
+        actionId: "sync_estimate_csv_with_ghl",
+        actionType: "sync_estimate_csv_with_ghl",
+        supported: true,
+        riskLevel: "medium",
+        description:
+          "Find uploaded estimate CSV contacts in GHL and add missing roofing/siding tags to existing contacts only.",
+        target: {},
+        payload: {
+          files,
+          uploadBatchId,
+          totalRows: csvSummary.totalRows,
+          validContacts: csvSummary.validContacts,
+          createMissingContacts: false,
+        },
+      },
+      0
+    ),
+  ];
+  const modelPlan = {
+    summary: `${csvSummary.validContacts.toLocaleString("en-US")} valid CSV contact rows will be checked against GHL. Existing matching contacts will receive missing roofing/siding tags. Missing contacts will only be reported, not created.`,
+    exactPlan: [
+      "Parse the uploaded CSV on the backend.",
+      "Search GHL by phone first, then email, then name plus address.",
+      "For existing contacts, add missing Roofing/Siding, sal-roofing, and sal-siding tags when indicated by the CSV row.",
+      "Report missing contacts, multiple matches, per-row errors, and totals.",
+      "Do not create new contacts from this CSV.",
+    ],
+    objectsAffected: [
+      `${csvSummary.validContacts.toLocaleString("en-US")} CSV contact rows`,
+      "Existing matching GHL contacts only",
+      "Missing contacts are report-only",
+    ],
+    messagesToSendOrCreate: [],
+    riskLevel: "medium",
+    destructive: false,
+  };
+  const publicPlan = publicPlanFromModel({
+    modelPlan,
+    actions,
+    unsupportedActions: [],
+    confirmationId,
+    expiresAt,
+  });
+
+  await AiCommanderGhlAudit.create({
+    adminUserId,
+    originalMessage,
+    generatedPlan: {
+      modelPlan,
+      normalizedActions: actions,
+      publicPlan,
+      csvSummary,
+    },
+    confirmationId,
+    status: "planned",
+    exactApiCallsPlanned: publicPlan.plannedApiActions,
+    expiresAt,
+  });
+
+  return publicPlan;
+}
+
+async function executeInternalAction(action, executionContext = {}) {
+  if (action.actionType === "sync_estimate_csv_with_ghl") {
+    const report = await syncEstimateCsvWithGhl({
+      files: action.payload?.files || [],
+      uploadBatchId: action.payload?.uploadBatchId,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "INTERNAL",
+        path: "jarvis://csv/sync-estimate-csv-with-ghl",
+        body: {
+          fileCount: Array.isArray(action.payload?.files) ? action.payload.files.length : 0,
+          createMissingContacts: false,
+        },
+      },
+      response: report,
+      status: "executed",
+      rateLimit: {},
+      extracted: { report },
+    };
+  }
+
+  if (action.actionType === "universal_ghl_request") {
+    const payload = action.payload || {};
+    const query = parseJsonObjectText(payload.universalQueryJson, "universalQueryJson");
+    const body = parseJsonObjectText(payload.universalBodyJson, "universalBodyJson");
+    const result = await executeGhlRequest({
+      method: payload.universalMethod,
+      path: payload.universalPath,
+      query,
+      body,
+      reason: payload.universalReason,
+      dryRun: payload.dryRun === true,
+      approved: true,
+      confirmationPhrase: payload.confirmationPhrase,
+      adminUserId: executionContext.adminUserId,
+      userRequest: executionContext.userRequest,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "UNIVERSAL",
+        path: "jarvis://ghl/universal",
+        body: {
+          method: result.method,
+          path: result.path,
+          query: result.query || {},
+          body: result.body || null,
+          dryRun: result.dryRun === true,
+          reason: cleanString(payload.universalReason),
+          confirmationPhrase: cleanString(payload.confirmationPhrase)
+            ? "[PROVIDED]"
+            : "",
+        },
+      },
+      response: result,
+      status: result.status || (result.dryRun ? "dry_run" : "executed"),
+      rateLimit: result.rateLimit || {},
+      extracted: { report: result },
+    };
+  }
+
+  return null;
+}
+
 function loadActionsFromAudit(audit) {
   const actions = audit?.generatedPlan?.normalizedActions;
   return Array.isArray(actions) ? actions : [];
@@ -299,7 +465,7 @@ function hasUnsupportedActions(audit, actions) {
 
 async function executePlan({ confirmationId }) {
   assertCommanderEnabled();
-  assertConfigured();
+  assertGhlConfigured();
   await markExpiredPlans();
 
   const cleanConfirmationId = cleanString(confirmationId);
@@ -349,11 +515,16 @@ async function executePlan({ confirmationId }) {
   const results = [];
   const ghlResponses = [];
   const errors = [];
-  const executionContext = { actionResults: {} };
+  const executionContext = {
+    actionResults: {},
+    adminUserId: audit.adminUserId,
+    userRequest: audit.originalMessage,
+  };
 
   for (const action of executableActions) {
     try {
-      const result = await executeAction(action, executionContext);
+      const result = (await executeInternalAction(action, executionContext)) ||
+        (await executeAction(action, executionContext));
       executedActions.push({
         actionId: result.actionId,
         actionType: result.actionType,
@@ -403,6 +574,7 @@ async function executePlan({ confirmationId }) {
 }
 
 module.exports = {
+  createEstimateCsvSyncPlan,
   createPlan,
   executePlan,
 };
