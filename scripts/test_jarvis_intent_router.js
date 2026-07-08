@@ -195,15 +195,20 @@ require.cache[ghlClientPath] = {
         };
       }
       if (input.method === "GET" && input.path === "/opportunities/search") {
+        const staleDate = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
         return {
           status: 200,
           data: {
             opportunities: [
               {
                 id: "opp-1",
+                title: "Roof replacement estimate",
+                status: "open",
                 pipelineId: "pipeline-1",
                 pipelineStageId: "stage-1",
                 contactId: "contact-1",
+                updatedAt: staleDate,
+                monetaryValue: 12000,
               },
             ],
             total: 1,
@@ -537,6 +542,11 @@ async function testHealthCheckUsesInternalCapability() {
   assert.equal(result.data.internalCapability, "health_check");
   assert.equal(result.data.healthCheckEndpoint, "GET /api/admin/jarvis/ghl-control/health");
   assert.equal(result.data.controlCenter.title, "Jarvis GHL Health Check");
+  assert.ok(result.data.businessAdvisorReport);
+  assert.match(result.answer, /Critical Problems:/);
+  assert.match(result.answer, /Revenue Opportunities:/);
+  assert.match(result.answer, /AI Automation Opportunities:/);
+  assert.match(result.answer, /If I were running your business today, here are the three things I'd do first\./);
   assert.ok(result.data.working.some((item) => item.key === "contacts"));
   assert.ok(result.data.failing.some((item) => item.key === "campaigns"));
   assert.equal(plannedMessages.length, beforePlans);
@@ -570,6 +580,19 @@ async function testAccountAuditUsesInternalModules() {
   assert.ok(moduleKeys.includes("custom_values"));
   assert.ok(result.data.modules.find((item) => item.key === "campaigns").status === "failed");
   assert.ok(result.data.warnings.some((item) => item.module === "campaigns"));
+  assert.ok(result.data.businessAdvisorReport);
+  assert.match(result.answer, /Critical Problems:/);
+  assert.match(result.answer, /Revenue Opportunities:/);
+  assert.match(result.answer, /AI Automation Opportunities:/);
+  assert.match(result.answer, /Sales Opportunities:/);
+  assert.match(result.answer, /Marketing Opportunities:/);
+  assert.match(result.answer, /Team Performance:/);
+  assert.match(result.answer, /Today's Priority Tasks:/);
+  assert.match(result.answer, /Estimated Revenue Impact:/);
+  assert.match(result.answer, /Recommended Next Actions:/);
+  assert.match(result.answer, /1 opportunities have had no visible activity for over 30 days/i);
+  assert.match(result.answer, /\$12,000/);
+  assert.match(result.answer, /If I were running your business today, here are the three things I'd do first\./);
   assert.equal(plannedMessages.length, beforePlans);
   assert.ok(ghlRequests.some((request) => request.path === "/contacts/search"));
   assert.ok(ghlRequests.some((request) => request.path === "/opportunities/pipelines"));

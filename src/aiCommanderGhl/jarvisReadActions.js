@@ -20,6 +20,7 @@ const CONTACT_COUNT_SCAN_PAGES = Math.max(
 );
 const OPPORTUNITY_PAGE_LIMIT = 100;
 const OPPORTUNITY_MAX_PAGES = Number(process.env.JARVIS_OPPORTUNITY_READ_MAX_PAGES || 10);
+const STALE_OPPORTUNITY_DAYS = Number(process.env.JARVIS_STALE_OPPORTUNITY_DAYS || 30);
 const CONVERSATION_PAGE_LIMIT = 100;
 const CONTACT_SEARCH_ENDPOINT = "POST /contacts/search";
 const LEGACY_CONTACTS_ENDPOINT = "GET /contacts/";
@@ -466,6 +467,114 @@ async function readOpportunityPages({ maxPages = OPPORTUNITY_MAX_PAGES } = {}) {
   };
 }
 
+function firstDateMs(...values) {
+  for (const value of values) {
+    const timestamp = Date.parse(cleanString(value));
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return null;
+}
+
+function opportunityActivityDateMs(opportunity) {
+  return firstDateMs(
+    opportunity?.lastActivityAt,
+    opportunity?.lastActivityDate,
+    opportunity?.lastStatusChangeAt,
+    opportunity?.dateUpdated,
+    opportunity?.updatedAt,
+    opportunity?.lastUpdatedAt,
+    opportunity?.modifiedAt,
+    opportunity?.createdAt,
+    opportunity?.dateAdded
+  );
+}
+
+function opportunityValue(opportunity) {
+  return firstNumber(
+    opportunity?.monetaryValue,
+    opportunity?.value,
+    opportunity?.amount,
+    opportunity?.opportunityValue,
+    opportunity?.estimatedValue,
+    opportunity?.price,
+    opportunity?.dealValue
+  );
+}
+
+function opportunityStatus(opportunity) {
+  return cleanString(opportunity?.status || opportunity?.state || opportunity?.pipelineStageStatus).toLowerCase();
+}
+
+function summarizeOpportunityBusinessSignals(opportunities, { stageNames, pipelineNames, stageToPipeline }) {
+  const now = Date.now();
+  const staleMs = Math.max(1, STALE_OPPORTUNITY_DAYS) * 24 * 60 * 60 * 1000;
+  const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
+  const signals = {
+    staleDays: Math.max(1, STALE_OPPORTUNITY_DAYS),
+    scanned: opportunities.length,
+    openCount: 0,
+    wonCount: 0,
+    lostCount: 0,
+    stale30Days: 0,
+    stale60Days: 0,
+    missingActivityDateCount: 0,
+    valueTotal: 0,
+    staleValue: 0,
+    missingValueCount: 0,
+    valueAvailable: false,
+    staleSamples: [],
+  };
+
+  for (const opportunity of opportunities) {
+    const status = opportunityStatus(opportunity);
+    if (/\bwon\b/.test(status)) signals.wonCount += 1;
+    else if (/\blost\b/.test(status)) signals.lostCount += 1;
+    else signals.openCount += 1;
+
+    const value = opportunityValue(opportunity);
+    if (Number.isFinite(value) && value > 0) {
+      signals.valueAvailable = true;
+      signals.valueTotal += value;
+    } else {
+      signals.missingValueCount += 1;
+    }
+
+    const activityMs = opportunityActivityDateMs(opportunity);
+    if (!activityMs) {
+      signals.missingActivityDateCount += 1;
+      continue;
+    }
+
+    const ageMs = Math.max(0, now - activityMs);
+    const stale = ageMs >= staleMs;
+    if (stale) {
+      signals.stale30Days += 1;
+      if (Number.isFinite(value) && value > 0) signals.staleValue += value;
+      if (signals.staleSamples.length < 10) {
+        const stageId = cleanString(
+          opportunity?.pipelineStageId || opportunity?.stageId || opportunity?.pipeline_stage_id
+        );
+        const pipelineId = cleanString(
+          opportunity?.pipelineId || opportunity?.pipeline_id || stageToPipeline.get(stageId)
+        );
+        signals.staleSamples.push({
+          id: cleanString(opportunity?.id || opportunity?._id),
+          title: cleanString(opportunity?.name || opportunity?.title),
+          stage: stageNames.get(stageId) || stageId || "Unknown stage",
+          pipeline: pipelineNames.get(pipelineId) || pipelineId || "Unknown pipeline",
+          daysSinceActivity: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
+          value: Number.isFinite(value) && value > 0 ? value : null,
+        });
+      }
+    }
+    if (ageMs >= sixtyDaysMs) signals.stale60Days += 1;
+  }
+
+  signals.valueTotal = Math.round(signals.valueTotal * 100) / 100;
+  signals.staleValue = Math.round(signals.staleValue * 100) / 100;
+  return signals;
+}
+
 async function countOpportunities() {
   const { opportunities, knownTotal, limited, endpointUsed } = await readOpportunityPages();
 
@@ -501,6 +610,11 @@ async function countOpportunities() {
     byPipeline[pipelineKey] = (byPipeline[pipelineKey] || 0) + 1;
   }
 
+  const businessSignals = summarizeOpportunityBusinessSignals(opportunities, {
+    stageNames,
+    pipelineNames,
+    stageToPipeline,
+  });
   const total = knownTotal ?? opportunities.length;
   return {
     intent: "read",
@@ -513,6 +627,7 @@ async function countOpportunities() {
       uniqueContactsWithOpportunities: uniqueContactIds.size || null,
       byPipeline,
       byStage,
+      businessSignals,
       limited,
       endpointUsed,
       exactCountAvailable: knownTotal !== null || !limited,

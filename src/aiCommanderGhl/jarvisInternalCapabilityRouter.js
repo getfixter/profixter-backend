@@ -1,6 +1,10 @@
 const { cleanString } = require("./ghlActions");
 const { redact } = require("./ghlClient");
 const { classifyFailure } = require("./ghlReadCapabilities");
+const {
+  buildBusinessAdvisorReport,
+  formatBusinessAdvisorAnswer,
+} = require("./jarvisBusinessAdvisor");
 const { buildGhlControlCenterReport } = require("./ghlOperationsControlLayer");
 const {
   countContacts,
@@ -227,18 +231,6 @@ async function runAccountAuditModules() {
   return [...primary, ...settings];
 }
 
-function compactModuleLine(module) {
-  if (module.status !== "completed") {
-    return `${module.label} failed (${module.error?.type || "module_failed"})`;
-  }
-
-  const stats = module.stats || {};
-  if (Number.isFinite(Number(stats.total))) return `${module.label}: ${formatNumber(stats.total)}`;
-  if (Number.isFinite(Number(stats.waiting))) return `${module.label}: ${formatNumber(stats.waiting)} waiting`;
-  if (Number.isFinite(Number(stats.returned))) return `${module.label}: ${formatNumber(stats.returned)} returned`;
-  return `${module.label}: completed`;
-}
-
 function buildCombinedReport({ action, label, modules, extra = {} }) {
   const completed = modules.filter((module) => module.status === "completed");
   const failed = modules.filter((module) => module.status !== "completed");
@@ -248,16 +240,26 @@ function buildCombinedReport({ action, label, modules, extra = {} }) {
     reason: module.error?.type || "module_failed",
     message: module.error?.message || "The internal module failed.",
   }));
-
-  const answer = [
-    `I ran the ${label} internal capability.`,
+  const businessAdvisorReport = buildBusinessAdvisorReport({
+    action,
+    label,
+    modules,
+    warnings,
+  });
+  const technicalSummary = [
     completed.length
-      ? `Completed ${formatNumber(completed.length)} modules: ${completed.slice(0, 8).map(compactModuleLine).join("; ")}${completed.length > 8 ? "; and more" : ""}.`
-      : "No modules completed successfully.",
+      ? `Completed ${formatNumber(completed.length)} internal module${completed.length === 1 ? "" : "s"}.`
+      : "No internal modules completed successfully.",
     failed.length
       ? `Needs attention: ${failed.map((module) => `${module.label} (${module.error?.type || "module_failed"})`).join("; ")}.`
-      : "All modules completed without internal errors.",
+      : "All internal modules completed without internal errors.",
   ].join(" ");
+  const answer = [
+    `I ran the ${label} internal capability and analyzed it as a business operations review.`,
+    technicalSummary,
+    "",
+    formatBusinessAdvisorAnswer(businessAdvisorReport),
+  ].join("\n");
 
   return {
     intent: "read",
@@ -270,6 +272,7 @@ function buildCombinedReport({ action, label, modules, extra = {} }) {
       completedModules: completed.length,
       failedModules: failed.length,
       warnings,
+      businessAdvisorReport,
       ...extra,
     },
     sources: [...new Set(modules.flatMap((module) => module.sources || []))],
@@ -278,25 +281,31 @@ function buildCombinedReport({ action, label, modules, extra = {} }) {
 }
 
 function healthAnswer(report) {
+  const businessAdvisorReport = buildBusinessAdvisorReport({
+    action: "health_check",
+    label: "GHL Health Check",
+    healthReport: report,
+  });
   const summary = report?.summary || {};
   const failing = Number(summary.failingCapabilities || 0);
-  return [
-    "I ran the GHL Health Check internal capability.",
-    `Working capabilities: ${formatNumber(summary.workingCapabilities || 0)}.`,
-    `Needs attention: ${formatNumber(failing)}.`,
-    `Registry coverage: ${formatNumber(summary.registryEnabledEndpoints || 0)} enabled endpoints.`,
-    failing
-      ? "I included the failing modules and sanitized reasons in the report."
-      : "I did not find failing read capabilities in this health check.",
-  ].join(" ");
+  return {
+    answer: [
+      "I ran the GHL Health Check internal capability and analyzed it as a business operations review.",
+      `Working capabilities: ${formatNumber(summary.workingCapabilities || 0)}. Needs attention: ${formatNumber(failing)}. Registry coverage: ${formatNumber(summary.registryEnabledEndpoints || 0)} enabled endpoints.`,
+      "",
+      formatBusinessAdvisorAnswer(businessAdvisorReport),
+    ].join("\n"),
+    businessAdvisorReport,
+  };
 }
 
 async function runHealthCheck(context = {}) {
   try {
     const report = await buildGhlControlCenterReport({ adminUserId: context.adminUserId });
+    const advisor = healthAnswer(report);
     return {
       intent: "read",
-      answer: healthAnswer(report),
+      answer: advisor.answer,
       data: {
         internalCapability: "health_check",
         title: "GHL Health Check",
@@ -309,6 +318,7 @@ async function runHealthCheck(context = {}) {
         capabilities: report.capabilities?.all || [],
         summary: report.summary,
         recommendations: report.recommendations || [],
+        businessAdvisorReport: advisor.businessAdvisorReport,
       },
       sources: ["Jarvis GHL Control Center", "GHL capability audit"],
       requiresApproval: false,
