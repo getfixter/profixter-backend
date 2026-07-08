@@ -162,11 +162,51 @@ async function testAuditEstimateCsvAgainstGhlDoesNotMutate() {
   assert.ok(!ghlRequests.some((request) => /\/tags$/.test(request.path)));
 }
 
+async function testSyncResumeSkipsCompletedRowsAndPersistsEachRemainingRow() {
+  ghlRequests.length = 0;
+  const saves = [];
+  const file = await writeSampleCsv();
+  const report = await syncEstimateCsvWithGhl({
+    files: [file],
+    approved: true,
+    completedIndexes: [0],
+    initialReport: {
+      totalRows: 4,
+      validContacts: 3,
+      processedRows: 3,
+      foundInGhl: 1,
+      notFoundInGhl: 0,
+      alreadyTagged: 0,
+      newlyTagged: 1,
+      multipleMatches: 0,
+      errors: [],
+      missingContacts: [],
+      files: [],
+      limited: false,
+      limit: 5000,
+      createdContacts: 0,
+    },
+    onRowComplete: (state) => saves.push(state),
+  });
+
+  assert.equal(report.foundInGhl, 2);
+  assert.equal(report.notFoundInGhl, 1);
+  assert.equal(report.newlyTagged, 1);
+  assert.equal(report.alreadyTagged, 1);
+  assert.equal(saves.length, 2);
+  assert.ok(saves.at(-1).completedIndexes.includes(0));
+  assert.ok(saves.at(-1).completedIndexes.includes(1));
+  assert.ok(saves.at(-1).completedIndexes.includes(2));
+  assert.ok(!ghlRequests.some((request) => String(request.body?.query || "").includes("6315551111")));
+  assert.ok(!ghlRequests.some((request) => request.path === "/contacts/contact-1/tags"));
+}
+
 async function run() {
   try {
     await testCountCsvContacts();
     await testAuditEstimateCsvAgainstGhlDoesNotMutate();
     await testSyncEstimateCsvWithGhl();
+    await testSyncResumeSkipsCompletedRowsAndPersistsEachRemainingRow();
     console.log("Jarvis CSV processing tests passed");
   } finally {
     await fs.remove(uploadRoot);

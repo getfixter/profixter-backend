@@ -9,7 +9,7 @@ const {
 } = require("./ghlEndpointRegistry");
 
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 300000;
 const DEFAULT_RETRIES = 2;
 
 function cleanString(value) {
@@ -42,7 +42,7 @@ function getRetryCount() {
 
 function getTimeoutMs() {
   const timeoutMs = Number(process.env.JARVIS_GHL_UNIVERSAL_TIMEOUT_MS);
-  if (Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 60000) {
+  if (Number.isFinite(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 300000) {
     return timeoutMs;
   }
   return DEFAULT_TIMEOUT_MS;

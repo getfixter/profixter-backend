@@ -13,7 +13,7 @@ const AiCommanderGhlAuditSchema = new mongoose.Schema(
     confirmationId: { type: String, required: true, unique: true, index: true },
     status: {
       type: String,
-      enum: ["planned", "executed", "failed", "expired"],
+      enum: ["planned", "running", "executed", "failed", "expired"],
       default: "planned",
       index: true,
     },

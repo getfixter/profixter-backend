@@ -3,6 +3,12 @@ const crypto = require("crypto");
 const AiCommanderGhlAudit = require("./aiCommanderGhl.audit.model");
 const { executeGhlRequest } = require("./ghlUniversalExecutor");
 const { executeWorkflow } = require("./jarvisWorkflowExecutor");
+const {
+  createWorkflowJobForAction,
+  executionResponseFromJob,
+  getWorkflowJobExecutionResponse,
+  isBackgroundWorkflowAction,
+} = require("./jarvisWorkflowJobRunner");
 const { generateGhlPlan } = require("./ghlPlanner");
 const { countCsvContacts } = require("./jarvisCsvProcessor");
 const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
@@ -552,6 +558,15 @@ async function executePlan({ confirmationId }) {
     };
   }
 
+  const backgroundWorkflowAction = executableActions.find(isBackgroundWorkflowAction);
+  if (backgroundWorkflowAction) {
+    const job = await createWorkflowJobForAction({
+      audit,
+      action: backgroundWorkflowAction,
+    });
+    return executionResponseFromJob(job);
+  }
+
   const executedActions = [];
   const results = [];
   const ghlResponses = [];
@@ -618,4 +633,5 @@ module.exports = {
   createEstimateCsvSyncPlan,
   createPlan,
   executePlan,
+  getWorkflowJobExecutionResponse,
 };

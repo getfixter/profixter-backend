@@ -1,4 +1,8 @@
-const { createPlan, executePlan } = require("./aiCommanderGhl.service");
+const {
+  createPlan,
+  executePlan,
+  getWorkflowJobExecutionResponse,
+} = require("./aiCommanderGhl.service");
 
 function statusForError(error) {
   return Number(error?.statusCode || error?.status || 500);
@@ -64,7 +68,26 @@ async function execute(req, res) {
   }
 }
 
+async function workflowJob(req, res) {
+  try {
+    const result = await getWorkflowJobExecutionResponse({
+      jobId: req.params.jobId,
+      adminUserId: req.user.id,
+    });
+    return res.json(result);
+  } catch (error) {
+    logError("workflow job", error, req);
+    return res.status(statusForError(error)).json({
+      status: "failed",
+      executedActions: [],
+      results: [],
+      errors: [error?.message || "Failed to read workflow job"],
+    });
+  }
+}
+
 module.exports = {
   execute,
   plan,
+  workflowJob,
 };

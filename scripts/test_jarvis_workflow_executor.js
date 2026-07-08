@@ -29,6 +29,10 @@ Module._load = function loadWithMockedFetch(request, parent, isMain) {
 };
 
 const { executeWorkflow } = require("../src/aiCommanderGhl/jarvisWorkflowExecutor");
+const {
+  executionResponseFromJob,
+  isBackgroundWorkflowAction,
+} = require("../src/aiCommanderGhl/jarvisWorkflowJobRunner");
 
 async function quiet(fn) {
   const originalInfo = console.info;
@@ -126,10 +130,36 @@ async function testLoopContinueOnError() {
   assert.match(result.errors[0].message, /row failed/);
 }
 
+function testWorkflowJobExecutionResponseShape() {
+  assert.equal(isBackgroundWorkflowAction({ actionType: "sync_estimate_csv_with_ghl" }), true);
+  assert.equal(isBackgroundWorkflowAction({ actionType: "create_contact" }), false);
+
+  const response = executionResponseFromJob({
+    jobId: "wf_test",
+    name: "csv_ghl_tag_sync",
+    actionType: "sync_estimate_csv_with_ghl",
+    status: "running",
+    processedItems: 50,
+    totalItems: 462,
+    percent: 11,
+    currentMessage: "Processing 50 / 462...",
+    progressEvents: [{ message: "Processing 50 / 462..." }],
+    payload: { actionId: "sync_estimate_csv_with_ghl" },
+    errors: [],
+  });
+
+  assert.equal(response.status, "running");
+  assert.equal(response.jobId, "wf_test");
+  assert.equal(response.workflowJob.progress.processed, 50);
+  assert.equal(response.workflowJob.progress.total, 462);
+  assert.equal(response.workflowJob.progress.percent, 11);
+}
+
 async function run() {
   await quiet(async () => {
     await testWorkflowPrimitivesAndApiCall();
     await testLoopContinueOnError();
+    testWorkflowJobExecutionResponseShape();
   });
   console.log("Jarvis workflow executor tests passed");
 }

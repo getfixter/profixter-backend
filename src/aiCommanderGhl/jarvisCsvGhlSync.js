@@ -6,6 +6,10 @@ const { parseCsvContext, normalizePhone } = require("./jarvisCsvProcessor");
 const SEARCH_PAGE_LIMIT = Number(process.env.JARVIS_CSV_GHL_SEARCH_LIMIT || 10);
 const SYNC_MAX_ROWS = Number(process.env.JARVIS_CSV_SYNC_MAX_ROWS || 5000);
 const MISSING_PREVIEW_LIMIT = Number(process.env.JARVIS_CSV_MISSING_PREVIEW_LIMIT || 25);
+const PROGRESS_EVERY = Math.max(
+  1,
+  Number(process.env.JARVIS_WORKFLOW_PROGRESS_EVERY || 50)
+);
 
 function cleanString(value) {
   return String(value ?? "").trim();
@@ -90,6 +94,28 @@ function sanitizeError(error) {
     message: error?.message || String(error || "GHL CSV workflow failed"),
     response: error?.response || null,
   });
+}
+
+function workflowConcurrency() {
+  const value = Number(
+    process.env.JARVIS_WORKFLOW_CONCURRENCY ||
+      process.env.JARVIS_CSV_GHL_SYNC_CONCURRENCY ||
+      5
+  );
+  if (Number.isFinite(value) && value > 0) return Math.min(20, Math.floor(value));
+  return 5;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const currentIndex = index;
+      index += 1;
+      await worker(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
 }
 
 function responseData(result) {
@@ -200,7 +226,20 @@ function missingPreview(row, reason) {
   };
 }
 
-function initializeReport(parsedFiles, rowsToProcess, limited) {
+function initializeReport(parsedFiles, rowsToProcess, limited, initialReport = null) {
+  if (initialReport && typeof initialReport === "object") {
+    return {
+      ...initialReport,
+      processedRows: rowsToProcess.length,
+      limited,
+      limit: SYNC_MAX_ROWS,
+      errors: Array.isArray(initialReport.errors) ? initialReport.errors : [],
+      missingContacts: Array.isArray(initialReport.missingContacts)
+        ? initialReport.missingContacts
+        : [],
+    };
+  }
+
   return {
     totalRows: parsedFiles.reduce((total, file) => total + file.totalRows, 0),
     validContacts: parsedFiles.reduce((total, file) => total + file.validContacts, 0),
@@ -222,6 +261,10 @@ function initializeReport(parsedFiles, rowsToProcess, limited) {
     limit: SYNC_MAX_ROWS,
     createdContacts: 0,
   };
+}
+
+function shouldEmitRowProgress(done, total) {
+  return done === 1 || done === total || done % PROGRESS_EVERY === 0;
 }
 
 async function processCsvRow({ row, report, applyTags, helpers, options }) {
@@ -275,7 +318,12 @@ async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
   );
   const limited = rows.length > SYNC_MAX_ROWS;
   const rowsToProcess = rows.slice(0, SYNC_MAX_ROWS);
-  const report = initializeReport(parsedFiles, rowsToProcess, limited);
+  const completedIndexes = new Set(
+    Array.isArray(context.completedIndexes)
+      ? context.completedIndexes.map((value) => Number(value)).filter(Number.isFinite)
+      : []
+  );
+  const report = initializeReport(parsedFiles, rowsToProcess, limited, context.initialReport);
   const name = applyTags ? "csv_ghl_tag_sync" : "csv_ghl_audit";
   const approved = applyTags ? context.approved === true : false;
 
@@ -296,31 +344,51 @@ async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
         message: `${rowsToProcess.length.toLocaleString("en-US")} valid contacts ready.`,
       },
       {
-        type: "loop",
-        items: "$.rows",
-        itemVar: "row",
-        indexVar: "rowIndex",
-        progressEvery: 50,
-        progressMessage: "Searching contact ${rowIndexDisplay} / ${loopLength}...",
+        type: "transform",
         continueOnError: true,
-        steps: [
-          {
-            type: "transform",
-            continueOnError: true,
-            handler: async (helpers) =>
-              processCsvRow({
-                row: helpers.variables.row,
+        handler: async (helpers) => {
+          const pendingRows = rowsToProcess
+            .map((row, index) => ({ row, index }))
+            .filter((item) => !completedIndexes.has(item.index));
+          const total = rowsToProcess.length;
+          let completedCount = completedIndexes.size;
+
+          await mapWithConcurrency(pendingRows, workflowConcurrency(), async ({ row, index }) => {
+            await processCsvRow({
+              row,
+              report: helpers.variables.report,
+              applyTags,
+              helpers,
+              options: {
+                approved,
+                adminUserId: context.adminUserId,
+                userRequest: context.userRequest,
+              },
+            });
+
+            completedIndexes.add(index);
+            completedCount = completedIndexes.size;
+            const progressMessage = shouldEmitRowProgress(completedCount, total)
+              ? `Processing ${completedCount.toLocaleString("en-US")} / ${total.toLocaleString("en-US")}...`
+              : "";
+            if (progressMessage) await helpers.emitProgress(progressMessage, {
+              processed: completedCount,
+              total,
+            });
+            if (typeof context.onRowComplete === "function") {
+              await context.onRowComplete({
+                index,
+                row,
                 report: helpers.variables.report,
-                applyTags,
-                helpers,
-                options: {
-                  approved,
-                  adminUserId: context.adminUserId,
-                  userRequest: context.userRequest,
-                },
-              }),
-          },
-        ],
+                completedIndexes: [...completedIndexes].sort((a, b) => a - b),
+                processedItems: completedCount,
+                totalItems: total,
+                percent: total ? Math.round((completedCount / total) * 100) : 100,
+                message: progressMessage || `Processed ${completedCount} / ${total}`,
+              });
+            }
+          });
+        },
       },
       { type: "progress", message: applyTags ? "Applying tags complete." : "Audit complete." },
       { type: "progress", message: "Finished." },
