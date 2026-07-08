@@ -523,6 +523,92 @@ async function testCapabilitiesDiagnosticSanitizesFailures() {
   assert.doesNotMatch(text, /secret-admin-jwt|secret-api-key|Bearer\s+(?!\[REDACTED\])/i);
 }
 
+async function testHealthCheckUsesInternalCapability() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Run a complete GHL Health Check.",
+    adminUserId: "admin-1",
+  });
+
+  const text = JSON.stringify(result);
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.internalCapability, "health_check");
+  assert.equal(result.data.healthCheckEndpoint, "GET /api/admin/jarvis/ghl-control/health");
+  assert.equal(result.data.controlCenter.title, "Jarvis GHL Health Check");
+  assert.ok(result.data.working.some((item) => item.key === "contacts"));
+  assert.ok(result.data.failing.some((item) => item.key === "campaigns"));
+  assert.equal(plannedMessages.length, beforePlans);
+  assert.doesNotMatch(result.answer, /GHL rejected/i);
+  assert.doesNotMatch(text, /secret-admin-jwt|secret-api-key|Bearer\s+(?!\[REDACTED\])/i);
+}
+
+async function testAccountAuditUsesInternalModules() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Audit my GHL account.",
+    adminUserId: "admin-1",
+  });
+
+  const moduleKeys = result.data.modules.map((item) => item.key);
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.internalCapability, "account_audit");
+  assert.ok(moduleKeys.includes("contacts"));
+  assert.ok(moduleKeys.includes("tags"));
+  assert.ok(moduleKeys.includes("pipelines"));
+  assert.ok(moduleKeys.includes("opportunities"));
+  assert.ok(moduleKeys.includes("workflows"));
+  assert.ok(moduleKeys.includes("conversations"));
+  assert.ok(moduleKeys.includes("users"));
+  assert.ok(moduleKeys.includes("calendars"));
+  assert.ok(moduleKeys.includes("campaigns"));
+  assert.ok(moduleKeys.includes("location"));
+  assert.ok(moduleKeys.includes("custom_fields"));
+  assert.ok(moduleKeys.includes("custom_values"));
+  assert.ok(result.data.modules.find((item) => item.key === "campaigns").status === "failed");
+  assert.ok(result.data.warnings.some((item) => item.module === "campaigns"));
+  assert.equal(plannedMessages.length, beforePlans);
+  assert.ok(ghlRequests.some((request) => request.path === "/contacts/search"));
+  assert.ok(ghlRequests.some((request) => request.path === "/opportunities/pipelines"));
+  assert.doesNotMatch(result.answer, /GHL rejected/i);
+}
+
+async function testSetupReviewUsesInternalModules() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Review my GHL setup.",
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.internalCapability, "settings_review");
+  assert.ok(result.data.modules.some((item) => item.key === "location"));
+  assert.ok(result.data.modules.some((item) => item.key === "custom_fields"));
+  assert.ok(result.data.modules.some((item) => item.key === "custom_values"));
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
+async function testSpecificReviewDoesNotBecomeAccountAudit() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Review my GHL pipelines.",
+    adminUserId: "admin-1",
+  });
+
+  const moduleKeys = result.data.modules.map((item) => item.key);
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.internalCapability, "pipeline_review");
+  assert.deepEqual(moduleKeys.sort(), ["opportunities", "pipelines"].sort());
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
 async function testCsvCountUsesUploadedFileNotGhl() {
   resetReads();
   const file = await writeRouterCsv();
@@ -671,6 +757,10 @@ async function run() {
     await testPotentialCustomersAskForDefinition();
     await testPotentialCustomersUsesConfiguredTag();
     await testCapabilitiesDiagnosticSanitizesFailures();
+    await testHealthCheckUsesInternalCapability();
+    await testAccountAuditUsesInternalModules();
+    await testSetupReviewUsesInternalModules();
+    await testSpecificReviewDoesNotBecomeAccountAudit();
     await testCsvCountUsesUploadedFileNotGhl();
     await testCsvAuditComposesGhlSearchWorkflow();
     await testCsvSyncCreatesApprovalPlan();

@@ -4,6 +4,10 @@ const {
   createPlan,
 } = require("./aiCommanderGhl.service");
 const { cleanString } = require("./ghlActions");
+const {
+  resolveInternalCapability,
+  runInternalCapability,
+} = require("./jarvisInternalCapabilityRouter");
 const { looksLikeCampaignBuilderRequest } = require("./jarvisCampaignBuilder.service");
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
 
@@ -187,6 +191,26 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
     return {
       intent: "advice",
       answer: OUTSIDE_GHL_WORKSPACE_ANSWER,
+      requiresApproval: false,
+    };
+  }
+
+  const internalCapability = resolveInternalCapability(clean, context);
+  if (internalCapability) {
+    const result = await runInternalCapability({
+      capability: internalCapability,
+      context,
+    });
+    logJarvisRequest({
+      adminUserId,
+      message: clean,
+      intent: "read",
+      readAction: `internal:${internalCapability.action}`,
+      status: result?.data?.status === "partial" ? "partial" : "answered",
+    });
+    return {
+      ...result,
+      intent: "read",
       requiresApproval: false,
     };
   }
