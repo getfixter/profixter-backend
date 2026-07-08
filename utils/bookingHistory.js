@@ -6,6 +6,8 @@ const TRACKED_FIELDS = [
   ["service", "Service"],
   ["address", "Address"],
   ["note", "Notes"],
+  ["adminNote", "Internal admin notes"],
+  ["images", "Photos"],
   ["assignedFixterId", "Assigned Fixter"],
 ];
 
@@ -26,6 +28,10 @@ function readable(value, field, source = {}) {
       minute: "2-digit",
     }).format(date);
   }
+  if (field === "images") {
+    const count = Array.isArray(value) ? value.length : 0;
+    return `${count} photo${count === 1 ? "" : "s"}`;
+  }
   const text = String(value ?? "").trim();
   return text || (field === "note" ? "No notes" : "Not set");
 }
@@ -38,6 +44,8 @@ function snapshot(booking) {
     service: source.service,
     address: source.address,
     note: source.note,
+    adminNote: source.adminNote,
+    images: Array.isArray(source.images) ? source.images.map(String) : [],
     assignedFixterId: source.assignedFixterId
       ? String(source.assignedFixterId)
       : "",
@@ -50,10 +58,14 @@ function detectChanges(before, after) {
     const oldComparable =
       field === "date"
         ? new Date(before[field] || 0).getTime()
+        : field === "images"
+          ? JSON.stringify(before[field] || [])
         : String(before[field] ?? "");
     const newComparable =
       field === "date"
         ? new Date(after[field] || 0).getTime()
+        : field === "images"
+          ? JSON.stringify(after[field] || [])
         : String(after[field] ?? "");
     if (oldComparable === newComparable) return [];
     return [{
@@ -106,6 +118,12 @@ function actionForChanges(changes) {
     changes[0].oldValue === "No notes"
   ) {
     return ["note_added", "Note added"];
+  }
+  if (
+    fields.has("images") &&
+    changes.every((change) => change.field === "images" || change.field === "note")
+  ) {
+    return ["note_added", "Appointment details added"];
   }
   return ["booking_edited", "Booking edited"];
 }

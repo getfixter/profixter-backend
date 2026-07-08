@@ -649,6 +649,24 @@ function buildContactOwnerFailureReport(report, failure) {
   };
 }
 
+function downloadMetadata(download) {
+  const content = cleanString(download?.content);
+  return {
+    label: cleanString(download?.label),
+    filename: cleanString(download?.filename),
+    contentType: cleanString(download?.contentType),
+    contentBytes: content ? Buffer.byteLength(content, "utf8") : 0,
+  };
+}
+
+function auditSnapshotForDownload(report) {
+  const snapshot = {
+    ...report,
+    downloads: asArray(report?.downloads).map(downloadMetadata),
+  };
+  return redact(snapshot);
+}
+
 function updateReportSummary(report, { ownerName, tagName, executionMs }) {
   const stats = report.stats;
   const processed = Number(stats.processed || 0);
@@ -697,7 +715,7 @@ function updateReportSummary(report, { ownerName, tagName, executionMs }) {
       label: "Download Audit Report.json",
       filename: "Contact Owner Assignment Audit Report.json",
       contentType: "application/json",
-      content: JSON.stringify(redact(report), null, 2),
+      content: JSON.stringify(auditSnapshotForDownload(report), null, 2),
     },
   ];
 }

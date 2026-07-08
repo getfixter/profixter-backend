@@ -45,6 +45,16 @@ const {
   validateOneTimeTask,
 } = require("../utils/oneTimeVisitSettings");
 const {
+  uploadAppointmentPhotos,
+  storeAppointmentImages,
+} = require("../utils/bookingAttachments");
+const {
+  actorSnapshot,
+  appendPublicNote,
+  appendContentUpdate,
+  canCustomerAddAppointmentDetails,
+} = require("../utils/bookingContentUpdates");
+const {
   ensureVisitEntitlementIndexesOnce,
 } = require("../utils/visitEntitlementIndexSafety");
 
@@ -231,7 +241,7 @@ router.get("/", auth, async (req, res) => {
   try {
     const bookings = await Booking.find({ user: req.user.id })
       .select(
-        "-assignedFixterId -assignedFixterName -assignedFixterEmail -assignedFixterPosition -slotReservationId"
+        "-assignedFixterId -assignedFixterName -assignedFixterEmail -assignedFixterPosition -slotReservationId -adminNote -contentUpdates"
       )
       .sort({ date: 1 })
       .lean();
@@ -339,6 +349,98 @@ router.get("/next", auth, async (req, res) => {
 function buildAddressLineFromBooking(b) {
   return [b.address, b.city, b.state, b.zip].filter(Boolean).join(", ");
 }
+
+// Customers may only append missing appointment details before the visit window closes.
+router.post("/:id/add-details", auth, uploadAppointmentPhotos, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid booking id" });
+    }
+
+    const allowedBodyFields = new Set(["note"]);
+    const disallowedFields = Object.keys(req.body || {}).filter(
+      (key) => !allowedBodyFields.has(key)
+    );
+    if (disallowedFields.length) {
+      return res.status(400).json({
+        message: "You can only add new notes or photos.",
+      });
+    }
+
+    const booking = await Booking.findOne({ _id: id, user: req.user.id });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    const eligibility = canCustomerAddAppointmentDetails(booking);
+    if (!eligibility.allowed) {
+      return res.status(400).json({ message: eligibility.message });
+    }
+
+    const noteText = String(req.body?.note || "").trim();
+    const files = req.files || [];
+    if (!noteText && !files.length) {
+      return res.status(400).json({
+        message: "You can only add new notes or photos.",
+      });
+    }
+    if (noteText.length > 5000) {
+      return res.status(400).json({ message: "Appointment note is too long." });
+    }
+
+    const me = await User.findById(req.user.id).lean();
+    const actor = actorSnapshot(me, "customer");
+    const before = bookingSnapshot(booking);
+    const imageUpload = await storeAppointmentImages({
+      files,
+      bookingDate: booking.date,
+      bookingNumber: booking.bookingNumber,
+      source: "customer",
+    });
+
+    if (noteText) {
+      appendPublicNote(booking, noteText, {
+        source: "customer",
+        actorName: actor.actorName,
+      });
+    }
+    if (imageUpload.images.length) {
+      booking.images = (booking.images || []).concat(imageUpload.images);
+    }
+    appendContentUpdate(booking, {
+      actor,
+      source: "customer",
+      noteAdded: noteText,
+      imagesAdded: imageUpload.images,
+    });
+
+    await booking.save();
+    await logBookingChanges({
+      bookingId: booking._id,
+      before,
+      after: bookingSnapshot(booking),
+      actor,
+    });
+
+    const responseBooking = booking.toObject();
+    delete responseBooking.adminNote;
+    delete responseBooking.contentUpdates;
+    delete responseBooking.assignedFixterId;
+    delete responseBooking.assignedFixterName;
+    delete responseBooking.assignedFixterEmail;
+    delete responseBooking.assignedFixterPosition;
+    delete responseBooking.slotReservationId;
+
+    return res.json({
+      message: "Appointment details added.",
+      booking: responseBooking,
+    });
+  } catch (error) {
+    console.error("Customer appointment detail update failed:", error.message);
+    return res.status(error?.statusCode || 500).json({
+      message: error.message || "Failed to update appointment details.",
+    });
+  }
+});
 
 /* ---------- CANCEL/DELETE handler (shared) ---------- */
 async function cancelOrDelete(req, res) {

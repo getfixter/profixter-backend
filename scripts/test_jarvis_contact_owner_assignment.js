@@ -1,4 +1,5 @@
 const assert = require("assert");
+const { BSON } = require("bson");
 
 process.env.GHL_LOCATION_ID = "test-location";
 process.env.GHL_COMPANY_ID = "company-test";
@@ -121,7 +122,7 @@ async function apiCall(input) {
     };
   }
 
-  if (input.method === "PUT" && /^\/contacts\/contact-[13]$/.test(input.path)) {
+  if (input.method === "PUT" && /^\/contacts\/contact-\d+$/.test(input.path)) {
     assert.deepEqual(input.body, { assignedTo: "user-taras" });
     if (updateMode === "failFirst" && input.path === "/contacts/contact-1") {
       const error = new Error("GHL API request failed with 422");
@@ -224,6 +225,47 @@ async function testPrepareAndExecute() {
   assert.equal(progress.at(-1).percent, 100);
 }
 
+async function testProgressReportDoesNotRecursivelyGrow() {
+  requests.length = 0;
+  updateMode = "success";
+  const contacts = Array.from({ length: 25 }, (_, index) => makeContact(index + 1));
+  const sizes = [];
+
+  const report = await executeContactOwnerAssignment({
+    ownerId: "user-taras",
+    ownerName: "Taras Bandura",
+    tagName: "website_registered",
+    contacts,
+    approved: true,
+    adminUserId: "admin-1",
+    userRequest: "Assign owner",
+    apiCall,
+    onContactComplete: async (state) => {
+      const document = { report: state.report };
+      sizes.push(Buffer.byteLength(JSON.stringify(document), "utf8"));
+      const serialized = BSON.serialize(document);
+      assert.ok(serialized.length > 0);
+      assert.equal(BSON.deserialize(serialized).report.stats.processed, state.processedItems);
+    },
+  });
+
+  const actualPuts = requests.filter((request) => request.method === "PUT" && request.dryRun !== true);
+  assert.ok(actualPuts.length > 0);
+  assert.equal(actualPuts[0].path, "/contacts/contact-1");
+  assert.deepEqual(actualPuts[0].body, { assignedTo: "user-taras" });
+  assert.equal(report.stats.updated, 25);
+  assert.equal(report.stats.failed, 0);
+  assert.ok(Math.max(...sizes) < 1_000_000);
+
+  const auditDownload = report.downloads.find(
+    (download) => download.filename === "Contact Owner Assignment Audit Report.json"
+  );
+  assert.ok(auditDownload);
+  const auditPayload = JSON.parse(auditDownload.content);
+  assert.equal(auditPayload.downloads[0].content, undefined);
+  assert.equal(typeof auditPayload.downloads[0].contentBytes, "number");
+}
+
 async function testContactSearchPaginatesWithoutTotal() {
   requests.length = 0;
   searchMode = "withoutTotal";
@@ -320,6 +362,7 @@ async function testFailedOwnerUpdateReturnsDetailedReport() {
 async function run() {
   await testParse();
   await testPrepareAndExecute();
+  await testProgressReportDoesNotRecursivelyGrow();
   await testContactSearchPaginatesWithoutTotal();
   await testOwnerResolvesByEmail();
   await testOwnerLookupFallsBackWhenUserSearchAuthUnsupported();

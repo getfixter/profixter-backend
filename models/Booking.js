@@ -62,8 +62,21 @@ const BookingSchema = new mongoose.Schema({
 
 
   note: { type: String, default: "" },
+  adminNote: { type: String, default: "" },
 
   images: [{ type: String }],
+  contentUpdates: [
+    {
+      actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      actorName: { type: String, default: "" },
+      actorEmail: { type: String, default: "" },
+      actorRole: { type: String, enum: ["admin", "employee", "customer", "system"], default: "system" },
+      source: { type: String, enum: ["admin", "customer"], required: true },
+      noteAdded: { type: String, default: "" },
+      imagesAdded: [{ type: String }],
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
 
   status: { type: String, default: "Pending" }, // Pending | Confirmed | Completed | Canceled | ...
   statusHistory: [{ status: String, date: Date }],

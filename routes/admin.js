@@ -43,6 +43,14 @@ const {
   getOneTimeVisitSettings,
   upsertOneTimeVisitSettings,
 } = require("../utils/oneTimeVisitSettings");
+const {
+  uploadAppointmentPhotos,
+  storeAppointmentImages,
+} = require("../utils/bookingAttachments");
+const {
+  actorSnapshot,
+  appendContentUpdate,
+} = require("../utils/bookingContentUpdates");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -2533,10 +2541,10 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
 
 // ✅ NEW: Update booking note/date (admin)
 // PUT /api/admin/bookings/:id
-router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
+router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, async (req, res) => {
   try {
     const { id } = req.params;
-    const { note, date } = req.body || {};
+    const { note, adminNote, date } = req.body || {};
 
     let booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
@@ -2547,8 +2555,8 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
       "assignedFixterId"
     );
     let parsedDate = null;
-
-    if (note !== undefined) booking.note = String(note);
+    let dateChanged = false;
+    let assignmentChanged = false;
 
     if (date !== undefined) {
       const d = new Date(String(date));
@@ -2556,28 +2564,44 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
         return res.status(400).json({ message: "Invalid date" });
       }
       parsedDate = d;
-      if (!useReservationEngine) booking.date = d;
-      booking.reminder24hQueuedAt = undefined;
-      booking.reminder24hSentAt = undefined;
-      booking.reminder24hSkippedAt = undefined;
-      booking.reminder24hSkipReason = "";
-      booking.reminder60mQueuedAt = undefined;
-      booking.reminder60mSentAt = undefined;
+      dateChanged = parsedDate.getTime() !== new Date(booking.date).getTime();
+      if (!useReservationEngine && dateChanged) {
+        booking.date = d;
+        booking.reminder24hQueuedAt = undefined;
+        booking.reminder24hSentAt = undefined;
+        booking.reminder24hSkippedAt = undefined;
+        booking.reminder24hSkipReason = "";
+        booking.reminder60mQueuedAt = undefined;
+        booking.reminder60mSentAt = undefined;
+      }
     }
     if (assignmentRequested) {
       if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
         return res.status(403).json({ message: "Assignment access denied" });
       }
+      const currentAssignmentId = booking.assignedFixterId
+        ? String(booking.assignedFixterId)
+        : "";
+      const requestedAssignmentId = req.body.assignedFixterId
+        ? String(req.body.assignedFixterId)
+        : "";
+      assignmentChanged = currentAssignmentId !== requestedAssignmentId;
       if (!useReservationEngine) {
         Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
       }
     }
-    if (useReservationEngine && (parsedDate || assignmentRequested)) {
-      let technicianId =
-        req.body.assignedFixterId || booking.assignedFixterId || null;
+    if (useReservationEngine && (dateChanged || assignmentChanged)) {
+      if (assignmentRequested && !req.body.assignedFixterId && booking.slotReservationId) {
+        return res.status(400).json({
+          code: "TECHNICIAN_REQUIRED",
+          message: "A reserved booking cannot be unassigned",
+        });
+      }
+      let technicianId = req.body.assignedFixterId || booking.assignedFixterId || null;
       if (!technicianId) {
         const options = await findEligibleTechnicians({
-          slotStart: parsedDate || booking.date,
+          slotStart: dateChanged ? parsedDate : booking.date,
+          excludeReservationId: booking.slotReservationId || null,
         });
         technicianId = options.recommended?.id;
       }
@@ -2590,22 +2614,31 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
       await moveReservationForBooking({
         bookingId: booking._id,
         technicianId,
-        slotStart: parsedDate || booking.date,
+        slotStart: dateChanged ? parsedDate : booking.date,
         actorUser: req.accessUser,
         createdByType: "admin",
         assignmentSource:
           req.accessRole === "admin" ? "admin" : "general_fixter",
       });
       booking = await Booking.findById(booking._id);
-      if (note !== undefined) booking.note = String(note);
-      if (parsedDate) {
-        booking.reminder24hQueuedAt = undefined;
-        booking.reminder24hSentAt = undefined;
-        booking.reminder24hSkippedAt = undefined;
-        booking.reminder24hSkipReason = "";
-        booking.reminder60mQueuedAt = undefined;
-        booking.reminder60mSentAt = undefined;
-      }
+    }
+
+    if (note !== undefined) booking.note = String(note);
+    if (adminNote !== undefined) booking.adminNote = String(adminNote);
+
+    const imageUpload = await storeAppointmentImages({
+      files: req.files || [],
+      bookingDate: booking.date,
+      bookingNumber: booking.bookingNumber,
+      source: "admin",
+    });
+    if (imageUpload.images.length) {
+      booking.images = (booking.images || []).concat(imageUpload.images);
+      appendContentUpdate(booking, {
+        actor: actorSnapshot(req.accessUser, req.accessRole || "admin"),
+        source: "admin",
+        imagesAdded: imageUpload.images,
+      });
     }
 
     await booking.save();
@@ -2619,7 +2652,10 @@ router.put("/bookings/:id", auth, ...bookingsWrite, async (req, res) => {
     return res.json({ message: "Booking updated", booking });
   } catch (err) {
     console.error("❌ Admin booking update error:", err.message);
-    res.status(err?.statusCode || 500).json({ message: "Server error", error: err.message });
+    res.status(err?.statusCode || 500).json({
+      code: err?.code || "BOOKING_UPDATE_FAILED",
+      message: err.message || "Failed to update booking",
+    });
   }
 });
 

@@ -24,6 +24,7 @@
     "test:customer-emails": "node scripts/test_customer_email_templates.js",
     "test:one-time-visit-flow": "node scripts/test_one_time_visit_payment_flow.js",
     "test:one-time-booking-policy": "node scripts/test_one_time_booking_policy.js",
+    "test:booking-content-updates": "node scripts/test_booking_content_updates.js",
     "test:visit-entitlement-indexes": "node scripts/test_visit_entitlement_indexes.js",
     "repair:visit-entitlement-indexes": "node scripts/repair_visit_entitlement_indexes.js",
     "test:booking-review-requests": "node scripts/test_booking_review_requests.js",
