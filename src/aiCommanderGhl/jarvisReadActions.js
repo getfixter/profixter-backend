@@ -3,6 +3,7 @@ const { cleanString } = require("./ghlActions");
 const { countCsvContacts: countCsvContactsFromContext, csvFilesFromContext } = require("./jarvisCsvProcessor");
 const { auditEstimateCsvAgainstGhl } = require("./jarvisCsvGhlSync");
 const { auditGhlCapabilities } = require("./ghlReadCapabilities");
+const { buildGhlControlCenterReport } = require("./ghlOperationsControlLayer");
 
 const READ_TIMEOUT_MS = Number(process.env.JARVIS_GHL_READ_TIMEOUT_MS || 15000);
 const CONTACT_READ_TIMEOUT_MS = Number(
@@ -714,6 +715,24 @@ async function listCustomFields() {
   });
 }
 
+async function listCustomValues() {
+  const locationId = getLocationId();
+  return listReadCategory({
+    label: "custom values",
+    dataKey: "customValues",
+    requests: [
+      { method: "GET", path: `/locations/${encodeURIComponent(locationId)}/customValues` },
+    ],
+    collectionKeys: ["customValues", "values", "data", "items"],
+    sources: ["GHL custom values"],
+    mapItem: (item) => ({
+      id: cleanString(item?.id || item?._id),
+      name: cleanString(item?.name || item?.key),
+      value: cleanString(item?.value).slice(0, 500),
+    }),
+  });
+}
+
 async function listCampaigns() {
   return listReadCategory({
     label: "campaigns",
@@ -1096,7 +1115,10 @@ async function checkContactsConnection() {
 }
 
 async function diagnoseGhlAccess() {
-  const audit = await auditGhlCapabilities();
+  const [audit, controlCenter] = await Promise.all([
+    auditGhlCapabilities(),
+    buildGhlControlCenterReport(),
+  ]);
   const workingLabels = audit.working.map((item) => item.label);
   const failingLabels = audit.failing.map((item) => `${item.label}: ${item.reason}`);
 
@@ -1116,6 +1138,7 @@ async function diagnoseGhlAccess() {
       working: audit.working,
       failing: audit.failing,
       capabilities: audit.capabilities,
+      controlCenter,
     },
     sources: ["GHL capability audit"],
   };
@@ -1188,7 +1211,7 @@ function resolveReadAction(message, context = {}) {
   }
 
   if (
-    /\b(what .*access|access do you have|capabilities|capability|full ghl access|audit)\b/.test(text) &&
+    /\b(what .*access|access do you have|capabilities|capability|full ghl access|audit|health check|control center)\b/.test(text) &&
     /\b(ghl|gohighlevel|highlevel|access|capabilities|capability)\b/.test(text)
   ) {
     return { action: "diagnose_ghl_access" };
@@ -1259,6 +1282,10 @@ function resolveReadAction(message, context = {}) {
     return { action: "list_custom_fields" };
   }
 
+  if (/\bcustom values?\b/.test(text) && /\b(show|list|what|all|have|exist)\b/.test(text)) {
+    return { action: "list_custom_values" };
+  }
+
   if (/\bcampaigns?\b/.test(text) && /\b(show|list|what|all|have|exist)\b/.test(text)) {
     return { action: "list_campaigns" };
   }
@@ -1301,6 +1328,7 @@ async function runReadAction(message, context = {}) {
   if (action === "list_appointments") return listAppointments();
   if (action === "list_users") return listUsers();
   if (action === "list_custom_fields") return listCustomFields();
+  if (action === "list_custom_values") return listCustomValues();
   if (action === "list_campaigns") return listCampaigns();
   if (action === "list_forms") return listForms();
   if (action === "list_surveys") return listSurveys();
@@ -1324,6 +1352,7 @@ module.exports = {
   listCalendars,
   listCampaigns,
   listCustomFields,
+  listCustomValues,
   listForms,
   listPipelines,
   listSurveys,

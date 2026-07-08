@@ -37,6 +37,7 @@ Module._load = function loadWithMockedFetch(request, parent, isMain) {
 
 const {
   DESTRUCTIVE_CONFIRMATION_PHRASE,
+  HIGH_RISK_CONFIRMATION_PHRASE,
 } = require("../src/aiCommanderGhl/ghlEndpointRegistry");
 const { executeGhlRequest } = require("../src/aiCommanderGhl/ghlUniversalExecutor");
 
@@ -174,6 +175,49 @@ async function testDeleteWithPhraseExecutes() {
   assert.equal(result.status, 200);
 }
 
+async function testHighRiskRequiresHighRiskPhrase() {
+  reset();
+  await assert.rejects(
+    () =>
+      executeGhlRequest({
+        method: "POST",
+        path: "/conversations/messages",
+        approved: true,
+        body: {
+          contactId: "contact-1",
+          type: "SMS",
+          message: "Hello",
+        },
+        reason: "Send approved campaign message",
+      }),
+    /CONFIRM GHL HIGH RISK/
+  );
+  assert.equal(fetchCalls.length, 0);
+}
+
+async function testHighRiskWithPhraseExecutes() {
+  reset();
+  fetchQueue.push(mockResponse(200, { messageId: "message-1" }));
+  const result = await executeGhlRequest({
+    method: "POST",
+    path: "/conversations/messages",
+    approved: true,
+    confirmationPhrase: HIGH_RISK_CONFIRMATION_PHRASE,
+    body: {
+      contactId: "contact-1",
+      type: "SMS",
+      message: "Hello",
+    },
+    reason: "Send approved campaign message",
+  });
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(result.requiresExtraConfirmation, true);
+  assert.equal(result.confirmationPhraseRequired, HIGH_RISK_CONFIRMATION_PHRASE);
+  assert.equal(result.riskCategory, "high-risk");
+  assert.equal(result.status, 200);
+}
+
 async function testLocationMismatchRejected() {
   reset();
   await assert.rejects(
@@ -214,6 +258,8 @@ async function run() {
     await testDeprecatedEndpointRejected();
     await testDeleteRequiresConfirmationPhrase();
     await testDeleteWithPhraseExecutes();
+    await testHighRiskRequiresHighRiskPhrase();
+    await testHighRiskWithPhraseExecutes();
     await testLocationMismatchRejected();
     await testRetriesRateLimitedRequest();
   });

@@ -33,9 +33,11 @@
     "test:ai-commander-body": "node scripts/test_ai_commander_body_parser.js",
     "test:ai-commander-ghl-actions": "node scripts/test_ai_commander_ghl_actions.js",
     "test:ghl-universal-executor": "node scripts/test_ghl_universal_executor.js",
+    "test:ghl-endpoint-registry": "node scripts/test_ghl_endpoint_registry.js",
     "test:jarvis-workflow-executor": "node scripts/test_jarvis_workflow_executor.js",
     "test:jarvis-csv-processing": "node scripts/test_jarvis_csv_processing.js",
     "test:jarvis-ghl-security": "node scripts/test_jarvis_ghl_security.js",
+    "test:jarvis-campaign-builder": "node scripts/test_jarvis_campaign_builder.js",
     "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
     "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js"
   },

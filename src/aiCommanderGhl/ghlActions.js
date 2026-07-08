@@ -864,6 +864,39 @@ const ACTION_DEFINITIONS = {
       return { workflow: data };
     },
   }),
+
+  jarvis_campaign_template_create: actionDoc({
+    method: "INTERNAL",
+    endpoint: "jarvis://campaigns/templates",
+    riskLevel: "medium",
+    description:
+      "Create a reusable Jarvis campaign template. Starting the campaign remains a separate approval.",
+    docs: "internal Jarvis campaign builder",
+    build(action) {
+      const template = parseJsonObjectText(
+        action.payload?.campaignTemplateJson,
+        "campaignTemplateJson"
+      );
+      return {
+        method: "INTERNAL",
+        path: "jarvis://campaigns/templates",
+        body: {
+          campaignName: cleanString(template.campaignName),
+          audienceType: cleanString(template.audienceDefinition?.type),
+          tags: cleanList(template.audienceDefinition?.tags),
+          messageSteps: Array.isArray(template.messageSteps)
+            ? template.messageSteps.length
+            : 0,
+          testMode: template.testMode === true,
+          approvalBeforeSending: template.approvalBeforeSending !== false,
+          startsCampaign: false,
+        },
+      };
+    },
+    extract(data) {
+      return { campaign: data?.campaign || data };
+    },
+  }),
 };
 
 function isSupportedAction(actionType) {

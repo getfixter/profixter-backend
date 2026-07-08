@@ -9,10 +9,13 @@ const GhlUniversalAuditSchema = new mongoose.Schema(
     path: { type: String, required: true, trim: true },
     endpointKey: { type: String, default: "", trim: true, index: true },
     locationId: { type: String, default: "", trim: true, index: true },
+    riskLevel: { type: String, default: "", trim: true, index: true },
+    riskCategory: { type: String, default: "", trim: true, index: true },
     query: { type: mongoose.Schema.Types.Mixed, default: {} },
     body: { type: mongoose.Schema.Types.Mixed, default: null },
     dryRun: { type: Boolean, default: false },
     approved: { type: Boolean, default: false },
+    approvalRequired: { type: Boolean, default: false },
     requiresExtraConfirmation: { type: Boolean, default: false },
     status: {
       type: String,

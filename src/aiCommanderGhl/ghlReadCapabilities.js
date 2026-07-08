@@ -219,6 +219,14 @@ function buildCapabilityDefinitions(locationId) {
       ],
     },
     {
+      key: "custom_values",
+      label: "Custom values",
+      collectionKeys: ["customValues", "values", "data", "items"],
+      requests: [
+        { method: "GET", path: `/locations/${encodedLocationId}/customValues` },
+      ],
+    },
+    {
       key: "campaigns",
       label: "Campaigns",
       collectionKeys: ["campaigns", "data", "items"],

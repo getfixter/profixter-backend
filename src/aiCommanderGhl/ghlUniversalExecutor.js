@@ -4,6 +4,7 @@ const { getLocationId, request, redact } = require("./ghlClient");
 const GhlUniversalAudit = require("./ghlUniversalAudit.model");
 const {
   DESTRUCTIVE_CONFIRMATION_PHRASE,
+  HIGH_RISK_CONFIRMATION_PHRASE,
   findEndpoint,
   normalizePath,
 } = require("./ghlEndpointRegistry");
@@ -118,13 +119,38 @@ function injectLocation({ endpoint, method, query, body, locationId }) {
   return { query, body: nextBody };
 }
 
-function requiresExtraConfirmation({ endpoint, body }) {
-  if (endpoint.requiresExtraConfirmation || endpoint.destructive) return true;
-  const bodyText = JSON.stringify(body || {});
-  if (endpoint.group === "conversations" && /\b(bulk|blast|all|email|sms)\b/i.test(bodyText)) {
-    return true;
+function largestArraySize(value, seen = new WeakSet()) {
+  if (!value || typeof value !== "object") return 0;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return Math.max(
+      value.length,
+      ...value.map((item) => largestArraySize(item, seen))
+    );
   }
-  return false;
+  return Math.max(0, ...Object.values(value).map((item) => largestArraySize(item, seen)));
+}
+
+function payloadLooksBulk(body) {
+  const bodyText = JSON.stringify(body || {});
+  return /\b(bulk|blast|all contacts|all leads|mass|everyone)\b/i.test(bodyText) ||
+    largestArraySize(body) > 100;
+}
+
+function requiredConfirmationPhrase({ endpoint, body }) {
+  if (endpoint.destructive || endpoint.riskCategory === "destructive") {
+    return DESTRUCTIVE_CONFIRMATION_PHRASE;
+  }
+  if (
+    endpoint.requiresExtraConfirmation ||
+    endpoint.riskCategory === "high-risk" ||
+    endpoint.riskLevel === "high" ||
+    payloadLooksBulk(body)
+  ) {
+    return endpoint.confirmationPhrase || HIGH_RISK_CONFIRMATION_PHRASE;
+  }
+  return "";
 }
 
 function makeSummary({ endpoint, method, path, dryRun, status }) {
@@ -187,10 +213,11 @@ async function executeGhlRequest({
   });
   const write = methodIsWrite(upperMethod) && endpoint.readOnly !== true;
   const sendsBody = !["GET", "HEAD"].includes(upperMethod);
-  const extraConfirmationRequired = requiresExtraConfirmation({
+  const confirmationPhraseRequired = write ? requiredConfirmationPhrase({
     endpoint,
     body: initialBody,
-  });
+  }) : "";
+  const extraConfirmationRequired = Boolean(confirmationPhraseRequired);
 
   const { query: finalQuery, body: finalBody } = injectLocation({
     endpoint,
@@ -214,6 +241,9 @@ async function executeGhlRequest({
     path: cleanPath,
     endpointKey: endpoint.key,
     locationId: configuredLocationId,
+    riskLevel: endpoint.riskLevel,
+    riskCategory: endpoint.riskCategory,
+    approvalRequired: write,
     query: finalQuery,
     body: sendsBody ? finalBody : null,
     dryRun: dryRun === true,
@@ -232,10 +262,10 @@ async function executeGhlRequest({
       write &&
       extraConfirmationRequired &&
       dryRun !== true &&
-      cleanString(confirmationPhrase) !== DESTRUCTIVE_CONFIRMATION_PHRASE
+      cleanString(confirmationPhrase) !== confirmationPhraseRequired
     ) {
       const error = new Error(
-        `This high-risk GHL request requires the exact confirmation phrase: ${DESTRUCTIVE_CONFIRMATION_PHRASE}`
+        `This ${endpoint.riskCategory || "high-risk"} GHL request requires the exact confirmation phrase: ${confirmationPhraseRequired}`
       );
       error.statusCode = 403;
       throw error;
@@ -256,12 +286,12 @@ async function executeGhlRequest({
         query: redact(finalQuery),
         body: sendsBody ? redact(finalBody) : null,
         riskLevel: endpoint.riskLevel,
+        riskCategory: endpoint.riskCategory,
+        requiredScopes: endpoint.requiredScopes || [],
         destructive: endpoint.destructive,
         requiresApproval: write,
         requiresExtraConfirmation: extraConfirmationRequired,
-        confirmationPhraseRequired: extraConfirmationRequired
-          ? DESTRUCTIVE_CONFIRMATION_PHRASE
-          : "",
+        confirmationPhraseRequired,
         summary,
       };
       await writeAudit({
@@ -305,9 +335,12 @@ async function executeGhlRequest({
       attempts: result.attempts || 1,
       summary,
       riskLevel: endpoint.riskLevel,
+      riskCategory: endpoint.riskCategory,
+      requiredScopes: endpoint.requiredScopes || [],
       destructive: endpoint.destructive,
       requiresApproval: write,
       requiresExtraConfirmation: extraConfirmationRequired,
+      confirmationPhraseRequired,
     };
   } catch (error) {
     await writeAudit({

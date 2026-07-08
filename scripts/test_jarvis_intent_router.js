@@ -11,6 +11,7 @@ const ghlClientPath = require.resolve("../src/aiCommanderGhl/ghlClient");
 const ghlRequests = [];
 const plannedMessages = [];
 const csvSyncPlans = [];
+const campaignTemplatePlans = [];
 let contactReadMode = "success";
 let tagMode = "plain";
 
@@ -259,6 +260,14 @@ require.cache[ghlClientPath] = {
           rateLimit: {},
         };
       }
+      if (input.method === "GET" && input.path === "/locations/test-location/customValues") {
+        return {
+          status: 200,
+          data: { customValues: [{ id: "value-1", name: "Company Name", value: "Fixter" }] },
+          request: { endpoint: "GET /locations/test-location/customValues" },
+          rateLimit: {},
+        };
+      }
       if (input.method === "GET" && input.path === "/forms/") {
         return {
           status: 200,
@@ -332,6 +341,30 @@ require.cache[servicePath] = {
             supported: true,
             method: "INTERNAL",
             endpoint: "jarvis://csv/sync-estimate-csv-with-ghl",
+          },
+        ],
+        riskLevel: "medium",
+        destructive: false,
+        requiresApproval: true,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    },
+    createCampaignTemplatePlan: async ({ message, adminUserId, files }) => {
+      campaignTemplatePlans.push({ message, adminUserId, files });
+      return {
+        confirmationId: "campaign-template-confirmation",
+        summary:
+          "I will create the reusable campaign template. It will not start and no SMS will be sent until you explicitly start it from Campaigns.",
+        exactPlan: ["Create one reusable Jarvis campaign template."],
+        objectsAffected: ["Campaign template: Roofing/Siding Re-engagement 2026"],
+        messagesToSendOrCreate: [],
+        plannedApiActions: [
+          {
+            actionId: "create_jarvis_campaign_template",
+            actionType: "jarvis_campaign_template_create",
+            supported: true,
+            method: "INTERNAL",
+            endpoint: "jarvis://campaigns/templates",
           },
         ],
         riskLevel: "medium",
@@ -478,10 +511,15 @@ async function testCapabilitiesDiagnosticSanitizesFailures() {
   assert.equal(result.requiresApproval, false);
   assert.ok(result.data.working.some((item) => item.key === "contacts"));
   assert.ok(result.data.working.some((item) => item.key === "pipelines"));
+  assert.ok(result.data.working.some((item) => item.key === "custom_values"));
   assert.ok(result.data.failing.some((item) => item.key === "surveys"));
   assert.ok(result.data.failing.some((item) => item.reason === "endpoint_unavailable"));
   assert.equal(result.data.diagnostics.locationIdUsed, "test-location");
   assert.equal(result.data.diagnostics.baseUrl, "https://services.leadconnectorhq.com");
+  assert.equal(result.data.controlCenter.title, "Jarvis GHL Health Check");
+  assert.equal(result.data.controlCenter.approvalRules.highRisk, "CONFIRM GHL HIGH RISK");
+  assert.equal(result.data.controlCenter.approvalRules.destructive, "CONFIRM GHL DESTRUCTIVE");
+  assert.ok(result.data.controlCenter.registry.summary || result.data.controlCenter.summary);
   assert.doesNotMatch(text, /secret-admin-jwt|secret-api-key|Bearer\s+(?!\[REDACTED\])/i);
 }
 
@@ -606,6 +644,23 @@ async function testWriteStillRequiresApproval() {
   assert.match(plannedMessages[0].message, /Create a test contact/);
 }
 
+async function testCampaignTemplateRequestRequiresApproval() {
+  resetReads();
+  const beforePlans = campaignTemplatePlans.length;
+  const result = await askJarvis({
+    message: "Create a sales campaign for Roofing/Siding Re-engagement 2026.",
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "write");
+  assert.equal(result.requiresApproval, true);
+  assert.equal(result.plan.requiresApproval, true);
+  assert.equal(result.plan.confirmationId, "campaign-template-confirmation");
+  assert.equal(result.plan.plannedApiActions[0].actionType, "jarvis_campaign_template_create");
+  assert.match(result.plan.summary, /no SMS will be sent/i);
+  assert.equal(campaignTemplatePlans.length, beforePlans + 1);
+}
+
 async function run() {
   try {
     await testReadContactCount();
@@ -623,6 +678,7 @@ async function run() {
     await testAdviceRequest();
     await testGeneralOutsideWorkspaceRequest();
     await testWriteStillRequiresApproval();
+    await testCampaignTemplateRequestRequiresApproval();
     console.log("Jarvis intent router tests passed");
   } finally {
     await fs.remove(uploadRoot);

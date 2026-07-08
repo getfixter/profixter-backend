@@ -13,6 +13,11 @@ const { generateGhlPlan } = require("./ghlPlanner");
 const { countCsvContacts } = require("./jarvisCsvProcessor");
 const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
 const {
+  buildCampaignTemplateDraft,
+  createCampaignTemplateFromPlan,
+  looksLikeCampaignBuilderRequest,
+} = require("./jarvisCampaignBuilder.service");
+const {
   UNSUPPORTED_MESSAGE,
   cleanString,
   executeAction,
@@ -77,6 +82,7 @@ const DEFAULT_PAYLOAD = Object.freeze({
   universalReason: "",
   workflowName: "",
   workflowJson: "",
+  campaignTemplateJson: "",
   confirmationPhrase: "",
   tags: [],
   customFields: [],
@@ -277,6 +283,10 @@ async function createPlan({ message, adminUserId }) {
     throw errorWithStatus("message is required", 400);
   }
 
+  if (looksLikeCampaignBuilderRequest(originalMessage)) {
+    return createCampaignTemplatePlan({ message: originalMessage, adminUserId });
+  }
+
   const modelPlan = await generateGhlPlan(originalMessage);
   const actions = Array.isArray(modelPlan.plannedActions)
     ? modelPlan.plannedActions.map(normalizeAction)
@@ -299,6 +309,100 @@ async function createPlan({ message, adminUserId }) {
       modelPlan,
       normalizedActions: actions,
       publicPlan,
+    },
+    confirmationId,
+    status: "planned",
+    exactApiCallsPlanned: publicPlan.plannedApiActions,
+    expiresAt,
+  });
+
+  return publicPlan;
+}
+
+async function createCampaignTemplatePlan({ message, adminUserId, files = [], uploadBatchId = "" }) {
+  assertCommanderEnabled();
+  assertGhlConfigured();
+  await markExpiredPlans();
+
+  const originalMessage = cleanString(message);
+  if (!originalMessage) {
+    throw errorWithStatus("message is required", 400);
+  }
+
+  const template = buildCampaignTemplateDraft({ message: originalMessage, files, uploadBatchId });
+  const audience = template.audienceDefinition || {};
+  const messageCount = Array.isArray(template.messageSteps) ? template.messageSteps.length : 0;
+  const confirmationId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + PLAN_TTL_MS);
+  const actions = [
+    normalizeAction(
+      {
+        actionId: "create_jarvis_campaign_template",
+        actionType: "jarvis_campaign_template_create",
+        supported: true,
+        riskLevel: "medium",
+        description:
+          "Create a reusable Jarvis campaign template. This does not start the campaign or send messages.",
+        target: {},
+        payload: {
+          campaignTemplateJson: JSON.stringify(template),
+          campaignName: template.campaignName,
+          startAfterCreate: false,
+        },
+      },
+      0
+    ),
+  ];
+  const audienceText =
+    audience.type === "ghl_tags"
+      ? `GHL contacts with tags: ${(audience.tags || []).join(", ")}`
+      : audience.type === "uploaded_csv"
+        ? "contacts from the attached CSV"
+        : audience.type || "campaign audience";
+  const modelPlan = {
+    summary: `I will create the reusable campaign template "${template.campaignName}". It will not start and no SMS will be sent until you explicitly start it from Campaigns.`,
+    exactPlan: [
+      "Create one reusable Jarvis campaign template.",
+      `Set the audience to ${audienceText}.`,
+      `Prepare ${messageCount} message step${messageCount === 1 ? "" : "s"} with wait delays.`,
+      "Save stop conditions for replies, manual takeover, appointments, unsubscribe, and stop keywords.",
+      "Save AI reply rules with human-like delay and escalation for price, legal, complaints, unusual requests, and anything outside the approved prompt.",
+      "Keep approval-before-sending enabled. Starting the campaign remains a separate explicit approval.",
+    ],
+    objectsAffected: [
+      `Campaign template: ${template.campaignName}`,
+      `Audience: ${audienceText}`,
+      `${messageCount} message step${messageCount === 1 ? "" : "s"}`,
+      "No contacts messaged during template creation",
+    ],
+    messagesToSendOrCreate: (template.messageSteps || []).map((step, index) => ({
+      channel: step.channel || "sms",
+      timing:
+        index === 0
+          ? "Initial message"
+          : `After ${step.waitDelay?.amount || 0} ${step.waitDelay?.unit || "minutes"}`,
+      subject: `Step ${index + 1}`,
+      body: step.body,
+    })),
+    riskLevel: "medium",
+    destructive: false,
+  };
+  const publicPlan = publicPlanFromModel({
+    modelPlan,
+    actions,
+    unsupportedActions: [],
+    confirmationId,
+    expiresAt,
+  });
+
+  await AiCommanderGhlAudit.create({
+    adminUserId,
+    originalMessage,
+    generatedPlan: {
+      modelPlan,
+      normalizedActions: actions,
+      publicPlan,
+      campaignTemplate: template,
     },
     confirmationId,
     status: "planned",
@@ -393,6 +497,41 @@ async function createEstimateCsvSyncPlan({ message, adminUserId, files, uploadBa
 }
 
 async function executeInternalAction(action, executionContext = {}) {
+  if (action.actionType === "jarvis_campaign_template_create") {
+    const template = parseJsonObjectText(
+      action.payload?.campaignTemplateJson,
+      "campaignTemplateJson"
+    );
+    const created = await createCampaignTemplateFromPlan({
+      template,
+      adminUserId: executionContext.adminUserId,
+      originalMessage: executionContext.userRequest,
+      confirmationId: executionContext.confirmationId,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "INTERNAL",
+        path: "jarvis://campaigns/templates",
+        body: {
+          campaignName: created.campaignName,
+          audienceType: created.audienceDefinition?.type,
+          messageSteps: created.messageSteps?.length || 0,
+          approvalBeforeSending: created.approvalBeforeSending,
+        },
+      },
+      response: {
+        campaign: created,
+        summary:
+          "Campaign template created. Nothing has started and no SMS has been sent.",
+      },
+      status: "executed",
+      rateLimit: {},
+      extracted: { campaign: created },
+    };
+  }
+
   if (action.actionType === "sync_estimate_csv_with_ghl") {
     const report = await syncEstimateCsvWithGhl({
       files: action.payload?.files || [],
@@ -575,6 +714,7 @@ async function executePlan({ confirmationId }) {
     actionResults: {},
     adminUserId: audit.adminUserId,
     userRequest: audit.originalMessage,
+    confirmationId: audit.confirmationId,
   };
 
   for (const action of executableActions) {
@@ -630,6 +770,7 @@ async function executePlan({ confirmationId }) {
 }
 
 module.exports = {
+  createCampaignTemplatePlan,
   createEstimateCsvSyncPlan,
   createPlan,
   executePlan,

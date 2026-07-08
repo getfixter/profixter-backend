@@ -8,6 +8,17 @@ const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const { askJarvis } = require("../src/aiCommanderGhl/jarvisIntentRouter");
 const { redact } = require("../src/aiCommanderGhl/ghlClient");
+const {
+  getCampaign,
+  listCampaigns,
+  pauseCampaignRun,
+  resumeCampaignRun,
+  startCampaignRun,
+  START_CONFIRMATION,
+} = require("../src/aiCommanderGhl/jarvisCampaignBuilder.service");
+const {
+  buildGhlControlCenterReport,
+} = require("../src/aiCommanderGhl/ghlOperationsControlLayer");
 const JarvisConversation = require("../src/aiCommanderGhl/jarvisConversation.model");
 
 const router = express.Router();
@@ -399,6 +410,116 @@ router.put(
     } catch (error) {
       return res.status(statusForError(error)).json({
         message: error?.message || "Failed to save Jarvis conversation.",
+      });
+    }
+  }
+);
+
+router.get(
+  "/campaigns",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const result = await listCampaigns({ limit: req.query.limit });
+      return res.json(result);
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to load Jarvis campaigns.",
+      });
+    }
+  }
+);
+
+router.get(
+  "/campaigns/:campaignId",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const result = await getCampaign(req.params.campaignId);
+      return res.json(result);
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to load Jarvis campaign.",
+      });
+    }
+  }
+);
+
+router.post(
+  "/campaigns/:campaignId/start",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const result = await startCampaignRun({
+        campaignId: req.params.campaignId,
+        adminUserId: req.user.id,
+        confirmation: cleanString(req.body?.confirmation),
+        dryRun: req.body?.dryRun,
+      });
+      return res.status(202).json({
+        ...result,
+        confirmationUsed: START_CONFIRMATION,
+      });
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to start Jarvis campaign.",
+      });
+    }
+  }
+);
+
+router.post(
+  "/campaigns/:campaignId/pause",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const result = await pauseCampaignRun({
+        campaignId: req.params.campaignId,
+        adminUserId: req.user.id,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to pause Jarvis campaign.",
+      });
+    }
+  }
+);
+
+router.post(
+  "/campaigns/:campaignId/resume",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const result = await resumeCampaignRun({
+        campaignId: req.params.campaignId,
+        adminUserId: req.user.id,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to resume Jarvis campaign.",
+      });
+    }
+  }
+);
+
+router.get(
+  "/ghl-control/health",
+  auth,
+  ...requirePermission(PERMISSIONS.ADMIN),
+  async (req, res) => {
+    try {
+      const report = await buildGhlControlCenterReport({ adminUserId: req.user.id });
+      return res.json({ report });
+    } catch (error) {
+      return res.status(statusForError(error)).json({
+        message: error?.message || "Failed to run Jarvis GHL Health Check.",
       });
     }
   }
