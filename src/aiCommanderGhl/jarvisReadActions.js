@@ -1,6 +1,7 @@
 const { getLocationId, getSafeTokenDiagnostics, request } = require("./ghlClient");
 const { cleanString } = require("./ghlActions");
 const { countCsvContacts: countCsvContactsFromContext, csvFilesFromContext } = require("./jarvisCsvProcessor");
+const { auditEstimateCsvAgainstGhl } = require("./jarvisCsvGhlSync");
 const { auditGhlCapabilities } = require("./ghlReadCapabilities");
 
 const READ_TIMEOUT_MS = Number(process.env.JARVIS_GHL_READ_TIMEOUT_MS || 15000);
@@ -1145,8 +1146,30 @@ async function countCsvContacts(context = {}) {
   };
 }
 
+async function auditCsvAgainstGhl(context = {}) {
+  const report = await auditEstimateCsvAgainstGhl({
+    ...context,
+    userRequest: context.userRequest || "Audit uploaded CSV against GHL",
+  });
+  return {
+    intent: "read",
+    answer:
+      `I audited the CSV against GHL. I found ${formatNumber(report.foundInGhl)} matching contacts, ${formatNumber(report.notFoundInGhl)} missing contacts, and ${formatNumber(report.multipleMatches)} rows with multiple possible matches. Nothing was changed.`,
+    data: report,
+    sources: ["Uploaded CSV", "GHL contacts"],
+  };
+}
+
 function resolveReadAction(message, context = {}) {
   const text = cleanString(message).toLowerCase();
+
+  if (
+    hasCsvFiles(context) &&
+    /\b(audit|match|find|check|compare|against)\b/.test(text) &&
+    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?)\b/.test(text)
+  ) {
+    return { action: "audit_csv_against_ghl" };
+  }
 
   if (
     hasCsvFiles(context) &&
@@ -1261,6 +1284,7 @@ async function runReadAction(message, context = {}) {
   const resolved = resolveReadAction(message, context);
   const action = resolved.action;
 
+  if (action === "audit_csv_against_ghl") return auditCsvAgainstGhl({ ...context, userRequest: message });
   if (action === "count_csv_contacts") return countCsvContacts(context);
   if (action === "count_contacts") return countContacts();
   if (action === "list_tags") return listTags();
@@ -1285,6 +1309,7 @@ async function runReadAction(message, context = {}) {
 }
 
 module.exports = {
+  auditCsvAgainstGhl,
   countContacts,
   countCsvContacts,
   countConversationsWaiting,

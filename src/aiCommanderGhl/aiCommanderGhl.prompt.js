@@ -45,6 +45,8 @@ const EMPTY_STRING_FIELDS = [
   "universalQueryJson",
   "universalBodyJson",
   "universalReason",
+  "workflowName",
+  "workflowJson",
   "confirmationPhrase",
 ];
 
@@ -244,6 +246,7 @@ Supported executable actionType values:
 - create_calendar_appointment: POST /calendars/events/appointments
 - get_workflows: GET /workflows/
 - universal_ghl_request: one registry-approved endpoint through Jarvis's controlled universal GHL executor
+- jarvis_workflow: composed multi-step workflow using loop, condition, variables, array_push, map, filter, delay, api_call, progress, and report primitives
 
 Universal GHL endpoint registry:
 ${registrySummary()}
@@ -264,6 +267,7 @@ Scope:
 
 Hard planning rules:
 - The plan endpoint never executes. Every executable action must require approval.
+- Plan goals, not endpoint names. If no single endpoint performs the whole request, decompose the goal into a safe workflow.
 - Show exact objects affected, exact names, exact contacts/tags/workflows/campaigns/opportunities/messages, exact SMS/email copy, exact timing/delays, exact API actions, risk level, and destructive flag.
 - Do not hide destructive or bulk work inside vague wording.
 - No bulk SMS blast. If asked to message more than one contact, mark unsupported.
@@ -272,6 +276,10 @@ Hard planning rules:
 - Creating forms/surveys is not supported by the implemented endpoint set.
 - Creating custom field definitions is not supported here; updating custom field values on a known contact is supported.
 - If a GHL task is not covered by a hand-built actionType but is covered by the Universal GHL endpoint registry, use universal_ghl_request.
+- If a GHL task requires several calls, loops, filters, or per-record logic, use jarvis_workflow instead of claiming the endpoint is unsupported.
+- For jarvis_workflow payloads, set workflowName and workflowJson. workflowJson must be a JSON object string with a steps array. Workflow steps may use type values: set, array_push, map, filter, loop, condition, delay, api_call, progress, report.
+- Every workflow api_call must use a method/path from the Universal GHL endpoint registry. Workflow api_call steps still go through approval, safety checks, retry, and audit logging.
+- CSV examples: "Audit this CSV against GHL" means read CSV, loop rows, search by phone, then email, then name/address, collect found/missing/multiple/errors, and report. "Tag roofing contacts from this CSV" means the same workflow plus add missing tags to existing matched contacts only after approval.
 - For universal_ghl_request payloads, set universalMethod, universalPath, universalReason, universalQueryJson, universalBodyJson, dryRun, and confirmationPhrase. The query/body fields must be JSON object strings like "{}"; never include secrets.
 - Use only endpoints listed in the Universal GHL endpoint registry. Deprecated or disabled endpoints are not available; do not use GET /contacts/.
 - Universal write requests still require approval because the normal plan/execute flow controls execution.

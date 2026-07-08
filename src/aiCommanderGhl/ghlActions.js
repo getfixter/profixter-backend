@@ -819,6 +819,51 @@ const ACTION_DEFINITIONS = {
       return { report: data };
     },
   }),
+
+  jarvis_workflow: actionDoc({
+    method: "WORKFLOW",
+    endpoint: "jarvis://workflow",
+    riskLevel: "high",
+    description:
+      "Execute a composed Jarvis workflow made of primitives such as loops, conditions, variables, transforms, reports, and registry-approved GHL API calls.",
+    docs: "internal Jarvis workflow executor",
+    build(action) {
+      const payload = action.payload || {};
+      const workflow = parseJsonObjectText(payload.workflowJson, "workflowJson");
+      const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+      const name = cleanString(payload.workflowName || workflow.name || "jarvis_workflow");
+      if (!steps.length) {
+        throw Object.assign(new Error("workflowJson.steps is required"), {
+          statusCode: 400,
+        });
+      }
+      return {
+        method: "WORKFLOW",
+        path: "jarvis://workflow",
+        body: {
+          name,
+          stepCount: steps.length,
+          dryRun: payload.dryRun === true,
+          approvalRequired: true,
+          primitives: [
+            "loop",
+            "condition",
+            "set",
+            "array_push",
+            "map",
+            "filter",
+            "delay",
+            "api_call",
+            "progress",
+            "report",
+          ],
+        },
+      };
+    },
+    extract(data) {
+      return { workflow: data };
+    },
+  }),
 };
 
 function isSupportedAction(actionType) {

@@ -1,12 +1,10 @@
-const { getLocationId, request, redact } = require("./ghlClient");
+const { executeGhlRequest } = require("./ghlUniversalExecutor");
+const { redact } = require("./ghlClient");
+const { executeWorkflow } = require("./jarvisWorkflowExecutor");
 const { parseCsvContext, normalizePhone } = require("./jarvisCsvProcessor");
 
 const SEARCH_PAGE_LIMIT = Number(process.env.JARVIS_CSV_GHL_SEARCH_LIMIT || 10);
 const SYNC_MAX_ROWS = Number(process.env.JARVIS_CSV_SYNC_MAX_ROWS || 5000);
-const SYNC_CONCURRENCY = Math.max(
-  1,
-  Math.min(10, Number(process.env.JARVIS_CSV_GHL_SYNC_CONCURRENCY || 3))
-);
 const MISSING_PREVIEW_LIMIT = Number(process.env.JARVIS_CSV_MISSING_PREVIEW_LIMIT || 25);
 
 function cleanString(value) {
@@ -89,27 +87,38 @@ function sanitizeError(error) {
   return redact({
     statusCode: error?.statusCode || null,
     ghlStatus: error?.ghlStatus || null,
-    message: error?.message || String(error || "GHL CSV sync failed"),
+    message: error?.message || String(error || "GHL CSV workflow failed"),
     response: error?.response || null,
   });
 }
 
-async function searchContacts(query) {
+function responseData(result) {
+  return result?.response || result?.data || {};
+}
+
+async function searchContacts(query, helpers = null, options = {}) {
   const cleanQuery = cleanString(query);
   if (!cleanQuery) return [];
-  const result = await request({
+  const apiCall =
+    helpers?.apiCall ||
+    ((requestShape) =>
+      executeGhlRequest({
+        ...requestShape,
+        approved: options.approved === true,
+        adminUserId: options.adminUserId,
+        userRequest: options.userRequest,
+      }));
+  const result = await apiCall({
     method: "POST",
     path: "/contacts/search",
-    timeoutMs: Number(process.env.JARVIS_GHL_CONTACT_READ_TIMEOUT_MS || 20000),
-    logResponseBody: false,
     body: {
-      locationId: getLocationId(),
       page: 1,
       pageLimit: SEARCH_PAGE_LIMIT,
       query: cleanQuery,
     },
+    reason: `Search GHL contact by ${options.reason || "CSV row value"}`,
   });
-  return collectionFrom(result.data, ["contacts", "data", "items"]).map(normalizeContact);
+  return collectionFrom(responseData(result), ["contacts", "data", "items"]).map(normalizeContact);
 }
 
 function chooseSingleMatch(candidates, predicate) {
@@ -122,16 +131,16 @@ function chooseSingleMatch(candidates, predicate) {
   return { status: "missing", count: 0 };
 }
 
-async function findContact(row) {
+async function findContact(row, helpers = null, options = {}) {
   if (row.phone) {
     const rowDigits = digits(row.phone);
-    const byPhone = await searchContacts(row.phone);
+    const byPhone = await searchContacts(row.phone, helpers, { ...options, reason: "phone" });
     const result = chooseSingleMatch(byPhone, (contact) => digits(contact.phone) === rowDigits);
     if (result.status !== "missing") return { ...result, matchMethod: "phone" };
   }
 
   if (row.email) {
-    const byEmail = await searchContacts(row.email);
+    const byEmail = await searchContacts(row.email, helpers, { ...options, reason: "email" });
     const result = chooseSingleMatch(
       byEmail,
       (contact) => cleanString(contact.email).toLowerCase() === row.email
@@ -140,7 +149,10 @@ async function findContact(row) {
   }
 
   if (row.name && row.address) {
-    const byNameAddress = await searchContacts(`${row.name} ${row.address}`);
+    const byNameAddress = await searchContacts(`${row.name} ${row.address}`, helpers, {
+      ...options,
+      reason: "name and address",
+    });
     const name = row.name.toLowerCase();
     const address = row.address.toLowerCase();
     const result = chooseSingleMatch(byNameAddress, (contact) => {
@@ -153,31 +165,27 @@ async function findContact(row) {
   return { status: "missing", matchMethod: "none", count: 0 };
 }
 
-async function addMissingTags(contact, tags) {
+async function addMissingTags(contact, tags, helpers = null, options = {}) {
   const existing = new Set(contact.tags.map(normalizeTag));
   const missing = tags.filter((tag) => !existing.has(normalizeTag(tag)));
   if (!missing.length) return { alreadyTagged: true, addedTags: [] };
 
-  await request({
+  const apiCall =
+    helpers?.apiCall ||
+    ((requestShape) =>
+      executeGhlRequest({
+        ...requestShape,
+        approved: options.approved === true,
+        adminUserId: options.adminUserId,
+        userRequest: options.userRequest,
+      }));
+  await apiCall({
     method: "POST",
     path: `/contacts/${encodeURIComponent(contact.id)}/tags`,
-    timeoutMs: Number(process.env.JARVIS_GHL_WRITE_TIMEOUT_MS || 20000),
-    logResponseBody: false,
     body: { tags: missing },
+    reason: "Add missing CSV workflow tags to matched GHL contact",
   });
   return { alreadyTagged: false, addedTags: missing };
-}
-
-async function mapWithConcurrency(items, limit, worker) {
-  let index = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
-      const currentIndex = index;
-      index += 1;
-      await worker(items[currentIndex], currentIndex);
-    }
-  });
-  await Promise.all(workers);
 }
 
 function missingPreview(row, reason) {
@@ -192,19 +200,10 @@ function missingPreview(row, reason) {
   };
 }
 
-async function syncEstimateCsvWithGhl(context = {}) {
-  const parsedFiles = await parseCsvContext(context);
-  const rows = parsedFiles.flatMap((file) =>
-    file.contacts.filter((contact) => contact.valid).map((contact) => ({
-      ...contact,
-      fileName: file.file.originalName,
-    }))
-  );
-  const limited = rows.length > SYNC_MAX_ROWS;
-  const rowsToProcess = rows.slice(0, SYNC_MAX_ROWS);
-  const report = {
+function initializeReport(parsedFiles, rowsToProcess, limited) {
+  return {
     totalRows: parsedFiles.reduce((total, file) => total + file.totalRows, 0),
-    validContacts: rows.length,
+    validContacts: parsedFiles.reduce((total, file) => total + file.validContacts, 0),
     processedRows: rowsToProcess.length,
     foundInGhl: 0,
     notFoundInGhl: 0,
@@ -223,45 +222,135 @@ async function syncEstimateCsvWithGhl(context = {}) {
     limit: SYNC_MAX_ROWS,
     createdContacts: 0,
   };
+}
 
-  await mapWithConcurrency(rowsToProcess, SYNC_CONCURRENCY, async (row) => {
-    try {
-      const match = await findContact(row);
-      if (match.status === "multiple") {
-        report.multipleMatches += 1;
-        if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
-          report.missingContacts.push(missingPreview(row, `multiple ${match.matchMethod} matches`));
-        }
-        return;
+async function processCsvRow({ row, report, applyTags, helpers, options }) {
+  try {
+    const match = await findContact(row, helpers, options);
+    if (match.status === "multiple") {
+      report.multipleMatches += 1;
+      if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
+        report.missingContacts.push(missingPreview(row, `multiple ${match.matchMethod} matches`));
       }
-      if (match.status !== "found" || !match.contact?.id) {
-        report.notFoundInGhl += 1;
-        if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
-          report.missingContacts.push(missingPreview(row, "not found in GHL"));
-        }
-        return;
-      }
-
-      report.foundInGhl += 1;
-      const tagResult = await addMissingTags(match.contact, desiredTagsForRow(row));
-      if (tagResult.alreadyTagged) {
-        report.alreadyTagged += 1;
-      } else {
-        report.newlyTagged += 1;
-      }
-    } catch (error) {
-      report.errors.push({
-        rowNumber: row.rowNumber,
-        fileName: row.fileName,
-        error: sanitizeError(error),
-      });
+      return;
     }
+    if (match.status !== "found" || !match.contact?.id) {
+      report.notFoundInGhl += 1;
+      if (report.missingContacts.length < MISSING_PREVIEW_LIMIT) {
+        report.missingContacts.push(missingPreview(row, "not found in GHL"));
+      }
+      return;
+    }
+
+    report.foundInGhl += 1;
+    if (!applyTags) return;
+
+    const tagResult = await addMissingTags(
+      match.contact,
+      desiredTagsForRow(row),
+      helpers,
+      options
+    );
+    if (tagResult.alreadyTagged) {
+      report.alreadyTagged += 1;
+    } else {
+      report.newlyTagged += 1;
+    }
+  } catch (error) {
+    report.errors.push({
+      rowNumber: row.rowNumber,
+      fileName: row.fileName,
+      error: sanitizeError(error),
+    });
+  }
+}
+
+async function executeCsvGhlWorkflow(context = {}, { applyTags = false } = {}) {
+  const parsedFiles = await parseCsvContext(context);
+  const rows = parsedFiles.flatMap((file) =>
+    file.contacts.filter((contact) => contact.valid).map((contact) => ({
+      ...contact,
+      fileName: file.file.originalName,
+    }))
+  );
+  const limited = rows.length > SYNC_MAX_ROWS;
+  const rowsToProcess = rows.slice(0, SYNC_MAX_ROWS);
+  const report = initializeReport(parsedFiles, rowsToProcess, limited);
+  const name = applyTags ? "csv_ghl_tag_sync" : "csv_ghl_audit";
+  const approved = applyTags ? context.approved === true : false;
+
+  const workflow = await executeWorkflow({
+    name,
+    approvalRequired: applyTags,
+    approved,
+    adminUserId: context.adminUserId,
+    userRequest: context.userRequest,
+    context: {
+      report,
+      rows: rowsToProcess,
+    },
+    steps: [
+      { type: "progress", message: "Reading CSV..." },
+      {
+        type: "progress",
+        message: `${rowsToProcess.length.toLocaleString("en-US")} valid contacts ready.`,
+      },
+      {
+        type: "loop",
+        items: "$.rows",
+        itemVar: "row",
+        indexVar: "rowIndex",
+        progressEvery: 50,
+        progressMessage: "Searching contact ${rowIndexDisplay} / ${loopLength}...",
+        continueOnError: true,
+        steps: [
+          {
+            type: "transform",
+            continueOnError: true,
+            handler: async (helpers) =>
+              processCsvRow({
+                row: helpers.variables.row,
+                report: helpers.variables.report,
+                applyTags,
+                helpers,
+                options: {
+                  approved,
+                  adminUserId: context.adminUserId,
+                  userRequest: context.userRequest,
+                },
+              }),
+          },
+        ],
+      },
+      { type: "progress", message: applyTags ? "Applying tags complete." : "Audit complete." },
+      { type: "progress", message: "Finished." },
+      { type: "report", value: "$.report" },
+    ],
   });
 
-  return report;
+  return {
+    ...report,
+    workflow: {
+      name: workflow.name,
+      status: workflow.status,
+      progress: workflow.progress,
+      errors: workflow.errors,
+      stepCount: workflow.stepCount,
+      approvalRequired: workflow.approvalRequired,
+    },
+  };
+}
+
+async function auditEstimateCsvAgainstGhl(context = {}) {
+  return executeCsvGhlWorkflow(context, { applyTags: false });
+}
+
+async function syncEstimateCsvWithGhl(context = {}) {
+  return executeCsvGhlWorkflow(context, { applyTags: true });
 }
 
 module.exports = {
+  auditEstimateCsvAgainstGhl,
   desiredTagsForRow,
   findContact,
   syncEstimateCsvWithGhl,

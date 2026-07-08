@@ -504,6 +504,28 @@ async function testCsvCountUsesUploadedFileNotGhl() {
   assert.match(result.answer, /2 valid contact rows/i);
 }
 
+async function testCsvAuditComposesGhlSearchWorkflow() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const file = await writeRouterCsv();
+  const result = await askJarvis({
+    message: "Audit this CSV against GHL.",
+    adminUserId: "admin-1",
+    files: [file],
+    uploadBatchId: "batch-1",
+  });
+
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.match(result.answer, /audited the CSV against GHL/i);
+  assert.match(result.answer, /Nothing was changed/i);
+  assert.equal(result.data.workflow.name, "csv_ghl_audit");
+  assert.ok(result.data.workflow.progress.some((event) => event.message === "Reading CSV..."));
+  assert.ok(ghlRequests.some((request) => request.path === "/contacts/search"));
+  assert.ok(!ghlRequests.some((request) => /\/tags$/.test(request.path)));
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
 async function testCsvSyncCreatesApprovalPlan() {
   resetReads();
   const beforePlans = plannedMessages.length;
@@ -595,6 +617,7 @@ async function run() {
     await testPotentialCustomersUsesConfiguredTag();
     await testCapabilitiesDiagnosticSanitizesFailures();
     await testCsvCountUsesUploadedFileNotGhl();
+    await testCsvAuditComposesGhlSearchWorkflow();
     await testCsvSyncCreatesApprovalPlan();
     await testLeadsByPipelineUsesOpportunityRead();
     await testAdviceRequest();

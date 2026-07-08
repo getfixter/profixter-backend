@@ -1,0 +1,140 @@
+const assert = require("assert");
+const Module = require("module");
+
+process.env.GHL_LOCATION_ID = "test-location";
+process.env.GHL_AI_COMMANDER_TOKEN = "pit-test-token";
+
+const fetchCalls = [];
+const originalLoad = Module._load;
+
+Module._load = function loadWithMockedFetch(request, parent, isMain) {
+  if (request === "node-fetch") {
+    return async function mockFetch(url, options) {
+      fetchCalls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "" },
+        text: async () =>
+          JSON.stringify({
+            tags: [
+              { id: "tag-1", name: "Roofing", active: true },
+              { id: "tag-2", name: "Archive", active: false },
+            ],
+          }),
+      };
+    };
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const { executeWorkflow } = require("../src/aiCommanderGhl/jarvisWorkflowExecutor");
+
+async function quiet(fn) {
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  console.info = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+}
+
+async function testWorkflowPrimitivesAndApiCall() {
+  fetchCalls.length = 0;
+  const result = await executeWorkflow({
+    name: "test_tag_workflow",
+    userRequest: "List active tags",
+    steps: [
+      { type: "progress", message: "Reading tags..." },
+      { type: "set", var: "activeNames", value: [] },
+      {
+        type: "api_call",
+        method: "GET",
+        path: "/tags/",
+        reason: "Read tags for workflow test",
+        resultVar: "tagResponse",
+      },
+      {
+        type: "filter",
+        items: "$.tagResponse.response.tags",
+        itemVar: "tag",
+        where: { path: "$.tag.active", equals: true },
+        resultVar: "activeTags",
+      },
+      {
+        type: "loop",
+        items: "$.activeTags",
+        itemVar: "tag",
+        progressEvery: 1,
+        progressMessage: "Processing tag ${indexDisplay} / ${loopLength}...",
+        steps: [
+          { type: "array_push", target: "activeNames", value: "$.tag.name" },
+        ],
+      },
+      {
+        type: "condition",
+        if: { path: "$.activeNames", notEmpty: true },
+        then: [{ type: "progress", message: "Active tags found." }],
+        else: [{ type: "progress", message: "No active tags found." }],
+      },
+      { type: "report", value: { activeNames: "$.activeNames" } },
+    ],
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(fetchCalls.length, 1);
+  assert.match(fetchCalls[0].url, /locationId=test-location/);
+  assert.deepEqual(result.report.activeNames, ["Roofing"]);
+  assert.ok(result.progress.some((event) => event.message === "Reading tags..."));
+  assert.ok(result.progress.some((event) => event.message === "Active tags found."));
+}
+
+async function testLoopContinueOnError() {
+  const result = await executeWorkflow({
+    name: "continue_on_error_workflow",
+    context: { rows: [1, 2, 3], processed: [] },
+    steps: [
+      {
+        type: "loop",
+        items: "$.rows",
+        itemVar: "row",
+        continueOnError: true,
+        steps: [
+          {
+            type: "transform",
+            handler: ({ variables }) => {
+              if (variables.row === 2) throw new Error("row failed");
+              variables.processed.push(variables.row);
+            },
+          },
+        ],
+      },
+      { type: "report", value: { processed: "$.processed" } },
+    ],
+  });
+
+  assert.equal(result.status, "completed_with_errors");
+  assert.deepEqual(result.report.processed, [1, 3]);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0].message, /row failed/);
+}
+
+async function run() {
+  await quiet(async () => {
+    await testWorkflowPrimitivesAndApiCall();
+    await testLoopContinueOnError();
+  });
+  console.log("Jarvis workflow executor tests passed");
+}
+
+run().catch((error) => {
+  console.error(error.stack || error.message);
+  process.exit(1);
+});

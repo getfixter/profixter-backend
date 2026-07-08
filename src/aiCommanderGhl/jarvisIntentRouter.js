@@ -83,8 +83,16 @@ function sanitizedReadFailure(error, action) {
 function looksLikeCsvSync(message, context = {}) {
   return (
     hasCsvFiles(context) &&
-    /\b(sync|tag|find|match|check|process|update)\b/i.test(message) &&
+    /\b(sync|tag|tags?|update|add|apply|process)\b/i.test(message) &&
     /\b(ghl|gohighlevel|highlevel|contacts?|leads?|roofing|siding|tags?)\b/i.test(message)
+  );
+}
+
+function looksLikeCsvAudit(message, context = {}) {
+  return (
+    hasCsvFiles(context) &&
+    /\b(audit|match|find|check|compare|against)\b/i.test(message) &&
+    /\b(ghl|gohighlevel|highlevel|contacts?|customers?|leads?)\b/i.test(message)
   );
 }
 
@@ -109,6 +117,7 @@ function classifyIntent(message, context = {}) {
 
   if (looksOutsideGhlWorkspace(clean, context)) return "advice";
   if (looksLikeCsvSync(clean, context)) return "write";
+  if (looksLikeCsvAudit(clean, context)) return "read";
   if (looksLikeRead(clean, context)) return "read";
   if (looksLikeWrite(clean, context)) return "write";
   if (looksLikeAdvice(clean) || isQuestion(clean)) return "advice";
@@ -167,7 +176,7 @@ function logJarvisRequest({ adminUserId, message, intent, readAction, status }) 
 
 async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" }) {
   const clean = cleanString(message);
-  const context = { files, uploadBatchId };
+  const context = { files, uploadBatchId, adminUserId, userRequest: clean };
   if (looksOutsideGhlWorkspace(clean, context)) {
     logJarvisRequest({ adminUserId, message: clean, intent: "advice", status: "outside_workspace" });
     return {
@@ -233,6 +242,7 @@ module.exports = {
   classifyIntent,
   hasGhlWorkspaceSignal,
   looksLikeRead,
+  looksLikeCsvAudit,
   looksLikeCsvSync,
   looksLikeWrite,
   looksOutsideGhlWorkspace,

@@ -105,6 +105,31 @@ function testUniversalRequestPreviewRedactsSecrets() {
   assert.equal(request.body.body.Authorization, "[REDACTED]");
 }
 
+function testJarvisWorkflowPreview() {
+  const request = buildRequestForAction({
+    actionId: "action_4",
+    actionType: "jarvis_workflow",
+    target: {},
+    payload: {
+      workflowName: "test_workflow",
+      workflowJson: JSON.stringify({
+        steps: [
+          { type: "progress", message: "Reading..." },
+          { type: "report", value: { ok: true } },
+        ],
+      }),
+      dryRun: false,
+      confirmationPhrase: "",
+    },
+  });
+
+  assert.equal(request.method, "WORKFLOW");
+  assert.equal(request.path, "jarvis://workflow");
+  assert.equal(request.body.name, "test_workflow");
+  assert.equal(request.body.stepCount, 2);
+  assert.ok(request.body.primitives.includes("loop"));
+}
+
 async function testDefaultGhlVersionHeader() {
   const originalInfo = console.info;
   const originalError = console.error;
@@ -127,6 +152,7 @@ async function run() {
   testCreateContactPayload();
   testUpsertOpportunityPayload();
   testUniversalRequestPreviewRedactsSecrets();
+  testJarvisWorkflowPreview();
   await testDefaultGhlVersionHeader();
   console.log("AI Commander GHL action payload tests passed");
 }

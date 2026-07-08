@@ -77,7 +77,10 @@ require.cache[ghlClientPath] = {
 };
 
 const { countCsvContacts } = require("../src/aiCommanderGhl/jarvisCsvProcessor");
-const { syncEstimateCsvWithGhl } = require("../src/aiCommanderGhl/jarvisCsvGhlSync");
+const {
+  auditEstimateCsvAgainstGhl,
+  syncEstimateCsvWithGhl,
+} = require("../src/aiCommanderGhl/jarvisCsvGhlSync");
 
 async function writeSampleCsv() {
   await fs.ensureDir(uploadRoot);
@@ -125,7 +128,7 @@ async function testCountCsvContacts() {
 async function testSyncEstimateCsvWithGhl() {
   ghlRequests.length = 0;
   const file = await writeSampleCsv();
-  const report = await syncEstimateCsvWithGhl({ files: [file] });
+  const report = await syncEstimateCsvWithGhl({ files: [file], approved: true });
 
   assert.equal(report.totalRows, 4);
   assert.equal(report.validContacts, 3);
@@ -137,12 +140,32 @@ async function testSyncEstimateCsvWithGhl() {
   assert.equal(report.errors.length, 0);
   assert.equal(report.createdContacts, 0);
   assert.equal(report.missingContacts[0].name, "Bob Missing");
+  assert.equal(report.workflow.name, "csv_ghl_tag_sync");
+  assert.ok(report.workflow.progress.some((event) => event.message === "Reading CSV..."));
+  assert.ok(report.workflow.progress.some((event) => event.message === "Finished."));
   assert.ok(ghlRequests.some((request) => request.path === "/contacts/contact-1/tags"));
+}
+
+async function testAuditEstimateCsvAgainstGhlDoesNotMutate() {
+  ghlRequests.length = 0;
+  const file = await writeSampleCsv();
+  const report = await auditEstimateCsvAgainstGhl({ files: [file] });
+
+  assert.equal(report.totalRows, 4);
+  assert.equal(report.validContacts, 3);
+  assert.equal(report.foundInGhl, 2);
+  assert.equal(report.notFoundInGhl, 1);
+  assert.equal(report.newlyTagged, 0);
+  assert.equal(report.alreadyTagged, 0);
+  assert.equal(report.workflow.name, "csv_ghl_audit");
+  assert.ok(report.workflow.progress.some((event) => event.message === "Audit complete."));
+  assert.ok(!ghlRequests.some((request) => /\/tags$/.test(request.path)));
 }
 
 async function run() {
   try {
     await testCountCsvContacts();
+    await testAuditEstimateCsvAgainstGhlDoesNotMutate();
     await testSyncEstimateCsvWithGhl();
     console.log("Jarvis CSV processing tests passed");
   } finally {

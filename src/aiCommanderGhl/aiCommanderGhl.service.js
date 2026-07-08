@@ -2,6 +2,7 @@ const crypto = require("crypto");
 
 const AiCommanderGhlAudit = require("./aiCommanderGhl.audit.model");
 const { executeGhlRequest } = require("./ghlUniversalExecutor");
+const { executeWorkflow } = require("./jarvisWorkflowExecutor");
 const { generateGhlPlan } = require("./ghlPlanner");
 const { countCsvContacts } = require("./jarvisCsvProcessor");
 const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
@@ -68,6 +69,8 @@ const DEFAULT_PAYLOAD = Object.freeze({
   universalQueryJson: "",
   universalBodyJson: "",
   universalReason: "",
+  workflowName: "",
+  workflowJson: "",
   confirmationPhrase: "",
   tags: [],
   customFields: [],
@@ -341,8 +344,9 @@ async function createEstimateCsvSyncPlan({ message, adminUserId, files, uploadBa
   const modelPlan = {
     summary: `${csvSummary.validContacts.toLocaleString("en-US")} valid CSV contact rows will be checked against GHL. Existing matching contacts will receive missing roofing/siding tags. Missing contacts will only be reported, not created.`,
     exactPlan: [
+      "Run a composed Jarvis workflow for the uploaded CSV.",
       "Parse the uploaded CSV on the backend.",
-      "Search GHL by phone first, then email, then name plus address.",
+      "Loop through each valid row and search GHL by phone first, then email, then name plus address.",
       "For existing contacts, add missing Roofing/Siding, sal-roofing, and sal-siding tags when indicated by the CSV row.",
       "Report missing contacts, multiple matches, per-row errors, and totals.",
       "Do not create new contacts from this CSV.",
@@ -387,6 +391,9 @@ async function executeInternalAction(action, executionContext = {}) {
     const report = await syncEstimateCsvWithGhl({
       files: action.payload?.files || [],
       uploadBatchId: action.payload?.uploadBatchId,
+      approved: true,
+      adminUserId: executionContext.adminUserId,
+      userRequest: executionContext.userRequest,
     });
     return {
       actionId: action.actionId,
@@ -444,6 +451,40 @@ async function executeInternalAction(action, executionContext = {}) {
       status: result.status || (result.dryRun ? "dry_run" : "executed"),
       rateLimit: result.rateLimit || {},
       extracted: { report: result },
+    };
+  }
+
+  if (action.actionType === "jarvis_workflow") {
+    const payload = action.payload || {};
+    const workflow = parseJsonObjectText(payload.workflowJson, "workflowJson");
+    const result = await executeWorkflow({
+      name: cleanString(payload.workflowName || workflow.name || "jarvis_workflow"),
+      steps: Array.isArray(workflow.steps) ? workflow.steps : [],
+      context: workflow.context && typeof workflow.context === "object" ? workflow.context : {},
+      dryRun: payload.dryRun === true || workflow.dryRun === true,
+      approvalRequired: true,
+      approved: true,
+      confirmationPhrase: payload.confirmationPhrase,
+      adminUserId: executionContext.adminUserId,
+      userRequest: executionContext.userRequest,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "WORKFLOW",
+        path: "jarvis://workflow",
+        body: {
+          name: result.name,
+          stepCount: result.stepCount,
+          dryRun: result.dryRun,
+          approvalRequired: result.approvalRequired,
+        },
+      },
+      response: result,
+      status: result.status,
+      rateLimit: {},
+      extracted: { workflow: result },
     };
   }
 
