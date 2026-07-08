@@ -30,6 +30,7 @@
     "test:admin-lead-emails": "node scripts/test_admin_lead_notifications.js",
     "test:chatbot-lead-rules": "node scripts/test_chatbot_lead_rules.js",
     "test:subscription-retention": "node scripts/test_subscription_retention_offer.js",
+    "test:admin-subscription-resolution": "node scripts/test_admin_subscription_plan_resolution.js",
     "test:ai-commander-body": "node scripts/test_ai_commander_body_parser.js",
     "test:ai-commander-ghl-actions": "node scripts/test_ai_commander_ghl_actions.js",
     "test:ghl-universal-executor": "node scripts/test_ghl_universal_executor.js",

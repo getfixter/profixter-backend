@@ -286,7 +286,9 @@ function subscriptionGrantsAccess(subscription, options = {}) {
 
   const now = options.now instanceof Date ? options.now : new Date();
   const stripeConfirmed = options.stripeConfirmed === true;
-  const status = String(subscription.status || "").trim().toLowerCase();
+  const status = options.stripeStatus
+    ? normalizeStripeStatus(options.stripeStatus)
+    : String(subscription.status || "").trim().toLowerCase();
 
   if (!["active", "trialing"].includes(status)) return false;
 
@@ -312,6 +314,97 @@ function subscriptionGrantsAccess(subscription, options = {}) {
   }
 
   return true;
+}
+
+function timestampForSubscriptionSort(value) {
+  const date = toDate(value);
+  return date ? date.getTime() : 0;
+}
+
+function subscriptionStatusRank(subscription, options = {}) {
+  const status = options.stripeStatus
+    ? normalizeStripeStatus(options.stripeStatus)
+    : normalizeStripeStatus(subscription?.status);
+
+  if (status === "active") return 60;
+  if (status === "trialing") return 55;
+  if (status === "past_due") return 35;
+  if (status === "unpaid") return 25;
+  if (status === "incomplete") return 15;
+  if (status === "paused") return 10;
+  return 0;
+}
+
+function subscriptionAccessSortTuple(subscription, options = {}) {
+  const stripeStatusBySubscriptionId = options.stripeStatusBySubscriptionId || new Map();
+  const stripeSubscriptionId = String(subscription?.stripeSubscriptionId || "");
+  const stripeStatus = stripeSubscriptionId
+    ? stripeStatusBySubscriptionId.get(stripeSubscriptionId)
+    : null;
+  const stripeConfirmed = ["active", "trialing"].includes(normalizeStripeStatus(stripeStatus));
+  const grantsAccess = subscriptionGrantsAccess(subscription, {
+    now: options.now,
+    stripeConfirmed,
+    stripeStatus,
+  });
+
+  return [
+    grantsAccess ? 1 : 0,
+    subscriptionStatusRank(subscription, { stripeStatus }),
+    timestampForSubscriptionSort(subscription?.currentPeriodEnd || subscription?.nextPaymentDate),
+    timestampForSubscriptionSort(subscription?.createdAt || subscription?.startDate),
+    timestampForSubscriptionSort(subscription?.updatedAt),
+    subscription?.stripeSubscriptionId ? 1 : 0,
+  ];
+}
+
+function compareSubscriptionAccess(left, right, options = {}) {
+  const leftTuple = subscriptionAccessSortTuple(left, options);
+  const rightTuple = subscriptionAccessSortTuple(right, options);
+
+  for (let index = 0; index < leftTuple.length; index += 1) {
+    if (leftTuple[index] !== rightTuple[index]) {
+      return rightTuple[index] - leftTuple[index];
+    }
+  }
+
+  return String(right?._id || "").localeCompare(String(left?._id || ""));
+}
+
+function selectCurrentSubscription(subscriptions = [], options = {}) {
+  const candidates = (Array.isArray(subscriptions) ? subscriptions : [])
+    .filter(Boolean)
+    .slice();
+
+  candidates.sort((left, right) => compareSubscriptionAccess(left, right, options));
+  return candidates[0] || null;
+}
+
+function subscriptionSelectionDiagnostics(subscriptions = [], selected = null, options = {}) {
+  return (Array.isArray(subscriptions) ? subscriptions : []).map((subscription) => {
+    const stripeStatusBySubscriptionId = options.stripeStatusBySubscriptionId || new Map();
+    const stripeSubscriptionId = String(subscription?.stripeSubscriptionId || "");
+    const stripeStatus = stripeSubscriptionId
+      ? stripeStatusBySubscriptionId.get(stripeSubscriptionId)
+      : null;
+    const stripeConfirmed = ["active", "trialing"].includes(normalizeStripeStatus(stripeStatus));
+
+    return {
+      subscriptionId: String(subscription?._id || ""),
+      stripeSubscriptionId: subscription?.stripeSubscriptionId || null,
+      subscriptionType: subscription?.subscriptionType || null,
+      status: subscription?.status || null,
+      accessStatus: subscription?.accessStatus || null,
+      cancelAtPeriodEnd: !!subscription?.cancelAtPeriodEnd,
+      currentPeriodEnd: subscription?.currentPeriodEnd || null,
+      grantsAccess: subscriptionGrantsAccess(subscription, {
+        now: options.now,
+        stripeConfirmed,
+        stripeStatus,
+      }),
+      selected: selected ? String(subscription?._id || "") === String(selected?._id || "") : false,
+    };
+  });
 }
 
 function isStripeSubscriptionMissingError(error) {
@@ -764,18 +857,18 @@ async function syncLegacyUserSubscription(userId) {
 
   const candidates = await Subscription.find({
     user: user._id,
-    status: { $in: ["active", "trialing"] },
-  }).sort({ currentPeriodEnd: 1, nextPaymentDate: 1, updatedAt: -1 });
+  }).sort({ currentPeriodEnd: -1, nextPaymentDate: -1, createdAt: -1, updatedAt: -1 });
   const activeSubs = candidates.filter((subscription) =>
     subscriptionGrantsAccess(subscription)
   );
 
   let chosen = null;
   if (user.defaultAddressId) {
-    chosen =
-      activeSubs.find((sub) => String(sub.addressId) === String(user.defaultAddressId)) || null;
+    chosen = selectCurrentSubscription(
+      activeSubs.filter((sub) => String(sub.addressId) === String(user.defaultAddressId))
+    );
   }
-  if (!chosen) chosen = activeSubs[0] || null;
+  if (!chosen) chosen = selectCurrentSubscription(activeSubs);
 
   const $set = {};
   if (!chosen) {
@@ -1378,6 +1471,9 @@ module.exports = {
   normalizeStripeStatus,
   deriveAccessStatus,
   subscriptionGrantsAccess,
+  compareSubscriptionAccess,
+  selectCurrentSubscription,
+  subscriptionSelectionDiagnostics,
   verifySubscriptionAccess,
   reconcileActiveStripeSubscriptions,
   handleCancelAtPeriodEnd,

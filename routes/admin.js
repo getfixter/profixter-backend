@@ -57,6 +57,7 @@ const {
 const {
   stripe,
   normalizePlanType,
+  normalizeStripeStatus,
   resolveStripePriceId,
   classifyPlanChange,
   resolveStripeSubscriptionForRecord,
@@ -66,6 +67,9 @@ const {
   upsertSubscriptionFromStripe,
   clearStripeSubscriptionSchedule,
   subscriptionGrantsAccess,
+  selectCurrentSubscription,
+  subscriptionSelectionDiagnostics,
+  syncCustomerFromStripe,
 } = require("../utils/subscriptionManagement");
 
 const ADMIN_EMAIL = process.env.MAIL_ADMIN || "getfixter@gmail.com";
@@ -149,33 +153,39 @@ router.put("/one-time-visit-settings", auth, ...onlyAdmin, async (req, res) => {
 });
 
 async function getAddressPlansForUser(user) {
-  const candidates = await Subscription.find({
-    user: user._id,
-    status: { $in: ["active", "trialing"] },
+  const candidates = await Subscription.find({ user: user._id }).sort({
+    currentPeriodEnd: -1,
+    nextPaymentDate: -1,
+    createdAt: -1,
+    updatedAt: -1,
   });
-  const subs = candidates.filter((subscription) =>
-    subscriptionGrantsAccess(subscription)
-  );
 
   const byAddressId = new Map();
   const cancellationByAddressId = new Map();
+  const hasAnyAddressSubs = candidates.some((subscription) => subscription.addressId);
 
   // 1) Map address-bound subs
-  subs.forEach((s) => {
-    if (s.addressId) {
-      byAddressId.set(String(s.addressId), s.subscriptionType);
-      if (s.cancellationDate) {
+  for (const address of user.addresses || []) {
+    const addressSubs = candidates.filter(
+      (subscription) => String(subscription.addressId || "") === String(address._id)
+    );
+    const selected = selectCurrentSubscription(addressSubs);
+    if (selected && subscriptionGrantsAccess(selected)) {
+      byAddressId.set(String(address._id), selected.subscriptionType);
+      if (selected.cancellationDate) {
         cancellationByAddressId.set(
-          String(s.addressId),
-          s.cancellationDate.toISOString().split("T")[0]
+          String(address._id),
+          selected.cancellationDate.toISOString().split("T")[0]
         );
       }
     }
-  });
+  }
 
   // 2) Addressless active sub → default address
-  const addrless = subs.find((s) => !s.addressId);
-  if (addrless && user.defaultAddressId) {
+  const addrless = !hasAnyAddressSubs
+    ? selectCurrentSubscription(candidates.filter((subscription) => !subscription.addressId))
+    : null;
+  if (addrless && subscriptionGrantsAccess(addrless) && user.defaultAddressId) {
     byAddressId.set(String(user.defaultAddressId), addrless.subscriptionType);
     if (addrless.cancellationDate) {
       cancellationByAddressId.set(
@@ -199,12 +209,324 @@ async function getAddressPlansForUser(user) {
   }));
 }
 
+function maskExternalId(value) {
+  if (!value) return null;
+  const text = String(value);
+  if (text.length <= 12) return `${text.slice(0, 4)}...`;
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function stripeTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(Number(value) * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function serializeStripeSubscriptionForDiagnostics(subscription) {
+  if (!subscription) return null;
+  const item = subscription.items?.data?.[0] || null;
+  return {
+    stripeSubscriptionId: maskExternalId(subscription.id),
+    stripeCustomerId: maskExternalId(subscription.customer),
+    status: subscription.status || null,
+    normalizedStatus: normalizeStripeStatus(subscription.status),
+    cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
+    currentPeriodEnd: stripeTimestamp(subscription.current_period_end),
+    createdAt: stripeTimestamp(subscription.created),
+    metadata: {
+      userId: subscription.metadata?.userId || null,
+      email: subscription.metadata?.email || null,
+      addressId: subscription.metadata?.addressId || null,
+      plan: subscription.metadata?.plan || null,
+      billingCycle: subscription.metadata?.billingCycle || null,
+    },
+    priceId: maskExternalId(item?.price?.id),
+    interval: item?.price?.recurring?.interval || null,
+  };
+}
+
+function chooseActiveStripeSubscription(stripeSubscriptions = []) {
+  return stripeSubscriptions
+    .filter((subscription) =>
+      ["active", "trialing"].includes(normalizeStripeStatus(subscription?.status))
+    )
+    .sort((left, right) => {
+      const leftStatusRank = normalizeStripeStatus(left?.status) === "active" ? 2 : 1;
+      const rightStatusRank = normalizeStripeStatus(right?.status) === "active" ? 2 : 1;
+      if (leftStatusRank !== rightStatusRank) return rightStatusRank - leftStatusRank;
+
+      const leftPeriodEnd = Number(left?.current_period_end || 0);
+      const rightPeriodEnd = Number(right?.current_period_end || 0);
+      if (leftPeriodEnd !== rightPeriodEnd) return rightPeriodEnd - leftPeriodEnd;
+
+      return Number(right?.created || 0) - Number(left?.created || 0);
+    })[0] || null;
+}
+
+async function findUserForSubscriptionRepair({
+  userId,
+  email,
+  stripeCustomerId,
+  stripeSubscription = null,
+}) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const clauses = [];
+
+  if (userId && mongoose.isValidObjectId(userId)) clauses.push({ _id: userId });
+  if (userId) clauses.push({ userId: String(userId) });
+  if (normalizedEmail) clauses.push({ email: normalizedEmail });
+  if (stripeCustomerId) clauses.push({ stripeCustomerId: String(stripeCustomerId) });
+  if (stripeSubscription?.customer) {
+    clauses.push({ stripeCustomerId: String(stripeSubscription.customer) });
+  }
+  if (stripeSubscription?.metadata?.email) {
+    clauses.push({ email: String(stripeSubscription.metadata.email).trim().toLowerCase() });
+  }
+  if (stripeSubscription?.metadata?.userId) {
+    clauses.push({ userId: String(stripeSubscription.metadata.userId) });
+  }
+
+  let user = clauses.length ? await User.findOne({ $or: clauses }) : null;
+  const customerId = stripeCustomerId || stripeSubscription?.customer || null;
+  if (!user && customerId) {
+    user = await syncCustomerFromStripe(String(customerId));
+  }
+
+  return user;
+}
+
+async function collectStripeSubscriptionsForUserRepair({
+  user,
+  email,
+  stripeCustomerId,
+  stripeSubscriptionId,
+}) {
+  const customerIds = new Set(
+    [stripeCustomerId, user?.stripeCustomerId].filter(Boolean).map((value) => String(value))
+  );
+  const subscriptionsById = new Map();
+
+  if (stripeSubscriptionId) {
+    const subscription = await stripe.subscriptions.retrieve(String(stripeSubscriptionId), {
+      expand: ["items.data.price"],
+    });
+    subscriptionsById.set(String(subscription.id), subscription);
+    if (subscription.customer) customerIds.add(String(subscription.customer));
+  }
+
+  const normalizedEmail = String(email || user?.email || "").trim().toLowerCase();
+  if (!customerIds.size && normalizedEmail) {
+    const customers = await stripe.customers.list({ email: normalizedEmail, limit: 10 });
+    for (const customer of customers.data || []) {
+      if (customer?.id) customerIds.add(String(customer.id));
+    }
+  }
+
+  for (const customerId of customerIds) {
+    const page = await stripe.subscriptions.list({
+      customer: customerId,
+      status: "all",
+      limit: 100,
+      expand: ["data.items.data.price"],
+    });
+    for (const subscription of page.data || []) {
+      subscriptionsById.set(String(subscription.id), subscription);
+    }
+  }
+
+  return {
+    customerIds: Array.from(customerIds),
+    stripeSubscriptions: Array.from(subscriptionsById.values()),
+  };
+}
+
+async function syncActiveStripeSubscriptionForUser(user, options = {}) {
+  const localBefore = await Subscription.find({ user: user._id }).sort({
+    currentPeriodEnd: -1,
+    nextPaymentDate: -1,
+    createdAt: -1,
+    updatedAt: -1,
+  });
+  const selectedBefore = selectCurrentSubscription(localBefore);
+  const beforeDiagnostics = subscriptionSelectionDiagnostics(localBefore, selectedBefore);
+  const alreadyGrantingAccess =
+    selectedBefore && subscriptionGrantsAccess(selectedBefore) ? selectedBefore : null;
+
+  const { customerIds, stripeSubscriptions } = await collectStripeSubscriptionsForUserRepair({
+    user,
+    email: options.email,
+    stripeCustomerId: options.stripeCustomerId,
+    stripeSubscriptionId: options.stripeSubscriptionId,
+  });
+  const selectedStripeSubscription = chooseActiveStripeSubscription(stripeSubscriptions);
+
+  if (!selectedStripeSubscription) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "admin_subscription_repair_no_active_stripe_subscription",
+        scope: "admin_subscription_sync",
+        userId: String(user._id),
+        publicUserId: user.userId || null,
+        email: user.email || null,
+        source: options.source || "admin_repair",
+        scannedStripeCustomers: customerIds.map(maskExternalId),
+        localSelection: beforeDiagnostics,
+      })
+    );
+
+    return {
+      repaired: false,
+      reason: alreadyGrantingAccess
+        ? "local_subscription_already_grants_access"
+        : "no_active_stripe_subscription_found",
+      user,
+      localBefore,
+      localAfter: localBefore,
+      selectedBefore,
+      selectedAfter: selectedBefore,
+      stripeSubscriptions,
+      selectedStripeSubscription: null,
+      customerIds,
+    };
+  }
+
+  const synced = await upsertSubscriptionFromStripe({
+    stripeSubscription: selectedStripeSubscription,
+    user,
+    addressIdHint: selectedStripeSubscription.metadata?.addressId || null,
+  });
+
+  const localAfter = await Subscription.find({ user: user._id }).sort({
+    currentPeriodEnd: -1,
+    nextPaymentDate: -1,
+    createdAt: -1,
+    updatedAt: -1,
+  });
+  const selectedAfter = selectCurrentSubscription(localAfter);
+  const afterDiagnostics = subscriptionSelectionDiagnostics(localAfter, selectedAfter);
+
+  console.log(
+    JSON.stringify({
+      level: "info",
+      event: "admin_subscription_repair_completed",
+      scope: "admin_subscription_sync",
+      userId: String(user._id),
+      publicUserId: user.userId || null,
+      email: user.email || null,
+      source: options.source || "admin_repair",
+      selectedStripeSubscriptionId: maskExternalId(selectedStripeSubscription.id),
+      selectedLocalSubscriptionId: String(selectedAfter?._id || ""),
+      ignoredSubscriptions: afterDiagnostics.filter((entry) => !entry.selected),
+    })
+  );
+
+  return {
+    repaired: !!synced,
+    reason: synced ? "active_stripe_subscription_synced" : "stripe_subscription_not_synced",
+    user,
+    localBefore,
+    localAfter,
+    selectedBefore,
+    selectedAfter,
+    stripeSubscriptions,
+    selectedStripeSubscription,
+    customerIds,
+  };
+}
+
 // DEBUG: see exactly what Admin will render for one user
 router.get("/users/:id/addressesDetailed", auth, onlyAdmin, async (req, res) => {
   const u = await User.findById(req.params.id).lean();
   if (!u) return res.status(404).json({ message: "User not found" });
   const rows = await getAddressPlansForUser(u);
   res.json(rows);
+});
+
+router.post("/users/subscription-sync/repair", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const stripeSubscriptionId = String(req.body?.stripeSubscriptionId || "").trim();
+    const stripeCustomerId = String(req.body?.stripeCustomerId || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const userId = String(req.body?.userId || "").trim();
+
+    let stripeSubscription = null;
+    if (stripeSubscriptionId) {
+      stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscriptionId, {
+        expand: ["items.data.price"],
+      });
+    }
+
+    const user = await findUserForSubscriptionRepair({
+      userId,
+      email,
+      stripeCustomerId,
+      stripeSubscription,
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "No local user matched that email, customer ID, user ID, or subscription.",
+      });
+    }
+
+    const result = await syncActiveStripeSubscriptionForUser(user, {
+      email,
+      stripeCustomerId,
+      stripeSubscriptionId,
+      source: "admin_subscription_repair_endpoint",
+    });
+
+    const selectedAfterGrantsAccess =
+      result.selectedAfter && subscriptionGrantsAccess(result.selectedAfter);
+
+    return res.json({
+      message: result.repaired
+        ? "Stripe subscription repair finished."
+        : "No active Stripe subscription was synced.",
+      repaired: result.repaired,
+      reason: result.reason,
+      user: {
+        _id: String(user._id),
+        userId: user.userId || null,
+        name: user.name || "",
+        email: user.email || "",
+        stripeCustomerId: maskExternalId(user.stripeCustomerId),
+      },
+      selectedStripeSubscription: serializeStripeSubscriptionForDiagnostics(
+        result.selectedStripeSubscription
+      ),
+      localBefore: subscriptionSelectionDiagnostics(result.localBefore, result.selectedBefore),
+      localAfter: subscriptionSelectionDiagnostics(result.localAfter, result.selectedAfter),
+      selectedCurrentPlan: selectedAfterGrantsAccess
+        ? {
+            subscriptionId: String(result.selectedAfter._id),
+            subscriptionType: result.selectedAfter.subscriptionType,
+            status: result.selectedAfter.status,
+            accessStatus: result.selectedAfter.accessStatus,
+            currentPeriodEnd: result.selectedAfter.currentPeriodEnd || null,
+          }
+        : null,
+      scannedStripeCustomers: result.customerIds.map(maskExternalId),
+      scannedStripeSubscriptions: result.stripeSubscriptions.map(
+        serializeStripeSubscriptionForDiagnostics
+      ),
+      addressesDetailed: await getAddressPlansForUser(user),
+    });
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "admin_subscription_repair_failed",
+        scope: "admin_subscription_sync",
+        message: err.message,
+      })
+    );
+    return res.status(err?.statusCode || 500).json({
+      message: "Failed to repair subscription from Stripe.",
+      error: err.message,
+    });
+  }
 });
 
 /* ───────────────── USERS ───────────────── */
@@ -1402,12 +1724,13 @@ router.post("/ghl/subscription-tags/cleanup", auth, onlyAdmin, async (_req, res)
   try {
     const users = await User.find({
       phone: { $exists: true, $ne: "" },
-    }).select("_id name email phone userId subscription");
+    }).select("_id name email phone userId subscription stripeCustomerId");
 
     let scanned = 0;
     let noPhone = 0;
     let noContact = 0;
     let removed = 0;
+    let repairedFromStripe = 0;
     const errors = [];
 
     for (const user of users) {
@@ -1418,12 +1741,31 @@ router.post("/ghl/subscription-tags/cleanup", auth, onlyAdmin, async (_req, res)
         continue;
       }
 
-      const activeSub = await Subscription.findOne({
-        user: user._id,
-        status: { $in: ["active", "trialing"] },
-      }).lean();
+      const subscriptions = await Subscription.find({ user: user._id });
+      const selectedSubscription = selectCurrentSubscription(subscriptions);
+      let hasActiveAccess =
+        selectedSubscription && subscriptionGrantsAccess(selectedSubscription);
 
-      if (activeSub) {
+      if (!hasActiveAccess && user.stripeCustomerId) {
+        try {
+          const repair = await syncActiveStripeSubscriptionForUser(user, {
+            source: "ghl_subscription_tag_cleanup",
+          });
+          hasActiveAccess =
+            repair.selectedAfter && subscriptionGrantsAccess(repair.selectedAfter);
+          if (hasActiveAccess) repairedFromStripe++;
+        } catch (repairError) {
+          errors.push({
+            userId: user.userId || "",
+            email: user.email || "",
+            phone: user.phone || "",
+            error: `Stripe subscription repair failed before GHL cleanup: ${repairError.message}`,
+          });
+          continue;
+        }
+      }
+
+      if (hasActiveAccess) {
         continue;
       }
 
@@ -1455,6 +1797,7 @@ router.post("/ghl/subscription-tags/cleanup", auth, onlyAdmin, async (_req, res)
       message: "GHL subscription tag cleanup finished",
       scanned,
       removed,
+      repairedFromStripe,
       noPhone,
       noContact,
       errors,
