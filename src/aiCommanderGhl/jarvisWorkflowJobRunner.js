@@ -31,6 +31,114 @@ function durationLabel(ms) {
   return `${seconds}s`;
 }
 
+function responseMessageFromError(error) {
+  const response = error?.response || {};
+  const message = response.message;
+  if (Array.isArray(message)) return message.map(cleanString).filter(Boolean).join("; ");
+  return cleanString(message || response.error || response.code || error?.message || error);
+}
+
+function actionLabelFromType(actionType) {
+  return titleCase(actionType || "workflow");
+}
+
+function firstContactFromPayload(payload = {}) {
+  const preview = Array.isArray(payload.preview) ? payload.preview : [];
+  const contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+  const contact = preview[0] || contacts[0] || null;
+  if (!contact || typeof contact !== "object") return null;
+  return {
+    id: cleanString(contact.id || contact.contactId),
+    name: cleanString(contact.name),
+    email: cleanString(contact.email),
+    phone: cleanString(contact.phone),
+    currentOwnerId: cleanString(contact.currentOwnerId || contact.assignedTo),
+  };
+}
+
+function buildGenericWorkflowFailureReport(job, error) {
+  const report = job?.report && typeof job.report === "object" ? job.report : {};
+  const stats = report.stats && typeof report.stats === "object" ? report.stats : {};
+  const updated = Number(stats.updated || stats.recordsChanged || 0);
+  const alreadyAssigned = Number(stats.alreadyAssigned || 0);
+  const processed = Number(job?.processedItems || stats.processed || 0);
+  const total = Number(job?.totalItems || stats.contactsFound || 0);
+  const failed = Number(stats.failed || 1);
+  const remaining = Math.max(0, total - processed);
+  const endpointCalled =
+    cleanString(error?.request?.endpoint) ||
+    [error?.request?.method, error?.request?.path].map(cleanString).filter(Boolean).join(" ");
+  const httpStatus = error?.ghlStatus || error?.statusCode || null;
+  const message = responseMessageFromError(error);
+
+  return {
+    actionName: actionLabelFromType(job?.actionType),
+    stepFailed: cleanString(job?.currentMessage) || `Running ${actionLabelFromType(job?.actionType)}`,
+    endpointCalled,
+    httpStatus,
+    ghlErrorMessage: message,
+    ghlErrorBody: error?.response || null,
+    payload: error?.request?.body || null,
+    firstAffectedContact: firstContactFromPayload(job?.payload),
+    anythingChangedBeforeFailure: updated > 0,
+    recordsProcessedBeforeFailure: processed,
+    recordsSucceeded: updated + alreadyAssigned,
+    recordsChanged: updated,
+    recordsFailed: failed,
+    recordsRemaining: remaining,
+    canResumeSafely: total > 0,
+    resumeReason:
+      updated > 0 || remaining > 0
+        ? `${updated.toLocaleString("en-US")} updated before failure. ${remaining.toLocaleString("en-US")} remaining. You can resume safely.`
+        : "No records were changed before failure. You can retry after reviewing the error.",
+    message: endpointCalled
+      ? `Failed while running ${actionLabelFromType(job?.actionType)}. GHL returned ${httpStatus || "an error"}: ${message}`
+      : `Failed while running ${actionLabelFromType(job?.actionType)}: ${message}`,
+  };
+}
+
+function workflowFailureReport({ job, error, failureReport }) {
+  const report = job?.report && typeof job.report === "object" ? job.report : {};
+  const finalFailureReport = failureReport || buildGenericWorkflowFailureReport(job, error);
+  const started = job?.startedAt ? new Date(job.startedAt).getTime() : Date.now();
+  const executionMs = Date.now() - started;
+  return {
+    summary: {
+      title: `${actionLabelFromType(job?.actionType)} Failed`,
+      status: "failed",
+      aiSummary: finalFailureReport.message,
+    },
+    stats: {
+      processed: finalFailureReport.recordsProcessedBeforeFailure || 0,
+      succeeded: finalFailureReport.recordsSucceeded || 0,
+      changed: finalFailureReport.recordsChanged || 0,
+      failed: finalFailureReport.recordsFailed || 1,
+      remaining: finalFailureReport.recordsRemaining || 0,
+      canResumeSafely: finalFailureReport.canResumeSafely ? "Yes" : "No",
+    },
+    warnings: [
+      finalFailureReport.message,
+      finalFailureReport.resumeReason,
+    ].filter(Boolean),
+    downloads: [],
+    recommendations: [
+      finalFailureReport.canResumeSafely
+        ? "Resume the workflow after reviewing the sanitized GHL response."
+        : "Review the failed step before retrying.",
+    ],
+    executionTime: {
+      ms: executionMs,
+      label: durationLabel(executionMs),
+    },
+    failureReport: finalFailureReport,
+    developerDetails: {
+      ...(report.developerDetails || {}),
+      failureReport: finalFailureReport,
+      previousReport: report,
+    },
+  };
+}
+
 function newWorkflowJobId() {
   return `wf_${crypto.randomBytes(10).toString("hex")}`;
 }
@@ -79,6 +187,7 @@ function publicWorkflowJob(job) {
 function executionResponseFromJob(job) {
   const status = statusForExecution(job.status);
   const workflowJob = publicWorkflowJob(job);
+  const jobErrors = redact(job.errors || []);
   return {
     status,
     jobId: job.jobId,
@@ -113,7 +222,15 @@ function executionResponseFromJob(job) {
             },
           ]
         : [],
-    errors: status === "failed" ? redact(job.errors || []) : [],
+    errors: status === "failed" ? jobErrors : [],
+    failureReport:
+      status === "failed"
+        ? redact(
+            workflowJob?.report?.failureReport ||
+              jobErrors.find((item) => item?.failureReport)?.failureReport ||
+              null
+          )
+        : null,
   };
 }
 
@@ -236,6 +353,12 @@ async function runContactOwnerAssignmentJob(job) {
     startedAt: job.startedAt,
     completedIndexes: job.completedIndexes || [],
     initialReport: job.report,
+    ownerLookupResult: {
+      id: job.payload?.ownerId,
+      name: job.payload?.ownerName,
+    },
+    tagSearchCount: job.payload?.contactCount,
+    dryRunResult: job.payload?.dryRun,
     onContactComplete: (state) => persistRowProgress(job.jobId, state),
   });
   await appendProgress(job.jobId, "Finished.", {
@@ -340,19 +463,24 @@ async function runWorkflowJob(jobId) {
     await job.save();
     await markAuditFinished(job, "executed", []);
   } catch (error) {
+    const failureReport = buildGenericWorkflowFailureReport(job, error);
+    const report = workflowFailureReport({ job, error, failureReport });
     const sanitizedError = redact({
       message: error?.message || String(error),
       statusCode: error?.statusCode || null,
       ghlStatus: error?.ghlStatus || null,
       request: error?.request || null,
       response: error?.response || null,
+      failureReport,
     });
     await JarvisWorkflowJob.updateOne(
       { jobId },
       {
         $set: {
           status: "failed",
-          currentMessage: "Workflow failed.",
+          currentMessage: failureReport.message || "Workflow failed.",
+          report: redact(report),
+          result: redact(report),
           failedAt: new Date(),
           lastHeartbeatAt: new Date(),
         },

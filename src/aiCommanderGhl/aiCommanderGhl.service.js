@@ -278,6 +278,63 @@ function responseError(error) {
   return cleanString(error.message || error);
 }
 
+function responseMessageFromError(error) {
+  const response = error?.response || {};
+  const message = response.message;
+  if (Array.isArray(message)) return message.map(cleanString).filter(Boolean).join("; ");
+  return cleanString(message || response.error || response.code || error?.message || error);
+}
+
+function buildApprovedActionFailureReport({
+  action,
+  error,
+  executedActions = [],
+  results = [],
+} = {}) {
+  const responseMessage = responseMessageFromError(error);
+  const endpointCalled =
+    cleanString(error?.request?.endpoint) ||
+    [error?.request?.method, error?.request?.path].map(cleanString).filter(Boolean).join(" ");
+  const actionName = actionLabelFromType(action?.actionType);
+  const succeeded = executedActions.length;
+  return {
+    actionName,
+    stepFailed: cleanString(action?.description) || `Executing ${actionName}`,
+    endpointCalled,
+    httpStatus: error?.ghlStatus || error?.statusCode || null,
+    ghlErrorMessage: responseMessage,
+    ghlErrorBody: error?.response || null,
+    payload: error?.request?.body || null,
+    firstAffectedContact: action?.payload?.contactId
+      ? {
+          id: action.payload.contactId,
+          name: cleanString(action.payload.name || action.payload.contactName),
+        }
+      : null,
+    anythingChangedBeforeFailure: results.length > 0,
+    recordsProcessedBeforeFailure: succeeded,
+    recordsSucceeded: succeeded,
+    recordsFailed: 1,
+    recordsRemaining: 0,
+    canResumeSafely: true,
+    resumeReason:
+      succeeded > 0
+        ? `${succeeded.toLocaleString("en-US")} action completed before failure. You can retry the failed action safely after reviewing the error.`
+        : "No earlier action completed before this failure. You can retry safely after reviewing the error.",
+    message: endpointCalled
+      ? `Failed while executing ${actionName}. GHL returned ${error?.ghlStatus || error?.statusCode || "an error"}: ${responseMessage}`
+      : `Failed while executing ${actionName}: ${responseMessage}`,
+  };
+}
+
+function actionLabelFromType(actionType) {
+  return cleanString(actionType)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || "Approved Action";
+}
+
 async function createPlan({ message, adminUserId }) {
   assertCommanderEnabled();
   assertConfigured();
@@ -696,6 +753,12 @@ async function executeInternalAction(action, executionContext = {}) {
       approved: true,
       adminUserId: executionContext.adminUserId,
       userRequest: executionContext.userRequest,
+      ownerLookupResult: {
+        id: action.payload?.ownerId,
+        name: action.payload?.ownerName,
+      },
+      tagSearchCount: action.payload?.contactCount,
+      dryRunResult: action.payload?.dryRun,
     });
     return {
       actionId: action.actionId,
@@ -901,13 +964,31 @@ async function executePlan({ confirmationId }) {
       });
       executionContext.actionResults[action.actionId] = result.extracted || {};
     } catch (error) {
-      errors.push(responseError(error));
+      const baseError = responseError(error);
+      const failureReport = buildApprovedActionFailureReport({
+        action,
+        error,
+        executedActions,
+        results,
+      });
+      errors.push(
+        typeof baseError === "object" && baseError
+          ? {
+              ...baseError,
+              failureReport,
+            }
+          : {
+              message: cleanString(baseError),
+              failureReport,
+            }
+      );
       if (error.request || error.response) {
         ghlResponses.push({
           actionId: action.actionId,
           status: error.ghlStatus || null,
           request: error.request || null,
           response: error.response || null,
+          failureReport,
         });
       }
       break;

@@ -466,6 +466,17 @@ function previewContacts(contacts, limit = 10) {
   }));
 }
 
+function contactPreview(contact) {
+  const normalized = normalizeContact(contact || {});
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    email: normalized.email,
+    phone: normalized.phone,
+    currentOwnerId: normalized.assignedTo,
+  };
+}
+
 async function prepareContactOwnerAssignment({ message, adminUserId, apiCall } = {}) {
   const parsed = parseContactOwnerAssignmentRequest(message);
   if (parsed.audienceType === "smart_list") {
@@ -555,6 +566,8 @@ function defaultReport({ ownerName, ownerId, tagName, contacts, startedAt }) {
     warnings: [],
     downloads: [],
     recommendations: [],
+    errors: [],
+    failureReport: null,
     executionTime: {
       ms: 0,
       label: "0s",
@@ -563,6 +576,10 @@ function defaultReport({ ownerName, ownerId, tagName, contacts, startedAt }) {
       ownerId,
       ownerName,
       tagName,
+      ownerLookupResult: null,
+      tagSearchCount: asArray(contacts).length,
+      dryRunResult: null,
+      firstActualUpdate: null,
       endpointCalls: [
         "GET /users/search",
         "GET /users/",
@@ -584,6 +601,54 @@ function durationLabel(ms) {
   return `${seconds}s`;
 }
 
+function failureMessage(failure) {
+  const status = failure?.ghlStatus || failure?.statusCode || failure?.httpStatus || "";
+  const message =
+    cleanString(failure?.ghlErrorMessage) ||
+    cleanString(failure?.message) ||
+    "GHL rejected the request.";
+  return status
+    ? `Failed while updating contact owner. GHL returned ${status}: ${message}`
+    : `Failed while updating contact owner: ${message}`;
+}
+
+function buildContactOwnerFailureReport(report, failure) {
+  const stats = report.stats || {};
+  const processed = Number(stats.processed || 0);
+  const updated = Number(stats.updated || 0);
+  const alreadyAssigned = Number(stats.alreadyAssigned || 0);
+  const failed = Number(stats.failed || 0);
+  const total = Number(stats.contactsFound || 0);
+  const remaining = Math.max(0, total - processed);
+  return {
+    actionName: "Contact Owner Assignment",
+    stepFailed: failure?.step || "Updating contact owner",
+    endpointCalled: failure?.endpointCalled || failure?.request?.endpoint || "",
+    httpStatus: failure?.ghlStatus || failure?.statusCode || null,
+    ghlErrorMessage:
+      cleanString(failure?.ghlErrorMessage) ||
+      cleanString(failure?.response?.message || failure?.message),
+    ghlErrorBody: failure?.response || null,
+    payload: failure?.payload || failure?.request?.body || null,
+    firstAffectedContact: failure?.contact || null,
+    anythingChangedBeforeFailure: updated > 0,
+    recordsProcessedBeforeFailure: processed,
+    recordsSucceeded: updated + alreadyAssigned,
+    recordsChanged: updated,
+    recordsAlreadyAssigned: alreadyAssigned,
+    recordsFailed: failed,
+    recordsRemaining: remaining,
+    canResumeSafely: true,
+    resumeReason:
+      remaining > 0
+        ? `${updated.toLocaleString("en-US")} updated before failure. ${remaining.toLocaleString("en-US")} remaining. You can resume safely.`
+        : failed > 0
+          ? `${updated.toLocaleString("en-US")} updated. ${failed.toLocaleString("en-US")} contacts failed and can be retried safely.`
+          : "No failed records are pending retry.",
+    message: failureMessage(failure),
+  };
+}
+
 function updateReportSummary(report, { ownerName, tagName, executionMs }) {
   const stats = report.stats;
   const processed = Number(stats.processed || 0);
@@ -596,17 +661,36 @@ function updateReportSummary(report, { ownerName, tagName, executionMs }) {
     label: durationLabel(executionMs),
   };
   report.summary.status = failed ? "completed_with_errors" : "completed";
-  report.summary.aiSummary = [
-    `I checked ${Number(stats.contactsFound || 0).toLocaleString("en-US")} contacts tagged "${tagName}".`,
-    `${Number(stats.updated || 0).toLocaleString("en-US")} contacts were assigned to ${ownerName}.`,
-    `${Number(stats.alreadyAssigned || 0).toLocaleString("en-US")} were already assigned to ${ownerName}.`,
-    `${Number(stats.failed || 0).toLocaleString("en-US")} failed.`,
-  ].join(" ");
+  const failure = asArray(report.errors)[0] || asArray(report.developerDetails?.failures)[0];
+  if (failure) {
+    report.failureReport = buildContactOwnerFailureReport(report, failure);
+  }
+  report.summary.aiSummary = report.failureReport
+    ? [
+        `I checked ${Number(stats.contactsFound || 0).toLocaleString("en-US")} contacts tagged "${tagName}".`,
+        `${Number(stats.updated || 0).toLocaleString("en-US")} contacts were assigned to ${ownerName}.`,
+        `${Number(stats.alreadyAssigned || 0).toLocaleString("en-US")} were already assigned to ${ownerName}.`,
+        `${Number(stats.failed || 0).toLocaleString("en-US")} failed.`,
+        report.failureReport.resumeReason,
+      ].join(" ")
+    : [
+        `I checked ${Number(stats.contactsFound || 0).toLocaleString("en-US")} contacts tagged "${tagName}".`,
+        `${Number(stats.updated || 0).toLocaleString("en-US")} contacts were assigned to ${ownerName}.`,
+        `${Number(stats.alreadyAssigned || 0).toLocaleString("en-US")} were already assigned to ${ownerName}.`,
+        `${Number(stats.failed || 0).toLocaleString("en-US")} failed.`,
+      ].join(" ");
   report.warnings = failed
-    ? [`${Number(failed).toLocaleString("en-US")} contact owner updates failed. Review the error report before re-running.`]
+    ? [
+        report.failureReport?.message ||
+          `${Number(failed).toLocaleString("en-US")} contact owner updates failed. Review the error report before re-running.`,
+      ]
     : [];
   report.recommendations = failed
-    ? ["Retry the failed contacts after checking the sanitized error report."]
+    ? [
+        report.failureReport?.canResumeSafely
+          ? "Resume or retry the failed contact owner updates after reviewing the sanitized GHL response."
+          : "Review the failed contact owner update before retrying.",
+      ]
     : ["Spot-check the assigned contacts in GHL and continue with the next operational workflow."];
   report.downloads = [
     {
@@ -630,17 +714,34 @@ async function mapWithConcurrency(items, limit, worker) {
   await Promise.all(workers);
 }
 
-function sanitizeFailure(error, contact) {
+function sanitizeFailure(error, contact, context = {}) {
+  const request = redact(error?.request || context.request || null);
+  const response = redact(error?.response || null);
+  const endpointCalled =
+    cleanString(request?.endpoint) ||
+    [request?.method, request?.path].map(cleanString).filter(Boolean).join(" ");
+  const status = error?.ghlStatus || error?.statusCode || null;
+  const responseMessage = Array.isArray(response?.message)
+    ? response.message.map(cleanString).filter(Boolean).join("; ")
+    : cleanString(response?.message || response?.error || response?.code);
   return redact({
+    actionName: "Contact Owner Assignment",
+    step: context.step || "Updating contact owner",
     contactId: contact?.id || "",
     name: contact?.name || "",
     email: contact?.email || "",
     phone: contact?.phone || "",
+    contact: contactPreview(contact),
     message: cleanString(error?.message || error),
     statusCode: error?.statusCode || null,
     ghlStatus: error?.ghlStatus || null,
-    request: error?.request || null,
-    response: error?.response || null,
+    httpStatus: status,
+    endpointCalled,
+    payload: request?.body || null,
+    request,
+    response,
+    ghlErrorMessage: responseMessage || cleanString(error?.message || error),
+    ghlErrorBody: response,
   });
 }
 
@@ -655,6 +756,9 @@ async function executeContactOwnerAssignment({
   startedAt = new Date(),
   completedIndexes = [],
   initialReport = null,
+  ownerLookupResult = null,
+  tagSearchCount = null,
+  dryRunResult = null,
   onContactComplete,
   apiCall,
 } = {}) {
@@ -691,6 +795,17 @@ async function executeContactOwnerAssignment({
     ownerId: cleanOwnerId,
     ownerName: cleanOwnerName,
     tagName: cleanTagName,
+    ownerLookupResult: redact(
+      ownerLookupResult || {
+        id: cleanOwnerId,
+        name: cleanOwnerName,
+      }
+    ),
+    tagSearchCount:
+      tagSearchCount === null || tagSearchCount === undefined
+        ? safeContacts.length
+        : Number(tagSearchCount || 0),
+    dryRunResult: redact(dryRunResult || report.developerDetails?.dryRunResult || null),
   };
   const call =
     apiCall ||
@@ -708,18 +823,37 @@ async function executeContactOwnerAssignment({
       if (cleanString(contact.assignedTo) === cleanOwnerId) {
         report.stats.alreadyAssigned += 1;
       } else {
-        await call({
+        const updateRequest = {
           method: "PUT",
           path: `/contacts/${encodeURIComponent(contact.id)}`,
           body: { assignedTo: cleanOwnerId },
           reason: `Assign contact owner to ${cleanOwnerName}`,
-        });
+        };
+        if (!report.developerDetails.firstActualUpdate) {
+          report.developerDetails.firstActualUpdate = redact({
+            endpoint: `${updateRequest.method} ${updateRequest.path}`,
+            payload: updateRequest.body,
+            contact: contactPreview(contact),
+          });
+        }
+        await call(updateRequest);
         report.stats.updated += 1;
       }
     } catch (error) {
       report.stats.failed += 1;
       report.developerDetails.failures = asArray(report.developerDetails.failures);
-      report.developerDetails.failures.push(sanitizeFailure(error, contact));
+      const failure = sanitizeFailure(error, contact, {
+        step: "Updating contact owner",
+        request: {
+          method: "PUT",
+          path: `/contacts/${encodeURIComponent(contact.id)}`,
+          endpoint: `PUT /contacts/${encodeURIComponent(contact.id)}`,
+          body: { assignedTo: cleanOwnerId },
+        },
+      });
+      report.developerDetails.failures.push(failure);
+      report.errors = asArray(report.errors);
+      report.errors.push(failure);
     } finally {
       completed.add(index);
       report.stats.processed = completed.size;

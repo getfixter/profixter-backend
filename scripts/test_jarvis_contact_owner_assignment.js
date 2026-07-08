@@ -2,6 +2,7 @@ const assert = require("assert");
 
 process.env.GHL_LOCATION_ID = "test-location";
 process.env.GHL_COMPANY_ID = "company-test";
+process.env.JARVIS_CONTACT_OWNER_ASSIGNMENT_CONCURRENCY = "1";
 
 const {
   executeContactOwnerAssignment,
@@ -15,6 +16,7 @@ const {
 const requests = [];
 let searchMode = "withTotal";
 let userSearchMode = "success";
+let updateMode = "success";
 
 function makeContact(index, extra = {}) {
   return {
@@ -121,6 +123,23 @@ async function apiCall(input) {
 
   if (input.method === "PUT" && /^\/contacts\/contact-[13]$/.test(input.path)) {
     assert.deepEqual(input.body, { assignedTo: "user-taras" });
+    if (updateMode === "failFirst" && input.path === "/contacts/contact-1") {
+      const error = new Error("GHL API request failed with 422");
+      error.statusCode = 502;
+      error.ghlStatus = 422;
+      error.request = {
+        method: "PUT",
+        endpoint: `PUT ${input.path}`,
+        path: input.path,
+        body: input.body,
+      };
+      error.response = {
+        message: ["assignedTo must be a valid user ID"],
+        error: "Unprocessable Entity",
+        statusCode: 422,
+      };
+      throw error;
+    }
     return {
       status: 200,
       response: { contact: { id: input.path.split("/").pop(), assignedTo: "user-taras" } },
@@ -249,12 +268,62 @@ async function testOwnerLookupFallsBackWhenUserSearchAuthUnsupported() {
   userSearchMode = "success";
 }
 
+async function testFailedOwnerUpdateReturnsDetailedReport() {
+  requests.length = 0;
+  searchMode = "withTotal";
+  updateMode = "failFirst";
+  const prepared = await prepareContactOwnerAssignment({
+    message:
+      'Assign the owner "Taras Bandura" to every contact that currently has the tag "website_registered".',
+    adminUserId: "admin-1",
+    apiCall,
+  });
+
+  requests.length = 0;
+  const report = await executeContactOwnerAssignment({
+    ownerId: prepared.owner.id,
+    ownerName: prepared.owner.name,
+    tagName: prepared.audience.tagName,
+    contacts: prepared.contacts,
+    approved: true,
+    adminUserId: "admin-1",
+    userRequest: "Assign owner",
+    ownerLookupResult: prepared.owner,
+    tagSearchCount: prepared.contactCount,
+    dryRunResult: prepared.ownerUpdateDryRun,
+    apiCall,
+  });
+
+  assert.equal(report.summary.status, "completed_with_errors");
+  assert.equal(report.stats.failed, 1);
+  assert.equal(report.stats.updated, 1);
+  assert.equal(report.failureReport.actionName, "Contact Owner Assignment");
+  assert.equal(report.failureReport.stepFailed, "Updating contact owner");
+  assert.equal(report.failureReport.endpointCalled, "PUT /contacts/contact-1");
+  assert.equal(report.failureReport.httpStatus, 422);
+  assert.match(report.failureReport.ghlErrorMessage, /assignedTo must be a valid user ID/i);
+  assert.equal(report.failureReport.firstAffectedContact.id, "contact-1");
+  assert.equal(report.failureReport.anythingChangedBeforeFailure, true);
+  assert.equal(report.failureReport.recordsProcessedBeforeFailure, 3);
+  assert.equal(report.failureReport.recordsSucceeded, 2);
+  assert.equal(report.failureReport.recordsFailed, 1);
+  assert.equal(report.failureReport.canResumeSafely, true);
+  assert.match(report.summary.aiSummary, /can be retried safely|resume safely/i);
+  assert.deepEqual(report.developerDetails.firstActualUpdate.payload, { assignedTo: "user-taras" });
+  assert.equal(report.developerDetails.ownerLookupResult.id, "user-taras");
+  assert.equal(report.developerDetails.tagSearchCount, 3);
+  assert.equal(report.developerDetails.dryRunResult.dryRun, true);
+  assert.doesNotMatch(JSON.stringify(report), /Bearer\s+(?!\\[REDACTED\\])/i);
+  updateMode = "success";
+}
+
 async function run() {
   await testParse();
   await testPrepareAndExecute();
   await testContactSearchPaginatesWithoutTotal();
   await testOwnerResolvesByEmail();
   await testOwnerLookupFallsBackWhenUserSearchAuthUnsupported();
+  await testFailedOwnerUpdateReturnsDetailedReport();
   console.log("Jarvis contact owner assignment tests passed");
 }
 
