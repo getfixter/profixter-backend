@@ -23,6 +23,11 @@ const {
   prepareContactOwnerAssignment,
 } = require("./jarvisContactOwnerAssignment");
 const {
+  executeOpportunityBuilder,
+  looksLikeOpportunityBuilderRequest,
+  prepareOpportunityBuilder,
+} = require("./jarvisOpportunityBuilder");
+const {
   UNSUPPORTED_MESSAGE,
   cleanString,
   executeAction,
@@ -351,6 +356,10 @@ async function createPlan({ message, adminUserId }) {
 
   if (looksLikeContactOwnerAssignmentRequest(originalMessage)) {
     return createContactOwnerAssignmentPlan({ message: originalMessage, adminUserId });
+  }
+
+  if (looksLikeOpportunityBuilderRequest(originalMessage)) {
+    return createOpportunityBuilderPlan({ message: originalMessage, adminUserId });
   }
 
   const modelPlan = await generateGhlPlan(originalMessage);
@@ -682,6 +691,136 @@ async function createContactOwnerAssignmentPlan({ message, adminUserId }) {
   return publicPlan;
 }
 
+async function createOpportunityBuilderPlan({ message, adminUserId }) {
+  assertCommanderEnabled();
+  assertGhlConfigured();
+  await markExpiredPlans();
+
+  const originalMessage = cleanString(message);
+  if (!originalMessage) {
+    throw errorWithStatus("message is required", 400);
+  }
+
+  const prepared = await prepareOpportunityBuilder({
+    message: originalMessage,
+    adminUserId,
+  });
+  const contactCount = Number(prepared.contactCount || 0);
+  const tagName = cleanString(prepared.audience?.tagName);
+  const pipelineName = cleanString(prepared.pipeline?.name);
+  const pipelineId = cleanString(prepared.pipeline?.id);
+  const stageName = cleanString(prepared.stage?.name);
+  const stageId = cleanString(prepared.stage?.id);
+  const dryRunEndpoint = cleanString(
+    prepared.opportunityCreateDryRun?.summary ||
+      prepared.opportunityCreateDryRun?.request?.endpoint ||
+      prepared.opportunityCreateDryRun?.path
+  );
+  const previewLines = prepared.preview.map((contact) => {
+    const label = cleanString(contact.name || contact.email || contact.phone || contact.id);
+    const details = [contact.email, contact.phone].map(cleanString).filter(Boolean).join(" / ");
+    return `${contact.number}. ${label}${details ? ` (${details})` : ""}`;
+  });
+
+  const confirmationId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + PLAN_TTL_MS);
+  const actions = [
+    normalizeAction(
+      {
+        actionId: "opportunity_builder",
+        actionType: "opportunity_builder",
+        supported: true,
+        riskLevel: "medium",
+        description:
+          "Create missing opportunities for every saved tagged contact after approval.",
+        target: {},
+        payload: {
+          audienceType: prepared.audience?.type || "tag",
+          tagName,
+          contactCount,
+          totalMatched: prepared.totalMatched,
+          partial: prepared.audience?.partial === true,
+          endpointUsed: prepared.audience?.endpointUsed,
+          preview: prepared.preview,
+          contacts: prepared.contacts,
+          pipelineName,
+          pipelineId,
+          stageName,
+          stageId,
+          pipelineStageId: stageId,
+          opportunityCreateDryRun: prepared.opportunityCreateDryRun,
+        },
+      },
+      0
+    ),
+  ];
+  const modelPlan = {
+    summary: [
+      `I found ${contactCount.toLocaleString("en-US")} contacts with tag "${tagName}".`,
+      `Pipeline: ${pipelineName}.`,
+      `Stage: ${stageName}.`,
+      "Nothing has been changed.",
+      "Approve to check each contact for an existing opportunity and create only the missing ones.",
+    ].join(" "),
+    exactPlan: [
+      `Search GHL contacts where tag equals "${tagName}".`,
+      `Count matches: ${contactCount.toLocaleString("en-US")} contacts.`,
+      `Resolve opportunity pipeline "${pipelineName}" to ID ${pipelineId}.`,
+      `Resolve stage "${stageName}" to ID ${stageId}.`,
+      "Preview the first 10 contacts before approval.",
+      dryRunEndpoint
+        ? `Dry-run validated the opportunity create payload: ${dryRunEndpoint}.`
+        : "No opportunity create dry-run was needed because the audience is empty.",
+      "After approval, loop through the saved contact list.",
+      `For each contact, search existing opportunities in pipeline "${pipelineName}".`,
+      "If an opportunity already exists in that pipeline, skip that contact.",
+      `If no opportunity exists, create one in "${pipelineName}" / "${stageName}".`,
+      "Return contacts found, opportunities created, already existed, failed, and execution time.",
+      ...previewLines.map((line) => `Preview: ${line}`),
+    ],
+    objectsAffected: [
+      `${contactCount.toLocaleString("en-US")} contacts tagged "${tagName}"`,
+      `Pipeline: ${pipelineName}`,
+      `Stage: ${stageName}`,
+      "No SMS, emails, tags, or customer-facing records",
+    ],
+    messagesToSendOrCreate: [],
+    riskLevel: "medium",
+    destructive: false,
+  };
+  const publicPlan = publicPlanFromModel({
+    modelPlan,
+    actions,
+    unsupportedActions: [],
+    confirmationId,
+    expiresAt,
+  });
+
+  await AiCommanderGhlAudit.create({
+    adminUserId,
+    originalMessage,
+    generatedPlan: {
+      modelPlan,
+      normalizedActions: actions,
+      publicPlan,
+      opportunityBuilder: {
+        audience: prepared.audience,
+        pipeline: prepared.pipeline,
+        stage: prepared.stage,
+        contactCount,
+        preview: prepared.preview,
+        opportunityCreateDryRun: prepared.opportunityCreateDryRun,
+      },
+    },
+    confirmationId,
+    status: "planned",
+    exactApiCallsPlanned: publicPlan.plannedApiActions,
+    expiresAt,
+  });
+
+  return publicPlan;
+}
+
 async function executeInternalAction(action, executionContext = {}) {
   if (action.actionType === "jarvis_campaign_template_create") {
     const template = parseJsonObjectText(
@@ -769,6 +908,41 @@ async function executeInternalAction(action, executionContext = {}) {
         body: {
           ownerName: action.payload?.ownerName,
           tagName: action.payload?.tagName,
+          contactCount: Array.isArray(action.payload?.contacts)
+            ? action.payload.contacts.length
+            : Number(action.payload?.contactCount || 0),
+        },
+      },
+      response: report,
+      status: "executed",
+      rateLimit: {},
+      extracted: { report },
+    };
+  }
+
+  if (action.actionType === "opportunity_builder") {
+    const report = await executeOpportunityBuilder({
+      tagName: action.payload?.tagName,
+      pipelineId: action.payload?.pipelineId,
+      pipelineName: action.payload?.pipelineName,
+      stageId: action.payload?.stageId || action.payload?.pipelineStageId,
+      stageName: action.payload?.stageName,
+      contacts: action.payload?.contacts || [],
+      approved: true,
+      adminUserId: executionContext.adminUserId,
+      userRequest: executionContext.userRequest,
+      dryRunResult: action.payload?.opportunityCreateDryRun,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "WORKFLOW",
+        path: "jarvis://opportunities/builder",
+        body: {
+          tagName: action.payload?.tagName,
+          pipelineName: action.payload?.pipelineName,
+          stageName: action.payload?.stageName,
           contactCount: Array.isArray(action.payload?.contacts)
             ? action.payload.contacts.length
             : Number(action.payload?.contactCount || 0),
@@ -1014,6 +1188,7 @@ module.exports = {
   createCampaignTemplatePlan,
   createContactOwnerAssignmentPlan,
   createEstimateCsvSyncPlan,
+  createOpportunityBuilderPlan,
   createPlan,
   executePlan,
   getWorkflowJobExecutionResponse,

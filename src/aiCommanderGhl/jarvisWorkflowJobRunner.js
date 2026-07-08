@@ -6,6 +6,7 @@ const { parseJsonObjectText } = require("./ghlActions");
 const { redact } = require("./ghlClient");
 const { executeContactOwnerAssignment } = require("./jarvisContactOwnerAssignment");
 const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
+const { executeOpportunityBuilder } = require("./jarvisOpportunityBuilder");
 const { executeWorkflow } = require("./jarvisWorkflowExecutor");
 
 const runningJobs = new Set();
@@ -144,7 +145,12 @@ function newWorkflowJobId() {
 }
 
 function isBackgroundWorkflowAction(action) {
-  return ["sync_estimate_csv_with_ghl", "jarvis_workflow", "contact_owner_assignment"].includes(action?.actionType);
+  return [
+    "sync_estimate_csv_with_ghl",
+    "jarvis_workflow",
+    "contact_owner_assignment",
+    "opportunity_builder",
+  ].includes(action?.actionType);
 }
 
 function statusForExecution(jobStatus) {
@@ -370,6 +376,33 @@ async function runContactOwnerAssignmentJob(job) {
   return result;
 }
 
+async function runOpportunityBuilderJob(job) {
+  await appendProgress(job.jobId, "Workflow started.", { jobId: job.jobId });
+  const result = await executeOpportunityBuilder({
+    tagName: job.payload?.tagName,
+    pipelineId: job.payload?.pipelineId,
+    pipelineName: job.payload?.pipelineName,
+    stageId: job.payload?.stageId || job.payload?.pipelineStageId,
+    stageName: job.payload?.stageName,
+    contacts: job.payload?.contacts || [],
+    approved: true,
+    adminUserId: job.adminUserId,
+    userRequest: job.originalMessage,
+    startedAt: job.startedAt,
+    completedIndexes: job.completedIndexes || [],
+    initialReport: job.report,
+    dryRunResult: job.payload?.opportunityCreateDryRun,
+    onContactComplete: (state) => persistRowProgress(job.jobId, state),
+  });
+  await appendProgress(job.jobId, "Finished.", {
+    processed: result.stats?.processed || 0,
+    opportunitiesCreated: result.stats?.opportunitiesCreated || 0,
+    alreadyExisted: result.stats?.alreadyExisted || 0,
+    failed: result.stats?.failed || 0,
+  });
+  return result;
+}
+
 async function runGenericWorkflowJob(job) {
   const workflow = parseJsonObjectText(job.payload?.workflowJson, "workflowJson");
   const result = await executeWorkflow({
@@ -449,7 +482,9 @@ async function runWorkflowJob(jobId) {
         ? await runCsvWorkflowJob(job)
         : job.actionType === "contact_owner_assignment"
           ? await runContactOwnerAssignmentJob(job)
-          : await runGenericWorkflowJob(job);
+          : job.actionType === "opportunity_builder"
+            ? await runOpportunityBuilderJob(job)
+            : await runGenericWorkflowJob(job);
 
     job = await JarvisWorkflowJob.findOne({ jobId });
     if (!job) return;
@@ -519,7 +554,9 @@ async function createWorkflowJobForAction({ audit, action }) {
       ? "csv_ghl_tag_sync"
       : actionType === "contact_owner_assignment"
         ? "contact_owner_assignment"
-      : cleanString(action.payload?.workflowName) || "jarvis_workflow";
+        : actionType === "opportunity_builder"
+          ? "opportunity_builder"
+          : cleanString(action.payload?.workflowName) || "jarvis_workflow";
   const totalItems = Number(
     action.payload?.validContacts ||
       action.payload?.contactCount ||

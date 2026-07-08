@@ -927,6 +927,39 @@ const ACTION_DEFINITIONS = {
       return { report: data };
     },
   }),
+
+  opportunity_builder: actionDoc({
+    method: "WORKFLOW",
+    endpoint: "jarvis://opportunities/builder",
+    riskLevel: "medium",
+    description:
+      "Create missing opportunities for a saved set of tagged contacts after approval.",
+    docs: "internal Jarvis Opportunity Builder workflow",
+    build(action) {
+      const payload = action.payload || {};
+      const contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+      return {
+        method: "WORKFLOW",
+        path: "jarvis://opportunities/builder",
+        body: {
+          audienceType: cleanString(payload.audienceType || "tag"),
+          tagName: cleanString(payload.tagName),
+          contactCount: contacts.length || Number(payload.contactCount || 0),
+          preview: Array.isArray(payload.preview) ? payload.preview.slice(0, 10) : [],
+          pipelineName: cleanString(payload.pipelineName),
+          pipelineId: cleanString(payload.pipelineId),
+          stageName: cleanString(payload.stageName),
+          stageId: cleanString(payload.stageId || payload.pipelineStageId),
+          approvalRequired: true,
+          checks: "GET /opportunities/search per contact",
+          creates: "POST /opportunities/ for missing opportunities only",
+        },
+      };
+    },
+    extract(data) {
+      return { report: data };
+    },
+  }),
 };
 
 function isSupportedAction(actionType) {

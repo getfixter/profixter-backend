@@ -14,6 +14,7 @@ const plannedMessages = [];
 const csvSyncPlans = [];
 const campaignTemplatePlans = [];
 const contactOwnerAssignmentPlans = [];
+const opportunityBuilderPlans = [];
 let contactReadMode = "success";
 let tagMode = "plain";
 
@@ -423,6 +424,39 @@ require.cache[servicePath] = {
             supported: true,
             method: "WORKFLOW",
             endpoint: "jarvis://contacts/owner-assignment",
+          },
+        ],
+        riskLevel: "medium",
+        destructive: false,
+        requiresApproval: true,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    },
+    createOpportunityBuilderPlan: async ({ message, adminUserId }) => {
+      opportunityBuilderPlans.push({ message, adminUserId });
+      return {
+        confirmationId: "opportunity-builder-confirmation",
+        summary:
+          'I found 123 contacts with tag "website_registered". Pipeline: Profixter Cold Calls. Stage: New Lead. Nothing has been changed. Approve to check each contact for an existing opportunity and create only the missing ones.',
+        exactPlan: [
+          'Search GHL contacts where tag equals "website_registered".',
+          'Resolve opportunity pipeline "Profixter Cold Calls".',
+          'Resolve stage "New Lead".',
+          "Preview the first 10 contacts before approval.",
+        ],
+        objectsAffected: [
+          '123 contacts tagged "website_registered"',
+          "Pipeline: Profixter Cold Calls",
+          "Stage: New Lead",
+        ],
+        messagesToSendOrCreate: [],
+        plannedApiActions: [
+          {
+            actionId: "opportunity_builder",
+            actionType: "opportunity_builder",
+            supported: true,
+            method: "WORKFLOW",
+            endpoint: "jarvis://opportunities/builder",
           },
         ],
         riskLevel: "medium",
@@ -855,6 +889,29 @@ async function testContactOwnerAssignmentRequiresApproval() {
   assert.equal(plannedMessages.length, beforeGenericPlans);
 }
 
+async function testOpportunityBuilderRequiresApproval() {
+  resetReads();
+  const beforeGenericPlans = plannedMessages.length;
+  const beforeOpportunityPlans = opportunityBuilderPlans.length;
+  const message =
+    'Add all contacts with tag "website_registered" to the opportunity pipeline "Profixter Cold Calls" in stage "New Lead".';
+  assert.equal(classifyIntent(message, { files: [] }), "write");
+  const result = await askJarvis({
+    message,
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "write");
+  assert.equal(result.requiresApproval, true);
+  assert.equal(result.plan.requiresApproval, true);
+  assert.equal(result.plan.confirmationId, "opportunity-builder-confirmation");
+  assert.equal(result.plan.plannedApiActions[0].actionType, "opportunity_builder");
+  assert.match(result.plan.summary, /123 contacts with tag "website_registered"/i);
+  assert.match(result.plan.summary, /Nothing has been changed/i);
+  assert.equal(opportunityBuilderPlans.length, beforeOpportunityPlans + 1);
+  assert.equal(plannedMessages.length, beforeGenericPlans);
+}
+
 async function run() {
   try {
     await testReadContactCount();
@@ -878,6 +935,7 @@ async function run() {
     await testWriteStillRequiresApproval();
     await testCampaignTemplateRequestRequiresApproval();
     await testContactOwnerAssignmentRequiresApproval();
+    await testOpportunityBuilderRequiresApproval();
     console.log("Jarvis intent router tests passed");
   } finally {
     await fs.remove(uploadRoot);

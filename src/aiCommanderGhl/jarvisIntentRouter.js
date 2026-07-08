@@ -2,6 +2,7 @@ const {
   createCampaignTemplatePlan,
   createContactOwnerAssignmentPlan,
   createEstimateCsvSyncPlan,
+  createOpportunityBuilderPlan,
   createPlan,
 } = require("./aiCommanderGhl.service");
 const { cleanString } = require("./ghlActions");
@@ -11,10 +12,11 @@ const {
 } = require("./jarvisInternalCapabilityRouter");
 const { looksLikeCampaignBuilderRequest } = require("./jarvisCampaignBuilder.service");
 const { looksLikeContactOwnerAssignmentRequest } = require("./jarvisContactOwnerAssignment");
+const { looksLikeOpportunityBuilderRequest } = require("./jarvisOpportunityBuilder");
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
 
 const OUTSIDE_GHL_WORKSPACE_ANSWER = "This is outside my GHL workspace. Ask ChatGPT.";
-const ROUTER_TRACE_VERSION = "jarvis-intent-router-contact-owner-assignment-debug-v1";
+const ROUTER_TRACE_VERSION = "jarvis-intent-router-opportunity-builder-v1";
 
 console.info("Jarvis intent router loaded", {
   routerTraceVersion: ROUTER_TRACE_VERSION,
@@ -22,6 +24,9 @@ console.info("Jarvis intent router loaded", {
     contactOwnerAssignment:
       typeof looksLikeContactOwnerAssignmentRequest === "function" &&
       typeof createContactOwnerAssignmentPlan === "function",
+    opportunityBuilder:
+      typeof looksLikeOpportunityBuilderRequest === "function" &&
+      typeof createOpportunityBuilderPlan === "function",
   },
 });
 
@@ -177,6 +182,7 @@ function classifyIntent(message, context = {}) {
 
   if (looksOutsideGhlWorkspace(clean, context)) return "advice";
   if (looksLikeContactOwnerAssignmentRequest(clean)) return "write";
+  if (looksLikeOpportunityBuilderRequest(clean)) return "write";
   if (looksLikeCsvSync(clean, context)) return "write";
   if (looksLikeCsvAudit(clean, context)) return "read";
   if (looksLikeRead(clean, context)) return "read";
@@ -235,10 +241,14 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
       contactOwnerAssignment:
         typeof looksLikeContactOwnerAssignmentRequest === "function" &&
         typeof createContactOwnerAssignmentPlan === "function",
+      opportunityBuilder:
+        typeof looksLikeOpportunityBuilderRequest === "function" &&
+        typeof createOpportunityBuilderPlan === "function",
     },
     evaluationOrder: [
       "outside_workspace",
       "contact_owner_assignment",
+      "opportunity_builder",
       "internal_capability",
       "classify_intent",
       "write_planners",
@@ -248,6 +258,7 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
     checks: {
       outsideWorkspace: looksOutsideGhlWorkspace(clean, context),
       contactOwnerAssignment: looksLikeContactOwnerAssignmentRequest(clean),
+      opportunityBuilder: looksLikeOpportunityBuilderRequest(clean),
       internalCapability: internalCapability
         ? {
             action: internalCapability.action,
@@ -293,11 +304,14 @@ function logJarvisRequest({
     readAction: readAction || null,
     status,
     messagePreview: cleanString(message).slice(0, 240),
-    registeredCapabilities: trace?.registeredCapabilities || {
-      contactOwnerAssignment:
-        typeof looksLikeContactOwnerAssignmentRequest === "function" &&
-        typeof createContactOwnerAssignmentPlan === "function",
-    },
+      registeredCapabilities: trace?.registeredCapabilities || {
+        contactOwnerAssignment:
+          typeof looksLikeContactOwnerAssignmentRequest === "function" &&
+          typeof createContactOwnerAssignmentPlan === "function",
+        opportunityBuilder:
+          typeof looksLikeOpportunityBuilderRequest === "function" &&
+          typeof createOpportunityBuilderPlan === "function",
+      },
     evaluationOrder: trace?.evaluationOrder || [],
     checks: trace?.checks || {},
     error: error
@@ -348,6 +362,31 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
       trace.fallbackReason =
         "Matched before internal capabilities, generic read actions, and generic write planning.";
       const plan = await createContactOwnerAssignmentPlan({ message: clean, adminUserId });
+      logJarvisRequest({
+        adminUserId,
+        message: clean,
+        intent: "write",
+        matchedIntent: trace.matchedIntent,
+        matchedCapability: trace.matchedCapability,
+        matchedRoute: trace.matchedRoute,
+        fallbackReason: trace.fallbackReason,
+        status: "planned",
+        trace,
+      });
+      return {
+        intent: "write",
+        plan,
+        requiresApproval: true,
+      };
+    }
+
+    if (looksLikeOpportunityBuilderRequest(clean)) {
+      trace.matchedIntent = "opportunity_builder";
+      trace.matchedCapability = "jarvisOpportunityBuilder";
+      trace.matchedRoute = "approval_workflow:opportunity_builder";
+      trace.fallbackReason =
+        "Matched before internal capabilities, generic read actions, and generic write planning.";
+      const plan = await createOpportunityBuilderPlan({ message: clean, adminUserId });
       logJarvisRequest({
         adminUserId,
         message: clean,
