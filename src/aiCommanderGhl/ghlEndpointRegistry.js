@@ -119,6 +119,7 @@ const ENDPOINTS = [
   endpoint({ key: "contacts.tasks.list", group: "tasks", method: "GET", path: "/contacts/:contactId/tasks", description: "List tasks for one contact.", requiredScopes: ["contacts.readonly"], requiresLocationId: false }),
   endpoint({ key: "contacts.tasks.update", group: "tasks", method: "PUT", path: "/contacts/:contactId/tasks/:taskId", description: "Update a contact task.", requiredScopes: ["contacts.write"], riskLevel: "medium", requiresLocationId: false }),
   endpoint({ key: "contacts.tasks.delete", group: "tasks", method: "DELETE", path: "/contacts/:contactId/tasks/:taskId", description: "Delete a contact task.", requiredScopes: ["contacts.write"], riskLevel: "high", destructive: true, requiresLocationId: false }),
+  endpoint({ key: "locations.tasks.search", group: "tasks", method: "POST", path: "/locations/:locationId/tasks/search", description: "Search location tasks.", requiredScopes: ["locations/tasks.readonly"], readOnly: true, approvalRequired: false, requiresLocationId: false, docs: "https://marketplace.gohighlevel.com/docs/ghl/locations/task-search/" }),
 
   endpoint({ key: "contacts.campaign.add", group: "campaigns", method: "POST", path: "/contacts/:contactId/campaigns/:campaignId", description: "Add one contact to a campaign.", requiredScopes: ["contacts.write"], riskLevel: "medium", requiresLocationId: false }),
   endpoint({ key: "contacts.campaign.remove", group: "campaigns", method: "DELETE", path: "/contacts/:contactId/campaigns/:campaignId", description: "Remove one contact from a campaign.", requiredScopes: ["contacts.write"], riskLevel: "medium", destructive: true, requiresLocationId: false }),
@@ -152,6 +153,7 @@ const ENDPOINTS = [
 
   endpoint({ key: "conversations.search", group: "conversations", method: "GET", path: "/conversations/search", description: "Search conversations.", requiredScopes: ["conversations.readonly"] }),
   endpoint({ key: "conversations.list", group: "conversations", method: "GET", path: "/conversations/", description: "List conversations.", requiredScopes: ["conversations.readonly"] }),
+  endpoint({ key: "conversations.messages.list", group: "conversations", method: "GET", path: "/conversations/:conversationId/messages", description: "List messages for one conversation.", requiredScopes: ["conversations/message.readonly"], requiresLocationId: false, docs: "https://marketplace.gohighlevel.com/docs/ghl/conversations/get-messages/" }),
   endpoint({ key: "conversations.messages.send", group: "conversations", method: "POST", path: "/conversations/messages", description: "Send one conversation message.", requiredScopes: ["conversations/message.write"], riskLevel: "high" }),
 
   endpoint({ key: "locations.get", group: "locations", method: "GET", path: "/locations/:locationId", description: "Get location/sub-account details.", requiredScopes: ["locations.readonly"], requiresLocationId: false }),

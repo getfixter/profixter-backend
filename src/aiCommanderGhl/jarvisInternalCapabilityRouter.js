@@ -17,12 +17,13 @@ const {
   listCustomValues,
   listPipelines,
   listTags,
+  listTasks,
   listUsers,
   listWorkflows,
 } = require("./jarvisReadActions");
 
 function hasGhlSignal(text) {
-  return /\b(ghl|gohighlevel|highlevel|account|workspace|setup|crm|pipeline|tag|opportunit|workflow|conversation|campaign|calendar|settings?|diagnostic|health check|report)\b/.test(
+  return /\b(ghl|gohighlevel|highlevel|account|workspace|setup|crm|pipeline|tag|task|opportunit|workflow|conversation|campaign|calendar|settings?|diagnostic|health check|report)\b/.test(
     text
   );
 }
@@ -36,7 +37,7 @@ function isWriteCampaignRequest(text) {
 }
 
 function hasSpecificReviewSubject(text) {
-  return /\b(campaign builder|campaigns?|pipelines?|stages?|tags?|opportunit|workflows?|conversations?|messages?|inbox|settings?|configuration|location|custom fields?|custom values?)\b/.test(
+  return /\b(campaign builder|campaigns?|pipelines?|stages?|tags?|tasks?|opportunit|workflows?|conversations?|messages?|inbox|settings?|configuration|location|custom fields?|custom values?)\b/.test(
     text
   );
 }
@@ -77,6 +78,10 @@ function resolveInternalCapability(message, context = {}) {
 
   if (/\btags?\b/.test(text) && /\b(review|audit|inspect|diagnos|health|setup)\b/.test(text)) {
     return capability("Tag Review", "tag_review");
+  }
+
+  if (/\btasks?\b/.test(text) && /\b(review|audit|inspect|diagnos|health|setup)\b/.test(text)) {
+    return capability("Task Review", "task_review");
   }
 
   if (/\bopportunit/.test(text) && /\b(review|audit|inspect|diagnos|health|setup)\b/.test(text)) {
@@ -222,6 +227,7 @@ async function runAccountAuditModules() {
     runModule("pipelines", "Pipelines and stages", listPipelines),
     runModule("opportunities", "Opportunities", countOpportunities),
     runModule("workflows", "Workflows", listWorkflows),
+    runModule("tasks", "Tasks", listTasks),
     runModule("conversations", "Conversations", countConversationsWaiting),
     runModule("users", "Users/team members", listUsers),
     runModule("calendars", "Calendars", listCalendars),
@@ -377,6 +383,12 @@ async function runInternalCapability({ capability: resolved, context = {} } = {}
         action: "tag_review",
         label: "Tag Review",
         modules: [await runModule("tags", "Tags", listTags)],
+      });
+    case "task_review":
+      return buildCombinedReport({
+        action: "task_review",
+        label: "Task Review",
+        modules: [await runModule("tasks", "Tasks", listTasks)],
       });
     case "opportunity_review":
       return buildCombinedReport({

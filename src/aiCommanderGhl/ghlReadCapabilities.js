@@ -181,6 +181,18 @@ function buildCapabilityDefinitions(locationId) {
       requests: [{ method: "GET", path: "/workflows/", query: { locationId } }],
     },
     {
+      key: "tasks",
+      label: "Tasks",
+      collectionKeys: ["tasks", "data", "items"],
+      requests: [
+        {
+          method: "POST",
+          path: `/locations/${encodedLocationId}/tasks/search`,
+          body: { page: 1, pageLimit: 1 },
+        },
+      ],
+    },
+    {
       key: "calendars",
       label: "Calendars",
       collectionKeys: ["calendars", "data", "items"],

@@ -233,6 +233,25 @@ require.cache[ghlClientPath] = {
           rateLimit: {},
         };
       }
+      if (input.method === "POST" && input.path === "/locations/test-location/tasks/search") {
+        return {
+          status: 200,
+          data: {
+            tasks: [
+              {
+                id: "task-1",
+                title: "Call stale roofing lead",
+                status: "open",
+                assignedTo: "user-1",
+                dueDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+              },
+            ],
+            total: 1,
+          },
+          request: { endpoint: "POST /locations/test-location/tasks/search" },
+          rateLimit: {},
+        };
+      }
       if (input.method === "GET" && input.path === "/calendars/") {
         return {
           status: 200,
@@ -543,9 +562,12 @@ async function testHealthCheckUsesInternalCapability() {
   assert.equal(result.data.healthCheckEndpoint, "GET /api/admin/jarvis/ghl-control/health");
   assert.equal(result.data.controlCenter.title, "Jarvis GHL Health Check");
   assert.ok(result.data.businessAdvisorReport);
+  assert.ok(result.data.businessAdvisorReport.sectionDataRequirements);
   assert.match(result.answer, /Critical Problems:/);
   assert.match(result.answer, /Revenue Opportunities:/);
   assert.match(result.answer, /AI Automation Opportunities:/);
+  assert.match(result.answer, /Missing or limited GHL data:/);
+  assert.match(result.answer, /Required endpoint\(s\):/);
   assert.match(result.answer, /If I were running your business today, here are the three things I'd do first\./);
   assert.ok(result.data.working.some((item) => item.key === "contacts"));
   assert.ok(result.data.failing.some((item) => item.key === "campaigns"));
@@ -571,6 +593,7 @@ async function testAccountAuditUsesInternalModules() {
   assert.ok(moduleKeys.includes("pipelines"));
   assert.ok(moduleKeys.includes("opportunities"));
   assert.ok(moduleKeys.includes("workflows"));
+  assert.ok(moduleKeys.includes("tasks"));
   assert.ok(moduleKeys.includes("conversations"));
   assert.ok(moduleKeys.includes("users"));
   assert.ok(moduleKeys.includes("calendars"));
@@ -581,6 +604,7 @@ async function testAccountAuditUsesInternalModules() {
   assert.ok(result.data.modules.find((item) => item.key === "campaigns").status === "failed");
   assert.ok(result.data.warnings.some((item) => item.module === "campaigns"));
   assert.ok(result.data.businessAdvisorReport);
+  assert.ok(result.data.businessAdvisorReport.sectionDataRequirements);
   assert.match(result.answer, /Critical Problems:/);
   assert.match(result.answer, /Revenue Opportunities:/);
   assert.match(result.answer, /AI Automation Opportunities:/);
@@ -591,6 +615,10 @@ async function testAccountAuditUsesInternalModules() {
   assert.match(result.answer, /Estimated Revenue Impact:/);
   assert.match(result.answer, /Recommended Next Actions:/);
   assert.match(result.answer, /1 opportunities have had no visible activity for over 30 days/i);
+  assert.match(result.answer, /1 tasks are visible: 1 open, 0 completed, 1 overdue/i);
+  assert.match(result.answer, /POST \/locations\/:locationId\/tasks\/search/);
+  assert.match(result.answer, /Data used:/);
+  assert.match(result.answer, /Missing or limited GHL data:/);
   assert.match(result.answer, /\$12,000/);
   assert.match(result.answer, /If I were running your business today, here are the three things I'd do first\./);
   assert.equal(plannedMessages.length, beforePlans);

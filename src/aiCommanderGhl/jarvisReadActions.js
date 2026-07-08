@@ -521,6 +521,9 @@ function summarizeOpportunityBusinessSignals(opportunities, { stageNames, pipeli
     valueTotal: 0,
     staleValue: 0,
     missingValueCount: 0,
+    assignedCount: 0,
+    unassignedCount: 0,
+    byOwner: {},
     valueAvailable: false,
     staleSamples: [],
   };
@@ -530,6 +533,14 @@ function summarizeOpportunityBusinessSignals(opportunities, { stageNames, pipeli
     if (/\bwon\b/.test(status)) signals.wonCount += 1;
     else if (/\blost\b/.test(status)) signals.lostCount += 1;
     else signals.openCount += 1;
+
+    const owner = cleanString(opportunity?.assignedTo || opportunity?.userId || opportunity?.ownerId);
+    if (owner) {
+      signals.assignedCount += 1;
+      signals.byOwner[owner] = (signals.byOwner[owner] || 0) + 1;
+    } else {
+      signals.unassignedCount += 1;
+    }
 
     const value = opportunityValue(opportunity);
     if (Number.isFinite(value) && value > 0) {
@@ -707,6 +718,58 @@ async function listWorkflows() {
       : "I checked GHL. I did not find any workflows.",
     data: { workflows, total: workflows.length },
     sources: ["GHL workflows"],
+  };
+}
+
+async function listTasks() {
+  const locationId = getLocationId();
+  const result = await listReadCategory({
+    label: "tasks",
+    dataKey: "tasks",
+    requests: [
+      {
+        method: "POST",
+        path: `/locations/${encodeURIComponent(locationId)}/tasks/search`,
+        body: { page: 1, pageLimit: 100 },
+      },
+    ],
+    collectionKeys: ["tasks", "data", "items"],
+    sources: ["GHL tasks"],
+    mapItem: (item) => ({
+      id: cleanString(item?.id || item?._id),
+      name: cleanString(item?.title || item?.name || item?.body),
+      status: cleanString(item?.status || item?.state),
+      assignedTo: cleanString(item?.assignedTo || item?.userId || item?.ownerId),
+      dueDate: cleanString(item?.dueDate || item?.dueAt),
+      completed: item?.completed === true || /complete|done/i.test(cleanString(item?.status || item?.state)),
+    }),
+  });
+
+  const now = Date.now();
+  const tasks = asArray(result.data?.tasks);
+  const byOwner = {};
+  let completed = 0;
+  let open = 0;
+  let overdue = 0;
+  for (const task of tasks) {
+    if (task.completed) completed += 1;
+    else open += 1;
+    const owner = cleanString(task.assignedTo) || "Unassigned";
+    byOwner[owner] = (byOwner[owner] || 0) + 1;
+    const dueMs = Date.parse(cleanString(task.dueDate));
+    if (!task.completed && Number.isFinite(dueMs) && dueMs < now) overdue += 1;
+  }
+
+  return {
+    ...result,
+    answer: `I checked GHL. I found ${formatNumber(result.data.total || tasks.length)} tasks: ${formatNumber(open)} open, ${formatNumber(completed)} completed, and ${formatNumber(overdue)} overdue in the returned task set.`,
+    data: {
+      ...result.data,
+      open,
+      completed,
+      overdue,
+      byOwner,
+    },
   };
 }
 
@@ -1381,6 +1444,10 @@ function resolveReadAction(message, context = {}) {
     return { action: "list_workflows" };
   }
 
+  if (/\btasks?\b/.test(text) && /\b(show|list|what|all|have|exist|how many|count|open|due|overdue)\b/.test(text)) {
+    return { action: "list_tasks" };
+  }
+
   if (/\bcalendars?\b/.test(text) && /\b(show|list|what|all|have|exist)\b/.test(text)) {
     return { action: "list_calendars" };
   }
@@ -1439,6 +1506,7 @@ async function runReadAction(message, context = {}) {
   if (action === "check_contacts_connection") return checkContactsConnection();
   if (action === "diagnose_ghl_access") return diagnoseGhlAccess();
   if (action === "list_workflows") return listWorkflows();
+  if (action === "list_tasks") return listTasks();
   if (action === "list_calendars") return listCalendars();
   if (action === "list_appointments") return listAppointments();
   if (action === "list_users") return listUsers();
@@ -1472,6 +1540,7 @@ module.exports = {
   listPipelines,
   listSurveys,
   listTags,
+  listTasks,
   listUsers,
   listWorkflows,
   resolveReadAction,
