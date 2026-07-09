@@ -865,6 +865,40 @@ const ACTION_DEFINITIONS = {
     },
   }),
 
+  generic_ghl_workflow: actionDoc({
+    method: "WORKFLOW",
+    endpoint: "jarvis://ghl/generic-workflow",
+    riskLevel: "high",
+    description:
+      "Execute a Generic GHL Planner workflow through Universal GHL Executor after approval.",
+    docs: "internal Jarvis Generic GHL Planner workflow",
+    build(action) {
+      const payload = action.payload || {};
+      const plan = parseJsonObjectText(payload.genericPlanJson, "genericPlanJson");
+      const endpoints = Array.isArray(plan.selectedEndpoints) ? plan.selectedEndpoints : [];
+      return {
+        method: "WORKFLOW",
+        path: "jarvis://ghl/generic-workflow",
+        body: {
+          objective: cleanString(plan.objective),
+          operation: cleanString(plan.operation),
+          approvalRequired: plan.approvalRequired === true,
+          riskLevel: cleanString(plan.riskLevel),
+          expectedAffectedRecords: Number(plan.expectedAffectedRecords || 0),
+          endpoints: endpoints.map((endpoint) => ({
+            key: cleanString(endpoint.key),
+            method: cleanString(endpoint.method),
+            path: cleanString(endpoint.path),
+          })),
+          debugTrace: Array.isArray(plan.debugTrace) ? plan.debugTrace.slice(0, 20) : [],
+        },
+      };
+    },
+    extract(data) {
+      return { report: data };
+    },
+  }),
+
   jarvis_campaign_template_create: actionDoc({
     method: "INTERNAL",
     endpoint: "jarvis://campaigns/templates",

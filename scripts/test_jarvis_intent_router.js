@@ -14,6 +14,7 @@ const plannedMessages = [];
 const csvSyncPlans = [];
 const campaignTemplatePlans = [];
 const contactOwnerAssignmentPlans = [];
+const genericGhlPlannerPlans = [];
 const opportunityBuilderPlans = [];
 let contactReadMode = "success";
 let tagMode = "plain";
@@ -432,6 +433,30 @@ require.cache[servicePath] = {
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
       };
     },
+    createGenericGhlPlannerPlan: async ({ message, adminUserId }) => {
+      genericGhlPlannerPlans.push({ message, adminUserId });
+      return {
+        confirmationId: "generic-ghl-planner-confirmation",
+        summary:
+          "Generic GHL Planner prepared a composed workflow. Nothing has been changed.",
+        exactPlan: ["Resolve data", "Loop records", "Execute selected GHL endpoints"],
+        objectsAffected: ["2 expected records"],
+        messagesToSendOrCreate: [],
+        plannedApiActions: [
+          {
+            actionId: "generic_ghl_workflow",
+            actionType: "generic_ghl_workflow",
+            supported: true,
+            method: "WORKFLOW",
+            endpoint: "jarvis://ghl/generic-workflow",
+          },
+        ],
+        riskLevel: "medium",
+        destructive: false,
+        requiresApproval: true,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      };
+    },
     createOpportunityBuilderPlan: async ({ message, adminUserId }) => {
       opportunityBuilderPlans.push({ message, adminUserId });
       return {
@@ -803,6 +828,23 @@ async function testLeadsByPipelineUsesOpportunityRead() {
   assert.ok(ghlRequests.some((request) => request.path === "/opportunities/search"));
 }
 
+async function testGenericPlannerReadOnlyUnreadConversations() {
+  resetReads();
+  const beforePlans = plannedMessages.length;
+  const result = await askJarvis({
+    message: "Show unread conversations.",
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "read");
+  assert.equal(result.requiresApproval, false);
+  assert.equal(result.data.genericPlanner, true);
+  assert.equal(result.data.report.stats.recordsFound, 1);
+  assert.match(result.answer, /1 unread conversation/i);
+  assert.ok(ghlRequests.some((request) => request.path === "/conversations/search"));
+  assert.equal(plannedMessages.length, beforePlans);
+}
+
 async function testAdviceRequest() {
   resetReads();
   const beforeReads = ghlRequests.length;
@@ -912,6 +954,26 @@ async function testOpportunityBuilderRequiresApproval() {
   assert.equal(plannedMessages.length, beforeGenericPlans);
 }
 
+async function testGenericPlannerWriteRequiresApproval() {
+  resetReads();
+  const beforeGenericPlans = plannedMessages.length;
+  const beforeGenericGhlPlans = genericGhlPlannerPlans.length;
+  const message = 'Move opportunities older than 30 days to stage "Follow Up".';
+  assert.equal(classifyIntent(message, { files: [] }), "write");
+  const result = await askJarvis({
+    message,
+    adminUserId: "admin-1",
+  });
+
+  assert.equal(result.intent, "write");
+  assert.equal(result.requiresApproval, true);
+  assert.equal(result.plan.requiresApproval, true);
+  assert.equal(result.plan.confirmationId, "generic-ghl-planner-confirmation");
+  assert.equal(result.plan.plannedApiActions[0].actionType, "generic_ghl_workflow");
+  assert.equal(genericGhlPlannerPlans.length, beforeGenericGhlPlans + 1);
+  assert.equal(plannedMessages.length, beforeGenericPlans);
+}
+
 async function run() {
   try {
     await testReadContactCount();
@@ -930,12 +992,14 @@ async function run() {
     await testCsvAuditComposesGhlSearchWorkflow();
     await testCsvSyncCreatesApprovalPlan();
     await testLeadsByPipelineUsesOpportunityRead();
+    await testGenericPlannerReadOnlyUnreadConversations();
     await testAdviceRequest();
     await testGeneralOutsideWorkspaceRequest();
     await testWriteStillRequiresApproval();
     await testCampaignTemplateRequestRequiresApproval();
     await testContactOwnerAssignmentRequiresApproval();
     await testOpportunityBuilderRequiresApproval();
+    await testGenericPlannerWriteRequiresApproval();
     console.log("Jarvis intent router tests passed");
   } finally {
     await fs.remove(uploadRoot);

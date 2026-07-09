@@ -2,6 +2,7 @@ const {
   createCampaignTemplatePlan,
   createContactOwnerAssignmentPlan,
   createEstimateCsvSyncPlan,
+  createGenericGhlPlannerPlan,
   createOpportunityBuilderPlan,
   createPlan,
 } = require("./aiCommanderGhl.service");
@@ -12,6 +13,11 @@ const {
 } = require("./jarvisInternalCapabilityRouter");
 const { looksLikeCampaignBuilderRequest } = require("./jarvisCampaignBuilder.service");
 const { looksLikeContactOwnerAssignmentRequest } = require("./jarvisContactOwnerAssignment");
+const {
+  buildGenericGhlPlan,
+  executeGenericGhlReadPlan,
+  looksLikeGenericGhlPlannerRequest,
+} = require("./jarvisGenericGhlPlanner");
 const { looksLikeOpportunityBuilderRequest } = require("./jarvisOpportunityBuilder");
 const { runReadAction, resolveReadAction } = require("./jarvisReadActions");
 
@@ -27,6 +33,9 @@ console.info("Jarvis intent router loaded", {
     opportunityBuilder:
       typeof looksLikeOpportunityBuilderRequest === "function" &&
       typeof createOpportunityBuilderPlan === "function",
+    genericGhlPlanner:
+      typeof looksLikeGenericGhlPlannerRequest === "function" &&
+      typeof createGenericGhlPlannerPlan === "function",
   },
 });
 
@@ -161,6 +170,10 @@ function looksLikeWrite(message, context = {}) {
   );
 }
 
+function looksLikeGenericRead(message) {
+  return /\bunread\b/i.test(message) && /\b(conversations?|messages?)\b/i.test(message);
+}
+
 function explainLooksLikeWrite(message, context = {}) {
   const matched = looksLikeWrite(message, context);
   return {
@@ -183,6 +196,7 @@ function classifyIntent(message, context = {}) {
   if (looksOutsideGhlWorkspace(clean, context)) return "advice";
   if (looksLikeContactOwnerAssignmentRequest(clean)) return "write";
   if (looksLikeOpportunityBuilderRequest(clean)) return "write";
+  if (looksLikeGenericRead(clean)) return "read";
   if (looksLikeCsvSync(clean, context)) return "write";
   if (looksLikeCsvAudit(clean, context)) return "read";
   if (looksLikeRead(clean, context)) return "read";
@@ -244,6 +258,9 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
       opportunityBuilder:
         typeof looksLikeOpportunityBuilderRequest === "function" &&
         typeof createOpportunityBuilderPlan === "function",
+      genericGhlPlanner:
+        typeof looksLikeGenericGhlPlannerRequest === "function" &&
+        typeof createGenericGhlPlannerPlan === "function",
     },
     evaluationOrder: [
       "outside_workspace",
@@ -251,6 +268,7 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
       "opportunity_builder",
       "internal_capability",
       "classify_intent",
+      "generic_ghl_planner",
       "write_planners",
       "read_actions",
       "advice",
@@ -259,6 +277,7 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
       outsideWorkspace: looksOutsideGhlWorkspace(clean, context),
       contactOwnerAssignment: looksLikeContactOwnerAssignmentRequest(clean),
       opportunityBuilder: looksLikeOpportunityBuilderRequest(clean),
+      genericGhlPlanner: looksLikeGenericGhlPlannerRequest(clean),
       internalCapability: internalCapability
         ? {
             action: internalCapability.action,
@@ -311,6 +330,9 @@ function logJarvisRequest({
         opportunityBuilder:
           typeof looksLikeOpportunityBuilderRequest === "function" &&
           typeof createOpportunityBuilderPlan === "function",
+        genericGhlPlanner:
+          typeof looksLikeGenericGhlPlannerRequest === "function" &&
+          typeof createGenericGhlPlannerPlan === "function",
       },
     evaluationOrder: trace?.evaluationOrder || [],
     checks: trace?.checks || {},
@@ -441,6 +463,8 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
         ? "approval_workflow:csv_sync"
         : looksLikeCampaignBuilderRequest(clean)
           ? "approval_workflow:campaign_template"
+          : looksLikeGenericGhlPlannerRequest(clean)
+            ? "approval_workflow:generic_ghl_planner"
           : "approval_workflow:generic_ai_commander";
       trace.matchedIntent = plannerRoute.replace("approval_workflow:", "");
       trace.matchedCapability =
@@ -448,6 +472,8 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
           ? "jarvisCsvGhlSync"
           : plannerRoute === "approval_workflow:campaign_template"
             ? "jarvisCampaignBuilder"
+            : plannerRoute === "approval_workflow:generic_ghl_planner"
+              ? "jarvisGenericGhlPlanner"
             : "aiCommanderGhl";
       trace.matchedRoute = plannerRoute;
       trace.fallbackReason =
@@ -458,6 +484,8 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
         ? await createEstimateCsvSyncPlan({ message: clean, adminUserId, files, uploadBatchId })
         : looksLikeCampaignBuilderRequest(clean)
           ? await createCampaignTemplatePlan({ message: clean, adminUserId, files, uploadBatchId })
+          : looksLikeGenericGhlPlannerRequest(clean)
+            ? await createGenericGhlPlannerPlan({ message: clean, adminUserId })
         : await createPlan({ message: clean, adminUserId });
       logJarvisRequest({
         adminUserId,
@@ -478,6 +506,34 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
     }
 
     if (intent === "read") {
+      if (looksLikeGenericGhlPlannerRequest(clean)) {
+        const genericPlan = await buildGenericGhlPlan({
+          message: clean,
+          adminUserId,
+          intentHint: "read",
+        });
+        if (genericPlan && genericPlan.approvalRequired === false) {
+          trace.matchedIntent = `generic:${genericPlan.operation}`;
+          trace.matchedCapability = "jarvisGenericGhlPlanner";
+          trace.matchedRoute = `generic_ghl_planner:${genericPlan.operation}`;
+          trace.fallbackReason =
+            "Generic GHL Planner matched a read-only request before specialized read-action fallback.";
+          const result = await executeGenericGhlReadPlan({ plan: genericPlan });
+          logJarvisRequest({
+            adminUserId,
+            message: clean,
+            intent,
+            matchedIntent: trace.matchedIntent,
+            matchedCapability: trace.matchedCapability,
+            matchedRoute: trace.matchedRoute,
+            fallbackReason: trace.fallbackReason,
+            readAction: genericPlan.operation,
+            status: "answered",
+            trace,
+          });
+          return result;
+        }
+      }
       const readAction = resolveReadAction(clean, context);
       trace.matchedIntent = readAction.action;
       trace.matchedCapability = "jarvisReadActions";

@@ -28,6 +28,12 @@ const {
   prepareOpportunityBuilder,
 } = require("./jarvisOpportunityBuilder");
 const {
+  buildGenericGhlPlan,
+  buildPublicModelPlan,
+  looksLikeGenericGhlPlannerRequest,
+} = require("./jarvisGenericGhlPlanner");
+const { executeGenericGhlWorkflow } = require("./jarvisGenericGhlWorkflow");
+const {
   UNSUPPORTED_MESSAGE,
   cleanString,
   executeAction,
@@ -360,6 +366,10 @@ async function createPlan({ message, adminUserId }) {
 
   if (looksLikeOpportunityBuilderRequest(originalMessage)) {
     return createOpportunityBuilderPlan({ message: originalMessage, adminUserId });
+  }
+
+  if (looksLikeGenericGhlPlannerRequest(originalMessage)) {
+    return createGenericGhlPlannerPlan({ message: originalMessage, adminUserId });
   }
 
   const modelPlan = await generateGhlPlan(originalMessage);
@@ -821,6 +831,73 @@ async function createOpportunityBuilderPlan({ message, adminUserId }) {
   return publicPlan;
 }
 
+async function createGenericGhlPlannerPlan({ message, adminUserId }) {
+  assertCommanderEnabled();
+  assertGhlConfigured();
+  await markExpiredPlans();
+
+  const originalMessage = cleanString(message);
+  if (!originalMessage) {
+    throw errorWithStatus("message is required", 400);
+  }
+
+  const genericPlan = await buildGenericGhlPlan({
+    message: originalMessage,
+    adminUserId,
+  });
+  if (!genericPlan || genericPlan.approvalRequired !== true) {
+    throw errorWithStatus("Generic GHL Planner did not produce an approval workflow.", 422);
+  }
+
+  const confirmationId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + PLAN_TTL_MS);
+  const actions = [
+    normalizeAction(
+      {
+        actionId: "generic_ghl_workflow",
+        actionType: "generic_ghl_workflow",
+        supported: true,
+        riskLevel: genericPlan.riskLevel,
+        destructive: genericPlan.selectedEndpoints?.some((endpoint) => endpoint.destructive),
+        description: genericPlan.objective,
+        target: {},
+        payload: {
+          workflowName: genericPlan.workflow?.name || "generic_ghl_workflow",
+          genericPlanJson: JSON.stringify(genericPlan),
+          recordCount: Number(genericPlan.expectedAffectedRecords || 0),
+          confirmationPhrase: "",
+        },
+      },
+      0
+    ),
+  ];
+  const modelPlan = buildPublicModelPlan(genericPlan);
+  const publicPlan = publicPlanFromModel({
+    modelPlan,
+    actions,
+    unsupportedActions: [],
+    confirmationId,
+    expiresAt,
+  });
+
+  await AiCommanderGhlAudit.create({
+    adminUserId,
+    originalMessage,
+    generatedPlan: {
+      modelPlan,
+      normalizedActions: actions,
+      publicPlan,
+      genericGhlPlan: genericPlan,
+    },
+    confirmationId,
+    status: "planned",
+    exactApiCallsPlanned: publicPlan.plannedApiActions,
+    expiresAt,
+  });
+
+  return publicPlan;
+}
+
 async function executeInternalAction(action, executionContext = {}) {
   if (action.actionType === "jarvis_campaign_template_create") {
     const template = parseJsonObjectText(
@@ -946,6 +1023,34 @@ async function executeInternalAction(action, executionContext = {}) {
           contactCount: Array.isArray(action.payload?.contacts)
             ? action.payload.contacts.length
             : Number(action.payload?.contactCount || 0),
+        },
+      },
+      response: report,
+      status: "executed",
+      rateLimit: {},
+      extracted: { report },
+    };
+  }
+
+  if (action.actionType === "generic_ghl_workflow") {
+    const genericPlan = parseJsonObjectText(action.payload?.genericPlanJson, "genericPlanJson");
+    const report = await executeGenericGhlWorkflow({
+      plan: genericPlan,
+      approved: true,
+      adminUserId: executionContext.adminUserId,
+      userRequest: executionContext.userRequest,
+      confirmationPhrase: action.payload?.confirmationPhrase,
+    });
+    return {
+      actionId: action.actionId,
+      actionType: action.actionType,
+      request: {
+        method: "WORKFLOW",
+        path: "jarvis://ghl/generic-workflow",
+        body: {
+          objective: genericPlan.objective,
+          operation: genericPlan.operation,
+          expectedAffectedRecords: genericPlan.expectedAffectedRecords,
         },
       },
       response: report,
@@ -1188,6 +1293,7 @@ module.exports = {
   createCampaignTemplatePlan,
   createContactOwnerAssignmentPlan,
   createEstimateCsvSyncPlan,
+  createGenericGhlPlannerPlan,
   createOpportunityBuilderPlan,
   createPlan,
   executePlan,

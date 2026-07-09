@@ -41,6 +41,7 @@
     "test:jarvis-ghl-security": "node scripts/test_jarvis_ghl_security.js",
     "test:jarvis-campaign-builder": "node scripts/test_jarvis_campaign_builder.js",
     "test:jarvis-contact-owner-assignment": "node scripts/test_jarvis_contact_owner_assignment.js",
+    "test:jarvis-generic-ghl-planner": "node scripts/test_jarvis_generic_ghl_planner.js",
     "test:jarvis-opportunity-builder": "node scripts/test_jarvis_opportunity_builder.js",
     "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
     "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js"

@@ -6,6 +6,7 @@ const { parseJsonObjectText } = require("./ghlActions");
 const { redact } = require("./ghlClient");
 const { executeContactOwnerAssignment } = require("./jarvisContactOwnerAssignment");
 const { syncEstimateCsvWithGhl } = require("./jarvisCsvGhlSync");
+const { executeGenericGhlWorkflow } = require("./jarvisGenericGhlWorkflow");
 const { executeOpportunityBuilder } = require("./jarvisOpportunityBuilder");
 const { executeWorkflow } = require("./jarvisWorkflowExecutor");
 
@@ -150,6 +151,7 @@ function isBackgroundWorkflowAction(action) {
     "jarvis_workflow",
     "contact_owner_assignment",
     "opportunity_builder",
+    "generic_ghl_workflow",
   ].includes(action?.actionType);
 }
 
@@ -403,6 +405,29 @@ async function runOpportunityBuilderJob(job) {
   return result;
 }
 
+async function runGenericGhlWorkflowJob(job) {
+  await appendProgress(job.jobId, "Workflow started.", { jobId: job.jobId });
+  const plan = parseJsonObjectText(job.payload?.genericPlanJson, "genericPlanJson");
+  const result = await executeGenericGhlWorkflow({
+    plan,
+    approved: true,
+    adminUserId: job.adminUserId,
+    userRequest: job.originalMessage,
+    confirmationPhrase: job.payload?.confirmationPhrase,
+    startedAt: job.startedAt,
+    completedIndexes: job.completedIndexes || [],
+    initialReport: job.report,
+    onRecordComplete: (state) => persistRowProgress(job.jobId, state),
+  });
+  await appendProgress(job.jobId, "Finished.", {
+    processed: result.stats?.processed || 0,
+    changed: result.stats?.recordsChanged || 0,
+    skipped: result.stats?.skipped || 0,
+    failed: result.stats?.failed || 0,
+  });
+  return result;
+}
+
 async function runGenericWorkflowJob(job) {
   const workflow = parseJsonObjectText(job.payload?.workflowJson, "workflowJson");
   const result = await executeWorkflow({
@@ -484,7 +509,9 @@ async function runWorkflowJob(jobId) {
           ? await runContactOwnerAssignmentJob(job)
           : job.actionType === "opportunity_builder"
             ? await runOpportunityBuilderJob(job)
-            : await runGenericWorkflowJob(job);
+            : job.actionType === "generic_ghl_workflow"
+              ? await runGenericGhlWorkflowJob(job)
+              : await runGenericWorkflowJob(job);
 
     job = await JarvisWorkflowJob.findOne({ jobId });
     if (!job) return;
@@ -556,10 +583,13 @@ async function createWorkflowJobForAction({ audit, action }) {
         ? "contact_owner_assignment"
         : actionType === "opportunity_builder"
           ? "opportunity_builder"
+          : actionType === "generic_ghl_workflow"
+            ? "generic_ghl_workflow"
           : cleanString(action.payload?.workflowName) || "jarvis_workflow";
   const totalItems = Number(
     action.payload?.validContacts ||
       action.payload?.contactCount ||
+      action.payload?.recordCount ||
       (Array.isArray(action.payload?.contacts) ? action.payload.contacts.length : 0)
   );
 
