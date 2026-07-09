@@ -931,10 +931,11 @@ async function testContactOwnerAssignmentRequiresApproval() {
   assert.equal(plannedMessages.length, beforeGenericPlans);
 }
 
-async function testOpportunityBuilderRequiresApproval() {
+async function testOpportunityCreationUsesGenericPlannerFirst() {
   resetReads();
   const beforeGenericPlans = plannedMessages.length;
   const beforeOpportunityPlans = opportunityBuilderPlans.length;
+  const beforeGenericGhlPlans = genericGhlPlannerPlans.length;
   const message =
     'Add all contacts with tag "website_registered" to the opportunity pipeline "Profixter Cold Calls" in stage "New Lead".';
   assert.equal(classifyIntent(message, { files: [] }), "write");
@@ -946,11 +947,12 @@ async function testOpportunityBuilderRequiresApproval() {
   assert.equal(result.intent, "write");
   assert.equal(result.requiresApproval, true);
   assert.equal(result.plan.requiresApproval, true);
-  assert.equal(result.plan.confirmationId, "opportunity-builder-confirmation");
-  assert.equal(result.plan.plannedApiActions[0].actionType, "opportunity_builder");
-  assert.match(result.plan.summary, /123 contacts with tag "website_registered"/i);
+  assert.equal(result.plan.confirmationId, "generic-ghl-planner-confirmation");
+  assert.equal(result.plan.plannedApiActions[0].actionType, "generic_ghl_workflow");
+  assert.match(result.plan.summary, /Generic GHL Planner/i);
   assert.match(result.plan.summary, /Nothing has been changed/i);
-  assert.equal(opportunityBuilderPlans.length, beforeOpportunityPlans + 1);
+  assert.equal(genericGhlPlannerPlans.length, beforeGenericGhlPlans + 1);
+  assert.equal(opportunityBuilderPlans.length, beforeOpportunityPlans);
   assert.equal(plannedMessages.length, beforeGenericPlans);
 }
 
@@ -998,7 +1000,7 @@ async function run() {
     await testWriteStillRequiresApproval();
     await testCampaignTemplateRequestRequiresApproval();
     await testContactOwnerAssignmentRequiresApproval();
-    await testOpportunityBuilderRequiresApproval();
+    await testOpportunityCreationUsesGenericPlannerFirst();
     await testGenericPlannerWriteRequiresApproval();
     console.log("Jarvis intent router tests passed");
   } finally {

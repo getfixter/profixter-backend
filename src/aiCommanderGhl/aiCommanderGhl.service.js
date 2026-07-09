@@ -364,12 +364,16 @@ async function createPlan({ message, adminUserId }) {
     return createContactOwnerAssignmentPlan({ message: originalMessage, adminUserId });
   }
 
-  if (looksLikeOpportunityBuilderRequest(originalMessage)) {
-    return createOpportunityBuilderPlan({ message: originalMessage, adminUserId });
+  if (looksLikeGenericGhlPlannerRequest(originalMessage)) {
+    try {
+      return await createGenericGhlPlannerPlan({ message: originalMessage, adminUserId });
+    } catch (error) {
+      if (!looksLikeOpportunityBuilderRequest(originalMessage)) throw error;
+    }
   }
 
-  if (looksLikeGenericGhlPlannerRequest(originalMessage)) {
-    return createGenericGhlPlannerPlan({ message: originalMessage, adminUserId });
+  if (looksLikeOpportunityBuilderRequest(originalMessage)) {
+    return createOpportunityBuilderPlan({ message: originalMessage, adminUserId });
   }
 
   const modelPlan = await generateGhlPlan(originalMessage);

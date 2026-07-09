@@ -195,8 +195,9 @@ function classifyIntent(message, context = {}) {
 
   if (looksOutsideGhlWorkspace(clean, context)) return "advice";
   if (looksLikeContactOwnerAssignmentRequest(clean)) return "write";
-  if (looksLikeOpportunityBuilderRequest(clean)) return "write";
   if (looksLikeGenericRead(clean)) return "read";
+  if (looksLikeGenericGhlPlannerRequest(clean)) return "write";
+  if (looksLikeOpportunityBuilderRequest(clean)) return "write";
   if (looksLikeCsvSync(clean, context)) return "write";
   if (looksLikeCsvAudit(clean, context)) return "read";
   if (looksLikeRead(clean, context)) return "read";
@@ -265,10 +266,10 @@ function buildRouteTrace({ message, context, internalCapability = null }) {
     evaluationOrder: [
       "outside_workspace",
       "contact_owner_assignment",
-      "opportunity_builder",
       "internal_capability",
       "classify_intent",
       "generic_ghl_planner",
+      "opportunity_builder_legacy_fallback",
       "write_planners",
       "read_actions",
       "advice",
@@ -402,12 +403,44 @@ async function askJarvis({ message, adminUserId, files = [], uploadBatchId = "" 
       };
     }
 
+    let genericOpportunityPlannerError = null;
+    if (looksLikeOpportunityBuilderRequest(clean) && looksLikeGenericGhlPlannerRequest(clean)) {
+      try {
+        trace.matchedIntent = "generic_ghl_planner";
+        trace.matchedCapability = "jarvisGenericGhlPlanner";
+        trace.matchedRoute = "approval_workflow:generic_ghl_planner";
+        trace.fallbackReason =
+          "Opportunity creation matched Generic GHL Planner before legacy Opportunity Builder.";
+        const plan = await createGenericGhlPlannerPlan({ message: clean, adminUserId });
+        logJarvisRequest({
+          adminUserId,
+          message: clean,
+          intent: "write",
+          matchedIntent: trace.matchedIntent,
+          matchedCapability: trace.matchedCapability,
+          matchedRoute: trace.matchedRoute,
+          fallbackReason: trace.fallbackReason,
+          status: "planned",
+          trace,
+        });
+        return {
+          intent: "write",
+          plan,
+          requiresApproval: true,
+        };
+      } catch (error) {
+        genericOpportunityPlannerError = error;
+      }
+    }
+
     if (looksLikeOpportunityBuilderRequest(clean)) {
-      trace.matchedIntent = "opportunity_builder";
+      trace.matchedIntent = "opportunity_builder_legacy_fallback";
       trace.matchedCapability = "jarvisOpportunityBuilder";
       trace.matchedRoute = "approval_workflow:opportunity_builder";
       trace.fallbackReason =
-        "Matched before internal capabilities, generic read actions, and generic write planning.";
+        genericOpportunityPlannerError
+          ? `Generic GHL Planner could not construct a valid workflow: ${cleanString(genericOpportunityPlannerError?.message || genericOpportunityPlannerError)}. Falling back to legacy Opportunity Builder.`
+          : "Legacy Opportunity Builder fallback matched after Generic GHL Planner checks.";
       const plan = await createOpportunityBuilderPlan({ message: clean, adminUserId });
       logJarvisRequest({
         adminUserId,

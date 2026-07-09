@@ -248,23 +248,47 @@ function extractTagAfterKeyword(message, keyword) {
 
 function extractAudienceTag(message) {
   const text = cleanString(message);
-  const without = matchFirst(text, [
-    /\bwithout\s+(?:the\s+)?tag\s+["']([^"']+)["']/i,
-    /\bwithout\s+(?:the\s+)?tag\s+([a-z0-9][\w .:-]{0,100}?)(?=\s+(?:to|into|for|in|pipeline|stage)\b|[?.!]|$)/i,
-  ]);
-  if (without) return { mode: "without", tagName: without };
+  const quotedPattern = /\b(?:tag|tagged)\b\s*["']([^"']+)["']/gi;
+  const unquotedPattern =
+    /\b(?:tag|tagged)\b\s+([a-z0-9][\w .:-]{0,100}?)(?=\s+(?:to|into|for|in|pipeline|stage|and|where|that|who|which)\b|[?.!,]|$)/gi;
+  const candidates = [];
+  for (const pattern of [quotedPattern, unquotedPattern]) {
+    let match = pattern.exec(text);
+    while (match) {
+      candidates.push({
+        tagName: cleanQuotedValue(match[1]),
+        index: match.index,
+        raw: match[0],
+      });
+      match = pattern.exec(text);
+    }
+  }
+  candidates.sort((a, b) => a.index - b.index);
 
-  const withTag = matchFirst(text, [
-    /\bwith\s+(?:the\s+)?tag\s+["']([^"']+)["']/i,
-    /\btagged\s+["']([^"']+)["']/i,
-    /\bhave\s+(?:the\s+)?tag\s+["']([^"']+)["']/i,
-    /\bhas\s+(?:the\s+)?tag\s+["']([^"']+)["']/i,
-    /\bwith\s+(?:the\s+)?tag\s+([a-z0-9][\w .:-]{0,100}?)(?=\s+(?:to|into|for|in|pipeline|stage)\b|[?.!]|$)/i,
-    /\btagged\s+([a-z0-9][\w .:-]{0,100}?)(?=\s+(?:to|into|for|in|pipeline|stage)\b|[?.!]|$)/i,
-    /\bhave\s+(?:the\s+)?tag\s+([a-z0-9][\w .:-]{0,100}?)(?=\s+(?:to|into|for|in|pipeline|stage)\b|[?.!]|$)/i,
-  ]);
-  if (withTag) return { mode: "with", tagName: withTag };
-  return { mode: "all", tagName: "" };
+  const candidate = candidates.find((item) => item.tagName);
+  if (!candidate) return { mode: "all", tagName: "", filters: [] };
+
+  const before = text.slice(Math.max(0, candidate.index - 120), candidate.index).toLowerCase();
+  const after = text
+    .slice(candidate.index, Math.min(text.length, candidate.index + candidate.raw.length + 40))
+    .toLowerCase();
+  const context = `${before} ${after}`;
+  const negative =
+    /\b(except|excluding|exclude|without)\b/i.test(context) ||
+    /\b(?:does|do|did)\s+not\s+have\b/i.test(context) ||
+    /\bnot\s+(?:have|having|tagged)\b/i.test(context);
+  const mode = negative ? "without" : "with";
+  return {
+    mode,
+    tagName: candidate.tagName,
+    filters: [
+      {
+        field: "tags",
+        operator: mode === "without" ? "does_not_include" : "includes",
+        value: candidate.tagName,
+      },
+    ],
+  };
 }
 
 function extractOwnerName(message) {
@@ -466,6 +490,16 @@ async function fetchContactsForAudience({ audience, call, debugTrace, maxRecords
   return {
     mode,
     tagName,
+    filters:
+      tagName
+        ? [
+            {
+              field: "tags",
+              operator: mode === "without" ? "does_not_include" : "includes",
+              value: tagName,
+            },
+          ]
+        : [],
     contacts,
     total: total || contacts.length,
     partial,
@@ -734,12 +768,15 @@ async function buildGenericGhlPlan({ message, adminUserId, apiCall, intentHint =
         recordCount: audience.contacts.length,
         partial: audience.partial,
         composition: [
-          "Find contact audience with contacts.search",
+          "Search Contacts with contacts.search",
+          audience.tagName
+            ? `Filter contacts where tags ${audience.mode === "without" ? "does not include" : "includes"} "${audience.tagName}"`
+            : "Filter contacts with the requested logical conditions",
           "Resolve pipeline/stage with opportunities.pipelines.list",
-          "Loop contacts",
-          "Search existing opportunities per contact",
-          "Create only missing opportunities",
-          "Report changed/skipped/failed",
+          "Loop matching contacts",
+          "Check Opportunity with opportunities.search",
+          "Create Opportunity with opportunities.create when missing",
+          "Report found/changed/skipped/failed",
         ],
       },
     });

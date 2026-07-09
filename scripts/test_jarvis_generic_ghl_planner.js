@@ -254,6 +254,100 @@ async function testCreateOpportunitiesWithoutTag() {
   assert.equal(requests.filter((request) => request.path === "/opportunities/").length, 1);
 }
 
+async function testOpportunityLogicalTagFilters() {
+  const cases = [
+    {
+      message:
+        'Add all contacts with tag "website_registered" to the opportunity pipeline "Profixter Cold Calls" in stage "New Lead".',
+      mode: "with",
+      operator: "includes",
+      tagName: "website_registered",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts that have tag "website_registered".',
+      mode: "with",
+      operator: "includes",
+      tagName: "website_registered",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts that has tag "website_registered".',
+      mode: "with",
+      operator: "includes",
+      tagName: "website_registered",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts with tag "website_registered".',
+      mode: "with",
+      operator: "includes",
+      tagName: "website_registered",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for only contacts with tag "website_registered".',
+      mode: "with",
+      operator: "includes",
+      tagName: "website_registered",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts without tag "premium".',
+      mode: "without",
+      operator: "does_not_include",
+      tagName: "premium",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts that do not have tag "premium".',
+      mode: "without",
+      operator: "does_not_include",
+      tagName: "premium",
+      count: 2,
+    },
+    {
+      message:
+        'Create opportunities in pipeline "Profixter Cold Calls" stage "New Lead" for contacts except contacts with tag "premium".',
+      mode: "without",
+      operator: "does_not_include",
+      tagName: "premium",
+      count: 2,
+    },
+  ];
+
+  for (const item of cases) {
+    requests.length = 0;
+    const plan = await buildGenericGhlPlan({
+      message: item.message,
+      adminUserId: "admin-1",
+      apiCall,
+    });
+    assert.equal(plan.operation, "opportunity_create_for_contacts");
+    assert.equal(plan.execution.audience.mode, item.mode);
+    assert.equal(plan.execution.audience.tagName, item.tagName);
+    assert.deepEqual(plan.execution.audience.filters, [
+      { field: "tags", operator: item.operator, value: item.tagName },
+    ]);
+    assert.equal(plan.expectedAffectedRecords, item.count);
+    assert.deepEqual(plan.execution.composition, [
+      "Search Contacts with contacts.search",
+      `Filter contacts where tags ${item.mode === "without" ? "does not include" : "includes"} "${item.tagName}"`,
+      "Resolve pipeline/stage with opportunities.pipelines.list",
+      "Loop matching contacts",
+      "Check Opportunity with opportunities.search",
+      "Create Opportunity with opportunities.create when missing",
+      "Report found/changed/skipped/failed",
+    ]);
+  }
+}
+
 async function testUnreadConversationsReadOnly() {
   requests.length = 0;
   const message = "Show unread conversations.";
@@ -316,6 +410,7 @@ async function testAddTagToContacts() {
 async function run() {
   await testOwnerAssignmentPlanAndExecution();
   await testCreateOpportunitiesWithoutTag();
+  await testOpportunityLogicalTagFilters();
   await testUnreadConversationsReadOnly();
   await testMoveOldOpportunities();
   await testAddTagToContacts();
