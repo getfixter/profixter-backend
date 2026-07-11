@@ -109,12 +109,12 @@ async function run() {
   assert.equal(validEmail("customer@example.com"), true);
   assert.equal(validEmail("not-an-email"), false);
   assert.equal(
-    resolveLeadReplyTo("Customer@Example.com", "support@profixter.com"),
+    resolveLeadReplyTo("Customer@Example.com", "getfixter@gmail.com"),
     "customer@example.com"
   );
   assert.equal(
-    resolveLeadReplyTo("", "support@profixter.com"),
-    "support@profixter.com"
+    resolveLeadReplyTo("", "getfixter@gmail.com"),
+    "getfixter@gmail.com"
   );
 
   const originalSendMail = transporter.sendMail;

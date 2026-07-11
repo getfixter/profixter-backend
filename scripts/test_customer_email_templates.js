@@ -1,5 +1,6 @@
 const assert = require("assert");
 const { TEMPLATES } = require("../utils/emailService");
+const { PUBLIC_CONTACT_EMAIL } = require("../utils/publicContact");
 
 const sample = {
   name: "Taylor",
@@ -66,7 +67,7 @@ for (const key of customerTemplateKeys) {
   assert.ok(rendered.text?.trim(), `${key} has no plain-text body`);
   assert.match(rendered.html, /max-width:600px/, `${key} is missing the 600px shell`);
   assert.match(rendered.html, /viewport/, `${key} is missing the mobile viewport`);
-  assert.match(rendered.html, /hello@profixter\.com/, `${key} is missing support contact`);
+  assert.ok(rendered.html.includes(PUBLIC_CONTACT_EMAIL), `${key} is missing support contact`);
   assert.match(
     rendered.html,
     /Based in Babylon/,

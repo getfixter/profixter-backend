@@ -1,8 +1,9 @@
 const { createUnsubscribeToken } = require("./unsubscribeToken");
 const { personalize, personalizeUrl } = require("./campaignMergeTags");
+const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
 
 const API_URL = String(process.env.PUBLIC_API_URL || process.env.API_URL || "").replace(/\/+$/, "");
-const REPLY_TO = process.env.MAIL_REPLY_TO || "getfixter@gmail.com";
+const REPLY_TO = process.env.MAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL;
 const LOGO_URL =
   process.env.BRAND_LOGO_URL ||
   "https://profixter-assets.s3.us-east-1.amazonaws.com/mrfixter-logoBlackText.png";

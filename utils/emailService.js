@@ -10,6 +10,7 @@ const EmailLog = require("../models/EmailLog");
 const {
   createCustomerEmailTemplates,
 } = require("./customerEmailTemplates");
+const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
 let marked;
 try {
   ({ marked } = require("marked"));
@@ -20,7 +21,7 @@ try {
 
 /* ========================== BRAND / CONTACT ========================== */
 const FROM = process.env.MAIL_FROM || "Profixter <no-reply@profixter.com>";
-const REPLY_TO = process.env.MAIL_REPLY_TO || "getfixter@gmail.com";
+const REPLY_TO = process.env.MAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL;
 const ADMIN = process.env.MAIL_ADMIN || "getfixter@gmail.com";
 
 const MARKETING_FROM = process.env.MARKETING_FROM || FROM;

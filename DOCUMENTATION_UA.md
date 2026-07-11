@@ -773,7 +773,7 @@ AWS_REGION=us-east-1
 OPENAI_API_KEY=sk-...
 
 # Email адреси
-MAIL_FROM=Mr. Fixter <my@profixter.com>
+MAIL_FROM=Profixter <no-reply@profixter.com>
 MAIL_REPLY_TO=getfixter@gmail.com
 MAIL_ADMIN=getfixter@gmail.com
 

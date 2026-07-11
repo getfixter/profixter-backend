@@ -3,6 +3,7 @@ const router = express.Router();
 
 const EmailSuppression = require("../models/EmailSuppression");
 const { readUnsubscribeToken } = require("../utils/unsubscribeToken");
+const { PUBLIC_CONTACT_EMAIL } = require("../utils/publicContact");
 
 function confirmationHtml(success, message) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -38,7 +39,7 @@ router.get("/unsubscribe", (req, res) => {
       .send(
         confirmationHtml(
           false,
-          "This unsubscribe link is invalid or expired. Contact getfixter@gmail.com for help."
+          `This unsubscribe link is invalid or expired. Contact ${PUBLIC_CONTACT_EMAIL} for help.`
         )
       );
   }
@@ -75,7 +76,7 @@ router.post("/unsubscribe", async (req, res) => {
       .send(
         confirmationHtml(
           false,
-          "This unsubscribe link is invalid or expired. Contact getfixter@gmail.com for help."
+          `This unsubscribe link is invalid or expired. Contact ${PUBLIC_CONTACT_EMAIL} for help.`
         )
       );
   }

@@ -1,9 +1,11 @@
+const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
+
 function createCustomerEmailTemplates({
   escapeHtml,
   formatNYCTime,
   urls,
 }) {
-  const SUPPORT_EMAIL = "hello@profixter.com";
+  const SUPPORT_EMAIL = PUBLIC_CONTACT_EMAIL;
   const TIP_URL = "https://www.profixter.com/tip";
   const REVIEW_URL = "https://www.profixter.com/review";
   const ACCOUNT_URL = "https://www.profixter.com/account";
