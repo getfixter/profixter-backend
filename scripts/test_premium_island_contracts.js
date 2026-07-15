@@ -1,4 +1,6 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 const {
   buildContractFilename,
   validateContractInput,
@@ -110,6 +112,34 @@ async function main() {
   const pdf = await generateContractPdfBuffer(contract);
   assert(pdf.length > 1000, "PDF should not be empty");
   assert.strictEqual(pdf.subarray(0, 4).toString(), "%PDF");
+
+  const routeSource = fs.readFileSync(
+    path.join(__dirname, "..", "routes", "adminContracts.js"),
+    "utf8"
+  );
+  assert(routeSource.includes("putPrivateObject"), "contracts must use private S3 writes");
+  assert(!routeSource.includes("putPublicObject"), "contracts must not use public S3 writes");
+  assert(
+    routeSource.includes("getContractForProjectOr404"),
+    "contract file/action routes must be project scoped"
+  );
+  assert(
+    routeSource.includes("projectIdFromRequest"),
+    "contract file/action routes must require projectId"
+  );
+  assert(
+    routeSource.includes("serializePdfRecord"),
+    "contract responses must sanitize PDF storage records"
+  );
+
+  const pdfSource = fs.readFileSync(
+    path.join(__dirname, "..", "utils", "contractPdf.js"),
+    "utf8"
+  );
+  assert(
+    !/ATTORNEY_REVIEW_NOTE|attorneyReviewNote|Developer note/i.test(pdfSource),
+    "customer PDF renderer must not include developer/legal-review notes"
+  );
 
   console.log("Premium Island Homes contract tests passed.");
 }

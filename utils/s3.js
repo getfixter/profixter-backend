@@ -15,7 +15,14 @@ const s3 = new S3Client({
   // No credentials here — EB instance profile supplies them
 });
 
-async function putPublicObject({ Bucket = BUCKET, Key, Body, ContentType, CacheControl }) {
+async function putPublicObject({
+  Bucket = BUCKET,
+  Key,
+  Body,
+  ContentType,
+  CacheControl,
+  ContentDisposition,
+}) {
   if (!Key) throw new Error("putPublicObject requires Key");
   if (!Body) throw new Error("putPublicObject requires Body");
 
@@ -26,12 +33,38 @@ async function putPublicObject({ Bucket = BUCKET, Key, Body, ContentType, CacheC
     Body,
     ContentType: ContentType || "application/octet-stream",
     CacheControl: CacheControl || "public, max-age=31536000, immutable",
+    ...(ContentDisposition ? { ContentDisposition } : {}),
   });
 
   await s3.send(cmd);
 
   // Public URL (works because your bucket policy allows s3:GetObject on this prefix)
   return `https://${Bucket}.s3.amazonaws.com/${Key}`;
+}
+
+async function putPrivateObject({
+  Bucket = BUCKET,
+  Key,
+  Body,
+  ContentType,
+  CacheControl,
+  ContentDisposition,
+}) {
+  if (!Key) throw new Error("putPrivateObject requires Key");
+  if (!Body) throw new Error("putPrivateObject requires Body");
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket,
+      Key,
+      Body,
+      ContentType: ContentType || "application/octet-stream",
+      CacheControl: CacheControl || "private, max-age=0, no-cache",
+      ...(ContentDisposition ? { ContentDisposition } : {}),
+    })
+  );
+
+  return { Bucket, Key };
 }
 
 async function deletePublicObjects({ Bucket = BUCKET, Keys = [] }) {
@@ -63,4 +96,4 @@ async function getObjectBuffer({ Bucket = BUCKET, Key }) {
   return streamToBuffer(response.Body);
 }
 
-module.exports = { deletePublicObjects, getObjectBuffer, putPublicObject };
+module.exports = { deletePublicObjects, getObjectBuffer, putPrivateObject, putPublicObject };

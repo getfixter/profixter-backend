@@ -59,19 +59,28 @@ function sectionTitle(doc, title) {
 }
 
 function labelValue(doc, label, value, options = {}) {
+  const labelWidth = options.labelWidth || 130;
+  const valueX = options.valueX || PAGE.marginX + 150;
+  const valueWidth = options.width || PAGE.width - PAGE.marginX * 2 - 150;
+  doc.font("Helvetica-Bold").fontSize(9);
+  const labelHeight = doc.heightOfString(label, { width: labelWidth });
+  doc.font("Helvetica").fontSize(10);
+  const valueHeight = doc.heightOfString(value || "Not specified", { width: valueWidth });
+  const rowHeight = Math.max(18, labelHeight, valueHeight) + 4;
+  ensureRoom(doc, rowHeight);
   const y = doc.y;
-  doc.font("Helvetica-Bold").fontSize(9).fillColor("#6b7280").text(label, {
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#6b7280").text(label, PAGE.marginX, y, {
     continued: false,
-    width: options.labelWidth || 130,
+    width: labelWidth,
   });
   doc
     .font("Helvetica")
     .fontSize(10)
     .fillColor("#111827")
-    .text(value || "Not specified", options.valueX || PAGE.marginX + 150, y, {
-      width: options.width || PAGE.width - PAGE.marginX * 2 - 150,
+    .text(value || "Not specified", valueX, y, {
+      width: valueWidth,
     });
-  doc.y = Math.max(doc.y, y + 18);
+  doc.y = y + rowHeight;
 }
 
 function paragraph(doc, text, options = {}) {
@@ -101,26 +110,50 @@ function paragraph(doc, text, options = {}) {
 function drawPaymentRows(doc, rows) {
   const x = PAGE.marginX;
   const widths = [160, 110, PAGE.width - PAGE.marginX * 2 - 270];
-  const headerY = doc.y;
-  doc.rect(x, headerY, PAGE.width - PAGE.marginX * 2, 24).fill("#f3f4f6");
-  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
-  doc.text("Milestone", x + 8, headerY + 8, { width: widths[0] - 16 });
-  doc.text("Amount", x + widths[0] + 8, headerY + 8, { width: widths[1] - 16 });
-  doc.text("Due condition", x + widths[0] + widths[1] + 8, headerY + 8, {
-    width: widths[2] - 16,
-  });
-  doc.y = headerY + 24;
+  const tableWidth = PAGE.width - PAGE.marginX * 2;
+  const headerHeight = 24;
 
-  rows.forEach((row, index) => {
-    ensureRoom(doc, 48);
-    const rowY = doc.y;
-    const height = Math.max(
+  function rowHeight(row) {
+    doc.fillColor("#111827").font("Helvetica").fontSize(9.5);
+    return Math.max(
       34,
+      doc.heightOfString(row.label || "", {
+        width: widths[0] - 16,
+      }) + 18,
+      doc.heightOfString(formatMoney(row.amountCents), {
+        width: widths[1] - 16,
+      }) + 18,
       doc.heightOfString(row.dueCondition || "", {
         width: widths[2] - 16,
       }) + 18
     );
-    doc.rect(x, rowY, PAGE.width - PAGE.marginX * 2, height).fill(index % 2 ? "#ffffff" : "#f9fafb");
+  }
+
+  function drawHeader() {
+    const headerY = doc.y;
+    doc.rect(x, headerY, tableWidth, headerHeight).fill("#f3f4f6");
+    doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
+    doc.text("Milestone", x + 8, headerY + 8, { width: widths[0] - 16 });
+    doc.text("Amount", x + widths[0] + 8, headerY + 8, { width: widths[1] - 16 });
+    doc.text("Due condition", x + widths[0] + widths[1] + 8, headerY + 8, {
+      width: widths[2] - 16,
+    });
+    doc.y = headerY + headerHeight;
+  }
+
+  const firstRowHeight = rows.length ? rowHeight(rows[0]) : 0;
+  ensureRoom(doc, headerHeight + firstRowHeight + 8);
+  drawHeader();
+
+  rows.forEach((row, index) => {
+    const height = rowHeight(row);
+    if (doc.y + height > PAGE.height - PAGE.bottom) {
+      doc.addPage();
+      ensureRoom(doc, headerHeight + height + 8);
+      drawHeader();
+    }
+    const rowY = doc.y;
+    doc.rect(x, rowY, tableWidth, height).fill(index % 2 ? "#ffffff" : "#f9fafb");
     doc.fillColor("#111827").font("Helvetica").fontSize(9.5);
     doc.text(row.label, x + 8, rowY + 9, { width: widths[0] - 16 });
     doc.font("Helvetica-Bold").text(formatMoney(row.amountCents), x + widths[0] + 8, rowY + 9, {
@@ -164,6 +197,9 @@ function addHeaderFooter(doc, contract) {
   for (let i = range.start; i < range.start + range.count; i += 1) {
     doc.switchToPage(i);
     doc.save();
+    const originalMargins = { ...doc.page.margins };
+    doc.page.margins.top = 0;
+    doc.page.margins.bottom = 0;
     doc.font("Helvetica").fontSize(8).fillColor("#6b7280");
     doc.text(`${contract.contractNumber} v${contract.version}`, PAGE.marginX, 28, {
       width: 180,
@@ -188,7 +224,12 @@ function addHeaderFooter(doc, contract) {
     doc.text(`Page ${i + 1} of ${range.count}`, PAGE.marginX, PAGE.height - 38, {
       width: PAGE.width - PAGE.marginX * 2,
       align: "center",
+      lineBreak: false,
     });
+    doc.page.margins.top = originalMargins.top;
+    doc.page.margins.bottom = originalMargins.bottom;
+    doc.page.margins.left = originalMargins.left;
+    doc.page.margins.right = originalMargins.right;
     doc.restore();
   }
 }

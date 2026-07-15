@@ -6,7 +6,7 @@ const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const Project = require("../models/Project");
 const Contract = require("../models/Contract");
 const { sendRaw } = require("../utils/emailService");
-const { getObjectBuffer, putPublicObject } = require("../utils/s3");
+const { getObjectBuffer, putPrivateObject } = require("../utils/s3");
 const {
   ATTORNEY_REVIEW_NOTE,
   COMPANY_INFO,
@@ -31,7 +31,9 @@ const {
 
 const router = express.Router();
 const MAX_SIGNED_PDF_BYTES = 25 * 1024 * 1024;
-const S3_PREFIX = (process.env.S3_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
+const CONTRACT_S3_PREFIX = (
+  process.env.CONTRACT_S3_PREFIX || "private/admin/contracts"
+).replace(/^\/+|\/+$/g, "");
 
 const signedUpload = multer({
   storage: multer.memoryStorage(),
@@ -57,7 +59,42 @@ function serializeContract(contract) {
     ...item,
     id: String(item._id || item.id || ""),
     _id: String(item._id || item.id || ""),
+    generatedPdf: serializePdfRecord(item.generatedPdf, "generated"),
+    signedPdf: serializePdfRecord(item.signedPdf, "signed"),
+    auditHistory: Array.isArray(item.auditHistory)
+      ? item.auditHistory.map((event) => ({
+          ...event,
+          details: sanitizeAuditDetails(event.details),
+        }))
+      : [],
   };
+}
+
+function serializePdfRecord(pdf, type) {
+  return {
+    available: !!pdf?.key,
+    fileName: pdf?.fileName || "",
+    size: Number(pdf?.size || 0),
+    ...(type === "signed"
+      ? {
+          uploadedAt: pdf?.uploadedAt || null,
+          uploadedBy: pdf?.uploadedBy || null,
+        }
+      : {
+          generatedAt: pdf?.generatedAt || null,
+          generatedBy: pdf?.generatedBy || null,
+        }),
+  };
+}
+
+function sanitizeAuditDetails(details) {
+  if (!details || typeof details !== "object") return {};
+  const sanitized = { ...details };
+  delete sanitized.key;
+  delete sanitized.url;
+  delete sanitized.storageKey;
+  delete sanitized.s3Key;
+  return sanitized;
 }
 
 function safeProviderResponse(info) {
@@ -98,14 +135,23 @@ async function getProjectOr404(projectId, res) {
   return project;
 }
 
-async function getContractOr404(contractId, res) {
+function projectIdFromRequest(req) {
+  return cleanString(req.body?.projectId || req.query?.projectId, 80);
+}
+
+async function getContractForProjectOr404(contractId, req, res) {
+  const projectId = projectIdFromRequest(req);
+  if (!mongoose.isValidObjectId(projectId)) {
+    res.status(400).json({ message: "Valid projectId is required" });
+    return null;
+  }
   if (!mongoose.isValidObjectId(contractId)) {
     res.status(400).json({ message: "Invalid contract ID" });
     return null;
   }
-  const contract = await Contract.findById(contractId);
+  const contract = await Contract.findOne({ _id: contractId, projectId });
   if (!contract) {
-    res.status(404).json({ message: "Contract not found" });
+    res.status(404).json({ message: "Contract not found for this project" });
     return null;
   }
   return contract;
@@ -237,7 +283,7 @@ router.post("/project/:projectId/draft", async (req, res) => {
 router.post("/:id/generate", async (req, res) => {
   let audit = null;
   try {
-    const contract = await getContractOr404(req.params.id, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     if (contract.status !== "Draft") {
       return res.status(409).json({
@@ -258,14 +304,15 @@ router.post("/:id/generate", async (req, res) => {
 
     const pdfBuffer = await generateContractPdfBuffer(contract);
     const fileName = buildContractFilename(contract);
-    const key = `${S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
+    const key = `${CONTRACT_S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
       contract.contractNumber
     )}/v${contract.version}/${fileName}`;
-    const url = await putPublicObject({
+    await putPrivateObject({
       Key: key,
       Body: pdfBuffer,
       ContentType: "application/pdf",
       CacheControl: "private, max-age=0, no-cache",
+      ContentDisposition: `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
 
     await Contract.updateMany(
@@ -293,14 +340,14 @@ router.post("/:id/generate", async (req, res) => {
     contract.current = true;
     contract.generatedPdf = {
       key,
-      url,
+      url: "",
       fileName,
       size: pdfBuffer.length,
       generatedAt: new Date(),
       generatedBy: req.user.id,
     };
     contract.updatedBy = req.user.id;
-    contract.addAuditEvent("PDF generated", req, { key, fileName, size: pdfBuffer.length });
+    contract.addAuditEvent("PDF generated", req, { fileName, size: pdfBuffer.length });
     await contract.save();
 
     await markAdminActivityLog(audit, {
@@ -326,7 +373,7 @@ router.post("/:id/generate", async (req, res) => {
 
 router.get("/:id/download", async (req, res) => {
   try {
-    const contract = await getContractOr404(req.params.id, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     const type = cleanString(req.query.type || "generated", 20);
     const pdf = type === "signed" ? contract.signedPdf : contract.generatedPdf;
@@ -354,7 +401,7 @@ router.get("/:id/download", async (req, res) => {
 
 router.post("/:id/email", async (req, res) => {
   try {
-    const contract = await getContractOr404(req.params.id, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     if (!contract.generatedPdf?.key) {
       return res.status(409).json({ message: "Generate the contract PDF before emailing it" });
@@ -415,27 +462,28 @@ router.post("/:id/email", async (req, res) => {
 
 router.post("/:id/signed", signedUpload.single("file"), async (req, res) => {
   try {
-    const contract = await getContractOr404(req.params.id, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     if (!req.file) return res.status(400).json({ message: "Signed contract PDF is required" });
 
     const fileName = `${sanitizeFilenamePart(
       contract.contractNumber
     )}-v${contract.version}-signed.pdf`;
-    const key = `${S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
+    const key = `${CONTRACT_S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
       contract.contractNumber
     )}/v${contract.version}/signed/${Date.now()}-${fileName}`;
-    const url = await putPublicObject({
+    await putPrivateObject({
       Key: key,
       Body: req.file.buffer,
       ContentType: "application/pdf",
       CacheControl: "private, max-age=0, no-cache",
+      ContentDisposition: `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
 
     contract.status = "Signed";
     contract.signedPdf = {
       key,
-      url,
+      url: "",
       fileName,
       size: req.file.size,
       uploadedAt: new Date(),
@@ -454,7 +502,7 @@ router.post("/:id/signed", signedUpload.single("file"), async (req, res) => {
 
 router.post("/:id/cancel", async (req, res) => {
   try {
-    const contract = await getContractOr404(req.params.id, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     contract.status = "Canceled";
     contract.updatedBy = req.user.id;
