@@ -4,6 +4,7 @@ const auth = require("../middleware/auth");
 const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
+const Contract = require("../models/Contract");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const {
   createAdminActivityLog,
@@ -214,6 +215,12 @@ router.delete("/:id", async (req, res) => {
     if (hasEstimates) {
       return res.status(409).json({
         message: "Delete this project's estimates before deleting the project",
+      });
+    }
+    const hasContracts = await Contract.exists({ projectId: req.params.id });
+    if (hasContracts) {
+      return res.status(409).json({
+        message: "This project has contract history and cannot be deleted",
       });
     }
 
