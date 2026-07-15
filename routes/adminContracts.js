@@ -9,6 +9,8 @@ const { sendRaw } = require("../utils/emailService");
 const { getObjectBuffer, putPrivateObject } = require("../utils/s3");
 const {
   ATTORNEY_REVIEW_NOTE,
+  CANCELLATION_NOTICE_ATTORNEY_REVIEW_NOTE,
+  CANCELLATION_NOTICE_CONFIG,
   COMPANY_INFO,
   CONTRACT_STATUSES,
   CONTRACT_TERMS_SECTIONS,
@@ -20,6 +22,7 @@ const {
   buildContractFilename,
   cleanString,
   fileExtension,
+  FULL_DEPOSIT_WARNING,
   sanitizeFilenamePart,
   validateContractInput,
 } = require("../utils/contractValidation");
@@ -115,7 +118,7 @@ function defaultEmailBody(contract) {
     `Hi ${name},`,
     "",
     "Attached is your Premium Island Homes contract for review.",
-    "Please review the scope, payment schedule, and cancellation notice. If everything looks good, sign and return the contract so we can move forward.",
+    "Please review the scope, payment schedule, terms, and signature page. If everything looks good, sign and return the contract so we can move forward.",
     "",
     "Thank you,",
     "Premium Island Homes Inc.",
@@ -176,11 +179,21 @@ function copyContractForNewDraft(source, update, req) {
 }
 
 async function saveDraft({ project, body, req }) {
-  const { errors, update } = validateContractInput(body, project);
+  const { errors, update, warnings } = validateContractInput(body, project);
   if (errors.length) {
     const error = new Error(errors[0]);
     error.status = 400;
     error.errors = errors;
+    throw error;
+  }
+  if (
+    warnings.some((warning) => warning.code === "full_deposit") &&
+    !update.fullDepositConfirmed
+  ) {
+    const error = new Error(FULL_DEPOSIT_WARNING);
+    error.status = 409;
+    error.errors = [FULL_DEPOSIT_WARNING];
+    error.warnings = warnings;
     throw error;
   }
   update.status = "Draft";
@@ -245,6 +258,8 @@ router.get("/meta", (_req, res) => {
     statuses: CONTRACT_STATUSES,
     termsVersion: CONTRACT_TERMS_VERSION,
     termsSections: CONTRACT_TERMS_SECTIONS,
+    cancellationNotice: CANCELLATION_NOTICE_CONFIG,
+    cancellationNoticeAttorneyReviewNote: CANCELLATION_NOTICE_ATTORNEY_REVIEW_NOTE,
     sourceUrls: NY_SOURCE_URLS,
     attorneyReviewNote: ATTORNEY_REVIEW_NOTE,
     maxSignedPdfBytes: MAX_SIGNED_PDF_BYTES,
@@ -289,6 +304,26 @@ router.post("/:id/generate", async (req, res) => {
       return res.status(409).json({
         message: "Only draft contracts can generate a new PDF. Save changes as a new draft first.",
       });
+    }
+    if (
+      Number(contract.totalPriceCents || 0) > 0 &&
+      Number(contract.depositAmountCents || 0) === Number(contract.totalPriceCents || 0) &&
+      !contract.fullDepositConfirmed &&
+      req.body?.fullDepositConfirmed !== true
+    ) {
+      return res.status(409).json({
+        message: FULL_DEPOSIT_WARNING,
+        warnings: [
+          {
+            code: "full_deposit",
+            severity: "confirmation_required",
+            message: FULL_DEPOSIT_WARNING,
+          },
+        ],
+      });
+    }
+    if (req.body?.fullDepositConfirmed === true && !contract.fullDepositConfirmed) {
+      contract.fullDepositConfirmed = true;
     }
 
     audit = await createAdminActivityLog(req, {

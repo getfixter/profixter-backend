@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Counter = require("./Counter");
 const {
+  CANCELLATION_NOTICE_TERMS_VERSION,
   CONTRACT_STATUSES,
   CONTRACT_TERMS_VERSION,
   WORK_TYPES,
@@ -57,6 +58,12 @@ const ContractSchema = new mongoose.Schema(
       required: true,
       immutable: true,
     },
+    legalNoticeVersion: {
+      type: String,
+      default: CANCELLATION_NOTICE_TERMS_VERSION,
+      required: true,
+      immutable: true,
+    },
     customerSnapshot: {
       fullName: { type: String, trim: true, maxlength: 160, required: true },
       email: { type: String, trim: true, lowercase: true, maxlength: 254, default: "" },
@@ -74,13 +81,14 @@ const ContractSchema = new mongoose.Schema(
     scopeText: { type: String, trim: true, maxlength: 30000, required: true },
     totalPriceCents: { type: Number, min: 0, required: true },
     depositAmountCents: { type: Number, min: 0, required: true },
+    fullDepositConfirmed: { type: Boolean, default: false },
     remainingBalanceCents: { type: Number, min: 0, required: true },
     paymentSchedule: { type: [PaymentScheduleSchema], default: [] },
     dates: {
       contractDate: { type: Date, required: true },
       estimatedStartDate: { type: Date, default: null },
       estimatedCompletionDate: { type: Date, default: null },
-      cancellationDeadline: { type: Date, required: true },
+      cancellationDeadline: { type: Date, default: null },
     },
     optionalDetails: {
       materialsAllowances: { type: String, trim: true, maxlength: 12000, default: "" },

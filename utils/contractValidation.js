@@ -5,6 +5,8 @@ const {
 } = require("../config/premiumIslandHomesContract");
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const FULL_DEPOSIT_WARNING =
+  "The entered deposit equals 100% of the contract price. Confirm that full payment is intentionally due before work begins.";
 
 function cleanString(value, maxLength = 10000) {
   return String(value ?? "")
@@ -71,6 +73,69 @@ function sanitizeFilenamePart(value, fallback = "contract") {
 function customerLastName(customerName) {
   const parts = cleanString(customerName, 160).split(/\s+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "Customer";
+}
+
+function normalizeComparableText(value) {
+  return cleanString(value, 30000)
+    .toLowerCase()
+    .replace(/[^\w\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function addressHasStateAndZip(address) {
+  const value = cleanString(address, 500);
+  return /\b[A-Z]{2}\b/i.test(value) && /\b\d{5}(?:-\d{4})?\b/.test(value);
+}
+
+function buildContractWarnings(update) {
+  const warnings = [];
+  const total = Number(update.totalPriceCents || 0);
+  const deposit = Number(update.depositAmountCents || 0);
+  const descriptionText = normalizeComparableText(update.projectDescription);
+  const scopeText = normalizeComparableText(update.scopeText);
+
+  if (total > 0 && deposit === total) {
+    warnings.push({
+      code: "full_deposit",
+      severity: "confirmation_required",
+      message: FULL_DEPOSIT_WARNING,
+    });
+  }
+
+  if (descriptionText && scopeText && descriptionText === scopeText) {
+    warnings.push({
+      code: "duplicate_description_scope",
+      severity: "warning",
+      message: "Project Description and Scope of Work are identical. The PDF will avoid repeating the same text twice.",
+    });
+  }
+
+  if (!update.dates?.estimatedCompletionDate) {
+    warnings.push({
+      code: "missing_estimated_completion_date",
+      severity: "warning",
+      message: "Estimated completion date is missing.",
+    });
+  }
+
+  if (!addressHasStateAndZip(update.propertySnapshot?.address)) {
+    warnings.push({
+      code: "missing_customer_state_or_zip",
+      severity: "warning",
+      message: "Customer address may be missing a state or ZIP code.",
+    });
+  }
+
+  if (scopeText && scopeText.length < 80) {
+    warnings.push({
+      code: "scope_unusually_short",
+      severity: "warning",
+      message: "Scope of Work is unusually short. Add enough detail for the customer to understand what is included.",
+    });
+  }
+
+  return warnings;
 }
 
 function buildContractFilename(contract) {
@@ -197,6 +262,9 @@ function validateContractInput(body = {}, project = null) {
     scopeText,
     totalPriceCents,
     depositAmountCents,
+    fullDepositConfirmed:
+      body.fullDepositConfirmed === true ||
+      body.fullDepositConfirmed === "true",
     remainingBalanceCents: Math.max(totalPriceCents - depositAmountCents, 0),
     paymentSchedule,
     dates: {
@@ -213,17 +281,12 @@ function validateContractInput(body = {}, project = null) {
         "Estimated completion date",
         errors
       ),
-      cancellationDeadline: parseDate(
-        body.dates?.cancellationDeadline || body.cancellationDeadline,
-        "Cancellation deadline",
-        errors,
-        { required: true }
-      ),
+      cancellationDeadline: null,
     },
     optionalDetails,
   };
 
-  return { errors, update };
+  return { errors, update, warnings: buildContractWarnings(update) };
 }
 
 function fileExtension(name) {
@@ -232,11 +295,14 @@ function fileExtension(name) {
 
 module.exports = {
   buildContractFilename,
+  buildContractWarnings,
   centsToDollars,
   cleanString,
   customerLastName,
   fileExtension,
   formatMoney,
+  FULL_DEPOSIT_WARNING,
+  normalizeComparableText,
   sanitizeFilenamePart,
   validateContractInput,
 };
