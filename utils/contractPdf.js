@@ -50,6 +50,50 @@ function formatPhone(value) {
   return `(${normalized.slice(0, 3)}) ${normalized.slice(3, 6)}-${normalized.slice(6)}`;
 }
 
+function originalContractPriceCents(contract) {
+  return Number(contract.originalContractPriceCents ?? contract.totalPriceCents ?? 0);
+}
+
+function discountRowsForContract(contract) {
+  return Array.isArray(contract.discounts)
+    ? contract.discounts
+        .filter((discount) => Number(discount.calculatedAmountCents || 0) > 0)
+        .slice()
+        .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    : [];
+}
+
+function totalDiscountAmountCents(contract) {
+  const configured = Number(contract.totalDiscountAmountCents || 0);
+  if (configured > 0) return configured;
+  return discountRowsForContract(contract).reduce(
+    (sum, discount) => sum + Number(discount.calculatedAmountCents || 0),
+    0
+  );
+}
+
+function adjustedContractPriceCents(contract) {
+  if (contract.adjustedContractPriceCents !== undefined && contract.adjustedContractPriceCents !== null) {
+    return Number(contract.adjustedContractPriceCents || 0);
+  }
+  return Math.max(originalContractPriceCents(contract) - totalDiscountAmountCents(contract), 0);
+}
+
+function formatBasisPoints(value) {
+  const basisPoints = Number(value || 0);
+  const whole = Math.floor(basisPoints / 100);
+  const fraction = basisPoints % 100;
+  if (!fraction) return `${whole}%`;
+  return `${whole}.${String(fraction).padStart(2, "0").replace(/0+$/g, "")}%`;
+}
+
+function discountValueLabel(discount) {
+  if (discount.type === "percentage") {
+    return formatBasisPoints(discount.value);
+  }
+  return "Fixed amount";
+}
+
 function cleanLines(value) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
@@ -227,30 +271,123 @@ function drawFirstPageHeader(doc, contract) {
 
 function drawPriceSummary(doc, contract) {
   const cardWidth = PAGE.width - PAGE.marginX * 2;
-  ensureRoom(doc, 95);
+  const original = originalContractPriceCents(contract);
+  const discounts = discountRowsForContract(contract);
+  const totalDiscount = totalDiscountAmountCents(contract);
+  const adjusted = adjustedContractPriceCents(contract);
+  const deposit = Number(contract.depositAmountCents || 0);
+  const remaining = Math.max(adjusted - deposit, 0);
+
+  ensureRoom(doc, discounts.length ? 128 : 95);
   const startY = doc.y;
   doc.roundedRect(PAGE.marginX, startY, cardWidth, 82, 5).fill("#f8fafc");
-  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text("TOTAL CONTRACT PRICE", PAGE.marginX + 14, startY + 14, {
+  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text(
+    "Final Contract Price",
+    PAGE.marginX + 14,
+    startY + 14,
+    {
     width: 170,
-  });
-  doc.font("Helvetica-Bold").fontSize(18).text(formatMoney(contract.totalPriceCents), PAGE.marginX + 14, startY + 30, {
+    }
+  );
+  doc.font("Helvetica-Bold").fontSize(18).text(formatMoney(adjusted), PAGE.marginX + 14, startY + 30, {
     width: 170,
   });
 
-  const columns = [
-    ["Deposit", formatMoney(contract.depositAmountCents)],
-    ["Remaining balance", formatMoney(contract.remainingBalanceCents)],
-  ];
+  const columns = discounts.length
+    ? [
+        ["Original Price", formatMoney(original)],
+        ["Discounts", `-${formatMoney(totalDiscount).replace("-", "")}`],
+        ["Deposit", formatMoney(deposit)],
+      ]
+    : [
+        ["Deposit", formatMoney(deposit)],
+        ["Remaining Balance", formatMoney(remaining)],
+      ];
   columns.forEach(([label, value], index) => {
-    const x = PAGE.marginX + 220 + index * 135;
+    const x = PAGE.marginX + 210 + index * 96;
     doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#64748b").text(label.toUpperCase(), x, startY + 22, {
-      width: 120,
+      width: 92,
     });
     doc.font("Helvetica-Bold").fontSize(13).fillColor("#111827").text(value, x, startY + 39, {
-      width: 120,
+      width: 92,
     });
   });
   doc.y = startY + 95;
+
+  if (!discounts.length) return;
+
+  const widths = [235, 95, 90, cardWidth - 420];
+  const headerHeight = 20;
+  const firstDiscount = discounts[0] || {};
+  const firstRowHeight = Math.max(
+    30,
+    textHeight(doc, firstDiscount.name || "", widths[0] - 14, { size: 8.5 }) + 14,
+    textHeight(doc, String(firstDiscount.note || "") || " ", widths[3] - 14, { size: 8.5 }) + 14
+  );
+  ensureRoom(doc, headerHeight + firstRowHeight + 32);
+
+  doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#111827").text("Discount Breakdown", PAGE.marginX, doc.y, {
+    width: cardWidth,
+  });
+  doc.moveDown(0.25);
+
+  ensureRoom(doc, headerHeight + 36);
+  const headerY = doc.y;
+  doc.rect(PAGE.marginX, headerY, cardWidth, headerHeight).fill("#eef2f7");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#111827");
+  doc.text("Discount", PAGE.marginX + 7, headerY + 6, { width: widths[0] - 14 });
+  doc.text("Value", PAGE.marginX + widths[0] + 7, headerY + 6, { width: widths[1] - 14 });
+  doc.text("Amount", PAGE.marginX + widths[0] + widths[1] + 7, headerY + 6, { width: widths[2] - 14 });
+  doc.text("Note", PAGE.marginX + widths[0] + widths[1] + widths[2] + 7, headerY + 6, {
+    width: widths[3] - 14,
+  });
+  doc.y = headerY + headerHeight;
+
+  discounts.forEach((discount, index) => {
+    const note = String(discount.note || "");
+    const height = Math.max(
+      30,
+      textHeight(doc, discount.name || "", widths[0] - 14, { size: 8.5 }) + 14,
+      textHeight(doc, note || " ", widths[3] - 14, { size: 8.5 }) + 14
+    );
+    if (doc.y + height > PAGE.height - PAGE.bottom) {
+      doc.addPage();
+    }
+    const rowY = doc.y;
+    doc.rect(PAGE.marginX, rowY, cardWidth, height).fill(index % 2 ? "#ffffff" : "#fafafa");
+    doc.font("Helvetica").fontSize(8.5).fillColor("#111827").text(discount.name, PAGE.marginX + 7, rowY + 7, {
+      width: widths[0] - 14,
+      lineGap: 1.2,
+    });
+    doc.text(discountValueLabel(discount), PAGE.marginX + widths[0] + 7, rowY + 7, {
+      width: widths[1] - 14,
+    });
+    doc.font("Helvetica-Bold").text(`-${formatMoney(discount.calculatedAmountCents).replace("-", "")}`, PAGE.marginX + widths[0] + widths[1] + 7, rowY + 7, {
+      width: widths[2] - 14,
+    });
+    doc.font("Helvetica").text(note, PAGE.marginX + widths[0] + widths[1] + widths[2] + 7, rowY + 7, {
+      width: widths[3] - 14,
+      lineGap: 1.2,
+    });
+    doc.y = rowY + height;
+  });
+
+  ensureRoom(doc, 52);
+  const totalY = doc.y;
+  doc.rect(PAGE.marginX, totalY, cardWidth, 42).fill("#f8fafc");
+  doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#64748b").text("TOTAL DISCOUNTS", PAGE.marginX + 7, totalY + 8, {
+    width: 150,
+  });
+  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(`-${formatMoney(totalDiscount).replace("-", "")}`, PAGE.marginX + 7, totalY + 22, {
+    width: 150,
+  });
+  doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#64748b").text("REMAINING BALANCE", PAGE.marginX + 210, totalY + 8, {
+    width: 140,
+  });
+  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(formatMoney(remaining), PAGE.marginX + 210, totalY + 22, {
+    width: 140,
+  });
+  doc.y = totalY + 56;
 }
 
 function paymentScheduleForContract(contract) {
@@ -267,7 +404,7 @@ function paymentScheduleForContract(contract) {
     },
     {
       label: "Remaining Balance",
-      amountCents: contract.remainingBalanceCents,
+      amountCents: Math.max(adjustedContractPriceCents(contract) - Number(contract.depositAmountCents || 0), 0),
       dueCondition: "Due upon substantial completion unless otherwise agreed in writing.",
     },
   ].filter((row) => Number(row.amountCents || 0) > 0);
@@ -390,12 +527,21 @@ function drawSignatureLine(doc, label, nameText = "") {
   doc.font("Helvetica-Bold").fontSize(10.5).fillColor("#111827").text(label, PAGE.marginX, startY, {
     width: PAGE.width - PAGE.marginX * 2,
   });
-  const lineY = startY + 42;
+  const valueHeights = columns.map(([, value]) =>
+    value
+      ? textHeight(doc, value, colWidth, { font: "Helvetica", size: 10, lineGap: 1.2 })
+      : 0
+  );
+  const maxValueHeight = Math.max(0, ...valueHeights);
+  const lineY = startY + 31 + Math.max(11, maxValueHeight);
+  ensureRoom(doc, lineY - startY + 48);
   columns.forEach(([caption, value], index) => {
     const x = PAGE.marginX + index * (colWidth + gap);
     if (value) {
-      doc.font("Helvetica").fontSize(10).fillColor("#111827").text(value, x, lineY - 18, {
+      const valueHeight = valueHeights[index];
+      doc.font("Helvetica").fontSize(10).fillColor("#111827").text(value, x, lineY - valueHeight - 7, {
         width: colWidth,
+        lineGap: 1.2,
       });
     }
     doc.moveTo(x, lineY).lineTo(x + colWidth, lineY).strokeColor("#9ca3af").lineWidth(0.75).stroke();
@@ -411,7 +557,7 @@ function drawSignaturePage(doc, contract) {
   sectionTitle(doc, "Signature Page", { topGap: 0, keepWith: 120 });
   drawParagraph(
     doc,
-    "By signing below, the parties acknowledge that they have reviewed and accepted the project description, scope of work, contract price, payment schedule, and terms of this agreement, and that the customer has received a copy of the agreement.",
+    "By signing below, the parties acknowledge that they have reviewed and accepted the project description, scope of work, pricing, listed discounts if any, payment schedule, and terms of this agreement, and that the customer has received a copy of the agreement.",
     { size: 10, color: "#374151", lineGap: 2.5, after: 1.4 }
   );
   drawSignatureLine(doc, "Customer 1", contract.customerSnapshot?.fullName || "");

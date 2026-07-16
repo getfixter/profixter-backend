@@ -25,6 +25,7 @@ const {
   FULL_DEPOSIT_WARNING,
   sanitizeFilenamePart,
   validateContractInput,
+  ZERO_ADJUSTED_PRICE_WARNING,
 } = require("../utils/contractValidation");
 const { generateContractPdfBuffer } = require("../utils/contractPdf");
 const {
@@ -118,7 +119,7 @@ function defaultEmailBody(contract) {
     `Hi ${name},`,
     "",
     "Attached is your Premium Island Homes contract for review.",
-    "Please review the scope, payment schedule, terms, and signature page. If everything looks good, sign and return the contract so we can move forward.",
+    "Please review the scope, pricing, discounts if listed, payment schedule, terms, and signature page. If everything looks good, sign and return the contract so we can move forward.",
     "",
     "Thank you,",
     "Premium Island Homes Inc.",
@@ -193,6 +194,16 @@ async function saveDraft({ project, body, req }) {
     const error = new Error(FULL_DEPOSIT_WARNING);
     error.status = 409;
     error.errors = [FULL_DEPOSIT_WARNING];
+    error.warnings = warnings;
+    throw error;
+  }
+  if (
+    warnings.some((warning) => warning.code === "zero_adjusted_price") &&
+    !update.zeroAdjustedPriceConfirmed
+  ) {
+    const error = new Error(ZERO_ADJUSTED_PRICE_WARNING);
+    error.status = 409;
+    error.errors = [ZERO_ADJUSTED_PRICE_WARNING];
     error.warnings = warnings;
     throw error;
   }
@@ -305,9 +316,12 @@ router.post("/:id/generate", async (req, res) => {
         message: "Only draft contracts can generate a new PDF. Save changes as a new draft first.",
       });
     }
+    const adjustedContractPriceCents = Number(
+      contract.adjustedContractPriceCents ?? contract.totalPriceCents ?? 0
+    );
     if (
-      Number(contract.totalPriceCents || 0) > 0 &&
-      Number(contract.depositAmountCents || 0) === Number(contract.totalPriceCents || 0) &&
+      adjustedContractPriceCents > 0 &&
+      Number(contract.depositAmountCents || 0) === adjustedContractPriceCents &&
       !contract.fullDepositConfirmed &&
       req.body?.fullDepositConfirmed !== true
     ) {
@@ -324,6 +338,26 @@ router.post("/:id/generate", async (req, res) => {
     }
     if (req.body?.fullDepositConfirmed === true && !contract.fullDepositConfirmed) {
       contract.fullDepositConfirmed = true;
+    }
+    if (
+      Number(contract.originalContractPriceCents || contract.totalPriceCents || 0) > 0 &&
+      adjustedContractPriceCents === 0 &&
+      !contract.zeroAdjustedPriceConfirmed &&
+      req.body?.zeroAdjustedPriceConfirmed !== true
+    ) {
+      return res.status(409).json({
+        message: ZERO_ADJUSTED_PRICE_WARNING,
+        warnings: [
+          {
+            code: "zero_adjusted_price",
+            severity: "confirmation_required",
+            message: ZERO_ADJUSTED_PRICE_WARNING,
+          },
+        ],
+      });
+    }
+    if (req.body?.zeroAdjustedPriceConfirmed === true && !contract.zeroAdjustedPriceConfirmed) {
+      contract.zeroAdjustedPriceConfirmed = true;
     }
 
     audit = await createAdminActivityLog(req, {

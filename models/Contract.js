@@ -17,6 +17,18 @@ const PaymentScheduleSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const DiscountSchema = new mongoose.Schema(
+  {
+    name: { type: String, trim: true, maxlength: 160, required: true },
+    type: { type: String, enum: ["fixed", "percentage"], required: true },
+    value: { type: Number, min: 0, required: true },
+    calculatedAmountCents: { type: Number, min: 0, required: true },
+    note: { type: String, trim: true, maxlength: 1000, default: "" },
+    order: { type: Number, min: 0, default: 0 },
+  },
+  { _id: true }
+);
+
 const AuditEventSchema = new mongoose.Schema(
   {
     event: { type: String, required: true, trim: true, maxlength: 120 },
@@ -79,9 +91,14 @@ const ContractSchema = new mongoose.Schema(
     otherWorkType: { type: String, trim: true, maxlength: 120, default: "" },
     projectDescription: { type: String, trim: true, maxlength: 10000, required: true },
     scopeText: { type: String, trim: true, maxlength: 30000, required: true },
+    originalContractPriceCents: { type: Number, min: 0, default: 0 },
     totalPriceCents: { type: Number, min: 0, required: true },
+    discounts: { type: [DiscountSchema], default: [] },
+    totalDiscountAmountCents: { type: Number, min: 0, default: 0 },
+    adjustedContractPriceCents: { type: Number, min: 0, default: 0 },
     depositAmountCents: { type: Number, min: 0, required: true },
     fullDepositConfirmed: { type: Boolean, default: false },
+    zeroAdjustedPriceConfirmed: { type: Boolean, default: false },
     remainingBalanceCents: { type: Number, min: 0, required: true },
     paymentSchedule: { type: [PaymentScheduleSchema], default: [] },
     dates: {
@@ -160,8 +177,20 @@ ContractSchema.pre("validate", async function assignContractNumber() {
   if (!this.contractNumber) {
     this.contractNumber = await this.constructor.nextContractNumber();
   }
+  const original = Number(this.originalContractPriceCents || this.totalPriceCents || 0);
+  const totalDiscount = Array.isArray(this.discounts)
+    ? this.discounts.reduce((sum, discount) => sum + Number(discount.calculatedAmountCents || 0), 0)
+    : Number(this.totalDiscountAmountCents || 0);
+  const adjusted = Math.max(original - totalDiscount, 0);
+  this.originalContractPriceCents = original;
+  this.totalPriceCents = original;
+  this.totalDiscountAmountCents = totalDiscount;
+  this.adjustedContractPriceCents = Number(this.adjustedContractPriceCents || adjusted);
+  if (this.adjustedContractPriceCents !== adjusted) {
+    this.adjustedContractPriceCents = adjusted;
+  }
   this.remainingBalanceCents = Math.max(
-    Number(this.totalPriceCents || 0) - Number(this.depositAmountCents || 0),
+    Number(this.adjustedContractPriceCents || 0) - Number(this.depositAmountCents || 0),
     0
   );
 });

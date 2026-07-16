@@ -30,7 +30,7 @@ const CONTRACT_STATUSES = Object.freeze([
   "Canceled",
 ]);
 
-const CONTRACT_TERMS_VERSION = "PIH-NY-HI-2026-002";
+const CONTRACT_TERMS_VERSION = "PIH-NY-HI-2026-003";
 const CANCELLATION_NOTICE_TERMS_VERSION = "PIH-NY-CANCEL-2026-001";
 
 const NY_SOURCE_URLS = Object.freeze([
@@ -76,7 +76,7 @@ const CONTRACT_TERMS_SECTIONS = Object.freeze([
   {
     title: "Price and Payment Schedule",
     body:
-      "The customer agrees to pay the total contract price according to the payment schedule in this agreement. Progress payments should reasonably relate to work performed, materials purchased, mobilization, scheduling, or other project costs described in the agreement.",
+      "The customer agrees to pay the adjusted contract price shown in this agreement according to the payment schedule. The original contract price is reduced only by the listed discounts, if any. Discounts apply only to the original scope described in this agreement and do not apply to future change orders, added work, or separate services unless Premium Island Homes Inc. agrees in writing. Progress payments should reasonably relate to work performed, materials purchased, mobilization, scheduling, or other project costs described in the agreement.",
   },
   {
     title: "Late or Missed Payments",

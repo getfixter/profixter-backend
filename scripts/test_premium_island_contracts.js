@@ -76,7 +76,11 @@ async function main() {
 
   const result = validateContractInput(validBody(), project);
   assert.deepStrictEqual(result.errors, []);
+  assert.strictEqual(result.update.originalContractPriceCents, 299900);
   assert.strictEqual(result.update.totalPriceCents, 299900);
+  assert.strictEqual(result.update.totalDiscountAmountCents, 0);
+  assert.strictEqual(result.update.adjustedContractPriceCents, 299900);
+  assert.deepStrictEqual(result.update.discounts, []);
   assert.strictEqual(result.update.depositAmountCents, 299900);
   assert.strictEqual(result.update.remainingBalanceCents, 0);
   assert.strictEqual(result.update.fullDepositConfirmed, true);
@@ -138,7 +142,7 @@ async function main() {
     project
   );
   assert(
-    depositTooHigh.errors.includes("Deposit cannot exceed total contract price"),
+    depositTooHigh.errors.includes("Deposit cannot exceed adjusted contract price"),
     "deposit validation failed"
   );
 
@@ -153,8 +157,212 @@ async function main() {
     project
   );
   assert(
-    scheduleTooHigh.errors.includes("Payment schedule total cannot exceed the contract price"),
+    scheduleTooHigh.errors.includes("Payment schedule total cannot exceed the adjusted contract price"),
     "payment schedule validation failed"
+  );
+
+  const mixedDiscount = validateContractInput(
+    validBody({
+      totalPriceCents: 1000000,
+      depositAmountCents: 250000,
+      fullDepositConfirmed: false,
+      discounts: [
+        { name: "Returning customer", type: "percentage", valueBasisPoints: 1000 },
+        { name: "Referral credit", type: "fixed", valueCents: 50000 },
+      ],
+      paymentSchedule: [
+        { label: "Deposit", amountCents: 250000, dueCondition: "Due at signing" },
+        { label: "Final payment", amountCents: 600000, dueCondition: "Due at completion" },
+      ],
+    }),
+    project
+  );
+  assert.deepStrictEqual(mixedDiscount.errors, []);
+  assert.strictEqual(mixedDiscount.update.originalContractPriceCents, 1000000);
+  assert.strictEqual(mixedDiscount.update.discounts[0].value, 1000);
+  assert.strictEqual(mixedDiscount.update.discounts[0].calculatedAmountCents, 100000);
+  assert.strictEqual(mixedDiscount.update.discounts[1].value, 50000);
+  assert.strictEqual(mixedDiscount.update.totalDiscountAmountCents, 150000);
+  assert.strictEqual(mixedDiscount.update.adjustedContractPriceCents, 850000);
+  assert.strictEqual(mixedDiscount.update.depositAmountCents, 250000);
+  assert.strictEqual(mixedDiscount.update.remainingBalanceCents, 600000);
+
+  const decimalPercentage = validateContractInput(
+    validBody({
+      totalPriceCents: 1000000,
+      depositAmountCents: 0,
+      discounts: [{ name: "Seasonal", type: "percentage", value: "7.5" }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert.deepStrictEqual(decimalPercentage.errors, []);
+  assert.strictEqual(decimalPercentage.update.discounts[0].value, 750);
+  assert.strictEqual(decimalPercentage.update.discounts[0].calculatedAmountCents, 75000);
+  assert.strictEqual(decimalPercentage.update.adjustedContractPriceCents, 925000);
+
+  const fullDiscount = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      zeroAdjustedPriceConfirmed: true,
+      discounts: [{ name: "Courtesy", type: "fixed", valueCents: 100000 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert.deepStrictEqual(fullDiscount.errors, []);
+  assert.strictEqual(fullDiscount.update.adjustedContractPriceCents, 0);
+  assert.strictEqual(fullDiscount.update.zeroAdjustedPriceConfirmed, true);
+  assert.strictEqual(fullDiscount.update.remainingBalanceCents, 0);
+  assert(
+    fullDiscount.warnings.some((warning) => warning.code === "zero_adjusted_price"),
+    "zero adjusted price confirmation warning failed"
+  );
+  assert(
+    fullDiscount.warnings.some((warning) => warning.code === "high_discount_total"),
+    "high discount warning should trigger above 30%"
+  );
+
+  const excessiveDiscounts = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [
+        { name: "Discount A", type: "fixed", valueCents: 80000 },
+        { name: "Discount B", type: "fixed", valueCents: 30000 },
+      ],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    excessiveDiscounts.errors.includes("Total discounts cannot exceed original contract price"),
+    "total discount cap validation failed"
+  );
+
+  const fixedExceedsOriginal = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [{ name: "Bad fixed", type: "fixed", valueCents: 100001 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    fixedExceedsOriginal.errors.includes("discounts[0].value cannot exceed original contract price"),
+    "fixed discount cap validation failed"
+  );
+
+  const percentTooHigh = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [{ name: "Bad percent", type: "percentage", valueBasisPoints: 10001 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    percentTooHigh.errors.includes("discounts[0].value cannot exceed 100%"),
+    "percentage discount cap validation failed"
+  );
+
+  const negativeDiscount = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [{ name: "Bad negative", type: "fixed", valueCents: -100 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    negativeDiscount.errors.some((message) => message.includes("non-negative amount")),
+    "negative discount validation failed"
+  );
+
+  const missingDiscountName = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [{ name: "", type: "fixed", valueCents: 1000 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    missingDiscountName.errors.includes("discounts[0].name is required"),
+    "missing discount name validation failed"
+  );
+
+  const duplicateDiscountName = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 0,
+      discounts: [
+        { name: "VIP", type: "fixed", valueCents: 1000 },
+        { name: "VIP", type: "fixed", valueCents: 2000 },
+      ],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert.deepStrictEqual(duplicateDiscountName.errors, []);
+  assert(
+    duplicateDiscountName.warnings.some((warning) => warning.code === "duplicate_discount_name"),
+    "duplicate discount name warning failed"
+  );
+
+  const depositExceedsAdjusted = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 90000,
+      discounts: [{ name: "Discount", type: "fixed", valueCents: 20000 }],
+      paymentSchedule: [],
+    }),
+    project
+  );
+  assert(
+    depositExceedsAdjusted.errors.includes("Deposit cannot exceed adjusted contract price"),
+    "deposit must be checked against adjusted price"
+  );
+
+  const scheduleExceedsAdjusted = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 10000,
+      discounts: [{ name: "Discount", type: "fixed", valueCents: 20000 }],
+      paymentSchedule: [
+        { label: "Too much", amountCents: 90000, dueCondition: "Due later" },
+      ],
+    }),
+    project
+  );
+  assert(
+    scheduleExceedsAdjusted.errors.includes("Payment schedule total cannot exceed the adjusted contract price"),
+    "payment schedule must be checked against adjusted price"
+  );
+
+  const adjustedFullDeposit = validateContractInput(
+    validBody({
+      totalPriceCents: 100000,
+      depositAmountCents: 80000,
+      fullDepositConfirmed: false,
+      discounts: [{ name: "Discount", type: "fixed", valueCents: 20000 }],
+      paymentSchedule: [
+        { label: "Full payment at signing", amountCents: 80000, dueCondition: "Due at signing" },
+      ],
+    }),
+    project
+  );
+  assert.deepStrictEqual(adjustedFullDeposit.errors, []);
+  assert(
+    adjustedFullDeposit.warnings.some(
+      (warning) => warning.code === "full_deposit" && warning.message === FULL_DEPOSIT_WARNING
+    ),
+    "100% deposit warning must compare against adjusted price"
   );
 
   const otherMissing = validateContractInput(
@@ -185,6 +393,20 @@ async function main() {
   assert.strictEqual(pdf.subarray(0, 4).toString(), "%PDF");
   assert(pdfPageCount(pdf) >= 4, "PDF should include flowing terms and a signature page");
   assert(pdfPageCount(pdf) <= 8, "PDF should not create excessive blank/footer pages");
+
+  const discountedContract = {
+    ...contract,
+    ...mixedDiscount.update,
+    contractNumber: "PIH-2026-0002",
+    version: 1,
+  };
+  const discountedPdf = await generateContractPdfBuffer(discountedContract);
+  assert(discountedPdf.length > 1000, "discounted PDF should not be empty");
+  assert.strictEqual(discountedPdf.subarray(0, 4).toString(), "%PDF");
+  assert(
+    pdfPageCount(discountedPdf) >= 4 && pdfPageCount(discountedPdf) <= 8,
+    "discounted PDF should keep a reasonable page count"
+  );
 
   const noNoticePdf = await generateContractPdfBuffer(contract, {
     includeCancellationNotice: false,
@@ -233,6 +455,14 @@ async function main() {
   assert(
     pdfSource.includes("Page ${i + 1} of ${range.count}"),
     "footer page count must be rendered"
+  );
+  assert(
+    pdfSource.includes("Discount Breakdown") && pdfSource.includes("if (!discounts.length) return"),
+    "discount breakdown should render only when discounts exist"
+  );
+  assert(
+    pdfSource.includes("Final Contract Price"),
+    "PDF must label adjusted pricing as Final Contract Price"
   );
 
   console.log("Premium Island Homes contract tests passed.");

@@ -40,6 +40,30 @@ const ProjectSchema = new mongoose.Schema(
     phone: { type: String, trim: true, maxlength: 40, default: "" },
     email: { type: String, trim: true, lowercase: true, maxlength: 254, default: "" },
     address: { type: String, required: true, trim: true, maxlength: 500 },
+    customerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    addressId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+      index: true,
+    },
+    customerSnapshot: {
+      fullName: { type: String, trim: true, maxlength: 160, default: "" },
+      email: { type: String, trim: true, lowercase: true, maxlength: 254, default: "" },
+      phone: { type: String, trim: true, maxlength: 40, default: "" },
+    },
+    propertySnapshot: {
+      addressLine1: { type: String, trim: true, maxlength: 240, default: "" },
+      addressLine2: { type: String, trim: true, maxlength: 120, default: "" },
+      city: { type: String, trim: true, maxlength: 120, default: "" },
+      state: { type: String, trim: true, maxlength: 40, default: "" },
+      postalCode: { type: String, trim: true, maxlength: 40, default: "" },
+      formattedAddress: { type: String, trim: true, maxlength: 500, default: "" },
+    },
     projectType: {
       type: String,
       enum: PROJECT_TYPES,

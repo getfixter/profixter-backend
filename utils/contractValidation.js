@@ -6,7 +6,12 @@ const {
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const FULL_DEPOSIT_WARNING =
-  "The entered deposit equals 100% of the contract price. Confirm that full payment is intentionally due before work begins.";
+  "The entered deposit equals 100% of the adjusted contract price. Confirm that full payment is intentionally due before work begins.";
+const ZERO_ADJUSTED_PRICE_WARNING =
+  "Discounts reduce the adjusted contract price to $0. Confirm that this contract is intentionally being generated at no charge.";
+const HIGH_DISCOUNT_WARNING =
+  "Total discounts exceed 30% of the original contract price. Review before generating.";
+const DISCOUNT_TYPES = Object.freeze(["fixed", "percentage"]);
 
 function cleanString(value, maxLength = 10000) {
   return String(value ?? "")
@@ -50,6 +55,116 @@ function parseCents(value, field, errors) {
   return Math.round(number * 100);
 }
 
+function parseBasisPoints(value, field, errors) {
+  if (value === "" || value === null || value === undefined) return 0;
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 0) {
+      errors.push(`${field} must be a non-negative percentage`);
+      return 0;
+    }
+    return value;
+  }
+
+  const normalized = String(value).replace(/[%\s]/g, "").trim();
+  if (!normalized) return 0;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    errors.push(`${field} must be a percentage with no more than two decimal places`);
+    return 0;
+  }
+  const [wholePart, decimalPart = ""] = normalized.split(".");
+  return Number(wholePart) * 100 + Number(decimalPart.padEnd(2, "0"));
+}
+
+function calculatePercentageDiscountCents(originalContractPriceCents, basisPoints) {
+  return Math.floor((Number(originalContractPriceCents || 0) * Number(basisPoints || 0) + 5000) / 10000);
+}
+
+function isBlankDiscountRow(row) {
+  const name = cleanString(row?.name, 160);
+  const note = cleanString(row?.note, 1000);
+  const value = row?.value ?? row?.valueCents ?? row?.valueBasisPoints ?? row?.amountCents ?? row?.amount;
+  return !name && !note && (value === "" || value === null || value === undefined);
+}
+
+function normalizeDiscounts(rows, originalContractPriceCents, errors, warnings) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const seenNames = new Map();
+  const duplicateNames = new Set();
+  const discounts = sourceRows
+    .slice(0, 40)
+    .map((row, index) => {
+      if (isBlankDiscountRow(row)) return null;
+
+      const name = cleanString(row?.name, 160);
+      const type = cleanString(row?.type || "fixed", 40).toLowerCase();
+      const note = cleanString(row?.note, 1000);
+
+      if (!name) errors.push(`discounts[${index}].name is required`);
+      if (!DISCOUNT_TYPES.includes(type)) {
+        errors.push(`discounts[${index}].type must be fixed or percentage`);
+      }
+
+      const comparableName = name.toLowerCase();
+      if (comparableName) {
+        if (seenNames.has(comparableName)) duplicateNames.add(name);
+        seenNames.set(comparableName, true);
+      }
+
+      let value = 0;
+      let calculatedAmountCents = 0;
+      if (type === "percentage") {
+        value = parseBasisPoints(
+          row?.valueBasisPoints ?? row?.basisPoints ?? row?.value,
+          `discounts[${index}].value`,
+          errors
+        );
+        if (value <= 0) errors.push(`discounts[${index}].value must be greater than zero`);
+        if (value > 10000) errors.push(`discounts[${index}].value cannot exceed 100%`);
+        calculatedAmountCents = calculatePercentageDiscountCents(originalContractPriceCents, value);
+      } else {
+        value = parseCents(
+          row?.valueCents ?? row?.amountCents ?? row?.amount ?? row?.value,
+          `discounts[${index}].value`,
+          errors
+        );
+        if (value <= 0) errors.push(`discounts[${index}].value must be greater than zero`);
+        if (value > originalContractPriceCents) {
+          errors.push(`discounts[${index}].value cannot exceed original contract price`);
+        }
+        calculatedAmountCents = value;
+      }
+
+      return {
+        name,
+        type: DISCOUNT_TYPES.includes(type) ? type : "fixed",
+        value,
+        calculatedAmountCents,
+        note,
+        order: index,
+      };
+    })
+    .filter(Boolean);
+
+  const totalDiscountAmountCents = discounts.reduce(
+    (sum, discount) => sum + Number(discount.calculatedAmountCents || 0),
+    0
+  );
+
+  if (totalDiscountAmountCents > originalContractPriceCents) {
+    errors.push("Total discounts cannot exceed original contract price");
+  }
+
+  duplicateNames.forEach((name) => {
+    warnings.push({
+      code: "duplicate_discount_name",
+      severity: "warning",
+      message: `Discount name "${name}" is used more than once. Duplicate names are allowed, but review them before generating.`,
+    });
+  });
+
+  return { discounts, totalDiscountAmountCents };
+}
+
 function centsToDollars(cents) {
   return Math.round(Number(cents || 0)) / 100;
 }
@@ -90,7 +205,9 @@ function addressHasStateAndZip(address) {
 
 function buildContractWarnings(update) {
   const warnings = [];
-  const total = Number(update.totalPriceCents || 0);
+  const total = Number(update.adjustedContractPriceCents ?? update.totalPriceCents ?? 0);
+  const original = Number(update.originalContractPriceCents ?? update.totalPriceCents ?? 0);
+  const totalDiscount = Number(update.totalDiscountAmountCents || 0);
   const deposit = Number(update.depositAmountCents || 0);
   const descriptionText = normalizeComparableText(update.projectDescription);
   const scopeText = normalizeComparableText(update.scopeText);
@@ -100,6 +217,22 @@ function buildContractWarnings(update) {
       code: "full_deposit",
       severity: "confirmation_required",
       message: FULL_DEPOSIT_WARNING,
+    });
+  }
+
+  if (original > 0 && totalDiscount > Math.floor((original * 30) / 100)) {
+    warnings.push({
+      code: "high_discount_total",
+      severity: "warning",
+      message: HIGH_DISCOUNT_WARNING,
+    });
+  }
+
+  if (original > 0 && total === 0) {
+    warnings.push({
+      code: "zero_adjusted_price",
+      severity: "confirmation_required",
+      message: ZERO_ADJUSTED_PRICE_WARNING,
     });
   }
 
@@ -174,7 +307,7 @@ function normalizePaymentSchedule(rows, totalPriceCents, errors) {
     0
   );
   if (paymentTotal > totalPriceCents) {
-    errors.push("Payment schedule total cannot exceed the contract price");
+    errors.push("Payment schedule total cannot exceed the adjusted contract price");
   }
 
   return paymentSchedule;
@@ -182,6 +315,7 @@ function normalizePaymentSchedule(rows, totalPriceCents, errors) {
 
 function validateContractInput(body = {}, project = null) {
   const errors = [];
+  const warnings = [];
   const workType = cleanString(body.workType || project?.projectType || "", 80);
   const otherWorkType = cleanString(body.otherWorkType, 120);
   const status = cleanString(body.status || "Draft", 40);
@@ -199,24 +333,39 @@ function validateContractInput(body = {}, project = null) {
   if (!projectDescription) errors.push("Project description is required");
   if (!scopeText) errors.push("Scope of work is required");
 
-  const totalPriceCents = parseCents(
-    body.totalPriceCents ?? body.totalContractPrice,
-    "Total contract price",
+  const originalContractPriceCents = parseCents(
+    body.originalContractPriceCents ?? body.totalPriceCents ?? body.totalContractPrice,
+    "Original contract price",
     errors
+  );
+  const { discounts, totalDiscountAmountCents } = normalizeDiscounts(
+    body.discounts,
+    originalContractPriceCents,
+    errors,
+    warnings
+  );
+  const adjustedContractPriceCents = Math.max(
+    originalContractPriceCents - totalDiscountAmountCents,
+    0
   );
   const depositAmountCents = parseCents(
     body.depositAmountCents ?? body.depositRequired,
     "Deposit required",
     errors
   );
-  if (totalPriceCents <= 0) errors.push("Total contract price must be greater than zero");
-  if (depositAmountCents > totalPriceCents) {
-    errors.push("Deposit cannot exceed total contract price");
+  if (originalContractPriceCents <= 0) {
+    errors.push("Original contract price must be greater than zero");
+  }
+  if (adjustedContractPriceCents < 0) {
+    errors.push("Adjusted contract price cannot be negative");
+  }
+  if (depositAmountCents > adjustedContractPriceCents) {
+    errors.push("Deposit cannot exceed adjusted contract price");
   }
 
   const paymentSchedule = normalizePaymentSchedule(
     body.paymentSchedule,
-    totalPriceCents,
+    adjustedContractPriceCents,
     errors
   );
 
@@ -260,12 +409,19 @@ function validateContractInput(body = {}, project = null) {
     otherWorkType,
     projectDescription,
     scopeText,
-    totalPriceCents,
+    originalContractPriceCents,
+    totalPriceCents: originalContractPriceCents,
+    discounts,
+    totalDiscountAmountCents,
+    adjustedContractPriceCents,
     depositAmountCents,
     fullDepositConfirmed:
       body.fullDepositConfirmed === true ||
       body.fullDepositConfirmed === "true",
-    remainingBalanceCents: Math.max(totalPriceCents - depositAmountCents, 0),
+    zeroAdjustedPriceConfirmed:
+      body.zeroAdjustedPriceConfirmed === true ||
+      body.zeroAdjustedPriceConfirmed === "true",
+    remainingBalanceCents: Math.max(adjustedContractPriceCents - depositAmountCents, 0),
     paymentSchedule,
     dates: {
       contractDate: parseDate(body.dates?.contractDate || body.contractDate, "Contract date", errors, {
@@ -286,7 +442,7 @@ function validateContractInput(body = {}, project = null) {
     optionalDetails,
   };
 
-  return { errors, update, warnings: buildContractWarnings(update) };
+  return { errors, update, warnings: [...warnings, ...buildContractWarnings(update)] };
 }
 
 function fileExtension(name) {
@@ -296,13 +452,18 @@ function fileExtension(name) {
 module.exports = {
   buildContractFilename,
   buildContractWarnings,
+  calculatePercentageDiscountCents,
   centsToDollars,
   cleanString,
   customerLastName,
   fileExtension,
   formatMoney,
   FULL_DEPOSIT_WARNING,
+  HIGH_DISCOUNT_WARNING,
   normalizeComparableText,
+  normalizeDiscounts,
+  parseBasisPoints,
   sanitizeFilenamePart,
   validateContractInput,
+  ZERO_ADJUSTED_PRICE_WARNING,
 };

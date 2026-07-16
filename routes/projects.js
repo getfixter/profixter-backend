@@ -5,11 +5,22 @@ const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
 const Contract = require("../models/Contract");
+const Subscription = require("../models/Subscription");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
+const {
+  buildCustomerSearchQuery,
+  buildCustomerSnapshot,
+  buildPropertySnapshot,
+  cleanString,
+  normalizeCursor,
+  normalizeLimit,
+  normalizeOptionalObjectId,
+  serializeCustomerForProjectSelector,
+} = require("../utils/projectCustomerSelection");
 
 const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -29,10 +40,6 @@ async function onlyAdmin(req, res, next) {
   }
 }
 
-function cleanString(value) {
-  return String(value ?? "").trim();
-}
-
 function parseAmount(value, field, errors) {
   if (value === "" || value === null || value === undefined) return 0;
   const amount = Number(value);
@@ -47,9 +54,62 @@ function validateProjectInput(body, { partial = false } = {}) {
   const errors = [];
   const update = {};
 
+  const bodyCustomerSnapshot = buildCustomerSnapshot({
+    ...(body.customerSnapshot || {}),
+    customerName: body.customerSnapshot?.fullName ?? body.customerName,
+    email: body.customerSnapshot?.email ?? body.email,
+    phone: body.customerSnapshot?.phone ?? body.phone,
+  });
+  const bodyPropertySnapshot = buildPropertySnapshot({
+    ...(body.propertySnapshot || {}),
+    address: body.propertySnapshot?.formattedAddress ?? body.address,
+  });
+  const flatCustomerName = body.customerName ?? bodyCustomerSnapshot.fullName;
+  const flatEmail = body.email ?? bodyCustomerSnapshot.email;
+  const flatPhone = body.phone ?? bodyCustomerSnapshot.phone;
+  const flatAddress = body.address ?? bodyPropertySnapshot.formattedAddress;
+
   const stringFields = ["customerName", "phone", "email", "address", "notes"];
   for (const field of stringFields) {
-    if (!partial || body[field] !== undefined) update[field] = cleanString(body[field]);
+    const shouldSetFromSnapshot =
+      (field === "customerName" || field === "phone" || field === "email")
+        ? !!body.customerSnapshot
+        : field === "address"
+          ? !!body.propertySnapshot
+          : false;
+    if (!partial || body[field] !== undefined || shouldSetFromSnapshot) {
+      const source = {
+        customerName: flatCustomerName,
+        phone: flatPhone,
+        email: flatEmail,
+        address: flatAddress,
+        notes: body.notes,
+      };
+      update[field] = cleanString(source[field], field === "notes" ? 10000 : 500);
+    }
+  }
+
+  if (!partial || body.customerId !== undefined) {
+    update.customerId = normalizeOptionalObjectId(body.customerId, "customerId", errors);
+    if (!update.customerId) update.addressId = null;
+  }
+  if (!partial || body.addressId !== undefined) {
+    update.addressId = normalizeOptionalObjectId(body.addressId, "addressId", errors);
+  }
+
+  if (!partial || body.customerSnapshot !== undefined || update.customerName !== undefined) {
+    update.customerSnapshot = buildCustomerSnapshot({
+      fullName: update.customerName ?? bodyCustomerSnapshot.fullName,
+      email: update.email ?? bodyCustomerSnapshot.email,
+      phone: update.phone ?? bodyCustomerSnapshot.phone,
+    });
+  }
+
+  if (!partial || body.propertySnapshot !== undefined || update.address !== undefined) {
+    update.propertySnapshot = buildPropertySnapshot({
+      ...bodyPropertySnapshot,
+      formattedAddress: update.address ?? bodyPropertySnapshot.formattedAddress,
+    });
   }
 
   if (!partial || body.status !== undefined) {
@@ -84,6 +144,49 @@ function validateProjectInput(body, { partial = false } = {}) {
   }
 
   return { errors, update };
+}
+
+async function findSubscriptionsForUser(userId) {
+  return Subscription.find({ user: userId })
+    .select(
+      "_id user addressId subscriptionType status accessStatus cancelAtPeriodEnd cancellationDate currentPeriodEnd nextPaymentDate createdAt updatedAt"
+    )
+    .sort({ currentPeriodEnd: -1, nextPaymentDate: -1, createdAt: -1, updatedAt: -1 })
+    .lean();
+}
+
+async function validateProjectCustomerLink(update, errors) {
+  if (!update.customerId) {
+    if (update.customerId === null) update.addressId = null;
+    return null;
+  }
+
+  const user = await User.findOne({
+    _id: update.customerId,
+    role: "customer",
+    isActive: true,
+  })
+    .select("name email phone addresses defaultAddressId")
+    .lean();
+
+  if (!user) {
+    errors.push("Selected customer was not found");
+    return null;
+  }
+
+  if (update.addressId) {
+    const ownsAddress = (user.addresses || []).some(
+      (address) => String(address._id || "") === String(update.addressId)
+    );
+    if (!ownsAddress) errors.push("Selected property does not belong to the selected customer");
+  }
+
+  return user;
+}
+
+async function serializeProjectCustomer(user, options = {}) {
+  const subscriptions = await findSubscriptionsForUser(user._id);
+  return serializeCustomerForProjectSelector(user, subscriptions, options);
 }
 
 router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
@@ -123,6 +226,71 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.get("/customer-search", async (req, res) => {
+  try {
+    const q = cleanString(req.query.q, 120);
+    const limit = normalizeLimit(req.query.limit, 12);
+    const cursor = normalizeCursor(req.query.cursor);
+    const query = buildCustomerSearchQuery(q);
+
+    if (!query) {
+      return res.json({
+        customers: [],
+        nextCursor: null,
+        limit,
+        message: "Enter at least 2 characters to search customers.",
+      });
+    }
+
+    const users = await User.find(query)
+      .select("userId name firstName lastName email phone address city state zip county addresses defaultAddressId createdAt")
+      .sort({ name: 1, email: 1, createdAt: -1 })
+      .skip(cursor)
+      .limit(limit + 1)
+      .lean();
+
+    const page = users.slice(0, limit);
+    const customers = [];
+    for (const user of page) {
+      customers.push(await serializeProjectCustomer(user, { query: q }));
+    }
+
+    return res.json({
+      customers,
+      nextCursor: users.length > limit ? String(cursor + limit) : null,
+      limit,
+    });
+  } catch (error) {
+    console.error("GET /admin/projects/customer-search failed:", error);
+    return res.status(500).json({ message: "Failed to search customers" });
+  }
+});
+
+router.get("/customer/:customerId", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.customerId)) {
+      return res.status(400).json({ message: "Invalid customer ID" });
+    }
+    const user = await User.findOne({
+      _id: req.params.customerId,
+      role: "customer",
+      isActive: true,
+    })
+      .select("userId name firstName lastName email phone address city state zip county addresses defaultAddressId createdAt")
+      .lean();
+    if (!user) return res.status(404).json({ message: "Customer not found" });
+
+    return res.json({
+      customer: await serializeProjectCustomer(user, {
+        selectedAddressId: req.query.addressId || null,
+      }),
+    });
+  } catch (error) {
+    console.error("GET /admin/projects/customer/:customerId failed:", error);
+    return res.status(500).json({ message: "Failed to load customer" });
+  }
+});
+
 router.get("/:projectId/estimates", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.projectId)) {
@@ -158,6 +326,7 @@ router.get("/:id", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const { errors, update } = validateProjectInput(req.body);
+    await validateProjectCustomerLink(update, errors);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
 
     const project = await Project.create(update);
@@ -178,6 +347,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const { errors, update } = validateProjectInput(req.body, { partial: true });
+    await validateProjectCustomerLink(update, errors);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
     delete update.projectNumber;
 
