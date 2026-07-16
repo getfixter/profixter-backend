@@ -305,6 +305,7 @@ function drawFirstPageHeader(doc, contract) {
       lineGap: 1,
     }
   );
+  const companyInfoBottomY = doc.y;
 
   const rightX = PAGE.width - PAGE.marginX - rightWidth;
   doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(contractDisplayLabel(contract), rightX, PAGE.top + 2, {
@@ -320,10 +321,12 @@ function drawFirstPageHeader(doc, contract) {
     align: "right",
     lineGap: 1,
   });
+  const contractMetaBottomY = doc.y;
 
-  doc.y = PAGE.top + 76;
+  const dividerPadding = 8;
+  doc.y = Math.max(companyInfoBottomY, contractMetaBottomY, PAGE.top + 76) + dividerPadding;
   rule(doc, "#cbd5e1");
-  doc.moveDown(0.5);
+  doc.y += dividerPadding;
 }
 
 function drawPriceSummary(doc, contract) {

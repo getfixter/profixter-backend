@@ -426,30 +426,53 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
 /* ───────── Google OAuth ───────── */
 router.post("/google", async (req, res) => {
   try {
-    const { idToken } = req.body;
+    const { idToken, accessToken } = req.body;
 
-    if (!idToken) {
-      return res.status(400).json({ message: "Google ID token is required" });
+    if (!idToken && !accessToken) {
+      return res.status(400).json({ message: "Google token is required" });
     }
 
-    const { OAuth2Client } = require("google-auth-library");
-    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+    let googleEmail = "";
+    let googleName = "";
+    let googleId = "";
 
-    let ticket;
-    try {
-      ticket = await client.verifyIdToken({
-        idToken,
-        audience: process.env.GOOGLE_CLIENT_ID,
+    if (idToken) {
+      const { OAuth2Client } = require("google-auth-library");
+      const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+      let ticket;
+      try {
+        ticket = await client.verifyIdToken({
+          idToken,
+          audience: process.env.GOOGLE_CLIENT_ID,
+        });
+      } catch (error) {
+        console.error("Google ID token verification failed:", error.message);
+        return res.status(401).json({ message: "Invalid Google token" });
+      }
+
+      const payload = ticket.getPayload();
+      googleEmail = String(payload.email || "").toLowerCase();
+      googleName = payload.name || "";
+      googleId = payload.sub || "";
+    } else {
+      const profileResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
-    } catch (error) {
-      console.error("Google token verification failed:", error.message);
-      return res.status(401).json({ message: "Invalid Google token" });
+
+      if (!profileResponse.ok) {
+        return res.status(401).json({ message: "Invalid Google token" });
+      }
+
+      const payload = await profileResponse.json();
+      googleEmail = String(payload.email || "").toLowerCase();
+      googleName = payload.name || "";
+      googleId = payload.sub || "";
     }
 
-    const payload = ticket.getPayload();
-    const googleEmail = payload.email.toLowerCase();
-    const googleName = payload.name;
-    const googleId = payload.sub;
+    if (!googleEmail || !googleId) {
+      return res.status(401).json({ message: "Google account profile is incomplete" });
+    }
 
     let user = await User.findOne({ email: googleEmail });
 
