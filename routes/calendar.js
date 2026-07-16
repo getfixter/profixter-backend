@@ -13,6 +13,12 @@ const {
 } = require("../utils/customerCalendarService");
 
 /* ---------------- helpers ---------------- */
+function disableLiveAvailabilityCache(res) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+}
+
 const toMin = (hhmm) => {
   const [h, m] = String(hhmm).split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
@@ -144,6 +150,7 @@ router.get("/config", async (_req, res) => {
 // Public so customers can see availability without auth.
 router.get("/slots", async (req, res) => {
   try {
+    disableLiveAvailabilityCache(res);
     const date = String(req.query.date || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ message: "Missing or invalid date (YYYY-MM-DD)" });
@@ -210,6 +217,7 @@ router.get("/slots", async (req, res) => {
 });
 
 router.get("/month", async (req, res) => {
+  disableLiveAvailabilityCache(res);
   if (!reservationEngineEnabled()) {
     return res.status(404).json({
       code: "RESERVATION_ENGINE_DISABLED",
