@@ -51,6 +51,7 @@ const {
   actorSnapshot,
   appendContentUpdate,
 } = require("../utils/bookingContentUpdates");
+const { buildUserSearchFields } = require("../utils/userSearchFields");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -1271,11 +1272,17 @@ router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
   });
 
   try {
-    const user = await User.findByIdAndUpdate(req.params.id, updates, {
-      new: true,
-    }).select("-password");
+    const existing = await User.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ message: "User not found" });
 
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const nextUser = { ...existing, ...updates };
+    await User.updateOne(
+      { _id: existing._id },
+      { $set: { ...updates, search: buildUserSearchFields(nextUser) } },
+      { runValidators: false }
+    );
+
+    const user = await User.findById(existing._id).select("-password").lean();
     res.json({ message: "User updated", user });
   } catch (err) {
     console.error("❌ Edit user error:", err);

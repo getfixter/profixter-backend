@@ -2,7 +2,10 @@ const mongoose = require("mongoose");
 require("dotenv").config();
 
 const User = require("../models/User");
-const { buildCustomerSearchQuery } = require("../utils/projectCustomerSelection");
+const {
+  buildCustomerSearchQuery,
+  projectSelectableCustomerEligibilityQuery,
+} = require("../utils/projectCustomerSelection");
 
 const SEARCH_INDEX_NAMES = new Set([
   "user_customer_search_names_idx",
@@ -91,8 +94,7 @@ function addressTermForUser(user = {}) {
 
 async function representativeTerms() {
   const sample = await User.findOne({
-    role: "customer",
-    isActive: true,
+    ...projectSelectableCustomerEligibilityQuery(),
     $or: [
       { name: { $type: "string", $ne: "" } },
       { email: { $type: "string", $ne: "" } },

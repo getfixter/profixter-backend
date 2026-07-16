@@ -2,17 +2,41 @@ const mongoose = require("mongoose");
 require("dotenv").config();
 
 const User = require("../models/User");
+const {
+  buildUserSearchFields,
+  isProjectSelectableCustomer,
+  isSearchFieldsCurrent,
+  projectSelectableCustomerEligibilityQuery,
+} = require("../utils/projectCustomerSelection");
 
-function sanitizeValidationError(error) {
-  if (!error) return "Unknown error";
-  if (error.name === "ValidationError" && error.errors) {
-    return Object.values(error.errors)
-      .map((entry) => entry.message)
-      .filter(Boolean)
-      .slice(0, 4)
-      .join("; ");
-  }
-  return String(error.message || error).slice(0, 500);
+function sanitizeError(error) {
+  return String(error?.message || error || "Unknown error").slice(0, 500);
+}
+
+function roleBucket(user = {}) {
+  const role = String(user.role ?? "missing").trim().toLowerCase() || "missing";
+  return role;
+}
+
+function activityBucket(user = {}) {
+  if (user.isActive === false) return "isActive:false";
+  if (!Object.prototype.hasOwnProperty.call(user, "isActive")) return "isActive:missing";
+  if (user.isActive === true) return "isActive:true";
+  return "isActive:other";
+}
+
+function hasAnySearchField(user = {}) {
+  const search = user.search || {};
+  return Boolean(
+    (Array.isArray(search.names) && search.names.length) ||
+      (Array.isArray(search.emails) && search.emails.length) ||
+      search.phone ||
+      (Array.isArray(search.addresses) && search.addresses.length)
+  );
+}
+
+function increment(map, key) {
+  map[key] = (map[key] || 0) + 1;
 }
 
 async function main() {
@@ -24,60 +48,86 @@ async function main() {
   const write = process.argv.includes("--write");
   await mongoose.connect(uri, { autoIndex: false });
 
-  let scanned = 0;
-  let requiringUpdates = 0;
-  let updated = 0;
-  let skipped = 0;
-  let malformed = 0;
-  const malformedSamples = [];
-  const cursor = User.find({ role: "customer", isActive: true })
-    .sort({ _id: 1 })
-    .cursor();
+  const report = {
+    mode: write ? "write" : "dry-run",
+    database: mongoose.connection.name,
+    totalUsersScanned: 0,
+    totalEligibleUsers: 0,
+    usersWithCompleteSearchFields: 0,
+    usersWithMissingSearchFields: 0,
+    usersWithStaleSearchFields: 0,
+    usersRequiringUpdates: 0,
+    usersSkipped: 0,
+    usersUpdated: 0,
+    malformedRecords: 0,
+    usersExcludedByRole: 0,
+    usersExcludedByActivityState: 0,
+    usersExcludedAsInternalOrDeleted: 0,
+    excludedRoleCounts: {},
+    excludedActivityCounts: {},
+    malformedSamples: [],
+  };
+
+  const cursor = User.find({}).sort({ _id: 1 }).cursor();
 
   for await (const user of cursor) {
-    scanned += 1;
-    const before = JSON.stringify(user.search || {});
+    report.totalUsersScanned += 1;
+
+    const selectable = isProjectSelectableCustomer(user);
+    if (!selectable) {
+      const role = roleBucket(user);
+      const activity = activityBucket(user);
+      if (user.isActive === false) {
+        report.usersExcludedByActivityState += 1;
+        increment(report.excludedActivityCounts, activity);
+      } else if (["admin", "employee", "fixter", "general fixter", "technician", "staff", "system", "service", "internal"].includes(role) || user.employeePosition) {
+        report.usersExcludedByRole += 1;
+        increment(report.excludedRoleCounts, role || "employeePosition");
+      } else {
+        report.usersExcludedAsInternalOrDeleted += 1;
+      }
+      continue;
+    }
+
+    report.totalEligibleUsers += 1;
+
     try {
-      user.markModified("search");
-      await user.validate();
-      const after = JSON.stringify(user.search || {});
-      if (before === after) {
-        skipped += 1;
+      const current = isSearchFieldsCurrent(user);
+      const hasSearch = hasAnySearchField(user);
+      if (current) {
+        report.usersWithCompleteSearchFields += 1;
+        report.usersSkipped += 1;
         continue;
       }
 
-      requiringUpdates += 1;
+      if (!hasSearch) report.usersWithMissingSearchFields += 1;
+      else report.usersWithStaleSearchFields += 1;
+      report.usersRequiringUpdates += 1;
+
       if (write) {
-        await user.save();
-        updated += 1;
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { search: buildUserSearchFields(user) } },
+          { runValidators: false }
+        );
+        report.usersUpdated += 1;
       }
     } catch (error) {
-      malformed += 1;
-      if (malformedSamples.length < 10) {
-        malformedSamples.push({
+      report.malformedRecords += 1;
+      if (report.malformedSamples.length < 10) {
+        report.malformedSamples.push({
           userId: String(user._id || ""),
-          reason: sanitizeValidationError(error),
+          reason: sanitizeError(error),
         });
       }
     }
   }
 
+  const indexedEligibleCount = await User.countDocuments(projectSelectableCustomerEligibilityQuery());
+  report.indexedEligibleQueryCount = indexedEligibleCount;
+
   await mongoose.disconnect();
-  console.log(
-    JSON.stringify(
-      {
-        mode: write ? "write" : "dry-run",
-        totalUsersScanned: scanned,
-        usersRequiringUpdates: requiringUpdates,
-        usersSkipped: skipped,
-        malformedRecords: malformed,
-        ...(write ? { usersUpdated: updated } : {}),
-        malformedSamples,
-      },
-      null,
-      2
-    )
-  );
+  console.log(JSON.stringify(report, null, 2));
 }
 
 main().catch(async (error) => {

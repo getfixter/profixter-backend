@@ -3,6 +3,33 @@ const {
   selectCurrentSubscription,
   subscriptionGrantsAccess,
 } = require("./subscriptionManagement");
+const {
+  buildUserSearchFields,
+  normalizeSearchPhone,
+  normalizeSearchText,
+} = require("./userSearchFields");
+
+const PROJECT_CUSTOMER_ROLE_VALUES = [
+  "customer",
+  "member",
+  "homeowner",
+  "subscriber",
+  "client",
+  "user",
+];
+const EXCLUDED_PROJECT_CUSTOMER_ROLES = new Set([
+  "admin",
+  "employee",
+  "fixter",
+  "general fixter",
+  "general_fixter",
+  "technician",
+  "tech",
+  "staff",
+  "system",
+  "service",
+  "internal",
+]);
 
 function cleanString(value, maxLength = 500) {
   return String(value ?? "")
@@ -15,18 +42,8 @@ function escapeRegex(value) {
   return cleanString(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeSearchText(value) {
-  return cleanString(value, 120)
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9@.\s-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function normalizePhoneDigits(value) {
-  return cleanString(value, 80).replace(/\D/g, "");
+  return normalizeSearchPhone(value);
 }
 
 function normalizeLimit(value, fallback = 12) {
@@ -41,29 +58,218 @@ function normalizeCursor(value) {
   return Math.max(0, Math.min(parsed, 5000));
 }
 
-function buildCustomerSearchQuery(rawQuery) {
+function normalizeRole(value) {
+  return cleanString(value, 80).toLowerCase().replace(/[_-]+/g, " ");
+}
+
+function isProjectSelectableCustomer(user = {}) {
+  const role = normalizeRole(user.role);
+  const employeePosition = cleanString(user.employeePosition, 80);
+  if (EXCLUDED_PROJECT_CUSTOMER_ROLES.has(role)) return false;
+  if (employeePosition) return false;
+  if (user.isActive === false) return false;
+  if (user.isDeleted === true || user.deleted === true || user.accountDeleted === true) return false;
+  if (user.deletedAt || user.accountDeletedAt || user.removedAt) return false;
+  if (user.isBlocked === true || user.blocked === true) return false;
+  if (["blocked", "deleted", "removed", "inactive"].includes(normalizeRole(user.status))) return false;
+  if (!role) return true;
+  return PROJECT_CUSTOMER_ROLE_VALUES.includes(role);
+}
+
+function projectSelectableCustomerEligibilityQuery() {
+  return {
+    $and: [
+      {
+        $or: [
+          { role: { $in: PROJECT_CUSTOMER_ROLE_VALUES } },
+          { role: null },
+          { role: "" },
+          { role: { $exists: false } },
+        ],
+      },
+      {
+        $or: [
+          { employeePosition: null },
+          { employeePosition: "" },
+          { employeePosition: { $exists: false } },
+        ],
+      },
+      {
+        $or: [
+          { isActive: { $ne: false } },
+          { isActive: { $exists: false } },
+        ],
+      },
+      { isDeleted: { $ne: true } },
+      { deleted: { $ne: true } },
+      { accountDeleted: { $ne: true } },
+      { deletedAt: null },
+      { accountDeletedAt: null },
+      { removedAt: null },
+      {
+        $or: [
+          { status: { $exists: false } },
+          { status: null },
+          { status: "" },
+          { status: { $nin: ["blocked", "deleted", "removed", "inactive"] } },
+        ],
+      },
+    ],
+  };
+}
+
+function searchFieldClauses(rawQuery) {
   const q = cleanString(rawQuery, 120);
-  if (q.length < 2) return null;
+  if (q.length < 2) return [];
 
   const normalized = normalizeSearchText(q);
+  const phoneDigits = normalizePhoneDigits(q);
+  if (!normalized && phoneDigits.length < 3) return [];
+
   const escaped = escapeRegex(normalized);
   const prefixRegex = new RegExp(`^${escaped}`);
-  const phoneDigits = normalizePhoneDigits(q);
-  const clauses = [
-    { "search.names": prefixRegex },
-    { "search.emails": prefixRegex },
-    { "search.addresses": prefixRegex },
-  ];
+  const clauses = normalized
+    ? [
+        { "search.names": prefixRegex },
+        { "search.emails": prefixRegex },
+        { "search.addresses": prefixRegex },
+      ]
+    : [];
 
   if (phoneDigits.length >= 3) {
     clauses.push({ "search.phone": new RegExp(`^${escapeRegex(phoneDigits)}`) });
   }
 
+  return clauses;
+}
+
+function buildCustomerSearchQuery(rawQuery) {
+  const clauses = searchFieldClauses(rawQuery);
+  if (!clauses.length) return null;
+
   return {
-    role: "customer",
-    isActive: true,
+    ...projectSelectableCustomerEligibilityQuery(),
     $or: clauses,
   };
+}
+
+function flexiblePhoneRegex(phoneDigits) {
+  if (!phoneDigits || phoneDigits.length < 3) return null;
+  const pattern = phoneDigits
+    .split("")
+    .map((digit) => escapeRegex(digit))
+    .join("\\D*");
+  return new RegExp(pattern);
+}
+
+function buildCustomerFallbackSearchQuery(rawQuery, excludedIds = []) {
+  const q = cleanString(rawQuery, 120);
+  if (q.length < 2) return null;
+
+  const textRegex = new RegExp(escapeRegex(q), "i");
+  const normalized = normalizeSearchText(q);
+  const normalizedRegex = normalized ? new RegExp(escapeRegex(normalized), "i") : textRegex;
+  const phoneRegex = flexiblePhoneRegex(normalizePhoneDigits(q));
+  const clauses = [
+    { name: textRegex },
+    { firstName: textRegex },
+    { lastName: textRegex },
+    { email: textRegex },
+    { address: textRegex },
+    { city: textRegex },
+    { state: textRegex },
+    { zip: textRegex },
+    { county: textRegex },
+    { "addresses.line1": textRegex },
+    { "addresses.city": textRegex },
+    { "addresses.state": textRegex },
+    { "addresses.zip": textRegex },
+    { "addresses.county": textRegex },
+    { "search.names": normalizedRegex },
+    { "search.emails": normalizedRegex },
+    { "search.addresses": normalizedRegex },
+  ];
+  if (phoneRegex) clauses.push({ phone: phoneRegex });
+
+  return {
+    ...projectSelectableCustomerEligibilityQuery(),
+    ...(excludedIds.length ? { _id: { $nin: excludedIds } } : {}),
+    $or: clauses,
+  };
+}
+
+function fullNameForUser(user = {}) {
+  const first = cleanString(user.firstName, 80);
+  const last = cleanString(user.lastName, 80);
+  return cleanString(user.name || [first, last].filter(Boolean).join(" "), 160);
+}
+
+function addressStringsForUser(user = {}) {
+  const saved = Array.isArray(user.addresses)
+    ? user.addresses.flatMap((address) => [
+        address?.line1,
+        address?.city,
+        address?.state,
+        address?.zip,
+        addressToFormatted(address),
+      ])
+    : [];
+  return [
+    user.address,
+    user.city,
+    user.state,
+    user.zip,
+    legacyAddressToFormatted(user),
+    ...saved,
+  ].filter(Boolean);
+}
+
+function scoreProjectCustomerSearchMatch(user = {}, rawQuery = "") {
+  const normalized = normalizeSearchText(rawQuery);
+  const phoneDigits = normalizePhoneDigits(rawQuery);
+  const email = normalizeSearchText(user.email);
+  const fullName = normalizeSearchText(fullNameForUser(user));
+  const firstName = normalizeSearchText(user.firstName);
+  const lastName = normalizeSearchText(user.lastName);
+  const userPhone = normalizePhoneDigits(user.phone);
+  const search = buildUserSearchFields(user);
+  const addresses = [...addressStringsForUser(user), ...(search.addresses || [])]
+    .map(normalizeSearchText)
+    .filter(Boolean);
+
+  if (normalized && email === normalized) return 0;
+  if (phoneDigits && userPhone === phoneDigits) return 1;
+  if (normalized && fullName === normalized) return 2;
+  if (
+    normalized &&
+    [fullName, firstName, lastName, ...(search.names || [])].some((name) =>
+      normalizeSearchText(name).startsWith(normalized)
+    )
+  ) {
+    return 3;
+  }
+  if (normalized && addresses.some((address) => address.includes(normalized))) return 4;
+  if (
+    normalized &&
+    [fullName, firstName, lastName, email, ...(search.names || []), ...(search.emails || [])]
+      .map(normalizeSearchText)
+      .some((value) => value.includes(normalized))
+  ) {
+    return 5;
+  }
+  if (phoneDigits && userPhone.includes(phoneDigits)) return 6;
+  return 50;
+}
+
+function isSearchFieldsCurrent(user = {}) {
+  const expected = buildUserSearchFields(user);
+  const current = user.search || {};
+  return JSON.stringify({
+    names: current.names || [],
+    emails: current.emails || [],
+    phone: current.phone || "",
+    addresses: current.addresses || [],
+  }) === JSON.stringify(expected);
 }
 
 function titleCase(value) {
@@ -298,16 +504,23 @@ function normalizeOptionalObjectId(value, field, errors) {
 
 module.exports = {
   addressToFormatted,
+  buildCustomerFallbackSearchQuery,
   buildCustomerSearchQuery,
   buildCustomerSnapshot,
   buildMembershipSummary,
   buildPropertySnapshot,
+  buildUserSearchFields,
   cleanString,
+  isProjectSelectableCustomer,
+  isSearchFieldsCurrent,
   normalizeCursor,
   normalizeLimit,
   normalizeOptionalObjectId,
   normalizePhoneDigits,
   normalizeSearchText,
+  projectSelectableCustomerEligibilityQuery,
+  PROJECT_CUSTOMER_ROLE_VALUES,
+  scoreProjectCustomerSearchMatch,
   serializeCustomerForProjectSelector,
   subscriptionStatus,
 };

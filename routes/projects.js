@@ -5,6 +5,7 @@ const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
 const Contract = require("../models/Contract");
+const Blacklist = require("../models/Blacklist");
 const Subscription = require("../models/Subscription");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const {
@@ -12,13 +13,19 @@ const {
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
 const {
+  buildCustomerFallbackSearchQuery,
   buildCustomerSearchQuery,
+  buildUserSearchFields,
   buildCustomerSnapshot,
   buildPropertySnapshot,
   cleanString,
+  isProjectSelectableCustomer,
+  isSearchFieldsCurrent,
   normalizeCursor,
   normalizeLimit,
   normalizeOptionalObjectId,
+  projectSelectableCustomerEligibilityQuery,
+  scoreProjectCustomerSearchMatch,
   serializeCustomerForProjectSelector,
 } = require("../utils/projectCustomerSelection");
 
@@ -202,15 +209,11 @@ async function validateProjectCustomerLink(update, errors) {
     return null;
   }
 
-  const user = await User.findOne({
-    _id: update.customerId,
-    role: "customer",
-    isActive: true,
-  })
-    .select("name email phone addresses defaultAddressId")
+  const user = await User.findById(update.customerId)
+    .select("userId name firstName lastName email phone role employeePosition isActive address city state zip county addresses defaultAddressId status isDeleted deleted deletedAt accountDeleted accountDeletedAt removedAt isBlocked blocked")
     .lean();
 
-  if (!user) {
+  if (!user || !isProjectSelectableCustomer(user) || (await isProjectCustomerBlocked(user))) {
     errors.push("Selected customer was not found");
     return null;
   }
@@ -228,6 +231,76 @@ async function validateProjectCustomerLink(update, errors) {
 async function serializeProjectCustomer(user, options = {}) {
   const subscriptions = await findSubscriptionsForUser(user._id);
   return serializeCustomerForProjectSelector(user, subscriptions, options);
+}
+
+const PROJECT_CUSTOMER_SELECT =
+  "userId name firstName lastName email phone role employeePosition isActive status isDeleted deleted deletedAt accountDeleted accountDeletedAt removedAt isBlocked blocked address city state zip county addresses defaultAddressId search createdAt updatedAt";
+
+async function blacklistEntriesForUsers(users = []) {
+  const ids = users.map((user) => user?._id).filter(Boolean);
+  const emails = users
+    .map((user) => cleanString(user?.email, 254).toLowerCase())
+    .filter(Boolean);
+  const userIds = users.map((user) => cleanString(user?.userId, 80)).filter(Boolean);
+  if (!ids.length && !emails.length && !userIds.length) return [];
+  return Blacklist.find({
+    $or: [
+      ...(ids.length ? [{ user: { $in: ids } }] : []),
+      ...(emails.length ? [{ email: { $in: emails } }] : []),
+      ...(userIds.length ? [{ userId: { $in: userIds } }] : []),
+    ],
+  })
+    .select("user userId email")
+    .lean();
+}
+
+async function blockedProjectCustomerIds(users = []) {
+  const entries = await blacklistEntriesForUsers(users);
+  const blocked = new Set();
+  for (const entry of entries) {
+    if (entry.user) blocked.add(String(entry.user));
+    const email = cleanString(entry.email, 254).toLowerCase();
+    const userId = cleanString(entry.userId, 80);
+    for (const user of users) {
+      if (email && cleanString(user.email, 254).toLowerCase() === email) blocked.add(String(user._id));
+      if (userId && cleanString(user.userId, 80) === userId) blocked.add(String(user._id));
+    }
+  }
+  return blocked;
+}
+
+async function isProjectCustomerBlocked(user) {
+  const blocked = await blockedProjectCustomerIds([user]);
+  return blocked.has(String(user?._id || ""));
+}
+
+function mergeAndRankProjectCustomers(users, q) {
+  const unique = new Map();
+  for (const user of users) {
+    if (!user || !isProjectSelectableCustomer(user)) continue;
+    const key = String(user._id || "");
+    if (!key || unique.has(key)) continue;
+    unique.set(key, user);
+  }
+  return Array.from(unique.values()).sort((left, right) => {
+    const leftScore = scoreProjectCustomerSearchMatch(left, q);
+    const rightScore = scoreProjectCustomerSearchMatch(right, q);
+    if (leftScore !== rightScore) return leftScore - rightScore;
+    return `${left.name || ""} ${left.email || ""}`.localeCompare(`${right.name || ""} ${right.email || ""}`);
+  });
+}
+
+async function repairReturnedCustomerSearchFields(users = []) {
+  await Promise.all(
+    users
+      .filter((user) => !isSearchFieldsCurrent(user))
+      .map((user) =>
+        User.updateOne(
+          { _id: user._id },
+          { $set: { search: buildUserSearchFields(user) } }
+        )
+      )
+  );
 }
 
 router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
@@ -283,14 +356,35 @@ router.get("/customer-search", async (req, res) => {
       });
     }
 
-    const users = await User.find(query)
-      .select("userId name firstName lastName email phone address city state zip county addresses defaultAddressId createdAt")
+    const fetchLimit = Math.min(cursor + limit + 1, 250);
+    const indexedUsers = await User.find(query)
+      .select(PROJECT_CUSTOMER_SELECT)
       .sort({ name: 1, email: 1, createdAt: -1 })
-      .skip(cursor)
-      .limit(limit + 1)
+      .limit(fetchLimit)
       .lean();
 
-    const page = users.slice(0, limit);
+    let fallbackUsers = [];
+    if (indexedUsers.length < fetchLimit) {
+      const fallbackQuery = buildCustomerFallbackSearchQuery(
+        q,
+        indexedUsers.map((user) => user._id)
+      );
+      if (fallbackQuery) {
+        fallbackUsers = await User.find(fallbackQuery)
+          .select(PROJECT_CUSTOMER_SELECT)
+          .sort({ updatedAt: -1, createdAt: -1 })
+          .limit(Math.min(fetchLimit, 100))
+          .maxTimeMS(1500)
+          .lean();
+      }
+    }
+
+    const ranked = mergeAndRankProjectCustomers([...indexedUsers, ...fallbackUsers], q);
+    const blocked = await blockedProjectCustomerIds(ranked);
+    const selectable = ranked.filter((user) => !blocked.has(String(user._id)));
+    const page = selectable.slice(cursor, cursor + limit);
+    await repairReturnedCustomerSearchFields(page);
+
     const customers = [];
     for (const user of page) {
       customers.push(await serializeProjectCustomer(user, { query: q }));
@@ -298,7 +392,7 @@ router.get("/customer-search", async (req, res) => {
 
     return res.json({
       customers,
-      nextCursor: users.length > limit ? String(cursor + limit) : null,
+      nextCursor: selectable.length > cursor + limit ? String(cursor + limit) : null,
       limit,
     });
   } catch (error) {
@@ -314,12 +408,15 @@ router.get("/customer/:customerId", async (req, res) => {
     }
     const user = await User.findOne({
       _id: req.params.customerId,
-      role: "customer",
-      isActive: true,
+      ...projectSelectableCustomerEligibilityQuery(),
     })
-      .select("userId name firstName lastName email phone address city state zip county addresses defaultAddressId createdAt")
+      .select(PROJECT_CUSTOMER_SELECT)
       .lean();
-    if (!user) return res.status(404).json({ message: "Customer not found" });
+    if (!user || !isProjectSelectableCustomer(user) || (await isProjectCustomerBlocked(user))) {
+      return res.status(404).json({ message: "Customer not found" });
+    }
+
+    await repairReturnedCustomerSearchFields([user]);
 
     return res.json({
       customer: await serializeProjectCustomer(user, {

@@ -3,12 +3,17 @@ const fs = require("fs");
 const path = require("path");
 const mongoose = require("mongoose");
 const {
+  buildCustomerFallbackSearchQuery,
   buildCustomerSearchQuery,
   buildCustomerSnapshot,
   buildMembershipSummary,
   buildPropertySnapshot,
+  buildUserSearchFields,
+  isProjectSelectableCustomer,
+  isSearchFieldsCurrent,
   normalizeCursor,
   normalizeLimit,
+  scoreProjectCustomerSearchMatch,
   serializeCustomerForProjectSelector,
 } = require("../utils/projectCustomerSelection");
 const Project = require("../models/Project");
@@ -40,8 +45,7 @@ function queryRegexes(query) {
 
 const firstNameQuery = buildCustomerSearchQuery("Ava");
 assert(firstNameQuery, "first-name query should be built");
-assert.strictEqual(firstNameQuery.role, "customer");
-assert.strictEqual(firstNameQuery.isActive, true);
+assert(firstNameQuery.$and, "project customer search should include centralized eligibility");
 assert(firstNameQuery.$or.some((entry) => entry["search.names"]), "name should use indexed search field");
 assert(firstNameQuery.$or.some((entry) => entry["search.emails"]), "email should use indexed search field");
 assert(firstNameQuery.$or.some((entry) => entry["search.addresses"]), "address should use indexed search field");
@@ -53,8 +57,97 @@ assert(
 );
 
 assert.strictEqual(buildCustomerSearchQuery("a"), null, "short searches should not enumerate users");
+assert.strictEqual(buildCustomerSearchQuery("!!"), null, "non-searchable punctuation should not enumerate users");
 assert.strictEqual(normalizeLimit(1000), 20, "limit should be capped");
 assert.strictEqual(normalizeCursor(999999), 5000, "cursor should be capped");
+
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "customer", isActive: true }),
+  true,
+  "current customer role should be selectable"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: null }),
+  true,
+  "legacy missing customer role should be selectable"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "member" }),
+  true,
+  "legacy member role should be selectable"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "customer" }),
+  true,
+  "missing isActive should not exclude legacy customers"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "customer", isActive: false }),
+  false,
+  "inactive customers should be excluded"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "admin", isActive: true }),
+  false,
+  "admins should be excluded"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "employee", employeePosition: "Fixter", isActive: true }),
+  false,
+  "fixters should be excluded"
+);
+assert.strictEqual(
+  isProjectSelectableCustomer({ role: "customer", isBlocked: true }),
+  false,
+  "blocked customers should be excluded"
+);
+
+const traceyFixture = {
+  _id: new mongoose.Types.ObjectId(),
+  userId: "17509779",
+  name: "Tracey DeMartis",
+  email: "tdemartis@example.com",
+  role: null,
+  phone: "+16315550123",
+  address: "15 Pine Street",
+  city: "Babylon",
+  state: "NY",
+  zip: "11702",
+  addresses: [],
+  search: { names: [], emails: [], phone: "", addresses: [] },
+};
+const traceySearch = buildUserSearchFields(traceyFixture);
+assert(traceySearch.names.includes("tracey demartis"), "search fields should include full name");
+assert(traceySearch.emails.includes("tdemartis@example.com"), "search fields should include email");
+assert.strictEqual(traceySearch.phone, "6315550123", "search fields should normalize phone");
+assert(traceySearch.addresses.some((entry) => entry.includes("pine")), "search fields should include legacy address");
+assert.strictEqual(isSearchFieldsCurrent(traceyFixture), false, "missing search fields should be detected");
+
+const fallbackQuery = buildCustomerFallbackSearchQuery("Tracey");
+assert(fallbackQuery, "fallback query should be built");
+assert(fallbackQuery.$and, "fallback should remain bounded by eligibility");
+assert(fallbackQuery.$or.some((entry) => entry.name), "fallback should search original names");
+
+assert.strictEqual(
+  scoreProjectCustomerSearchMatch({ email: "tracey@example.com", name: "Other" }, "tracey@example.com"),
+  0,
+  "exact email match should rank first"
+);
+assert.strictEqual(
+  scoreProjectCustomerSearchMatch({ phone: "+16315550123", name: "Other" }, "(631) 555-0123"),
+  1,
+  "exact phone match should rank after email"
+);
+assert.strictEqual(
+  scoreProjectCustomerSearchMatch({ name: "Tracey DeMartis" }, "Tracey DeMartis"),
+  2,
+  "exact full-name match should rank before prefixes"
+);
+assert.strictEqual(
+  scoreProjectCustomerSearchMatch({ name: "Tracey DeMartis" }, "Tra"),
+  3,
+  "name prefix match should rank before address/partial matches"
+);
 
 const searchIndexNames = new Set(
   User.schema.indexes().map(([_key, options]) => options?.name).filter(Boolean)
@@ -180,6 +273,8 @@ assert(Project.schema.path("propertySnapshot.formattedAddress"), "Project should
 const routeSource = fs.readFileSync(path.join(__dirname, "..", "routes", "projects.js"), "utf8");
 assert(routeSource.includes('router.get("/customer-search"'), "customer search endpoint should exist");
 assert(routeSource.includes("router.use(auth, ...requirePermission(PERMISSIONS.ADMIN))"), "customer search must be admin guarded");
+assert(routeSource.includes("buildCustomerFallbackSearchQuery"), "customer search should include bounded fallback");
+assert(routeSource.includes("repairReturnedCustomerSearchFields"), "customer search should self-heal returned stale search fields");
 assert(!routeSource.includes("stripeCustomerId") && !routeSource.includes("stripeSubscriptionId"), "project customer search route must not return Stripe identifiers");
 
 console.log("Project customer selection tests passed.");
