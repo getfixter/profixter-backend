@@ -30,7 +30,7 @@ const CONTRACT_STATUSES = Object.freeze([
   "Canceled",
 ]);
 
-const CONTRACT_TERMS_VERSION = "PIH-NY-HI-2026-003";
+const CONTRACT_TERMS_VERSION = "PIH-NY-HI-2026-004";
 const CANCELLATION_NOTICE_TERMS_VERSION = "PIH-NY-CANCEL-2026-001";
 
 const NY_SOURCE_URLS = Object.freeze([
@@ -54,159 +54,69 @@ const CANCELLATION_NOTICE_CONFIG = Object.freeze({
 
 const CONTRACT_TERMS_SECTIONS = Object.freeze([
   {
-    title: "Contract Documents and Entire Agreement",
+    title: "Agreement Documents",
     body:
-      "This agreement consists of the customer and property information, project description, scope of work, price and payment schedule, additional written project details, these terms, and the signature page. It is the entire agreement between the customer and Premium Island Homes Inc. for the work described here. Any change must be documented in a written change order or written amendment.",
+      "This agreement includes the customer and property information, project description, scope of work, final contract price, payment schedule, additional written project details, these terms, and the signature page. It is the entire agreement for the work described here. Any change must be in a written change order or written amendment.",
   },
   {
-    title: "Scope of Work and Exclusions",
+    title: "Scope, Exclusions, Materials, and Allowances",
     body:
-      "Premium Island Homes Inc. will perform only the work described in this agreement and approved written change orders. Work, materials, repairs, finishes, fixtures, demolition, hauling, or services not specifically listed are excluded unless added in writing.",
+      "Premium Island Homes Inc. will perform only the work described in this agreement and approved written change orders. Work, materials, repairs, finishes, fixtures, demolition, hauling, or services not listed are excluded unless added in writing. Materials, selections, and allowances are controlled by the project details when stated. The customer is responsible for approved selections and costs above any allowance unless otherwise stated.",
   },
   {
-    title: "Materials and Allowances",
+    title: "Customer-Supplied Items",
     body:
-      "Materials, brands, model numbers, colors, selections, and allowances are controlled by the project details when stated. If an allowance is listed, the customer is responsible for approved selections or costs above that allowance unless otherwise stated in writing.",
+      "If the customer supplies materials, fixtures, appliances, or finishes, the customer is responsible for ordering accuracy, delivery timing, missing parts, defects, manufacturer warranty issues, and compatibility unless Premium Island Homes Inc. agrees otherwise in writing.",
   },
   {
-    title: "Customer-Supplied Materials",
+    title: "Price, Payment, and Nonpayment",
     body:
-      "If the customer supplies materials, fixtures, appliances, or finishes, the customer is responsible for ordering accuracy, delivery timing, missing parts, defects, warranty issues, and compatibility unless Premium Island Homes Inc. agrees otherwise in writing.",
+      "The customer agrees to pay the final contract price according to the payment schedule. Discounts apply only to the original scope unless Premium Island Homes Inc. agrees otherwise in writing. Payments are due when the listed milestone or due condition occurs. Late or missed payments may delay scheduling, materials, inspections, completion, or final documents. Premium Island Homes Inc. may pause work or coordination if a required payment is not made when due.",
   },
   {
-    title: "Price and Payment Schedule",
-    body:
-      "The customer agrees to pay the adjusted contract price shown in this agreement according to the payment schedule. The original contract price is reduced only by the listed discounts, if any. Discounts apply only to the original scope described in this agreement and do not apply to future change orders, added work, or separate services unless Premium Island Homes Inc. agrees in writing. Progress payments should reasonably relate to work performed, materials purchased, mobilization, scheduling, or other project costs described in the agreement.",
-  },
-  {
-    title: "Late or Missed Payments",
-    body:
-      "Payments are due when the listed milestone or due condition occurs. Late or missed payments may delay scheduling, material ordering, inspections, completion, or release of final documents.",
-  },
-  {
-    title: "Right to Suspend Work for Nonpayment",
-    body:
-      "Premium Island Homes Inc. may pause work, deliveries, scheduling, or additional coordination if a required payment is not made when due. Work will resume after the account is brought current and the schedule can reasonably accommodate the project.",
-  },
-  {
-    title: "Written Change Orders",
+    title: "Change Orders",
     body:
       "Additional work, deleted work, material substitutions, price changes, and schedule changes must be documented and approved in writing before the changed work is performed. Verbal discussions do not change the agreement unless confirmed in writing.",
   },
   {
-    title: "Concealed and Unforeseen Conditions",
+    title: "Concealed Conditions and Existing Defects",
     body:
-      "Concealed, unknown, unsafe, code-related, structural, water, mold, rot, pest, electrical, plumbing, framing, substrate, or other unforeseen conditions are not included unless specifically stated. Required investigation, repair, remediation, or redesign may require a written change order.",
-  },
-  {
-    title: "Pre-Existing Defects and Damage",
-    body:
-      "Premium Island Homes Inc. is not responsible for pre-existing defects, improper prior work, hidden damage, code violations, material failures, or conditions outside the agreed scope except to the extent caused by Premium Island Homes Inc.",
-  },
-  {
-    title: "Hazardous or Regulated Materials",
-    body:
-      "Hazardous or regulated materials, including asbestos, lead, mold, contaminated materials, or regulated waste, are excluded unless specifically included in writing. Discovery of these conditions may require work stoppage, testing, remediation, or a change order.",
+      "Concealed, unknown, unsafe, code-related, structural, water, mold, rot, pest, electrical, plumbing, framing, substrate, hazardous, regulated, or other unforeseen conditions are not included unless specifically stated. Investigation, repair, remediation, testing, disposal, redesign, or additional work may require a written change order. Premium Island Homes Inc. is not responsible for pre-existing defects, improper prior work, hidden damage, code violations, material failures, or conditions outside the agreed scope except to the extent caused by Premium Island Homes Inc.",
   },
   {
     title: "Permits and Inspections",
     body:
-      "Permit responsibility is stated in the project details. Required municipal approvals, inspections, certificates, utility coordination, and agency timelines may affect scheduling and final payment timing.",
+      "Permit responsibility is stated in the project details. Municipal approvals, inspections, certificates, utility coordination, licensed trades, and agency timelines may affect scheduling and final payment timing. Work may be delayed until required approvals are satisfied.",
   },
   {
-    title: "Material Availability and Reasonable Substitutions",
+    title: "Schedule, Delays, and Material Availability",
     body:
-      "Material availability, discontinued products, delivery delays, supplier changes, and manufacturer substitutions may affect the project. Reasonable substitutions must be discussed with the customer and documented when they affect price, appearance, performance, or schedule.",
+      "Estimated start and completion dates are good-faith planning dates, not guarantees. Weather, supply issues, inspections, permits, utilities, government action, concealed conditions, change orders, customer delays, other contractors, discontinued products, delivery delays, supplier changes, and events outside reasonable control may affect the schedule. Substitutions must be discussed and documented when they affect price, appearance, performance, or schedule.",
   },
   {
-    title: "Estimated Schedule and Delays",
+    title: "Customer Responsibilities and Site Access",
     body:
-      "Estimated start and completion dates are good-faith planning dates, not guarantees. Weather, supply chain issues, inspections, permit offices, utilities, government action, concealed conditions, change orders, customer delays, other contractors, and events outside reasonable control may affect the schedule.",
+      "The customer will provide safe access, working utilities where needed, parking or delivery access when available, clear work areas, secured pets, and timely decisions. The customer should remove fragile, valuable, or personal belongings from work areas before work begins. Customer delays, unavailable selections, denied access, unpaid balances, or work by others may change the schedule and may require documented coordination costs.",
   },
   {
-    title: "Customer Delays and Other Contractors",
+    title: "Work Areas, Cleanup, Subcontractors, and Documentation",
     body:
-      "Delays caused by customer decisions, unavailable selections, denied access, pets, personal property, unpaid balances, or work by other contractors may change the schedule and may require additional coordination costs if documented in writing.",
+      "Premium Island Homes Inc. will use reasonable care to protect work areas and adjacent areas. Construction can create dust, vibration, noise, and disruption. Routine cleanup and ordinary debris removal are included when stated or reasonably necessary for the agreed work. Premium Island Homes Inc. may use qualified subcontractors, vendors, suppliers, or specialty trades while remaining responsible for coordinating the agreed scope. Project photos or videos may be kept for records, quality control, scheduling, insurance, warranty, and portfolio purposes. Customer names and private identifying information will not be used publicly without permission.",
   },
   {
-    title: "Property Access, Utilities, Pets, and Working Conditions",
+    title: "Substantial Completion, Punch List, and Final Payment",
     body:
-      "The customer will provide safe and reasonable access, working utilities where needed, parking or delivery access when available, clear work areas, secured pets, and timely project decisions. The customer should remove fragile, valuable, or personal belongings from work areas before work begins.",
-  },
-  {
-    title: "Protection of Belongings and Work Areas",
-    body:
-      "Premium Island Homes Inc. will use reasonable care to protect work areas and adjacent areas affected by the project. Construction can create dust, vibration, noise, and disruption, and the customer remains responsible for securing belongings outside the agreed work area.",
-  },
-  {
-    title: "Subcontractors",
-    body:
-      "Premium Island Homes Inc. may use qualified subcontractors, vendors, suppliers, or specialty trades to perform portions of the work while remaining responsible for coordinating the agreed scope.",
-  },
-  {
-    title: "Cleanup and Debris Removal",
-    body:
-      "Routine cleanup and debris removal are included when stated or reasonably necessary for the agreed work. Hazardous waste, excessive owner debris, or disposal outside the described project scope is excluded unless added in writing.",
-  },
-  {
-    title: "Substantial Completion",
-    body:
-      "Substantial completion occurs when the agreed work is usable for its intended purpose, even if minor punch-list items remain. Substantial completion does not waive the customer's right to identify incomplete or deficient work.",
-  },
-  {
-    title: "Punch-List Work",
-    body:
-      "Punch-list items should be documented during walkthrough or promptly after substantial completion. Premium Island Homes Inc. will make reasonable arrangements to complete valid punch-list work.",
-  },
-  {
-    title: "Final Payment",
-    body:
-      "Final payment is due according to the payment schedule after substantial completion, final walkthrough, or the listed due condition. Minor punch-list items do not excuse final payment unless the parties agree in writing.",
+      "Substantial completion occurs when the agreed work is usable for its intended purpose, even if minor punch-list items remain. Punch-list items should be documented during walkthrough or promptly after substantial completion. Premium Island Homes Inc. will make reasonable arrangements to complete valid punch-list work. Final payment is due according to the payment schedule. Minor punch-list items do not excuse final payment unless the parties agree in writing.",
   },
   {
     title: "Workmanship Warranty",
     body:
-      "Premium Island Homes Inc. warrants its workmanship for one year from substantial completion unless a different written warranty is provided. The warranty covers correction of defective workmanship by Premium Island Homes Inc. and does not cover exclusions listed in this agreement.",
+      "Premium Island Homes Inc. warrants its workmanship for one year from substantial completion unless a different written warranty is provided. The warranty covers correction of defective workmanship by Premium Island Homes Inc. It does not cover normal wear, maintenance, misuse, owner-supplied materials, manufacturer defects, structural movement, moisture from outside the agreed scope, acts of others, lack of maintenance, later alterations, or conditions not caused by Premium Island Homes Inc. Manufacturer warranties are provided by the manufacturer, and the customer is responsible for product registration unless otherwise stated.",
   },
   {
-    title: "Manufacturer Warranties",
+    title: "Termination, Notices, Signatures, and Governing Law",
     body:
-      "Manufacturer warranties for materials, fixtures, appliances, equipment, finishes, or products are provided by the manufacturer, not Premium Island Homes Inc. The customer is responsible for product registration unless otherwise stated.",
-  },
-  {
-    title: "Warranty Exclusions",
-    body:
-      "Warranty coverage excludes normal wear, maintenance, misuse, abuse, owner-supplied materials, manufacturer defects, movement of existing structures, moisture from outside the agreed scope, acts of others, lack of maintenance, and conditions not caused by Premium Island Homes Inc.",
-  },
-  {
-    title: "Damage or Alterations by Others",
-    body:
-      "Premium Island Homes Inc. is not responsible for damage, defects, or failures caused by the customer, occupants, guests, pets, other contractors, later alterations, misuse, lack of maintenance, or work performed by others.",
-  },
-  {
-    title: "Photographs and Project Documentation",
-    body:
-      "Premium Island Homes Inc. may photograph, video, and document the project for records, quality control, scheduling, insurance, warranty, and portfolio purposes. Customer names and private identifying information will not be used publicly without permission.",
-  },
-  {
-    title: "Termination or Suspension",
-    body:
-      "Either party may seek to terminate or suspend the agreement for material breach after written notice and a reasonable opportunity to cure when appropriate. This clause does not limit any statutory cancellation right that applies by law.",
-  },
-  {
-    title: "Written Notices",
-    body:
-      "Written notices may be delivered by email, mail, hand delivery, or another written method the parties use for the project, unless a specific law requires a different method.",
-  },
-  {
-    title: "Electronic Signatures and Counterparts",
-    body:
-      "Electronic signatures, scanned signatures, and signatures on separate counterparts are intended to be enforceable to the fullest extent allowed by law.",
-  },
-  {
-    title: "Severability and Governing Law",
-    body:
-      "If one part of this agreement is found unenforceable, the remaining parts remain in effect to the extent allowed by law. This agreement is governed by New York law.",
+      "Either party may seek to terminate or suspend the agreement for material breach after written notice and a reasonable opportunity to cure when appropriate. Written notices may be delivered by email, mail, hand delivery, or another written method the parties use for the project, unless law requires a different method. Electronic signatures, scanned signatures, and counterparts are intended to be enforceable. If one part is found unenforceable, the remaining parts remain in effect to the extent allowed by law. This agreement is governed by New York law.",
   },
 ]);
 

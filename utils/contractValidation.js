@@ -185,6 +185,18 @@ function sanitizeFilenamePart(value, fallback = "contract") {
   return cleaned || fallback;
 }
 
+function customerContractNumber(value) {
+  const input = typeof value === "object" && value !== null ? value.contractNumber : value;
+  const text = cleanString(input, 120);
+  const match = text.match(/(\d+)\D*$/);
+  const sequence = match ? match[1] : text.replace(/\D/g, "");
+  return (sequence || "0").padStart(6, "0");
+}
+
+function contractDisplayLabel(contractOrNumber) {
+  return `Contract #${customerContractNumber(contractOrNumber)}`;
+}
+
 function customerLastName(customerName) {
   const parts = cleanString(customerName, 160).split(/\s+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "Customer";
@@ -276,7 +288,7 @@ function buildContractFilename(contract) {
     contract.workType === "Other"
       ? contract.otherWorkType || "Project"
       : contract.workType || "Project";
-  return `${sanitizeFilenamePart(contract.contractNumber, "PIH")}-${sanitizeFilenamePart(
+  return `${sanitizeFilenamePart(contractDisplayLabel(contract), "Contract")}-${sanitizeFilenamePart(
     customerLastName(contract.customerSnapshot?.fullName),
     "Customer"
   )}-${sanitizeFilenamePart(workType, "Project")}-Contract.pdf`;
@@ -455,6 +467,8 @@ module.exports = {
   calculatePercentageDiscountCents,
   centsToDollars,
   cleanString,
+  contractDisplayLabel,
+  customerContractNumber,
   customerLastName,
   fileExtension,
   formatMoney,

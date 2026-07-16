@@ -70,8 +70,8 @@ async function main() {
   assert.strictEqual(CANCELLATION_NOTICE_CONFIG.includeCancellationNotice, true);
   assert.strictEqual(CANCELLATION_NOTICE_CONFIG.termsVersion, CANCELLATION_NOTICE_TERMS_VERSION);
   assert(
-    CONTRACT_TERMS_SECTIONS.length >= 25,
-    "expanded central contract terms should remain configured"
+    CONTRACT_TERMS_SECTIONS.length >= 12,
+    "grouped central contract terms should remain configured"
   );
 
   const result = validateContractInput(validBody(), project);
@@ -376,7 +376,7 @@ async function main() {
 
   const contract = {
     _id: "650000000000000000000001",
-    contractNumber: "PIH-2026-0001",
+    contractNumber: "PIH-2026-000007",
     version: 2,
     projectId: project._id,
     ...result.update,
@@ -386,7 +386,7 @@ async function main() {
   };
 
   const filename = buildContractFilename(contract);
-  assert.strictEqual(filename, "PIH-2026-0001-Grant-Bathroom-Contract.pdf");
+  assert.strictEqual(filename, "Contract-000007-Grant-Bathroom-Contract.pdf");
 
   const pdf = await generateContractPdfBuffer(contract);
   assert(pdf.length > 1000, "PDF should not be empty");
@@ -397,7 +397,7 @@ async function main() {
   const discountedContract = {
     ...contract,
     ...mixedDiscount.update,
-    contractNumber: "PIH-2026-0002",
+    contractNumber: "PIH-2026-000008",
     version: 1,
   };
   const discountedPdf = await generateContractPdfBuffer(discountedContract);
@@ -432,6 +432,19 @@ async function main() {
     "contract routes must enforce full deposit confirmation"
   );
 
+  const modelSource = fs.readFileSync(
+    path.join(__dirname, "..", "models", "Contract.js"),
+    "utf8"
+  );
+  assert(
+    modelSource.includes('key: "pih-contract"') && modelSource.includes('padStart(6, "0")'),
+    "new contract numbers must use a global six-digit customer sequence"
+  );
+  assert(
+    !modelSource.includes("pih-contract:${year}") && !modelSource.includes("PIH-${year}"),
+    "new contract numbers must not include year prefixes"
+  );
+
   const pdfSource = fs.readFileSync(
     path.join(__dirname, "..", "utils", "contractPdf.js"),
     "utf8"
@@ -445,8 +458,8 @@ async function main() {
     "customer PDF renderer must not include old terms identifiers or cancellation deadline appendix"
   );
   assert(
-    pdfSource.includes("Customer 2 - Optional"),
-    "signature page must include optional second customer"
+    pdfSource.includes("secondCustomerName") && pdfSource.includes("Customer 2"),
+    "signature page must hide optional second customer unless present"
   );
   assert(
     pdfSource.includes("descriptionShouldRender"),
@@ -457,8 +470,8 @@ async function main() {
     "footer page count must be rendered"
   );
   assert(
-    pdfSource.includes("Discount Breakdown") && pdfSource.includes("if (!discounts.length) return"),
-    "discount breakdown should render only when discounts exist"
+    pdfSource.includes("Discount Breakdown") && pdfSource.includes("if (discounts.length === 1)"),
+    "discount breakdown table should render only for multiple discounts"
   );
   assert(
     pdfSource.includes("Final Contract Price"),

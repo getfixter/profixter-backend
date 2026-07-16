@@ -57,7 +57,7 @@ function baseBody(overrides = {}) {
 const samples = [
   {
     slug: "small-bathroom-no-discount",
-    contractNumber: "PIH-2026-SAMPLE-001",
+    contractNumber: "000001",
     body: baseBody({
       workType: "Bathroom",
       projectDescription: "Small bathroom refresh for vanity, fixtures, and finish repairs.",
@@ -81,7 +81,7 @@ const samples = [
   },
   {
     slug: "standard-remodel-two-discounts",
-    contractNumber: "PIH-2026-SAMPLE-002",
+    contractNumber: "000002",
     body: baseBody({
       workType: "Kitchen",
       projectDescription: "Kitchen and dining-area remodeling work for a registered customer at the selected property.",
@@ -111,7 +111,7 @@ const samples = [
   },
   {
     slug: "large-long-scope-multiple-milestones",
-    contractNumber: "PIH-2026-SAMPLE-003",
+    contractNumber: "000003",
     body: baseBody({
       workType: "Home Remodeling",
       projectDescription:

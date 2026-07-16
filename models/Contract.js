@@ -164,13 +164,12 @@ ContractSchema.index({ projectId: 1, current: 1 });
 ContractSchema.index({ projectId: 1, version: -1 });
 
 ContractSchema.statics.nextContractNumber = async function nextContractNumber() {
-  const year = new Date().getUTCFullYear();
   const counter = await Counter.findOneAndUpdate(
-    { key: `pih-contract:${year}` },
+    { key: "pih-contract" },
     { $inc: { value: 1 } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
-  return `PIH-${year}-${String(counter.value).padStart(4, "0")}`;
+  return String(counter.value).padStart(6, "0");
 };
 
 ContractSchema.pre("validate", async function assignContractNumber() {

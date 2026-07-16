@@ -6,6 +6,7 @@ const {
 } = require("../config/premiumIslandHomesContract");
 const {
   buildContractFilename,
+  contractDisplayLabel,
   formatMoney,
   normalizeComparableText,
 } = require("./contractValidation");
@@ -32,14 +33,6 @@ function workTypeLabel(contract) {
   return contract.workType === "Other"
     ? contract.otherWorkType || "Other"
     : contract.workType;
-}
-
-function customerLastName(contract) {
-  const parts = String(contract.customerSnapshot?.fullName || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "Customer";
 }
 
 function formatPhone(value) {
@@ -87,11 +80,12 @@ function formatBasisPoints(value) {
   return `${whole}.${String(fraction).padStart(2, "0").replace(/0+$/g, "")}%`;
 }
 
-function discountValueLabel(discount) {
+function discountDisplayName(discount) {
+  const name = String(discount.name || "Discount").trim() || "Discount";
   if (discount.type === "percentage") {
-    return formatBasisPoints(discount.value);
+    return `${name} (${formatBasisPoints(discount.value)})`;
   }
-  return "Fixed amount";
+  return name;
 }
 
 function cleanLines(value) {
@@ -151,6 +145,39 @@ function drawParagraph(doc, text, options = {}) {
   doc.moveDown(options.after ?? 0.35);
 }
 
+function parseListLine(line) {
+  const match = String(line || "").match(/^([-*]|\u2022|\d+[.)])\s+(.*)$/);
+  if (!match) return null;
+  const rawMarker = match[1];
+  const marker = /^[-*]$/.test(rawMarker) || rawMarker === "\u2022"
+    ? "\u2022"
+    : rawMarker.replace(/\)$/, ".");
+  return { marker, body: match[2] || "" };
+}
+
+function drawListItem(doc, marker, body, options = {}) {
+  const width = options.width || PAGE.width - PAGE.marginX * 2;
+  const baseX = options.x || PAGE.marginX;
+  const size = options.size || 9.5;
+  const color = options.color || "#374151";
+  const markerWidth = /^\d/.test(marker) ? 26 : 20;
+  const bodyWidth = width - markerWidth;
+  const height = Math.max(
+    16,
+    textHeight(doc, body, bodyWidth, { size, lineGap: options.lineGap ?? 2 })
+  ) + 4;
+  ensureRoom(doc, height);
+  const y = doc.y;
+  doc.font("Helvetica").fontSize(size).fillColor(color).text(marker, baseX, y, {
+    width: markerWidth - 4,
+  });
+  doc.font("Helvetica").fontSize(size).fillColor(color).text(body, baseX + markerWidth, y, {
+    width: bodyWidth,
+    lineGap: options.lineGap ?? 2,
+  });
+  doc.y = y + height;
+}
+
 function drawStructuredText(doc, text, options = {}) {
   const width = options.width || PAGE.width - PAGE.marginX * 2;
   const baseX = options.x || PAGE.marginX;
@@ -168,33 +195,30 @@ function drawStructuredText(doc, text, options = {}) {
 
   for (const block of blocks) {
     const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
-    const allListItems = lines.length > 1 && lines.every((line) => /^([-*]|\d+[.)])\s+/.test(line));
-    if (!allListItems) {
-      drawParagraph(doc, block.replace(/\n/g, "\n"), { ...options, width, x: baseX, size, color });
-      continue;
+    let paragraphLines = [];
+
+    function flushParagraph() {
+      if (!paragraphLines.length) return;
+      drawParagraph(doc, paragraphLines.join("\n"), {
+        ...options,
+        width,
+        x: baseX,
+        size,
+        color,
+      });
+      paragraphLines = [];
     }
 
     for (const line of lines) {
-      const match = line.match(/^([-*]|\d+[.)])\s+(.*)$/);
-      const marker = match?.[1] || "-";
-      const body = match?.[2] || line;
-      const markerWidth = 22;
-      const bodyWidth = width - markerWidth;
-      const height = Math.max(
-        14,
-        textHeight(doc, body, bodyWidth, { size, lineGap: 2 })
-      ) + 4;
-      ensureRoom(doc, height);
-      const y = doc.y;
-      doc.font("Helvetica").fontSize(size).fillColor(color).text(marker, baseX, y, {
-        width: markerWidth - 4,
-      });
-      doc.font("Helvetica").fontSize(size).fillColor(color).text(body, baseX + markerWidth, y, {
-        width: bodyWidth,
-        lineGap: 2,
-      });
-      doc.y = y + height;
+      const listLine = parseListLine(line);
+      if (!listLine) {
+        paragraphLines.push(line);
+        continue;
+      }
+      flushParagraph();
+      drawListItem(doc, listLine.marker, listLine.body, { ...options, width, x: baseX, size, color });
     }
+    flushParagraph();
     doc.moveDown(0.15);
   }
 }
@@ -221,52 +245,85 @@ function drawKeyValueTable(doc, rows) {
   });
 }
 
+function drawCompactInfoGrid(doc, rows) {
+  const colGap = 14;
+  const columns = 3;
+  const colWidth = (PAGE.width - PAGE.marginX * 2 - colGap * (columns - 1)) / columns;
+
+  for (let index = 0; index < rows.length; index += columns) {
+    const group = rows.slice(index, index + columns);
+    const groupHeight = Math.max(
+      36,
+      ...group.map((row) =>
+        textHeight(doc, row.value || "Not specified", colWidth, {
+          size: 9.3,
+          lineGap: 1.2,
+        }) + 16
+      )
+    );
+    ensureRoom(doc, groupHeight + 6);
+    const y = doc.y;
+    group.forEach((row, groupIndex) => {
+      const x = PAGE.marginX + groupIndex * (colWidth + colGap);
+      doc.font("Helvetica-Bold").fontSize(7.4).fillColor("#6b7280").text(row.label.toUpperCase(), x, y, {
+        width: colWidth,
+      });
+      doc.font("Helvetica").fontSize(9.3).fillColor("#111827").text(row.value || "Not specified", x, y + 11, {
+        width: colWidth,
+        lineGap: 1.2,
+      });
+    });
+    doc.y = y + groupHeight;
+    doc.moveDown(0.2);
+  }
+}
+
 function drawFirstPageHeader(doc, contract) {
-  const leftWidth = 320;
-  doc.font("Helvetica-Bold").fontSize(16).fillColor("#111827").text("PREMIUM ISLAND HOMES INC.", PAGE.marginX, PAGE.top, {
+  const rightWidth = 145;
+  const leftWidth = PAGE.width - PAGE.marginX * 2 - rightWidth - 24;
+
+  doc.font("Helvetica-Bold").fontSize(24).fillColor("#111827").text("HOME IMPROVEMENT AGREEMENT", PAGE.marginX, PAGE.top, {
+    width: leftWidth,
+    lineGap: 1,
+  });
+  doc.moveDown(0.22);
+  doc.font("Helvetica-Bold").fontSize(10.5).fillColor("#111827").text(COMPANY_INFO.legalName, {
     width: leftWidth,
   });
-  doc.moveDown(0.25);
-  doc.font("Helvetica-Bold").fontSize(19).fillColor("#111827").text("HOME IMPROVEMENT AGREEMENT", {
-    width: leftWidth,
-  });
-  doc.moveDown(0.3);
-  doc.font("Helvetica").fontSize(8.7).fillColor("#4b5563").text(
-    `${COMPANY_INFO.addressLines.join(", ")} | ${COMPANY_INFO.phone} | ${COMPANY_INFO.email} | ${COMPANY_INFO.website} | License ${COMPANY_INFO.homeImprovementLicense}`,
+  doc.moveDown(0.18);
+  doc.font("Helvetica").fontSize(8.3).fillColor("#4b5563").text(
+    `${COMPANY_INFO.addressLines.join(" | ")} | ${COMPANY_INFO.phone}`,
     {
-      width: PAGE.width - PAGE.marginX * 2,
-      lineGap: 1.5,
+      width: leftWidth,
+      lineGap: 1,
+    }
+  );
+  doc.font("Helvetica").fontSize(8.3).fillColor("#4b5563").text(
+    `${COMPANY_INFO.email} | ${COMPANY_INFO.website} | ${COMPANY_INFO.homeImprovementLicense}`,
+    {
+      width: leftWidth,
+      lineGap: 1,
     }
   );
 
-  const boxX = PAGE.width - PAGE.marginX - 170;
-  const boxY = PAGE.top;
-  doc.roundedRect(boxX, boxY, 170, 70, 4).strokeColor("#d1d5db").lineWidth(0.75).stroke();
-  doc.font("Helvetica").fontSize(8).fillColor("#6b7280").text("Contract No.", boxX + 12, boxY + 10, {
-    width: 70,
-  });
-  doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#111827").text(contract.contractNumber, boxX + 82, boxY + 10, {
-    width: 76,
+  const rightX = PAGE.width - PAGE.marginX - rightWidth;
+  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(contractDisplayLabel(contract), rightX, PAGE.top + 2, {
+    width: rightWidth,
     align: "right",
   });
-  doc.font("Helvetica").fontSize(8).fillColor("#6b7280").text("Version", boxX + 12, boxY + 30, {
-    width: 70,
-  });
-  doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#111827").text(String(contract.version || 1), boxX + 82, boxY + 30, {
-    width: 76,
+  doc.font("Helvetica").fontSize(8.5).fillColor("#6b7280").text("Contract Date", rightX, PAGE.top + 24, {
+    width: rightWidth,
     align: "right",
   });
-  doc.font("Helvetica").fontSize(8).fillColor("#6b7280").text("Contract date", boxX + 12, boxY + 50, {
-    width: 70,
-  });
-  doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#111827").text(formatDate(contract.dates?.contractDate), boxX + 82, boxY + 50, {
-    width: 76,
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#111827").text(formatDate(contract.dates?.contractDate), rightX, PAGE.top + 36, {
+    width: rightWidth,
     align: "right",
+    lineGap: 1,
   });
 
-  doc.y = PAGE.top + 98;
+  doc.y = PAGE.top + 76;
   rule(doc, "#cbd5e1");
-  doc.moveDown(0.6);
+  doc.moveDown(0.5);
 }
 
 function drawPriceSummary(doc, contract) {
@@ -278,51 +335,81 @@ function drawPriceSummary(doc, contract) {
   const deposit = Number(contract.depositAmountCents || 0);
   const remaining = Math.max(adjusted - deposit, 0);
 
-  ensureRoom(doc, discounts.length ? 128 : 95);
+  ensureRoom(doc, discounts.length ? 150 : 112);
   const startY = doc.y;
-  doc.roundedRect(PAGE.marginX, startY, cardWidth, 82, 5).fill("#f8fafc");
-  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text(
+  const cardHeight = 106;
+  doc.roundedRect(PAGE.marginX, startY, cardWidth, cardHeight, 5).fillAndStroke("#f8fafc", "#dbe3ee");
+  doc.fillColor("#64748b").font("Helvetica-Bold").fontSize(8.5).text(
     "Final Contract Price",
     PAGE.marginX + 14,
     startY + 14,
     {
-    width: 170,
+      width: 190,
     }
   );
-  doc.font("Helvetica-Bold").fontSize(18).text(formatMoney(adjusted), PAGE.marginX + 14, startY + 30, {
-    width: 170,
+  doc.font("Helvetica-Bold").fontSize(27).fillColor("#111827").text(formatMoney(adjusted), PAGE.marginX + 14, startY + 29, {
+    width: 205,
   });
 
-  const columns = discounts.length
-    ? [
-        ["Original Price", formatMoney(original)],
-        ["Discounts", `-${formatMoney(totalDiscount).replace("-", "")}`],
-        ["Deposit", formatMoney(deposit)],
-      ]
-    : [
-        ["Deposit", formatMoney(deposit)],
-        ["Remaining Balance", formatMoney(remaining)],
-      ];
-  columns.forEach(([label, value], index) => {
-    const x = PAGE.marginX + 210 + index * 96;
-    doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#64748b").text(label.toUpperCase(), x, startY + 22, {
-      width: 92,
+  const rows = [
+    ["Original Price", formatMoney(original)],
+    ["Discounts", totalDiscount > 0 ? `-${formatMoney(totalDiscount).replace("-", "")}` : formatMoney(0)],
+    ["Deposit", formatMoney(deposit)],
+    ["Remaining Balance", formatMoney(remaining)],
+  ];
+  rows.forEach(([label, value], index) => {
+    const x = PAGE.marginX + 250 + (index % 2) * 118;
+    const y = startY + 18 + Math.floor(index / 2) * 40;
+    doc.font("Helvetica-Bold").fontSize(7.8).fillColor("#64748b").text(label.toUpperCase(), x, y, {
+      width: 110,
     });
-    doc.font("Helvetica-Bold").fontSize(13).fillColor("#111827").text(value, x, startY + 39, {
-      width: 92,
+    doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(value, x, y + 14, {
+      width: 110,
     });
   });
-  doc.y = startY + 95;
+  doc.y = startY + cardHeight + 14;
 
   if (!discounts.length) return;
 
-  const widths = [235, 95, 90, cardWidth - 420];
-  const headerHeight = 20;
+  if (discounts.length === 1) {
+    const discount = discounts[0];
+    const rowHeight = Math.max(
+      34,
+      textHeight(doc, discountDisplayName(discount), cardWidth - 130, { size: 9 }) + 16
+    );
+    ensureRoom(doc, rowHeight + 24);
+    doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#111827").text("Discount", PAGE.marginX, doc.y, {
+      width: cardWidth,
+    });
+    doc.moveDown(0.25);
+    const rowY = doc.y;
+    doc.rect(PAGE.marginX, rowY, cardWidth, rowHeight).fill("#ffffff");
+    doc.moveTo(PAGE.marginX, rowY).lineTo(PAGE.marginX + cardWidth, rowY).strokeColor("#e5e7eb").lineWidth(0.75).stroke();
+    doc.moveTo(PAGE.marginX, rowY + rowHeight).lineTo(PAGE.marginX + cardWidth, rowY + rowHeight).stroke();
+    doc.font("Helvetica").fontSize(9).fillColor("#111827").text(discountDisplayName(discount), PAGE.marginX + 8, rowY + 10, {
+      width: cardWidth - 130,
+      lineGap: 1.2,
+    });
+    doc.font("Helvetica-Bold").fontSize(10).fillColor("#111827").text(
+      `-${formatMoney(discount.calculatedAmountCents).replace("-", "")}`,
+      PAGE.marginX + cardWidth - 112,
+      rowY + 10,
+      {
+        width: 104,
+        align: "right",
+      }
+    );
+    doc.y = rowY + rowHeight + 14;
+    return;
+  }
+
+  const widths = [cardWidth - 220, 95, 125];
+  const headerHeight = 22;
   const firstDiscount = discounts[0] || {};
   const firstRowHeight = Math.max(
     30,
-    textHeight(doc, firstDiscount.name || "", widths[0] - 14, { size: 8.5 }) + 14,
-    textHeight(doc, String(firstDiscount.note || "") || " ", widths[3] - 14, { size: 8.5 }) + 14
+    textHeight(doc, discountDisplayName(firstDiscount), widths[0] - 14, { size: 8.7 }) + 14,
+    textHeight(doc, String(firstDiscount.note || "") || " ", widths[2] - 14, { size: 8.4 }) + 14
   );
   ensureRoom(doc, headerHeight + firstRowHeight + 32);
 
@@ -336,10 +423,9 @@ function drawPriceSummary(doc, contract) {
   doc.rect(PAGE.marginX, headerY, cardWidth, headerHeight).fill("#eef2f7");
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#111827");
   doc.text("Discount", PAGE.marginX + 7, headerY + 6, { width: widths[0] - 14 });
-  doc.text("Value", PAGE.marginX + widths[0] + 7, headerY + 6, { width: widths[1] - 14 });
-  doc.text("Amount", PAGE.marginX + widths[0] + widths[1] + 7, headerY + 6, { width: widths[2] - 14 });
-  doc.text("Note", PAGE.marginX + widths[0] + widths[1] + widths[2] + 7, headerY + 6, {
-    width: widths[3] - 14,
+  doc.text("Amount", PAGE.marginX + widths[0] + 7, headerY + 6, { width: widths[1] - 14 });
+  doc.text("Note", PAGE.marginX + widths[0] + widths[1] + 7, headerY + 6, {
+    width: widths[2] - 14,
   });
   doc.y = headerY + headerHeight;
 
@@ -347,26 +433,24 @@ function drawPriceSummary(doc, contract) {
     const note = String(discount.note || "");
     const height = Math.max(
       30,
-      textHeight(doc, discount.name || "", widths[0] - 14, { size: 8.5 }) + 14,
-      textHeight(doc, note || " ", widths[3] - 14, { size: 8.5 }) + 14
+      textHeight(doc, discountDisplayName(discount), widths[0] - 14, { size: 8.7 }) + 14,
+      textHeight(doc, note || " ", widths[2] - 14, { size: 8.4 }) + 14
     );
     if (doc.y + height > PAGE.height - PAGE.bottom) {
       doc.addPage();
     }
     const rowY = doc.y;
     doc.rect(PAGE.marginX, rowY, cardWidth, height).fill(index % 2 ? "#ffffff" : "#fafafa");
-    doc.font("Helvetica").fontSize(8.5).fillColor("#111827").text(discount.name, PAGE.marginX + 7, rowY + 7, {
+    doc.font("Helvetica").fontSize(8.7).fillColor("#111827").text(discountDisplayName(discount), PAGE.marginX + 7, rowY + 7, {
       width: widths[0] - 14,
       lineGap: 1.2,
     });
-    doc.text(discountValueLabel(discount), PAGE.marginX + widths[0] + 7, rowY + 7, {
+    doc.font("Helvetica-Bold").text(`-${formatMoney(discount.calculatedAmountCents).replace("-", "")}`, PAGE.marginX + widths[0] + 7, rowY + 7, {
       width: widths[1] - 14,
+      align: "right",
     });
-    doc.font("Helvetica-Bold").text(`-${formatMoney(discount.calculatedAmountCents).replace("-", "")}`, PAGE.marginX + widths[0] + widths[1] + 7, rowY + 7, {
+    doc.font("Helvetica").fontSize(8.4).text(note, PAGE.marginX + widths[0] + widths[1] + 7, rowY + 7, {
       width: widths[2] - 14,
-    });
-    doc.font("Helvetica").text(note, PAGE.marginX + widths[0] + widths[1] + widths[2] + 7, rowY + 7, {
-      width: widths[3] - 14,
       lineGap: 1.2,
     });
     doc.y = rowY + height;
@@ -479,7 +563,7 @@ function truncatedDescription(text) {
 }
 
 function drawTerms(doc, options = {}) {
-  sectionTitle(doc, "Terms and Notices", { keepWith: 92 });
+  sectionTitle(doc, "Terms", { keepWith: 92 });
   const notice = {
     ...CANCELLATION_NOTICE_CONFIG,
     ...(options.cancellationNoticeConfig || {}),
@@ -496,80 +580,106 @@ function drawTerms(doc, options = {}) {
     const bodyWidth = PAGE.width - PAGE.marginX * 2;
     const headingHeight = textHeight(doc, section.title, bodyWidth, {
       font: "Helvetica-Bold",
-      size: 8,
+      size: 8.4,
     });
     const bodyPreview = String(section.body || "").split(/\s+/).slice(0, 18).join(" ");
-    const previewHeight = textHeight(doc, bodyPreview, bodyWidth, { size: 7.4 });
+    const previewHeight = textHeight(doc, bodyPreview, bodyWidth, { size: 7.7 });
     ensureRoom(doc, headingHeight + previewHeight + 18);
-    doc.font("Helvetica-Bold").fontSize(8).fillColor("#111827").text(section.title, PAGE.marginX, doc.y, {
+    doc.font("Helvetica-Bold").fontSize(8.4).fillColor("#111827").text(section.title, PAGE.marginX, doc.y, {
       width: bodyWidth,
       lineGap: 0.4,
     });
     doc.moveDown(0.05);
     drawParagraph(doc, section.body, {
-      size: 7.4,
+      size: 7.7,
       color: "#374151",
       after: 0.08,
-      lineGap: 0.35,
+      lineGap: 0.6,
     });
   });
 }
 
-function drawSignatureLine(doc, label, nameText = "") {
-  const startY = doc.y;
-  const colWidth = 150;
-  const gap = 22;
-  const columns = [
-    ["Printed name", nameText],
-    ["Signature", ""],
-    ["Date", ""],
-  ];
-  doc.font("Helvetica-Bold").fontSize(10.5).fillColor("#111827").text(label, PAGE.marginX, startY, {
-    width: PAGE.width - PAGE.marginX * 2,
-  });
-  const valueHeights = columns.map(([, value]) =>
-    value
-      ? textHeight(doc, value, colWidth, { font: "Helvetica", size: 10, lineGap: 1.2 })
-      : 0
+function secondCustomerName(contract) {
+  const snapshot = contract.customerSnapshot || {};
+  return (
+    snapshot.secondFullName ||
+    snapshot.secondaryFullName ||
+    snapshot.customer2Name ||
+    snapshot.coCustomerName ||
+    contract.secondCustomerName ||
+    contract.secondaryCustomerName ||
+    ""
   );
-  const maxValueHeight = Math.max(0, ...valueHeights);
-  const lineY = startY + 31 + Math.max(11, maxValueHeight);
-  ensureRoom(doc, lineY - startY + 48);
-  columns.forEach(([caption, value], index) => {
-    const x = PAGE.marginX + index * (colWidth + gap);
-    if (value) {
-      const valueHeight = valueHeights[index];
-      doc.font("Helvetica").fontSize(10).fillColor("#111827").text(value, x, lineY - valueHeight - 7, {
-        width: colWidth,
-        lineGap: 1.2,
-      });
-    }
-    doc.moveTo(x, lineY).lineTo(x + colWidth, lineY).strokeColor("#9ca3af").lineWidth(0.75).stroke();
-    doc.font("Helvetica").fontSize(8.5).fillColor("#6b7280").text(caption, x, lineY + 7, {
-      width: colWidth,
-    });
+}
+
+function drawSignatureBlock(doc, title, printedName = "") {
+  const blockWidth = PAGE.width - PAGE.marginX * 2;
+  const startY = doc.y;
+  const lineWidth = blockWidth;
+  const printedHeight = printedName
+    ? textHeight(doc, printedName, lineWidth, { font: "Helvetica", size: 10.5, lineGap: 1.3 })
+    : 0;
+  const blockHeight = 142 + Math.max(0, printedHeight - 14);
+  ensureRoom(doc, blockHeight + 12);
+
+  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(title, PAGE.marginX, startY, {
+    width: blockWidth,
   });
-  doc.y = lineY + 48;
+
+  const printedLineY = startY + 48 + Math.max(0, printedHeight - 14);
+  if (printedName) {
+    doc.font("Helvetica").fontSize(10.5).fillColor("#111827").text(printedName, PAGE.marginX, printedLineY - printedHeight - 7, {
+      width: lineWidth,
+      lineGap: 1.3,
+    });
+  }
+  doc.moveTo(PAGE.marginX, printedLineY).lineTo(PAGE.marginX + lineWidth, printedLineY).strokeColor("#9ca3af").lineWidth(0.8).stroke();
+  doc.font("Helvetica").fontSize(8.7).fillColor("#6b7280").text("Printed Name", PAGE.marginX, printedLineY + 7, {
+    width: lineWidth,
+  });
+
+  const signatureLineY = printedLineY + 48;
+  doc.moveTo(PAGE.marginX, signatureLineY).lineTo(PAGE.marginX + lineWidth, signatureLineY).strokeColor("#9ca3af").lineWidth(0.8).stroke();
+  doc.font("Helvetica").fontSize(8.7).fillColor("#6b7280").text("Signature", PAGE.marginX, signatureLineY + 7, {
+    width: lineWidth,
+  });
+
+  const dateLineWidth = 190;
+  const dateLineY = signatureLineY + 48;
+  doc.moveTo(PAGE.marginX, dateLineY).lineTo(PAGE.marginX + dateLineWidth, dateLineY).strokeColor("#9ca3af").lineWidth(0.8).stroke();
+  doc.font("Helvetica").fontSize(8.7).fillColor("#6b7280").text("Date", PAGE.marginX, dateLineY + 7, {
+    width: dateLineWidth,
+  });
+
+  doc.y = dateLineY + 38;
 }
 
 function drawSignaturePage(doc, contract) {
   doc.addPage();
-  sectionTitle(doc, "Signature Page", { topGap: 0, keepWith: 120 });
+  doc.font("Helvetica-Bold").fontSize(22).fillColor("#111827").text("Accepted and Agreed", PAGE.marginX, PAGE.top, {
+    width: PAGE.width - PAGE.marginX * 2,
+  });
+  doc.y = PAGE.top + 36;
+  rule(doc, "#cbd5e1");
+  doc.moveDown(0.8);
   drawParagraph(
     doc,
     "By signing below, the parties acknowledge that they have reviewed and accepted the project description, scope of work, pricing, listed discounts if any, payment schedule, and terms of this agreement, and that the customer has received a copy of the agreement.",
-    { size: 10, color: "#374151", lineGap: 2.5, after: 1.4 }
+    { size: 10, color: "#374151", lineGap: 2.4, after: 1.2 }
   );
-  drawSignatureLine(doc, "Customer 1", contract.customerSnapshot?.fullName || "");
-  doc.moveDown(0.85);
-  drawSignatureLine(doc, "Customer 2 - Optional");
-  doc.moveDown(0.85);
-  drawSignatureLine(doc, "Contractor", `${COMPANY_INFO.legalName}\n${COMPANY_INFO.projectManager}, Project Manager`);
+  drawSignatureBlock(doc, "Customer", contract.customerSnapshot?.fullName || "");
+  const secondaryName = secondCustomerName(contract);
+  if (secondaryName) {
+    doc.moveDown(0.25);
+    drawSignatureBlock(doc, "Customer 2", secondaryName);
+  }
+  doc.moveDown(0.45);
+  drawSignatureBlock(doc, COMPANY_INFO.legalName, `${COMPANY_INFO.projectManager}\nProject Manager`);
 }
 
 function addFooter(doc, contract) {
   const range = doc.bufferedPageRange();
-  const last = customerLastName(contract);
+  const label = contractDisplayLabel(contract);
   for (let i = range.start; i < range.start + range.count; i += 1) {
     doc.switchToPage(i);
     doc.save();
@@ -583,12 +693,17 @@ function addFooter(doc, contract) {
       .lineWidth(0.75)
       .stroke();
     doc.font("Helvetica").fontSize(8).fillColor("#6b7280");
-    doc.text(`Contract ${contract.contractNumber} | ${last}`, PAGE.marginX, PAGE.height - 32, {
-      width: 260,
+    doc.text(COMPANY_INFO.legalName, PAGE.marginX, PAGE.height - 32, {
+      width: 180,
       lineBreak: false,
     });
-    doc.text(`Page ${i + 1} of ${range.count}`, PAGE.marginX, PAGE.height - 32, {
-      width: PAGE.width - PAGE.marginX * 2,
+    doc.text(label, PAGE.marginX + 185, PAGE.height - 32, {
+      width: 160,
+      align: "center",
+      lineBreak: false,
+    });
+    doc.text(`Page ${i + 1} of ${range.count}`, PAGE.width - PAGE.marginX - 120, PAGE.height - 32, {
+      width: 120,
       align: "right",
       lineBreak: false,
     });
@@ -612,7 +727,7 @@ async function generateContractPdfBuffer(contract, options = {}) {
       },
       bufferPages: true,
       info: {
-        Title: `${contract.contractNumber} Premium Island Homes Agreement`,
+        Title: `${contractDisplayLabel(contract)} Premium Island Homes Agreement`,
         Author: COMPANY_INFO.legalName,
         Subject: "Home improvement agreement",
       },
@@ -625,12 +740,12 @@ async function generateContractPdfBuffer(contract, options = {}) {
 
     drawFirstPageHeader(doc, contract);
 
-    sectionTitle(doc, "Customer and Property", { topGap: 0, keepWith: 95 });
-    drawKeyValueTable(doc, [
+    sectionTitle(doc, "Customer Information", { topGap: 0, keepWith: 82 });
+    drawCompactInfoGrid(doc, [
       { label: "Customer", value: contract.customerSnapshot?.fullName },
-      { label: "Email", value: contract.customerSnapshot?.email || "Not specified" },
       { label: "Phone", value: formatPhone(contract.customerSnapshot?.phone) },
-      { label: "Property address", value: contract.propertySnapshot?.address },
+      { label: "Email", value: contract.customerSnapshot?.email || "Not specified" },
+      { label: "Property", value: contract.propertySnapshot?.address },
       { label: "Work type", value: workTypeLabel(contract) },
       { label: "Contract date", value: formatDate(contract.dates?.contractDate) },
     ]);
@@ -638,15 +753,17 @@ async function generateContractPdfBuffer(contract, options = {}) {
     if (descriptionShouldRender(contract)) {
       sectionTitle(doc, "Project Description", { keepWith: 85 });
       drawStructuredText(doc, truncatedDescription(contract.projectDescription), {
-        size: 9.7,
-        color: "#374151",
+        size: 10.7,
+        color: "#1f2937",
+        lineGap: 2.8,
       });
     }
 
     sectionTitle(doc, "Scope of Work", { keepWith: 95 });
     drawStructuredText(doc, contract.scopeText, {
-      size: 9.5,
-      color: "#374151",
+      size: 10,
+      color: "#1f2937",
+      lineGap: 2.3,
     });
 
     sectionTitle(doc, "Price and Payment", { keepWith: 140 });
