@@ -35,6 +35,7 @@
     "test:subscription-retention": "node scripts/test_subscription_retention_offer.js",
     "test:admin-subscription-resolution": "node scripts/test_admin_subscription_plan_resolution.js",
     "test:project-customer-selection": "node scripts/test_project_customer_selection.js",
+    "test:project-soft-delete": "node scripts/test_project_soft_delete.js",
     "audit:project-customer-search": "node scripts/audit_project_customer_search_indexes.js",
     "samples:premium-island-contracts": "node scripts/generate_premium_island_contract_samples.js",
     "test:premium-island-contracts": "node scripts/test_premium_island_contracts.js",

@@ -57,12 +57,32 @@ function actorEmail(req) {
   return String(actor.email || "").toLowerCase();
 }
 
-function serializeContract(contract) {
+function isDeletedProject(project) {
+  return project?.isDeleted === true;
+}
+
+function sendDeletedProjectResponse(res, project) {
+  return res.status(410).json({
+    message: "Parent project has been deleted. Contracts, signed files, and history are preserved for recordkeeping.",
+    isDeleted: true,
+    deletedAt: project.deletedAt || null,
+  });
+}
+
+function deletedProjectNotice(project) {
+  if (!isDeletedProject(project)) return null;
+  return `Parent project deleted on ${project.deletedAt ? new Date(project.deletedAt).toISOString() : "unknown date"}`;
+}
+
+function serializeContract(contract, options = {}) {
   const item = typeof contract.toObject === "function" ? contract.toObject() : contract;
+  const parentProject = options.parentProject || null;
   return {
     ...item,
     id: String(item._id || item.id || ""),
     _id: String(item._id || item.id || ""),
+    parentProjectDeletedAt: isDeletedProject(parentProject) ? parentProject.deletedAt || null : null,
+    parentProjectDeletedMessage: deletedProjectNotice(parentProject),
     generatedPdf: serializePdfRecord(item.generatedPdf, "generated"),
     signedPdf: serializePdfRecord(item.signedPdf, "signed"),
     auditHistory: Array.isArray(item.auditHistory)
@@ -126,7 +146,7 @@ function defaultEmailBody(contract) {
   ].join("\n");
 }
 
-async function getProjectOr404(projectId, res) {
+async function getProjectOr404(projectId, res, options = {}) {
   if (!mongoose.isValidObjectId(projectId)) {
     res.status(400).json({ message: "Invalid project ID" });
     return null;
@@ -136,6 +156,10 @@ async function getProjectOr404(projectId, res) {
     res.status(404).json({ message: "Project not found" });
     return null;
   }
+  if (isDeletedProject(project) && !options.allowDeleted) {
+    sendDeletedProjectResponse(res, project);
+    return null;
+  }
   return project;
 }
 
@@ -143,21 +167,22 @@ function projectIdFromRequest(req) {
   return cleanString(req.body?.projectId || req.query?.projectId, 80);
 }
 
-async function getContractForProjectOr404(contractId, req, res) {
+async function getContractForProjectOr404(contractId, req, res, options = {}) {
   const projectId = projectIdFromRequest(req);
-  if (!mongoose.isValidObjectId(projectId)) {
-    res.status(400).json({ message: "Valid projectId is required" });
-    return null;
-  }
   if (!mongoose.isValidObjectId(contractId)) {
     res.status(400).json({ message: "Invalid contract ID" });
     return null;
   }
+  const project = await getProjectOr404(projectId, res, {
+    allowDeleted: options.allowDeleted === true,
+  });
+  if (!project) return null;
   const contract = await Contract.findOne({ _id: contractId, projectId });
   if (!contract) {
     res.status(404).json({ message: "Contract not found for this project" });
     return null;
   }
+  contract.$locals.parentProject = project;
   return contract;
 }
 
@@ -279,12 +304,16 @@ router.get("/meta", (_req, res) => {
 
 router.get("/project/:projectId", async (req, res) => {
   try {
-    const project = await getProjectOr404(req.params.projectId, res);
+    const project = await getProjectOr404(req.params.projectId, res, { allowDeleted: true });
     if (!project) return null;
     const contracts = await Contract.find({ projectId: project._id })
       .sort({ current: -1, version: -1, createdAt: -1 })
       .lean();
-    return res.json({ contracts: contracts.map(serializeContract) });
+    return res.json({
+      contracts: contracts.map((contract) => serializeContract(contract, { parentProject: project })),
+      parentProjectDeletedAt: isDeletedProject(project) ? project.deletedAt || null : null,
+      parentProjectDeletedMessage: deletedProjectNotice(project),
+    });
   } catch (error) {
     console.error("GET /admin/contracts/project/:projectId failed:", error);
     return res.status(500).json({ message: "Failed to load project contracts" });
@@ -296,7 +325,7 @@ router.post("/project/:projectId/draft", async (req, res) => {
     const project = await getProjectOr404(req.params.projectId, res);
     if (!project) return null;
     const contract = await saveDraft({ project, body: req.body, req });
-    return res.status(201).json({ contract: serializeContract(contract) });
+    return res.status(201).json({ contract: serializeContract(contract, { parentProject: project }) });
   } catch (error) {
     console.error("POST /admin/contracts/project/:projectId/draft failed:", error);
     return res.status(error.status || 500).json({
@@ -429,7 +458,7 @@ router.post("/:id/generate", async (req, res) => {
       },
     });
 
-    return res.json({ contract: serializeContract(contract) });
+    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/generate failed:", error);
     await markAdminActivityLog(audit, {
@@ -442,7 +471,7 @@ router.post("/:id/generate", async (req, res) => {
 
 router.get("/:id/download", async (req, res) => {
   try {
-    const contract = await getContractForProjectOr404(req.params.id, req, res);
+    const contract = await getContractForProjectOr404(req.params.id, req, res, { allowDeleted: true });
     if (!contract) return null;
     const type = cleanString(req.query.type || "generated", 20);
     const pdf = type === "signed" ? contract.signedPdf : contract.generatedPdf;
@@ -520,7 +549,7 @@ router.post("/:id/email", async (req, res) => {
     contract.updatedBy = req.user.id;
     await contract.save();
 
-    return res.json({ contract: serializeContract(contract) });
+    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/email failed:", error);
     return res.status(500).json({
@@ -562,7 +591,7 @@ router.post("/:id/signed", signedUpload.single("file"), async (req, res) => {
     contract.addAuditEvent("Signed copy uploaded", req, { fileName, size: req.file.size });
     await contract.save();
 
-    return res.json({ contract: serializeContract(contract) });
+    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/signed failed:", error);
     return res.status(500).json({ message: "Failed to upload signed contract" });
@@ -579,7 +608,7 @@ router.post("/:id/cancel", async (req, res) => {
       reason: cleanString(req.body?.reason, 1000),
     });
     await contract.save();
-    return res.json({ contract: serializeContract(contract) });
+    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/cancel failed:", error);
     return res.status(500).json({ message: "Failed to cancel contract" });

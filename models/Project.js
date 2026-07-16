@@ -74,11 +74,21 @@ const ProjectSchema = new mongoose.Schema(
     depositAmount: { type: Number, min: 0, default: 0 },
     balanceDue: { type: Number, min: 0, default: 0 },
     notes: { type: String, trim: true, maxlength: 10000, default: "" },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
+    deletedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    deleteReason: { type: String, trim: true, maxlength: 1000, default: "" },
   },
   { timestamps: true }
 );
 
 ProjectSchema.index({ createdAt: -1 });
+ProjectSchema.index({ isDeleted: 1, createdAt: -1 });
 ProjectSchema.index({ customerName: "text", address: "text", email: "text", phone: "text" });
 
 ProjectSchema.statics.nextProjectNumber = async function nextProjectNumber() {

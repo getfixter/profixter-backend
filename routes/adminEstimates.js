@@ -14,6 +14,31 @@ const router = express.Router();
 const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
 const ESTIMATE_STATUSES = Estimate.ESTIMATE_STATUSES;
 
+function isDeletedProject(project) {
+  return project?.isDeleted === true;
+}
+
+function sendDeletedProjectResponse(res, project) {
+  return res.status(410).json({
+    message: "Parent project has been deleted. Preserved estimates are available only through an authorized recovery or audit path.",
+    isDeleted: true,
+    deletedAt: project.deletedAt || null,
+  });
+}
+
+async function getActiveProjectOrRespond(projectId, res) {
+  const project = await Project.findById(projectId).select("_id isDeleted deletedAt").lean();
+  if (!project) {
+    res.status(404).json({ message: "Project not found" });
+    return null;
+  }
+  if (isDeletedProject(project)) {
+    sendDeletedProjectResponse(res, project);
+    return null;
+  }
+  return project;
+}
+
 async function onlyAdmin(req, res, next) {
   try {
     const user = await User.findById(req.user.id).select("email").lean();
@@ -158,7 +183,14 @@ router.get("/", async (req, res) => {
       if (!mongoose.isValidObjectId(projectId)) {
         return res.status(400).json({ message: "Invalid project ID" });
       }
+      const project = await getActiveProjectOrRespond(projectId, res);
+      if (!project) return null;
       query.projectId = projectId;
+    } else {
+      const deletedProjects = await Project.find({ isDeleted: true }).select("_id").lean();
+      if (deletedProjects.length) {
+        query.projectId = { $nin: deletedProjects.map((project) => project._id) };
+      }
     }
     if (status) {
       if (!ESTIMATE_STATUSES.includes(status)) {
@@ -184,6 +216,8 @@ router.get("/:id", async (req, res) => {
     }
     const estimate = await Estimate.findById(req.params.id).lean();
     if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+    const project = await getActiveProjectOrRespond(estimate.projectId, res);
+    if (!project) return null;
     return res.json({ estimate });
   } catch (error) {
     console.error("GET /admin/estimates/:id failed:", error);
@@ -196,8 +230,8 @@ router.post("/", async (req, res) => {
     const { errors, estimate: input } = validateEstimateInput(req.body);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
 
-    const projectExists = await Project.exists({ _id: input.projectId });
-    if (!projectExists) return res.status(404).json({ message: "Project not found" });
+    const project = await getActiveProjectOrRespond(input.projectId, res);
+    if (!project) return null;
 
     const estimate = await Estimate.create({
       ...input,
@@ -248,8 +282,8 @@ router.put("/:id", async (req, res) => {
     const { errors, estimate: input } = validateEstimateInput(merged);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
 
-    const projectExists = await Project.exists({ _id: input.projectId });
-    if (!projectExists) return res.status(404).json({ message: "Project not found" });
+    const project = await getActiveProjectOrRespond(input.projectId, res);
+    if (!project) return null;
 
     const estimate = await Estimate.findByIdAndUpdate(
       req.params.id,
@@ -269,6 +303,8 @@ router.delete("/:id", async (req, res) => {
     }
     const estimate = await Estimate.findById(req.params.id).lean();
     if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+    const project = await getActiveProjectOrRespond(estimate.projectId, res);
+    if (!project) return null;
 
     const audit = await createAdminActivityLog(req, {
       action: "Estimate Delete Started",

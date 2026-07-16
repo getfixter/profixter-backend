@@ -27,6 +27,47 @@ const ADMIN_EMAIL = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLo
 const PROJECT_TYPES = Project.PROJECT_TYPES;
 const PROJECT_STATUSES = Project.PROJECT_STATUSES;
 
+function activeProjectFilter(filter = {}) {
+  return { ...filter, isDeleted: { $ne: true } };
+}
+
+function isDeletedProject(project) {
+  return project?.isDeleted === true;
+}
+
+function sendDeletedProjectResponse(res, project) {
+  return res.status(410).json({
+    message: "Project has been deleted and is available only through an authorized recovery or audit path.",
+    isDeleted: true,
+    deletedAt: project.deletedAt || null,
+  });
+}
+
+async function projectDeletionSummary(projectId) {
+  const [estimateCount, contracts] = await Promise.all([
+    Estimate.countDocuments({ projectId }),
+    Contract.find({ projectId })
+      .select("_id status generatedPdf signedPdf")
+      .lean(),
+  ]);
+
+  const generatedPdfCount = contracts.filter((contract) => !!contract.generatedPdf?.key).length;
+  const signedPdfCount = contracts.filter((contract) => !!contract.signedPdf?.key).length;
+  const contractCount = contracts.length;
+  const storedDocumentCount = generatedPdfCount + signedPdfCount;
+  const hasRelatedRecords = contractCount > 0 || estimateCount > 0 || storedDocumentCount > 0;
+
+  return {
+    contractCount,
+    estimateCount,
+    generatedPdfCount,
+    signedPdfCount,
+    storedDocumentCount,
+    hasRelatedRecords,
+    requiresDeleteConfirmation: hasRelatedRecords,
+  };
+}
+
 async function onlyAdmin(req, res, next) {
   try {
     const user = await User.findById(req.user.id).select("email").lean();
@@ -197,7 +238,7 @@ router.get("/meta", (_req, res) => {
 
 router.get("/", async (req, res) => {
   try {
-    const query = {};
+    const query = activeProjectFilter();
     const status = cleanString(req.query.status);
     const projectType = cleanString(req.query.projectType);
     const customer = cleanString(req.query.customer);
@@ -296,8 +337,9 @@ router.get("/:projectId/estimates", async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.projectId)) {
       return res.status(400).json({ message: "Invalid project ID" });
     }
-    const projectExists = await Project.exists({ _id: req.params.projectId });
-    if (!projectExists) return res.status(404).json({ message: "Project not found" });
+    const project = await Project.findById(req.params.projectId).select("_id isDeleted deletedAt").lean();
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (isDeletedProject(project)) return sendDeletedProjectResponse(res, project);
 
     const estimates = await Estimate.find({ projectId: req.params.projectId })
       .sort({ createdAt: -1 })
@@ -309,6 +351,30 @@ router.get("/:projectId/estimates", async (req, res) => {
   }
 });
 
+router.get("/:id/deletion-summary", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid project ID" });
+    }
+    const project = await Project.findById(req.params.id)
+      .select("_id projectNumber isDeleted deletedAt")
+      .lean();
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    return res.json({
+      project: {
+        _id: project._id,
+        projectNumber: project.projectNumber,
+        isDeleted: project.isDeleted === true,
+        deletedAt: project.deletedAt || null,
+      },
+      deletionSummary: await projectDeletionSummary(req.params.id),
+    });
+  } catch (error) {
+    console.error("GET /admin/projects/:id/deletion-summary failed:", error);
+    return res.status(500).json({ message: "Failed to load project deletion summary" });
+  }
+});
+
 router.get("/:id", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -316,6 +382,7 @@ router.get("/:id", async (req, res) => {
     }
     const project = await Project.findById(req.params.id).lean();
     if (!project) return res.status(404).json({ message: "Project not found" });
+    if (isDeletedProject(project)) return sendDeletedProjectResponse(res, project);
     return res.json({ project });
   } catch (error) {
     console.error("GET /admin/projects/:id failed:", error);
@@ -345,6 +412,9 @@ router.put("/:id", async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: "Invalid project ID" });
     }
+    const existing = await Project.findById(req.params.id).select("_id isDeleted deletedAt").lean();
+    if (!existing) return res.status(404).json({ message: "Project not found" });
+    if (isDeletedProject(existing)) return sendDeletedProjectResponse(res, existing);
 
     const { errors, update } = validateProjectInput(req.body, { partial: true });
     await validateProjectCustomerLink(update, errors);
@@ -367,7 +437,7 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.post("/:id/restore", async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: "Invalid project ID" });
@@ -375,22 +445,84 @@ router.delete("/:id", async (req, res) => {
     const project = await Project.findById(req.params.id).lean();
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    if (String(req.body?.confirmation || "") !== String(project.projectNumber || "")) {
-      return res.status(400).json({
-        message: `Type ${project.projectNumber} to delete this project.`,
+    if (!isDeletedProject(project)) {
+      return res.json({
+        message: "Project is already active",
+        project,
+        restored: false,
       });
     }
 
-    const hasEstimates = await Estimate.exists({ projectId: req.params.id });
-    if (hasEstimates) {
-      return res.status(409).json({
-        message: "Delete this project's estimates before deleting the project",
+    const audit = await createAdminActivityLog(req, {
+      action: "Project Restore Started",
+      entityType: "Project",
+      entityId: project._id,
+      entityName: project.projectNumber,
+      details: {
+        projectNumber: project.projectNumber,
+        customer: project.customerName,
+        deletedAt: project.deletedAt,
+      },
+    });
+
+    const restored = await Project.findByIdAndUpdate(
+      req.params.id,
+      {
+        $set: {
+          isDeleted: false,
+          deletedAt: null,
+          deletedBy: null,
+          deleteReason: "",
+        },
+      },
+      { new: true, runValidators: true }
+    ).lean();
+    if (!restored) return res.status(404).json({ message: "Project not found" });
+
+    await markAdminActivityLog(audit, {
+      action: "Project Restored",
+      details: {
+        projectNumber: restored.projectNumber,
+        customer: restored.customerName,
+        restoredAt: new Date().toISOString(),
+      },
+    });
+
+    return res.json({ message: "Project restored", project: restored, restored: true });
+  } catch (error) {
+    console.error("POST /admin/projects/:id/restore failed:", error);
+    return res.status(500).json({ message: "Failed to restore project" });
+  }
+});
+
+router.delete("/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid project ID" });
+    }
+    const project = await Project.findById(req.params.id).lean();
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    const relatedRecords = await projectDeletionSummary(req.params.id);
+
+    if (isDeletedProject(project)) {
+      return res.json({
+        message: "Project already deleted. Contracts and saved records remain preserved.",
+        project,
+        deletion: {
+          isDeleted: true,
+          deletedAt: project.deletedAt || null,
+          deletedBy: project.deletedBy || null,
+          relatedRecords,
+        },
       });
     }
-    const hasContracts = await Contract.exists({ projectId: req.params.id });
-    if (hasContracts) {
-      return res.status(409).json({
-        message: "This project has contract history and cannot be deleted",
+
+    if (
+      relatedRecords.requiresDeleteConfirmation &&
+      String(req.body?.confirmation || "").trim() !== "DELETE"
+    ) {
+      return res.status(400).json({
+        message: "Type DELETE to confirm deletion while preserving contracts, estimates, files, and history.",
       });
     }
 
@@ -405,10 +537,23 @@ router.delete("/:id", async (req, res) => {
         customerEmail: project.email,
         projectType: project.projectType,
         projectStatus: project.status,
+        relatedRecords,
       },
     });
 
-    const deleted = await Project.findByIdAndDelete(req.params.id);
+    const deletedAt = new Date();
+    const deleted = await Project.findByIdAndUpdate(
+      req.params.id,
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt,
+          deletedBy: req.user.id,
+          deleteReason: cleanString(req.body?.deleteReason, 1000),
+        },
+      },
+      { new: true, runValidators: true }
+    ).lean();
     if (!deleted) return res.status(404).json({ message: "Project not found" });
 
     await markAdminActivityLog(audit, {
@@ -419,11 +564,21 @@ router.delete("/:id", async (req, res) => {
         customerEmail: project.email,
         projectType: project.projectType,
         projectStatus: project.status,
-        deletedAt: new Date().toISOString(),
+        deletedAt: deletedAt.toISOString(),
+        preservedRecords: relatedRecords,
       },
     });
 
-    return res.json({ message: "Project deleted" });
+    return res.json({
+      message: "Project deleted. Contracts and saved records were preserved.",
+      project: deleted,
+      deletion: {
+        isDeleted: true,
+        deletedAt,
+        deletedBy: req.user.id,
+        relatedRecords,
+      },
+    });
   } catch (error) {
     console.error("DELETE /admin/projects/:id failed:", error);
     return res.status(500).json({ message: "Failed to delete project" });
