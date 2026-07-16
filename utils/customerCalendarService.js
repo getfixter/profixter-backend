@@ -80,6 +80,8 @@ function customerDayFromShadow({ date, day, reservations, now = new Date() }) {
     timezone,
     engine: "reservation",
     visitDurationMinutes: 90,
+    available: slots.length > 0,
+    availableSlotCount: slots.length,
     slots,
     taken,
     remaining,
@@ -173,6 +175,8 @@ async function customerMonthAvailability({
     });
     days.push({
       date,
+      available: detail.available,
+      availableSlotCount: detail.availableSlotCount,
       open: detail.slots.length > 0,
       slotCount: detail.slots.length,
       slots: detail.slots,

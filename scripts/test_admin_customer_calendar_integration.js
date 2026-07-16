@@ -66,6 +66,8 @@ function customerDay(overrides = {}, at = now) {
 function run() {
   const base = customerDay();
   assert.deepEqual(base.slots, ["09:00", "10:00"]);
+  assert.equal(base.available, true);
+  assert.equal(base.availableSlotCount, 2);
   assert.equal(base.remaining["09:00"], 2);
   assert.equal(JSON.stringify(base).includes("Technician tech-1"), false);
 
@@ -78,6 +80,8 @@ function run() {
     }],
   });
   assert.deepEqual(closedDay.slots, []);
+  assert.equal(closedDay.available, false);
+  assert.equal(closedDay.availableSlotCount, 0);
   const adjacentDate = "2026-07-08";
   const adjacentShadowDay = calculateDayFromContext({
     date: adjacentDate,

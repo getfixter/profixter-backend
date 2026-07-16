@@ -61,6 +61,8 @@ async function run() {
     },
   });
   assert.deepEqual(customerDay.slots, ["10:00"]);
+  assert.equal(customerDay.available, true);
+  assert.equal(customerDay.availableSlotCount, 1);
   assert.equal(customerDay.remaining["10:00"], 1);
   assert.equal(JSON.stringify(customerDay).includes("Roman"), false);
 
@@ -94,6 +96,8 @@ async function run() {
   assert.equal(contextLoads, 1);
   assert.equal(month.days.length, 31);
   assert.deepEqual(month.days[0].slots, ["10:00"]);
+  assert.equal(month.days[0].available, true);
+  assert.equal(month.days[0].availableSlotCount, 1);
 
   const state = {
     booking: null,
