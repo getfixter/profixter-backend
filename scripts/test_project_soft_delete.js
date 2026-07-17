@@ -105,7 +105,7 @@ assert.match(
 assert.match(projectsModule, /Type <span[^>]*>DELETE<\/span> to confirm/, "Modal must require DELETE");
 assert.match(
   projectsModule,
-  /contracts, signed files, estimates, and history will be preserved for recordkeeping/,
+  /Contracts, estimates, files, and history will be preserved for recordkeeping/,
   "Modal must explain preserved legal records"
 );
 assert.match(

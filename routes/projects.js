@@ -5,6 +5,7 @@ const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
 const Contract = require("../models/Contract");
+const Invoice = require("../models/Invoice");
 const Blacklist = require("../models/Blacklist");
 const Subscription = require("../models/Subscription");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
@@ -51,24 +52,34 @@ function sendDeletedProjectResponse(res, project) {
 }
 
 async function projectDeletionSummary(projectId) {
-  const [estimateCount, contracts] = await Promise.all([
+  const [estimateCount, contracts, invoices] = await Promise.all([
     Estimate.countDocuments({ projectId }),
     Contract.find({ projectId })
       .select("_id status generatedPdf signedPdf")
+      .lean(),
+    Invoice.find({ projectId })
+      .select("_id status generatedPdfs")
       .lean(),
   ]);
 
   const generatedPdfCount = contracts.filter((contract) => !!contract.generatedPdf?.key).length;
   const signedPdfCount = contracts.filter((contract) => !!contract.signedPdf?.key).length;
   const contractCount = contracts.length;
-  const storedDocumentCount = generatedPdfCount + signedPdfCount;
-  const hasRelatedRecords = contractCount > 0 || estimateCount > 0 || storedDocumentCount > 0;
+  const invoiceCount = invoices.length;
+  const invoicePdfCount = invoices.reduce(
+    (sum, invoice) => sum + (invoice.generatedPdfs || []).filter((pdf) => !!pdf.key).length,
+    0
+  );
+  const storedDocumentCount = generatedPdfCount + signedPdfCount + invoicePdfCount;
+  const hasRelatedRecords = contractCount > 0 || estimateCount > 0 || invoiceCount > 0 || storedDocumentCount > 0;
 
   return {
     contractCount,
     estimateCount,
+    invoiceCount,
     generatedPdfCount,
     signedPdfCount,
+    invoicePdfCount,
     storedDocumentCount,
     hasRelatedRecords,
     requiresDeleteConfirmation: hasRelatedRecords,

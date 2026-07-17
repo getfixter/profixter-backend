@@ -179,6 +179,7 @@ app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/contracts", require("./routes/adminContracts"));
+app.use("/api/admin/invoices", require("./routes/adminInvoices"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 app.use(
