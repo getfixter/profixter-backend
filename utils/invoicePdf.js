@@ -286,6 +286,7 @@ function discountLabel(discount) {
 function drawSummary(doc, invoice) {
   const width = 250;
   const x = PAGE.width - PAGE.marginX - width;
+  const discountTextWidth = PAGE.width - PAGE.marginX * 2 - width - 24;
   const rows = [
     ["Subtotal", formatMoney(invoice.subtotalCents)],
     ["Discounts/Credits", invoice.totalDiscountCents ? `-${formatMoney(invoice.totalDiscountCents).replace("-", "")}` : formatMoney(0)],
@@ -297,23 +298,33 @@ function drawSummary(doc, invoice) {
   rows.push(["Payments Received", `-${formatMoney(invoice.totalPaidCents).replace("-", "")}`]);
 
   const discounts = (invoice.discounts || []).filter((discount) => Number(discount.calculatedAmountCents || 0) > 0);
-  const height = 34 + rows.length * 24 + (discounts.length ? Math.min(discounts.length, 4) * 18 + 10 : 0) + 52;
+  const discountRows = discounts.slice(0, 5).map((discount) => ({
+    discount,
+    text: `${discountLabel(discount)}: -${formatMoney(discount.calculatedAmountCents).replace("-", "")}`,
+  }));
+  const discountHeights = discountRows.map((row) =>
+    Math.max(16, textHeight(doc, row.text, discountTextWidth, { size: 8.4, lineGap: 1 }) + 3)
+  );
+  const discountBlockHeight = discountRows.length
+    ? 16 + discountHeights.reduce((sum, itemHeight) => sum + itemHeight, 0) + 8
+    : 0;
+  const height = 34 + rows.length * 24 + discountBlockHeight + 52;
   ensureRoom(doc, height);
   const startY = doc.y;
 
-  if (discounts.length) {
+  if (discountRows.length) {
     doc.font("Helvetica-Bold").fontSize(8.3).fillColor("#64748b").text("Discounts and credits", PAGE.marginX, startY, {
-      width: PAGE.width - PAGE.marginX * 2 - width - 24,
+      width: discountTextWidth,
     });
     let y = startY + 14;
-    discounts.slice(0, 5).forEach((discount) => {
+    discountRows.forEach((row, index) => {
       doc.font("Helvetica").fontSize(8.4).fillColor("#374151").text(
-        `${discountLabel(discount)}: -${formatMoney(discount.calculatedAmountCents).replace("-", "")}`,
+        row.text,
         PAGE.marginX,
         y,
-        { width: PAGE.width - PAGE.marginX * 2 - width - 24 }
+        { width: discountTextWidth, lineGap: 1 }
       );
-      y += 16;
+      y += discountHeights[index];
     });
   }
 
@@ -367,7 +378,13 @@ function drawPaymentHistory(doc, invoice) {
 
   drawHeader();
   payments.forEach((payment, index) => {
-    const height = 29;
+    const reference = payment.reference || "Not specified";
+    const method = payment.method || "Other";
+    const height = Math.max(
+      29,
+      textHeight(doc, method, widths[1] - 14, { size: 8.4, lineGap: 1 }) + 16,
+      textHeight(doc, reference, widths[2] - 14, { size: 8.4, lineGap: 1 }) + 16
+    );
     if (doc.y + height > PAGE.height - PAGE.bottom) {
       doc.addPage();
       drawHeader();
@@ -376,8 +393,8 @@ function drawPaymentHistory(doc, invoice) {
     doc.rect(PAGE.marginX, y, tableWidth, height).fill(index % 2 ? "#ffffff" : "#fafafa");
     doc.font("Helvetica").fontSize(8.4).fillColor("#111827");
     doc.text(compactDate(payment.paymentDate), PAGE.marginX + 7, y + 8, { width: widths[0] - 14 });
-    doc.text(payment.method || "Other", PAGE.marginX + widths[0] + 7, y + 8, { width: widths[1] - 14 });
-    doc.text(payment.reference || "Not specified", PAGE.marginX + widths[0] + widths[1] + 7, y + 8, { width: widths[2] - 14 });
+    doc.text(method, PAGE.marginX + widths[0] + 7, y + 8, { width: widths[1] - 14, lineGap: 1 });
+    doc.text(reference, PAGE.marginX + widths[0] + widths[1] + 7, y + 8, { width: widths[2] - 14, lineGap: 1 });
     doc.font("Helvetica-Bold").text(formatMoney(payment.amountCents), PAGE.marginX + widths[0] + widths[1] + widths[2] + 7, y + 8, {
       width: widths[3] - 14,
       align: "right",

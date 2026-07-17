@@ -205,6 +205,21 @@ async function main() {
   assert.strictEqual(partialPayment.update.remainingBalanceCents, 1000000);
   assert.strictEqual(partialPayment.update.status, "Partially Paid");
 
+  const sentUnpaid = calculateInvoiceFinancials({
+    ...manual.update,
+    sentAt: new Date("2026-07-16T12:00:00.000Z"),
+  });
+  assert.deepStrictEqual(sentUnpaid.errors, []);
+  assert.strictEqual(sentUnpaid.status, "Sent", "sent unpaid invoices should remain Sent");
+
+  const sentPartial = calculateInvoiceFinancials({
+    ...manual.update,
+    sentAt: new Date("2026-07-16T12:00:00.000Z"),
+    payments: [{ amountCents: 500000, paymentDate: new Date("2026-07-16T12:00:00.000Z"), method: "Check" }],
+  });
+  assert.deepStrictEqual(sentPartial.errors, []);
+  assert.strictEqual(sentPartial.status, "Partially Paid", "partial payment must outrank Sent");
+
   const paid = validateInvoiceDraftInput(
     validBody({
       payments: [
@@ -218,6 +233,24 @@ async function main() {
   assert.strictEqual(paid.update.status, "Paid in Full");
   assert.strictEqual(paid.update.remainingBalanceCents, 0);
   assert.strictEqual(paid.update.dates.paidInFullAt.toISOString().slice(0, 10), "2026-07-18");
+
+  const paidOutOfOrder = validateInvoiceDraftInput(
+    validBody({
+      payments: [
+        { amountCents: 500000, paymentDate: "2026-07-20", method: "ACH / Bank Transfer" },
+        { amountCents: 400000, paymentDate: "2026-07-16", method: "Check" },
+        { amountCents: 600000, paymentDate: "2026-07-18", method: "Credit Card" },
+      ],
+    }),
+    project
+  );
+  assert.deepStrictEqual(paidOutOfOrder.errors, []);
+  assert.strictEqual(paidOutOfOrder.update.status, "Paid in Full");
+  assert.strictEqual(
+    paidOutOfOrder.update.dates.paidInFullAt.toISOString().slice(0, 10),
+    "2026-07-20",
+    "paidInFullAt should come from the payment that reduces the balance to zero"
+  );
 
   const reopened = calculateInvoiceFinancials({
     ...paid.update,
@@ -255,7 +288,7 @@ async function main() {
   const unpaidPdf = await generateInvoicePdfBuffer(invoiceForPdf(manual.update));
   assert(unpaidPdf.length > 1000, "unpaid invoice PDF should not be empty");
   assert.strictEqual(unpaidPdf.subarray(0, 4).toString(), "%PDF");
-  assert(pdfPageCount(unpaidPdf) >= 1 && pdfPageCount(unpaidPdf) <= 2, "simple invoice should stay compact");
+  assert.strictEqual(pdfPageCount(unpaidPdf), 1, "ordinary unpaid invoices should remain one page where practical");
 
   const paidPdf = await generateInvoicePdfBuffer(invoiceForPdf(paid.update));
   assert(paidPdf.length > 1000, "paid invoice PDF should render");
@@ -276,18 +309,71 @@ async function main() {
   const multipagePdf = await generateInvoicePdfBuffer(invoiceForPdf(manyLineItems.update, { invoiceNumber: "000004" }));
   assert(pdfPageCount(multipagePdf) > 1, "large invoices should flow to multiple pages");
 
+  const longContent = validateInvoiceDraftInput(
+    validBody({
+      lineItems: [
+        {
+          description: "Long-form repair scope covering detailed preparation, waterproofing, trim adjustments, finish protection, cleanup, and customer walkthrough without clipping or overlap",
+          quantity: 1,
+          unitPriceCents: 1000000,
+          category: "Contract work",
+        },
+        {
+          description: "Additional materials with extended supplier description, color notes, delivery handling, and documentation requirements",
+          quantity: 1,
+          unitPriceCents: 500000,
+          category: "Materials",
+        },
+      ],
+      discounts: [
+        {
+          name: "Extended customer accommodation credit with a deliberately long display name",
+          type: "fixed",
+          valueCents: 25000,
+        },
+      ],
+      payments: [
+        {
+          amountCents: 500000,
+          paymentDate: "2026-07-16",
+          method: "ACH / Bank Transfer",
+          reference: "ACH-REFERENCE-WITH-LONG-TRACE-ID-20260716-PIH-CUSTOMER-PAYMENT-VERIFY-WRAP",
+        },
+      ],
+      publicNote:
+        "This customer-facing note is intentionally long enough to wrap across multiple lines so the invoice layout proves that notes remain readable without overlapping adjacent sections.",
+    }),
+    project
+  );
+  assert.deepStrictEqual(longContent.errors, []);
+  const longContentPdf = await generateInvoicePdfBuffer(invoiceForPdf(longContent.update, { invoiceNumber: "000005" }));
+  assert(longContentPdf.length > 1000, "long-content invoice PDF should render");
+  assert(pdfPageCount(longContentPdf) >= 1, "long-content invoice PDF should contain at least one page");
+
   const routeSource = fs.readFileSync(path.join(__dirname, "..", "routes", "adminInvoices.js"), "utf8");
   assert(routeSource.includes("putPrivateObject"), "invoices must use private S3 writes");
   assert(!routeSource.includes("putPublicObject"), "invoice PDFs must not be public S3 objects");
+  assert(routeSource.includes("private/admin/invoices"), "invoice PDFs must stay under the private invoice prefix");
   assert(routeSource.includes("getInvoiceForProjectOr404"), "invoice actions must be project scoped");
   assert(routeSource.includes("Invoice not found for this project"), "cross-project invoice access must fail closed");
   assert(routeSource.includes("requirePermission(PERMISSIONS.ADMIN)"), "invoice management must be admin-only");
   assert(routeSource.includes("assertNoActiveContractImport"), "contract invoice imports must prevent double import");
+  assert(!routeSource.includes("projectDepositPayment"), "contract deposit requirements must not be auto-imported as received payments");
+  assert(!routeSource.includes("Deposit recorded on project"), "project deposit fields must not become invoice payment records");
   assert(routeSource.includes("Generate a current invoice PDF before emailing"), "stale PDFs must not be emailed");
   assert(routeSource.indexOf("sendRaw") < routeSource.indexOf("invoice.emailHistory.push"), "email history must be written only after send succeeds");
   assert(routeSource.includes("Failed to generate invoice PDF"), "S3/PDF generation failures must be handled");
   assert(routeSource.includes("Failed to email invoice"), "email failures must be handled");
   assert(routeSource.includes('confirmation !== "VOID"'), "voiding must require explicit confirmation");
+  assert(routeSource.includes("This invoice is paid in full. Thank you for your payment."), "paid invoice email language must replace amount due");
+  assert(routeSource.includes("Amount due:"), "unpaid invoice email language must show amount due");
+  const emailRoute = routeSource.slice(
+    routeSource.indexOf('router.post("/:id/email"'),
+    routeSource.indexOf('router.post("/:id/payments"')
+  );
+  assert(!emailRoute.includes("generateInvoicePdfBuffer"), "email retries must not generate new PDFs");
+  assert(!emailRoute.includes("putPrivateObject"), "email retries must not write new S3 PDF versions");
+  assert(!emailRoute.includes("generatedPdfs.push"), "email retries must not append duplicate PDF versions");
 
   const modelSource = fs.readFileSync(path.join(__dirname, "..", "models", "Invoice.js"), "utf8");
   assert(modelSource.includes('key: "pih-invoice"') && modelSource.includes('padStart(6, "0")'), "invoice numbers must use a global six-digit sequence");

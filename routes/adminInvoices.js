@@ -37,11 +37,6 @@ function actorEmail(req) {
   return String(actor.email || "").toLowerCase();
 }
 
-function actorId(req) {
-  const actor = req.accessUser || req.authUser || {};
-  return req.user?.id || actor?._id || null;
-}
-
 function isDeletedProject(project) {
   return project?.isDeleted === true;
 }
@@ -232,23 +227,7 @@ function contractWorkType(contract) {
     : contract?.workType || "Project";
 }
 
-function projectDepositPayment(project, totalCents, req) {
-  const projectDepositCents = Math.round(Number(project?.depositAmount || 0) * 100);
-  if (projectDepositCents <= 0 || projectDepositCents > totalCents) return [];
-  return [
-    {
-      amountCents: projectDepositCents,
-      paymentDate: todayDateOnly(),
-      method: "Other",
-      reference: project.projectNumber || "",
-      note: "Deposit recorded on project.",
-      recordedBy: actorId(req),
-      recordedByEmail: actorEmail(req),
-    },
-  ];
-}
-
-function draftBodyFromContract(project, contract, req) {
+function draftBodyFromContract(project, contract) {
   const defaults = projectSnapshots(project);
   const originalCents = Number(contract.originalContractPriceCents ?? contract.totalPriceCents ?? 0);
   const finalCents = Number(contract.adjustedContractPriceCents ?? originalCents);
@@ -304,9 +283,9 @@ function draftBodyFromContract(project, contract, req) {
       serviceDate: contract.dates?.estimatedCompletionDate || null,
     },
     publicNote: "Thank you for your business.",
-    internalNote: `Created from ${invoiceContractLabel(contractNumber)}. Contract was not modified.`,
+    internalNote: `Created from ${invoiceContractLabel(contractNumber)}. Contract was not modified. Contract deposit or payment-schedule requirements were not imported as received payments.`,
     paymentInstructions: defaultPaymentInstructions(),
-    payments: projectDepositPayment(project, finalCents, req),
+    payments: [],
   };
 }
 
@@ -392,7 +371,7 @@ router.post("/project/:projectId/draft", async (req, res) => {
       const contract = await loadContractForInvoice(project._id, body, res);
       if (!contract) return null;
       if (await assertNoActiveContractImport(project._id, contract._id, res)) return null;
-      body = draftBodyFromContract(project, contract, req);
+      body = draftBodyFromContract(project, contract);
     }
 
     let invoice = null;

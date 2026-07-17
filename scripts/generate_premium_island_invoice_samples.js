@@ -155,6 +155,50 @@ const samples = [
       },
     }),
   },
+  {
+    slug: "05-long-wrapping",
+    invoiceNumber: "000005",
+    label: "Long wrapping stress invoice",
+    body: baseBody({
+      lineItems: [
+        {
+          description: "Long-form repair scope covering detailed preparation, waterproofing, trim adjustments, finish protection, cleanup, and customer walkthrough without clipping or overlap",
+          quantity: 1,
+          unitPriceCents: 1000000,
+          category: "Contract work",
+        },
+        {
+          description: "Additional materials with extended supplier description, color notes, delivery handling, and documentation requirements",
+          quantity: 1,
+          unitPriceCents: 500000,
+          category: "Materials",
+        },
+      ],
+      discounts: [
+        {
+          name: "Extended customer accommodation credit with a deliberately long display name",
+          type: "fixed",
+          valueCents: 25000,
+        },
+      ],
+      payments: [
+        {
+          amountCents: 500000,
+          paymentDate: "2026-07-16",
+          method: "ACH / Bank Transfer",
+          reference: "ACH-REFERENCE-WITH-LONG-TRACE-ID-20260716-PIH-CUSTOMER-PAYMENT-VERIFY-WRAP",
+        },
+      ],
+      projectSnapshot: {
+        projectId: project._id,
+        projectNumber: project.projectNumber,
+        workType: "Other",
+        projectDescription: "Layout stress sample with long invoice content.",
+      },
+      publicNote:
+        "This customer-facing note is intentionally long enough to wrap across multiple lines so the invoice layout proves that notes remain readable without overlapping adjacent sections.",
+    }),
+  },
 ];
 
 async function renderPdfPages(pdfPath, slug) {
