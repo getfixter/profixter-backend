@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
+    "test": "node scripts/run_ci_tests.js",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "migrate:addresses": "node scripts/migrate_addresses.js",
