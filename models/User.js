@@ -9,6 +9,21 @@ const AddressSchema = new mongoose.Schema(
     state: { type: String, required: true, default: "NY" },
     zip: { type: String, required: true },
     county: { type: String, default: "" },
+
+    // First Visit Free acquisition state, tracked per property.
+    // Deliberately independent of the Booking lifecycle so cancel/delete/cleanup
+    // can never reset a consumed offer. Absent on existing addresses; derived
+    // lazily from booking history on first read (see utils/introVisitEligibility).
+    introVisit: {
+      status: {
+        type: String,
+        enum: ["available", "claimed", "consumed"],
+        default: undefined,
+      },
+      bookingId: { type: mongoose.Schema.Types.ObjectId, default: null },
+      claimedAt: { type: Date, default: null },
+      consumedAt: { type: Date, default: null },
+    },
   },
   { _id: true, timestamps: false }
 );

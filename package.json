@@ -26,6 +26,7 @@
     "test:customer-emails": "node scripts/test_customer_email_templates.js",
     "test:one-time-visit-flow": "node scripts/test_one_time_visit_payment_flow.js",
     "test:one-time-booking-policy": "node scripts/test_one_time_booking_policy.js",
+    "test:intro-visit-eligibility": "node scripts/test_intro_visit_eligibility.js",
     "test:booking-content-updates": "node scripts/test_booking_content_updates.js",
     "test:visit-entitlement-indexes": "node scripts/test_visit_entitlement_indexes.js",
     "repair:visit-entitlement-indexes": "node scripts/repair_visit_entitlement_indexes.js",
@@ -53,7 +54,8 @@
     "test:jarvis-generic-ghl-planner": "node scripts/test_jarvis_generic_ghl_planner.js",
     "test:jarvis-opportunity-builder": "node scripts/test_jarvis_opportunity_builder.js",
     "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
-    "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js"
+    "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js",
+    "test:service-area": "node scripts/test_service_area.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

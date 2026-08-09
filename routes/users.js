@@ -11,6 +11,7 @@ const {
   subscriptionGrantsAccess,
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
+const { findDuplicateAddress } = require("../utils/introVisitEligibility");
 
 async function subscriptionBlocksDestructiveAction(subscription, source) {
   if (!subscription) return false;
@@ -105,6 +106,19 @@ router.post("/addresses", auth, async (req, res) => {
     const errs = validateAddressFields(addr);
     if (errs.length) {
       return res.status(400).json({ message: "Missing fields", fields: errs });
+    }
+
+    // Conservative duplicate protection. Unit/apartment identifiers are
+    // preserved, so "Apt 1" and "Apt 2" remain distinct properties. Returning
+    // the existing record keeps its acquisition state intact rather than
+    // minting a fresh introductory-visit eligibility.
+    const duplicate = findDuplicateAddress(me, addr);
+    if (duplicate) {
+      return res.status(200).json({
+        address: toAddressDTO(duplicate),
+        defaultAddressId: me.defaultAddressId ? String(me.defaultAddressId) : null,
+        deduplicated: true,
+      });
     }
 
     me.addresses.push(addr);

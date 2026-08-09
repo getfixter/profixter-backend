@@ -40,6 +40,18 @@ const {
   suggestNextAvailableSlots,
 } = require("../utils/customerCalendarService");
 const {
+  INTRO_VISIT_STATUS,
+  INTRO_VISIT_SERVICE,
+  getIntroVisitState,
+  claimIntroVisitAtomic,
+  attachBookingToClaim,
+  releaseIntroVisitClaim,
+} = require("../utils/introVisitEligibility");
+const {
+  isAddressInServiceArea,
+  outOfServiceAreaMessage,
+} = require("../utils/serviceArea");
+const {
   getOneTimeVisitSettings,
   publicOneTimeVisitSettings,
   validateOneTimeTask,
@@ -281,6 +293,8 @@ router.get("/next", auth, async (req, res) => {
 
     let bookingLimit = plan === "basic" ? 1 : plan ? 2 : 0;
     let freeFirstVisitAvailable = false;
+    let introVisitStatus = null;
+    let introVisitServiceable = false;
 
     let hasAnyBookings = false;
 
@@ -288,7 +302,19 @@ router.get("/next", auth, async (req, res) => {
       const anyBooking = await Booking.exists({ user: me._id });
       hasAnyBookings = !!anyBooking;
 
-      freeFirstVisitAvailable = !hasAnyBookings;
+      // Eligibility now comes from persistent per-property acquisition state,
+      // reconciled against the claimed booking. This matches the rule enforced
+      // by POST / below, which the previous `!hasAnyBookings` check did not.
+      const introState = await getIntroVisitState({
+        user: me,
+        address: subdoc,
+        Booking,
+      });
+      introVisitStatus = introState.status;
+      introVisitServiceable = isAddressInServiceArea(subdoc);
+      // Display must match enforcement in POST / exactly, including the
+      // service-area gate, so an eligible-looking CTA is never rejected.
+      freeFirstVisitAvailable = introState.isAvailable && introVisitServiceable;
 
       if (freeFirstVisitAvailable) {
         plan = "free";
@@ -317,6 +343,8 @@ router.get("/next", auth, async (req, res) => {
       plan,
       hasSubscription,
       freeFirstVisitAvailable,
+      introVisitStatus,
+      introVisitServiceable,
       bookingLimit,
       activeCount,
       hasAnyBookings,
@@ -944,6 +972,8 @@ router.post(
     let counterStamped = null;
     const uploadedS3Keys = [];
     let bookingCommitted = false;
+    // Declared out here so the catch block can release a reserved offer.
+    let introVisitClaimed = false;
 
     try {
       const me = await User.findById(req.user.id);
@@ -1007,29 +1037,78 @@ router.post(
       }
 
       if (!activeSub) {
-        const alreadyUsedFree = await Booking.exists({
-          user: me._id,
-          addressId: subdoc._id,
-          isFreeFirstVisit: true,
-        });
-
-        if (alreadyUsedFree) {
+        // The introductory offer is only extended to serviceable properties.
+        // ZIP is used because the user-entered county string is not trustworthy.
+        if (!isAddressInServiceArea(subdoc)) {
           return res.status(403).json({
-            message:
-              "You already used your free first visit for this address. Please purchase a subscription to book again.",
+            message: outOfServiceAreaMessage(),
+            code: "OUT_OF_SERVICE_AREA",
           });
         }
 
-        usingFreeFirstVisit = true;
-        plan = "free";
-        bookingLimit = 1;
+        // Persistent per-property state, reconciled against the claimed
+        // booking. Survives booking cancellation, deletion and cleanup.
+        const introState = await getIntroVisitState({
+          user: me,
+          address: subdoc,
+          Booking,
+        });
 
-        if (String(service) !== "Labor Only") {
+        if (introState.status === INTRO_VISIT_STATUS.CONSUMED) {
+          return res.status(403).json({
+            message:
+              "You already used your free first visit for this address. Please purchase a subscription to book again.",
+            code: "INTRO_VISIT_CONSUMED",
+          });
+        }
+
+        if (introState.status === INTRO_VISIT_STATUS.CLAIMED) {
+          return res.status(403).json({
+            message:
+              "Your free first visit is already booked for this address. Please complete or cancel it before booking again.",
+            code: "INTRO_VISIT_CLAIMED",
+          });
+        }
+
+        if (String(service) !== INTRO_VISIT_SERVICE) {
           return res.status(400).json({
             message:
               'Free first visit is available for "Labor Only" only. Please select "Labor Only" or purchase a plan.',
           });
         }
+
+        // Job photos are an operational requirement: technicians review them
+        // before the visit so they arrive with the right tools and materials.
+        // Enforced server-side here so a crafted request cannot skip it.
+        // Scoped to the free-visit branch so member validation is untouched.
+        if (!req.files?.length) {
+          return res.status(400).json({
+            message:
+              "Add at least one photo so your technician can review the job and arrive prepared.",
+            code: "PHOTO_REQUIRED",
+          });
+        }
+
+        // Reserve the offer BEFORE creating the booking. Only one concurrent
+        // request can win this update, which closes the double-claim race.
+        const won = await claimIntroVisitAtomic({
+          UserModel: User,
+          userId: me._id,
+          addressId: subdoc._id,
+        });
+
+        if (!won) {
+          return res.status(403).json({
+            message:
+              "Your free first visit is already booked for this address. Please complete or cancel it before booking again.",
+            code: "INTRO_VISIT_CLAIMED",
+          });
+        }
+
+        introVisitClaimed = true;
+        usingFreeFirstVisit = true;
+        plan = "free";
+        bookingLimit = 1;
       }
 
       const futureAddressBookings = await Booking.find({
@@ -1236,6 +1315,21 @@ router.post(
       }
       bookingCommitted = true;
 
+      // The offer was already reserved atomically before creation. Link the
+      // booking to it so cancellation and completion can reconcile later.
+      if (usingFreeFirstVisit) {
+        try {
+          await attachBookingToClaim({
+            UserModel: User,
+            userId: me._id,
+            addressId: subdoc._id,
+            bookingId: booking._id,
+          });
+        } catch (e) {
+          console.error("attachBookingToClaim failed:", e.message);
+        }
+      }
+
       // GHL SMS automation hooks
       try {
         const contactId = await createOrUpdateContact({
@@ -1348,6 +1442,21 @@ router.post(
       });
     } catch (error) {
       console.error("❌ Booking Error:", error.stack || error.message);
+
+      // The introductory offer was reserved before booking creation. If the
+      // booking never committed, hand it back so the customer is not left
+      // holding a claim they could not use. Never releases a consumed offer.
+      try {
+        if (introVisitClaimed && !bookingCommitted) {
+          await releaseIntroVisitClaim({
+            UserModel: User,
+            userId: req.user.id,
+            addressId: req.body.addressId,
+          });
+        }
+      } catch (releaseError) {
+        console.error("releaseIntroVisitClaim failed:", releaseError?.message);
+      }
 
       try {
         if (counterStamped && !bookingCommitted) {
