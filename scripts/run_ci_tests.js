@@ -16,6 +16,7 @@ const path = require("path");
 const SUITES = [
   "test_service_area.js",
   "test_change_order_totals.js",
+  "test_project_financials.js",
   "test_change_order_document.js",
   "test_esign_signature_flow.js",
   "test_native_signing.js",
@@ -42,6 +43,7 @@ const SUITES = [
  *   test_intro_visit_photo_live.js   needs a live MongoDB + running backend + S3 stub
  *   test_native_signing_integration.js  boots an in-memory MongoDB binary
  *   test_native_signing_routes.js       boots an in-memory MongoDB binary
+ *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test
  */

@@ -57,6 +57,7 @@
     "test:roofing-sales-agent": "node scripts/test_roofing_sales_agent.js",
     "test:jarvis-intent-router": "node scripts/test_jarvis_intent_router.js",
     "test:service-area": "node scripts/test_service_area.js",
+    "test:project-financials": "node scripts/test_project_financials.js",
     "test:change-order-totals": "node scripts/test_change_order_totals.js",
     "test:change-order-document": "node scripts/test_change_order_document.js",
     "test:esign-signature-flow": "node scripts/test_esign_signature_flow.js",

@@ -153,6 +153,46 @@ const InvoiceSchema = new mongoose.Schema(
       finalContractPriceCents: { type: Number, min: 0, default: 0 },
       importedAt: { type: Date, default: null },
     },
+    /**
+     * The project's approved financial position at the moment this invoice was
+     * issued.
+     *
+     * This is what makes an issued invoice immutable in the way that matters:
+     * once a later Change Order executes, the project's current approved value
+     * moves, but this invoice keeps reporting the figures it was actually
+     * issued against. The PDF renders from here, never from live project state.
+     *
+     * Optional and never backfilled - invoices issued before this existed have
+     * no snapshot and continue to render exactly as they always have.
+     *
+     * Only EXECUTED change orders appear here. A pending one is not approved
+     * value and must never be frozen into an invoice as though it were.
+     */
+    projectFinancialSnapshot: {
+      agreementId: { type: String, trim: true, maxlength: 80, default: "" },
+      agreementNumber: { type: String, trim: true, maxlength: 80, default: "" },
+      agreementVersion: { type: Number, min: 1, default: 1 },
+      originalAgreementCents: { type: Number, min: 0, default: 0 },
+      executedChangeOrders: {
+        type: [
+          {
+            changeOrderId: { type: String, trim: true, maxlength: 80, default: "" },
+            changeOrderNumber: { type: String, trim: true, maxlength: 80, default: "" },
+            title: { type: String, trim: true, maxlength: 240, default: "" },
+            /** Signed cents: negative for a deduction, zero for no-cost. */
+            netAdjustmentCents: { type: Number, default: 0 },
+          },
+        ],
+        default: [],
+      },
+      executedChangeOrderCents: { type: Number, default: 0 },
+      approvedAgreementCents: { type: Number, min: 0, default: 0 },
+      previouslyInvoicedCents: { type: Number, min: 0, default: 0 },
+      previouslyPaidCents: { type: Number, min: 0, default: 0 },
+      uninvoicedApprovedCents: { type: Number, min: 0, default: 0 },
+      capturedAt: { type: Date, default: null },
+    },
+
     lineItems: {
       type: [LineItemSchema],
       required: true,

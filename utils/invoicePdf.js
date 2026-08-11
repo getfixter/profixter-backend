@@ -5,6 +5,7 @@ const {
   formatMoney,
   invoiceDisplayLabel,
 } = require("./invoiceValidation");
+const { formatSignedCents } = require("./changeOrderTotals");
 
 const PAGE = {
   width: 612,
@@ -114,7 +115,7 @@ function drawStatusBadge(doc, invoice) {
   const y = doc.y;
   const width = 176;
   const height = 36;
-  ensureRoom(height + 8);
+  ensureRoom(doc, height + 8);
   doc.roundedRect(x, y, width, height, 4).fillAndStroke(bg, border);
   doc.font("Helvetica-Bold").fontSize(13).fillColor(color).text(label, x + 10, y + 10, {
     width: width - 20,
@@ -355,6 +356,87 @@ function drawSummary(doc, invoice) {
   doc.y = startY + height;
 }
 
+/**
+ * Where this invoice sits against the agreement it bills.
+ *
+ * Rendered strictly from the snapshot frozen onto the invoice when it was
+ * issued - never from live project state. A change order executed next month
+ * must not rewrite a PDF the customer already holds, so the only live figure
+ * used here is the invoice's own total, which is equally frozen.
+ *
+ * Invoices issued before the snapshot existed simply have none, and this
+ * section is skipped: their PDFs keep rendering exactly as they always have.
+ */
+function drawAgreementPosition(doc, invoice) {
+  const snapshot = invoice.projectFinancialSnapshot;
+  if (!snapshot?.capturedAt) return;
+  if (!Number(snapshot.approvedAgreementCents || 0)) return;
+
+  const thisInvoiceCents = Number(invoice.invoiceTotalCents || 0);
+  const previouslyInvoicedCents = Number(snapshot.previouslyInvoicedCents || 0);
+  const totalInvoicedCents = previouslyInvoicedCents + thisInvoiceCents;
+  const approvedCents = Number(snapshot.approvedAgreementCents || 0);
+  const changeOrders = (snapshot.executedChangeOrders || []).filter(
+    (entry) => Number(entry.netAdjustmentCents || 0) !== 0
+  );
+
+  const rows = [["Original Agreement", formatMoney(snapshot.originalAgreementCents), false]];
+  changeOrders.slice(0, 6).forEach((entry) => {
+    rows.push([
+      `${entry.changeOrderNumber}${entry.title ? ` - ${entry.title}` : ""}`,
+      formatSignedCents(entry.netAdjustmentCents),
+      false,
+    ]);
+  });
+  if (changeOrders.length > 6) {
+    const remainder = changeOrders
+      .slice(6)
+      .reduce((sum, entry) => sum + Number(entry.netAdjustmentCents || 0), 0);
+    rows.push([`${changeOrders.length - 6} further change orders`, formatSignedCents(remainder), false]);
+  }
+  rows.push(["Approved Agreement Value", formatMoney(approvedCents), true]);
+  rows.push(["Previously Invoiced", formatMoney(previouslyInvoicedCents), false]);
+  rows.push([invoiceDisplayLabel(invoice), formatMoney(thisInvoiceCents), false]);
+  rows.push(["Total Invoiced", formatMoney(totalInvoicedCents), true]);
+  rows.push([
+    totalInvoicedCents > approvedCents ? "Invoiced Above Approved" : "Approved, Not Yet Invoiced",
+    formatMoney(Math.abs(approvedCents - totalInvoicedCents)),
+    false,
+  ]);
+
+  const tableWidth = PAGE.width - PAGE.marginX * 2;
+  const amountWidth = 110;
+  const labelWidth = tableWidth - amountWidth - 16;
+  sectionTitle(doc, "Agreement Summary", { keepWith: 52 + rows.length * 17 + 26 });
+
+  doc.font("Helvetica").fontSize(8).fillColor("#6b7280").text(
+    `Agreement #${snapshot.agreementNumber || "Not specified"} as of ${compactDate(snapshot.capturedAt)}. Later change orders do not alter this invoice.`,
+    PAGE.marginX,
+    doc.y,
+    { width: tableWidth, lineGap: 1 }
+  );
+  doc.moveDown(0.45);
+
+  rows.forEach(([label, value, strong]) => {
+    const height = Math.max(16, textHeight(doc, label, labelWidth, { size: 8.8, lineGap: 1 }) + 6);
+    if (doc.y + height > PAGE.height - PAGE.bottom) doc.addPage();
+    const y = doc.y;
+    if (strong) {
+      doc.moveTo(PAGE.marginX, y - 2).lineTo(PAGE.width - PAGE.marginX, y - 2)
+        .strokeColor("#e2e8f0").lineWidth(0.75).stroke();
+    }
+    doc.font(strong ? "Helvetica-Bold" : "Helvetica").fontSize(8.8).fillColor(strong ? "#111827" : "#475569")
+      .text(label, PAGE.marginX, y + 2, { width: labelWidth, lineGap: 1 });
+    doc.font(strong ? "Helvetica-Bold" : "Helvetica").fontSize(8.8).fillColor("#111827")
+      .text(value, PAGE.width - PAGE.marginX - amountWidth, y + 2, {
+        width: amountWidth,
+        align: "right",
+      });
+    doc.y = y + height;
+  });
+  doc.moveDown(0.5);
+}
+
 function drawPaymentHistory(doc, invoice) {
   const payments = [...(invoice.payments || [])].sort((a, b) => new Date(a.paymentDate || 0) - new Date(b.paymentDate || 0));
   if (!payments.length) return;
@@ -483,6 +565,7 @@ async function generateInvoicePdfBuffer(invoice) {
     sectionTitle(doc, "Invoice Items", { keepWith: 96 });
     drawLineItemTable(doc, invoice);
     drawSummary(doc, invoice);
+    drawAgreementPosition(doc, invoice);
     drawPaymentHistory(doc, invoice);
     drawNotesAndInstructions(doc, invoice);
     addFooter(doc, invoice);

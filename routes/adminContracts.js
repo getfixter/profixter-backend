@@ -5,6 +5,8 @@ const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const Project = require("../models/Project");
 const Contract = require("../models/Contract");
+const Estimate = require("../models/Estimate");
+const { buildEstimateSnapshot } = require("../utils/projectFinancials");
 const { sendRaw } = require("../utils/emailService");
 const { getObjectBuffer, putPrivateObject } = require("../utils/s3");
 const {
@@ -205,6 +207,29 @@ function copyContractForNewDraft(source, update, req) {
   return new Contract({ ...data, ...update });
 }
 
+/**
+ * Link an Agreement to the Estimate it came from, once.
+ *
+ * The snapshot is taken from the Estimate in the database, never from the
+ * request, and only while the Agreement is still a draft with nothing frozen
+ * yet. Editing the Estimate afterwards must not move a signed number, and
+ * re-saving a draft must not quietly re-import a changed proposal.
+ */
+async function applyEstimateLink(contract, body, project) {
+  if (contract.estimateSnapshot?.importedAt) return;
+  const estimateId = cleanString(body?.estimateId, 80);
+  if (!estimateId || !mongoose.isValidObjectId(estimateId)) return;
+
+  const estimate = await Estimate.findOne({ _id: estimateId, projectId: project._id }).lean();
+  if (!estimate) {
+    const error = new Error("Estimate not found for this project");
+    error.status = 404;
+    throw error;
+  }
+  contract.estimateId = estimate._id;
+  contract.estimateSnapshot = buildEstimateSnapshot(estimate);
+}
+
 async function saveDraft({ project, body, req }) {
   const { errors, update, warnings } = validateContractInput(body, project);
   if (errors.length) {
@@ -264,6 +289,7 @@ async function saveDraft({ project, body, req }) {
       { $set: { current: false } }
     );
     const nextDraft = copyContractForNewDraft(contract, update, req);
+    await applyEstimateLink(nextDraft, body, project);
     nextDraft.addAuditEvent("Draft created", req, {
       fromContractId: contract._id,
       fromVersion: contract.version,
@@ -274,6 +300,7 @@ async function saveDraft({ project, body, req }) {
   if (contract) {
     Object.assign(contract, update);
     contract.updatedBy = req.user.id;
+    await applyEstimateLink(contract, body, project);
     contract.addAuditEvent("Draft updated", req);
     return contract.save();
   }
@@ -284,7 +311,10 @@ async function saveDraft({ project, body, req }) {
     createdBy: req.user.id,
     updatedBy: req.user.id,
   });
-  newContract.addAuditEvent("Draft created", req);
+  await applyEstimateLink(newContract, body, project);
+  newContract.addAuditEvent("Draft created", req, {
+    estimateNumber: newContract.estimateSnapshot?.estimateNumber || "",
+  });
   return newContract.save();
 }
 
@@ -318,6 +348,43 @@ router.get("/project/:projectId", async (req, res) => {
   } catch (error) {
     console.error("GET /admin/contracts/project/:projectId failed:", error);
     return res.status(500).json({ message: "Failed to load project contracts" });
+  }
+});
+
+/**
+ * Estimates on this project that an Agreement can be built from.
+ *
+ * Money is converted to cents here so the Agreement form never has to do the
+ * dollars-to-cents arithmetic itself - the same conversion the snapshot uses.
+ */
+router.get("/project/:projectId/estimate-options", async (req, res) => {
+  try {
+    const project = await getProjectOr404(req.params.projectId, res);
+    if (!project) return null;
+    const estimates = await Estimate.find({ projectId: project._id })
+      .select("estimateNumber title description status total lineItems createdAt")
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    return res.json({
+      estimates: estimates.map((estimate) => ({
+        id: String(estimate._id),
+        estimateNumber: estimate.estimateNumber,
+        title: estimate.title || "",
+        description: estimate.description || "",
+        status: estimate.status,
+        totalCents: buildEstimateSnapshot(estimate).totalCents,
+        lineItems: (estimate.lineItems || []).map((item) => ({
+          description: item.description,
+          quantity: Number(item.quantity || 0),
+          totalCents: Math.max(Math.round(Number(item.total || 0) * 100), 0),
+        })),
+        createdAt: estimate.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error("GET /admin/contracts/project/:projectId/estimate-options failed:", error);
+    return res.status(500).json({ message: "Failed to load project estimates" });
   }
 });
 

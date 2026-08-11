@@ -13,6 +13,7 @@ const {
   createAdminActivityLog,
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
+const { getProjectFinancialSummary } = require("../utils/projectFinancialsService");
 const {
   buildCustomerFallbackSearchQuery,
   buildCustomerSearchQuery,
@@ -456,6 +457,38 @@ router.get("/:projectId/estimates", async (req, res) => {
   } catch (error) {
     console.error("GET /admin/projects/:projectId/estimates failed:", error);
     return res.status(500).json({ message: "Failed to load project estimates" });
+  }
+});
+
+/**
+ * The project's financial story: estimated, agreed, changed, billed, paid.
+ *
+ * The single read path for these figures. The Admin UI renders what this
+ * returns and calculates none of it independently, so there is no second
+ * implementation of the money rules to drift out of step with this one.
+ *
+ * Deleted projects are still readable here: their invoices and agreements are
+ * preserved for recordkeeping, and so is the arithmetic that explains them.
+ */
+router.get("/:projectId/financials", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.projectId)) {
+      return res.status(400).json({ message: "Invalid project ID" });
+    }
+    const project = await Project.findById(req.params.projectId)
+      .select("_id projectNumber isDeleted deletedAt")
+      .lean();
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    const summary = await getProjectFinancialSummary(project._id);
+    return res.json({
+      ...summary,
+      projectNumber: project.projectNumber || "",
+      parentProjectDeletedAt: isDeletedProject(project) ? project.deletedAt || null : null,
+    });
+  } catch (error) {
+    console.error("GET /admin/projects/:projectId/financials failed:", error);
+    return res.status(500).json({ message: "Failed to load project financials" });
   }
 });
 

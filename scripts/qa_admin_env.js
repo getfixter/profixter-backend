@@ -289,11 +289,82 @@ async function main() {
   }
   log("production untouched", `0 requests to ${PRODUCTION_HOST}`);
 
+  await verifyProjectFinancials(page, seed);
+
   console.log("\nADMIN QA ENVIRONMENT READY\n");
   console.log(`  backend    ${BACKEND_URL}`);
   console.log(`  frontend   ${FRONTEND_URL}`);
   console.log(`  project    ${seed.projectId} (${seed.projectNumber})`);
   console.log(`  admin      ${seed.adminId} <${ADMIN_EMAIL}>`);
+}
+
+/**
+ * The project financial summary, as actually rendered.
+ *
+ * Route tests prove the API returns the right numbers; only a real browser
+ * proves the Admin can see them. A component that throws, never mounts, or
+ * quietly renders "$0" would pass every backend test ever written.
+ *
+ * Assertions are on rendered text and live element geometry, never screenshots.
+ */
+async function verifyProjectFinancials(page, seed) {
+  console.log("\n  --- project financials ---");
+
+  await page.getByText(seed.projectNumber, { exact: false }).first().click();
+  await page.waitForTimeout(2500);
+
+  const overview = await page.evaluate(() => document.body.innerText);
+  const expected = [
+    "Original Agreement",
+    "Current Agreement Value",
+    "Invoiced",
+    "Paid",
+    "Outstanding",
+    "Approved, not yet invoiced",
+  ];
+  const missing = expected.filter((label) => !overview.includes(label));
+  if (missing.length) {
+    fail(`Project financial summary did not render: missing ${missing.join(", ")}`);
+  }
+  if (!overview.includes("$187,500")) {
+    fail("Financial summary rendered without the seeded Agreement value of $187,500.");
+  }
+  log("overview summary", "all figures rendered");
+
+  // Nothing may scroll the page sideways on a phone.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(1200);
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  if (overflow.scrollWidth > overflow.clientWidth + 1) {
+    fail(
+      `Financial summary overflows a 390px viewport: scrollWidth ${overflow.scrollWidth} > clientWidth ${overflow.clientWidth}`
+    );
+  }
+  log("mobile layout", `no horizontal overflow at 390px (${overflow.scrollWidth}px)`);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(800);
+
+  // The billing panel must offer a choice, not assume the approved value.
+  const invoicesTab = page.getByRole("button", { name: /^Invoice/i }).first();
+  await invoicesTab.click();
+  await page.waitForTimeout(2500);
+  await page.getByRole("button", { name: "Bill from Agreement" }).click();
+  await page.waitForTimeout(900);
+
+  const billing = await page.evaluate(() => document.body.innerText);
+  const choices = ["A set amount", "Remaining approved", "Change orders only", "Full Agreement"];
+  const missingChoices = choices.filter((choice) => !billing.includes(choice));
+  if (missingChoices.length) {
+    fail(`Billing panel missing options: ${missingChoices.join(", ")}`);
+  }
+  if (!billing.includes("The amount billed is your decision")) {
+    fail("Billing panel did not state that the amount is the Admin's choice.");
+  }
+  log("billing panel", `${choices.length} billing modes offered`);
+  console.log("  --------------------------\n");
 }
 
 process.on("SIGINT", async () => {

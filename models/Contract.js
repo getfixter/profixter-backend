@@ -76,6 +76,37 @@ const ContractSchema = new mongoose.Schema(
       required: true,
       immutable: true,
     },
+    /**
+     * The Estimate this Agreement was created from, when there was one.
+     *
+     * Optional and additive: Agreements created without an Estimate are
+     * unaffected, and nothing is backfilled.
+     */
+    estimateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Estimate",
+      default: null,
+      index: true,
+    },
+
+    /**
+     * What the Estimate said at the moment this Agreement was created.
+     *
+     * Frozen on purpose. The Agreement is the baseline once issued, so editing
+     * the Estimate afterwards must never move the signed number - and years
+     * later we still need to see which proposal this came from.
+     *
+     * Estimates store money as dollars while everything downstream uses integer
+     * cents, so the conversion happens once, here, at the boundary.
+     */
+    estimateSnapshot: {
+      estimateNumber: { type: String, trim: true, maxlength: 80, default: "" },
+      title: { type: String, trim: true, maxlength: 240, default: "" },
+      totalCents: { type: Number, min: 0, default: 0 },
+      lineItemCount: { type: Number, min: 0, default: 0 },
+      importedAt: { type: Date, default: null },
+    },
+
     customerSnapshot: {
       fullName: { type: String, trim: true, maxlength: 160, required: true },
       email: { type: String, trim: true, lowercase: true, maxlength: 254, default: "" },

@@ -20,6 +20,13 @@ const {
   validateInvoiceDraftInput,
 } = require("../utils/invoiceValidation");
 const { generateInvoicePdfBuffer } = require("../utils/invoicePdf");
+const { freezeInvoiceSnapshot } = require("../utils/projectFinancials");
+const {
+  buildBillingWarnings,
+  getInvoiceFinancialContext,
+  invoiceIsIssued,
+} = require("../utils/projectFinancialsService");
+const { formatSignedCents } = require("../utils/changeOrderTotals");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -218,6 +225,9 @@ function contentSignature(invoiceLike) {
     publicNote: invoiceLike.publicNote,
     paymentInstructions: invoiceLike.paymentInstructions,
     payments: invoiceLike.payments,
+    // A change order executing behind a drafted invoice changes what its PDF
+    // should say, so it has to count as a content change.
+    projectFinancials: snapshotSignature(invoiceLike.projectFinancialSnapshot),
   });
 }
 
@@ -227,19 +237,97 @@ function contractWorkType(contract) {
     : contract?.workType || "Project";
 }
 
-function draftBodyFromContract(project, contract) {
+/** How much of the project this import is meant to bill. */
+const BILLING_MODES = Object.freeze(["full", "amount", "remaining", "changeOrders"]);
+
+function normalizeBilling(body) {
+  const raw = body?.billing && typeof body.billing === "object" ? body.billing : {};
+  const mode = BILLING_MODES.includes(cleanString(raw.mode, 40)) ? cleanString(raw.mode, 40) : "full";
+  return {
+    mode,
+    amountCents: Math.max(Math.round(Number(raw.amountCents || 0)), 0),
+    label: cleanString(raw.label, 240),
+    changeOrderIds: (Array.isArray(raw.changeOrderIds) ? raw.changeOrderIds : [])
+      .map((id) => cleanString(id, 80))
+      .filter(Boolean)
+      .slice(0, 100),
+  };
+}
+
+function changeOrderDescription(changeOrder) {
+  const title = cleanString(changeOrder.title, 240);
+  return title ? `${changeOrder.changeOrderNumber} - ${title}` : String(changeOrder.changeOrderNumber || "Change order");
+}
+
+/**
+ * Turn executed change orders into invoice rows.
+ *
+ * An addition is billable work, so it becomes a line item. A deduction is
+ * money coming off the agreement, and invoice line items cannot be negative -
+ * so it becomes a credit, which is what a deduction actually is. A no-cost
+ * change order moves no money and is deliberately not billed at all.
+ */
+function changeOrderBillingRows(changeOrders) {
+  const lineItems = [];
+  const discounts = [];
+  changeOrders.forEach((changeOrder) => {
+    const net = Number(changeOrder.netAdjustmentCents || 0);
+    if (net > 0) {
+      lineItems.push({
+        description: changeOrderDescription(changeOrder),
+        quantity: 1,
+        unitPriceCents: net,
+        category: "Change order",
+      });
+    } else if (net < 0) {
+      discounts.push({
+        name: changeOrderDescription(changeOrder),
+        type: "credit",
+        valueCents: Math.abs(net),
+        note: "Executed change order deduction",
+      });
+    }
+  });
+  return { lineItems, discounts };
+}
+
+/**
+ * Contract discounts, converted to fixed amounts.
+ *
+ * The contract already worked out what each discount is worth against the
+ * contract price. Carrying a percentage across would re-apply it to the
+ * invoice subtotal instead - which changes the moment a change order line or
+ * an admin edit moves that subtotal, silently altering an agreed discount.
+ * The percentage stays visible in the label; only the maths is frozen.
+ */
+function contractDiscountRows(contract) {
+  return (contract.discounts || []).map((discount) => {
+    const percent = discount.type === "percentage" ? Number(discount.value || 0) / 100 : 0;
+    const label = percent
+      ? `${discount.name} (${percent.toFixed(3).replace(/0+$/g, "").replace(/\.$/, "")}%)`
+      : discount.name;
+    return {
+      name: label,
+      type: "fixed",
+      valueCents: Number(discount.calculatedAmountCents || 0),
+      note: discount.note,
+    };
+  });
+}
+
+function draftBodyFromContract(project, contract, { billing, context, executedChangeOrders }) {
   const defaults = projectSnapshots(project);
   const originalCents = Number(contract.originalContractPriceCents ?? contract.totalPriceCents ?? 0);
   const finalCents = Number(contract.adjustedContractPriceCents ?? originalCents);
   const contractNumber = cleanString(contract.contractNumber, 80);
-  const discounts = (contract.discounts || []).map((discount) => ({
-    name: discount.name,
-    type: discount.type,
-    ...(discount.type === "percentage"
-      ? { valueBasisPoints: discount.value }
-      : { valueCents: discount.value }),
-    note: discount.note,
-  }));
+  const { lineItems, discounts, note } = billingRowsForMode({
+    billing,
+    context,
+    contract,
+    contractNumber,
+    originalCents,
+    executedChangeOrders,
+  });
   return {
     source: "contract",
     contractId: contract._id,
@@ -266,14 +354,7 @@ function draftBodyFromContract(project, contract) {
       workType: contractWorkType(contract),
       projectDescription: contract.projectDescription || defaults.projectSnapshot.projectDescription,
     },
-    lineItems: [
-      {
-        description: `${contractWorkType(contract)} contract work${contractNumber ? ` (${invoiceContractLabel(contractNumber)})` : ""}`,
-        quantity: 1,
-        unitPriceCents: originalCents,
-        category: "Contract work",
-      },
-    ],
+    lineItems,
     discounts,
     taxTreatment: "Not Determined",
     dueTerm: "due_on_receipt",
@@ -283,9 +364,79 @@ function draftBodyFromContract(project, contract) {
       serviceDate: contract.dates?.estimatedCompletionDate || null,
     },
     publicNote: "Thank you for your business.",
-    internalNote: `Created from ${invoiceContractLabel(contractNumber)}. Contract was not modified. Contract deposit or payment-schedule requirements were not imported as received payments.`,
+    internalNote: [
+      `Created from ${invoiceContractLabel(contractNumber)}. ${note}`,
+      `Approved Agreement value at import: ${formatMoney(context.approvedAgreementCents)}` +
+        (context.executedChangeOrders.length
+          ? ` (Agreement ${formatMoney(context.originalAgreementCents)} ${formatSignedCents(context.executedChangeOrderCents)} from ${context.executedChangeOrders.length} executed change order${context.executedChangeOrders.length === 1 ? "" : "s"}).`
+          : "."),
+      `Previously invoiced on this project: ${formatMoney(context.previouslyInvoicedCents)}. Previously paid: ${formatMoney(context.previouslyPaidCents)}.`,
+      "Agreement was not modified. Agreement deposit or payment-schedule requirements were not imported as received payments.",
+    ].join("\n"),
     paymentInstructions: defaultPaymentInstructions(),
     payments: [],
+  };
+}
+
+/**
+ * The rows for one billing intent.
+ *
+ * Every mode produces an amount the Admin can still edit. None of them decides
+ * what is due: they only save retyping the figures the project already knows.
+ */
+function billingRowsForMode({ billing, context, contract, contractNumber, originalCents, executedChangeOrders }) {
+  const agreementLabel = contractNumber ? ` (${invoiceContractLabel(contractNumber)})` : "";
+
+  if (billing.mode === "amount" || billing.mode === "remaining") {
+    const isRemaining = billing.mode === "remaining";
+    const amountCents = isRemaining
+      ? Number(context.uninvoicedApprovedCents || 0)
+      : billing.amountCents;
+    const description =
+      billing.label ||
+      (isRemaining ? `Final balance${agreementLabel}` : `Progress payment${agreementLabel}`);
+    return {
+      lineItems: [
+        {
+          description,
+          quantity: 1,
+          unitPriceCents: Math.max(amountCents, 0),
+          category: "Contract work",
+        },
+      ],
+      discounts: [],
+      note: isRemaining
+        ? "Imported as the approved value not yet invoiced."
+        : "Imported as a partial billing amount.",
+    };
+  }
+
+  if (billing.mode === "changeOrders") {
+    const selected = billing.changeOrderIds.length
+      ? executedChangeOrders.filter((co) => billing.changeOrderIds.includes(String(co._id)))
+      : executedChangeOrders;
+    const rows = changeOrderBillingRows(selected);
+    return {
+      lineItems: rows.lineItems,
+      discounts: rows.discounts,
+      note: `Imported as change order billing only (${selected.length} executed change order${selected.length === 1 ? "" : "s"}).`,
+    };
+  }
+
+  // "full": the agreement price plus everything executed against it.
+  const rows = changeOrderBillingRows(executedChangeOrders);
+  return {
+    lineItems: [
+      {
+        description: `${contractWorkType(contract)} contract work${agreementLabel}`,
+        quantity: 1,
+        unitPriceCents: originalCents,
+        category: "Contract work",
+      },
+      ...rows.lineItems,
+    ],
+    discounts: [...contractDiscountRows(contract), ...rows.discounts],
+    note: "Imported at the full approved Agreement value including executed change orders.",
   };
 }
 
@@ -314,6 +465,13 @@ async function loadContractForInvoice(projectId, body, res) {
   return contract;
 }
 
+/**
+ * Guard against importing the same agreement twice at full value.
+ *
+ * Only "full" imports are blocked. Progress, milestone and change-order
+ * billing all legitimately produce several invoices against one agreement, and
+ * refusing them would make partial billing impossible.
+ */
 async function assertNoActiveContractImport(projectId, contractId, res) {
   const existing = await Invoice.findOne({
     projectId,
@@ -323,10 +481,53 @@ async function assertNoActiveContractImport(projectId, contractId, res) {
   }).lean();
   if (!existing) return false;
   res.status(409).json({
-    message: "An active invoice already exists for this contract. Open the existing invoice instead of importing the same contract again.",
+    message: "An active invoice already exists for this agreement. Bill a partial amount or the remaining balance instead of importing the full agreement again.",
     invoice: serializeInvoice(existing),
   });
   return true;
+}
+
+/**
+ * Stamp the project's financial position onto an invoice.
+ *
+ * Refreshed freely while the invoice is a draft, because a draft should tell
+ * the truth about today. Frozen the moment it is issued: from then on the
+ * invoice keeps reporting the figures it was actually sent against, no matter
+ * what change orders execute afterwards. This is the whole of the historical
+ * immutability guarantee, in one place.
+ *
+ * @returns {object|null} the live context, or null if the invoice is frozen.
+ */
+async function refreshFinancialSnapshot(invoice, { contract = null } = {}) {
+  if (invoiceIsIssued(invoice)) return null;
+  const { agreement, changeOrders, context } = await getInvoiceFinancialContext(invoice.projectId, {
+    contract,
+    excludeInvoiceId: invoice._id,
+  });
+  if (!agreement) return null;
+  invoice.projectFinancialSnapshot = freezeInvoiceSnapshot(context, changeOrders);
+  return { agreement, changeOrders, context };
+}
+
+/**
+ * The parts of a snapshot that change what the PDF says.
+ *
+ * `capturedAt` is deliberately excluded: it moves on every refresh, and
+ * including it would mark a draft as needing regeneration merely for having
+ * been re-saved.
+ */
+function snapshotSignature(snapshot) {
+  if (!snapshot) return "";
+  return JSON.stringify({
+    approvedAgreementCents: snapshot.approvedAgreementCents,
+    originalAgreementCents: snapshot.originalAgreementCents,
+    executedChangeOrderCents: snapshot.executedChangeOrderCents,
+    previouslyInvoicedCents: snapshot.previouslyInvoicedCents,
+    executedChangeOrders: (snapshot.executedChangeOrders || []).map((entry) => [
+      entry.changeOrderNumber,
+      entry.netAdjustmentCents,
+    ]),
+  });
 }
 
 function handleWriteError(error, res, fallbackMessage) {
@@ -367,11 +568,44 @@ router.post("/project/:projectId/draft", async (req, res) => {
     let body = req.body && typeof req.body === "object" ? req.body : {};
     const requestedId = cleanString(body.invoiceId || body._id || body.id, 80);
     const createFromContract = body.createFromContract === true || body.source === "contract";
+    let importContract = null;
     if (createFromContract && !requestedId) {
       const contract = await loadContractForInvoice(project._id, body, res);
       if (!contract) return null;
-      if (await assertNoActiveContractImport(project._id, contract._id, res)) return null;
-      body = draftBodyFromContract(project, contract);
+      const billing = normalizeBilling(body);
+      if (billing.mode === "full" && (await assertNoActiveContractImport(project._id, contract._id, res))) {
+        return null;
+      }
+
+      // The whole point of the import: the draft is built against the agreement
+      // PLUS its executed change orders, not the agreement price alone.
+      const { context, changeOrders } = await getInvoiceFinancialContext(project._id, { contract });
+      const executed = changeOrders.filter((co) => String(co.status) === "Executed");
+      if (billing.mode === "amount" && billing.amountCents <= 0) {
+        return res.status(400).json({ message: "Enter the amount to invoice" });
+      }
+      if (billing.mode === "remaining" && Number(context.uninvoicedApprovedCents || 0) <= 0) {
+        return res.status(409).json({
+          message: "The approved Agreement value has already been fully invoiced. Nothing remains to bill.",
+        });
+      }
+      if (billing.mode === "changeOrders" && !executed.length) {
+        return res.status(409).json({
+          message: "This agreement has no executed change orders to bill.",
+        });
+      }
+
+      importContract = contract;
+      body = draftBodyFromContract(project, contract, {
+        billing,
+        context,
+        executedChangeOrders: executed,
+      });
+      if (!body.lineItems.length) {
+        return res.status(409).json({
+          message: "The selected change orders are all deductions or no-cost, so there is nothing to bill on their own.",
+        });
+      }
     }
 
     let invoice = null;
@@ -392,6 +626,7 @@ router.post("/project/:projectId/draft", async (req, res) => {
     update.customerId = objectIdOrNull(update.customerId);
     update.contractId = objectIdOrNull(update.contractId);
 
+    let live = null;
     if (!invoice) {
       invoice = new Invoice({
         projectId: project._id,
@@ -399,10 +634,15 @@ router.post("/project/:projectId/draft", async (req, res) => {
         createdBy: req.user.id,
         updatedBy: req.user.id,
       });
-      invoice.addEvent("Invoice created", req, { source: update.source });
+      live = await refreshFinancialSnapshot(invoice, { contract: importContract });
+      invoice.addEvent("Invoice created", req, {
+        source: update.source,
+        approvedAgreementCents: invoice.projectFinancialSnapshot?.approvedAgreementCents,
+      });
     } else {
       Object.assign(invoice, update);
       invoice.updatedBy = req.user.id;
+      live = await refreshFinancialSnapshot(invoice);
       const nextSignature = contentSignature(invoice.toObject());
       if ((invoice.generatedPdfs || []).length && previousSignature !== nextSignature) {
         invoice.requiresRegeneration = true;
@@ -415,7 +655,16 @@ router.post("/project/:projectId/draft", async (req, res) => {
     }
 
     await invoice.save();
-    return res.status(201).json({ invoice: serializeInvoice(invoice, { parentProject: project }) });
+    return res.status(201).json({
+      invoice: serializeInvoice(invoice, { parentProject: project }),
+      financialWarnings: live
+        ? buildBillingWarnings({
+            context: live.context,
+            invoiceTotalCents: invoice.invoiceTotalCents,
+            agreement: live.agreement,
+          })
+        : [],
+    });
   } catch (error) {
     return handleWriteError(error, res, "Failed to save invoice draft");
   }
@@ -440,6 +689,10 @@ router.post("/:id/generate", async (req, res) => {
         version: Number(invoice.version || 1),
       },
     });
+
+    // Last refresh before the document exists. After the invoice is issued this
+    // is a no-op, so regenerating a sent invoice never rewrites its history.
+    await refreshFinancialSnapshot(invoice);
 
     const nextVersion = Math.max(
       Number(invoice.version || 1),
