@@ -25,9 +25,24 @@ const { getObjectBuffer } = require("../utils/s3");
 const adobe = require("../utils/esign/adobeSignClient");
 const signatureService = require("../utils/esign/signatureService");
 const provisioner = require("../utils/esign/webhookProvisioner");
+const nativeService = require("../utils/esign/nativeSignatureService");
+const native = require("../utils/esign/nativeSigning");
+const signingEmails = require("../utils/esign/signingEmails");
 const { createAdminActivityLog, markAdminActivityLog } = require("../utils/adminActivityLog");
 
+const multer = require("multer");
+
 const router = express.Router();
+
+/** Manual signed-document upload. PDFs only, bounded size. */
+const signedUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const isPdf = /\.pdf$/i.test(file.originalname || "") || file.mimetype === "application/pdf";
+    return isPdf ? cb(null, true) : cb(new Error("The signed document must be a PDF"));
+  },
+});
 
 /** Optional countersigner. When unset, only the customer signs. */
 const COMPANY_SIGNER_EMAIL = String(process.env.ESIGN_COMPANY_SIGNER_EMAIL || "")
@@ -48,6 +63,12 @@ router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+/** The signed-in admin's email, for audit attribution. */
+function actorEmail(req) {
+  const actor = req.accessUser || req.authUser || {};
+  return String(actor.email || "").toLowerCase();
+}
 
 function serializeSignature(signature, options = {}) {
   const item = typeof signature.toObject === "function" ? signature.toObject() : signature;
@@ -111,7 +132,7 @@ async function loadDocument(documentType, documentId) {
       doc: contract,
       projectId: contract.projectId,
       number: contract.contractNumber,
-      name: `Contract ${contract.contractNumber} - ${COMPANY_INFO.legalName}`,
+      name: `Home Improvement Agreement #${contract.contractNumber} - ${COMPANY_INFO.legalName}`,
       pdf: contract.generatedPdf,
       customerName: contract.customerSnapshot?.fullName || "",
       customerEmail: contract.customerSnapshot?.email || "",
@@ -260,6 +281,248 @@ router.get("/meta", async (_req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Native signing                                                      */
+/* ------------------------------------------------------------------ */
+
+/** Public signing links are built from the configured public site origin. */
+function signingLinkFor(rawToken) {
+  const base = String(process.env.PUBLIC_SITE_BASE_URL || "https://profixter.com").replace(/\/+$/, "");
+  return `${base}/sign/${rawToken}`;
+}
+
+/**
+ * Start a native signature request.
+ *
+ * `mode` is REMOTE (emailed link) or IN_PERSON (short-lived session used on the
+ * admin's own device). Both freeze the document identically and complete
+ * through the same pipeline; only delivery and expiry differ.
+ *
+ * The raw token exists only in this response. For REMOTE it goes into the
+ * email; for IN_PERSON it is handed straight back so the device can open the
+ * signing ceremony without any email at all.
+ */
+router.post("/native/send", async (req, res) => {
+  let audit = null;
+  try {
+    const documentType = cleanString(req.body?.documentType, 40).toUpperCase();
+    const documentId = cleanString(req.body?.documentId, 80);
+    const mode = cleanString(req.body?.mode, 20).toUpperCase() === "IN_PERSON" ? "IN_PERSON" : "REMOTE";
+
+    if (!["CONTRACT", "CHANGE_ORDER"].includes(documentType)) {
+      return res.status(400).json({ message: "documentType must be CONTRACT or CHANGE_ORDER" });
+    }
+    if (!mongoose.isValidObjectId(documentId)) {
+      return res.status(400).json({ message: "Invalid document ID" });
+    }
+
+    audit = await createAdminActivityLog(req, {
+      action: mode === "IN_PERSON" ? "In-Person Signing Started" : "Signature Request Sent",
+      entityType: documentType === "CONTRACT" ? "Contract" : "ChangeOrder",
+      entityId: documentId,
+      details: { mode },
+    });
+
+    const { signature, rawToken, target } = await nativeService.createSignatureRequest({
+      documentType,
+      documentId,
+      signingMode: mode,
+      createdBy: req.user.id,
+      message: cleanString(req.body?.message, 2000),
+      context: { ...native.requestEvidence(req), actorEmail: actorEmail(req) },
+    });
+
+    const signingUrl = signingLinkFor(rawToken);
+
+    // In-person signing happens on this device; emailing a link would be noise
+    // and would turn a short-lived session into a mailbox credential.
+    let emailed = false;
+    if (mode === "REMOTE") {
+      try {
+        await signingEmails.sendSignatureRequest({ signature, target, signingUrl });
+        signature.signingToken.sendCount += 1;
+        signature.signingToken.lastSentAt = new Date();
+        signature.status = "Sent";
+        signature.sentAt = new Date();
+        signature.addAuditEvent(native.AUDIT.EMAIL_SENT, { recipient: target.customerEmail });
+        await signature.save();
+        emailed = true;
+      } catch (emailError) {
+        // The request exists and is valid; only delivery failed. Surfaced to
+        // the admin rather than silently swallowed.
+        console.error("native signing: request email failed:", emailError?.message);
+      }
+    }
+
+    await markAdminActivityLog(audit, {
+      action: mode === "IN_PERSON" ? "In-Person Signing Session Created" : "Signature Request Created",
+      details: { documentNumber: target.number, signatureId: String(signature._id), emailed },
+    });
+
+    return res.status(201).json({
+      signature: serializeSignature(signature),
+      // The link is returned once. It is not stored in this form anywhere.
+      signingUrl,
+      mode,
+      emailed,
+    });
+  } catch (error) {
+    console.error("POST /admin/signatures/native/send failed:", error?.message);
+    await markAdminActivityLog(audit, {
+      action: "Signature Request Failed",
+      details: { message: error?.message || "Unknown error" },
+    });
+    if (error?.code === "SIGNING_NOT_CONFIGURED") {
+      return res.status(409).json({ message: error.message, code: error.code });
+    }
+    return res.status(400).json({ message: error?.message || "Failed to start the signature request" });
+  }
+});
+
+/**
+ * Resend the request email.
+ *
+ * Reuses the SAME frozen document and the SAME request. A reminder must never
+ * produce a new agreement revision or a new document to sign - only the
+ * original request is re-delivered, and the raw token no longer exists to be
+ * re-sent, so a fresh link is issued against the identical frozen record.
+ */
+router.post("/native/:id/resend", async (req, res) => {
+  try {
+    const signature = await getSignatureOr404(req.params.id, res);
+    if (!signature) return null;
+    if (signature.signingMode !== "REMOTE") {
+      return res.status(409).json({ message: "Only a remote request can be resent." });
+    }
+    const rejection = native.tokenRejectionReason(signature);
+    if (rejection) {
+      return res.status(409).json({ message: `This request is ${rejection} and cannot be resent.` });
+    }
+
+    // The stored hash cannot be reversed, so re-delivery issues a new token
+    // against the unchanged frozen document.
+    const rawToken = native.generateToken();
+    signature.signingToken.hash = native.hashToken(rawToken);
+    signature.signingToken.sendCount += 1;
+    signature.signingToken.lastSentAt = new Date();
+
+    const target = await nativeService.loadDocument(signature.documentType, signature.documentId);
+    const signingUrl = signingLinkFor(rawToken);
+    await signingEmails.sendSignatureRequest({ signature, target, signingUrl, reminder: true });
+
+    signature.addAuditEvent(
+      native.AUDIT.EMAIL_SENT,
+      { reminder: true, sendCount: signature.signingToken.sendCount },
+      { ...native.requestEvidence(req), actorEmail: actorEmail(req) }
+    );
+    await signature.save();
+
+    return res.json({ signature: serializeSignature(signature), signingUrl });
+  } catch (error) {
+    console.error("POST /admin/signatures/native/:id/resend failed:", error?.message);
+    return res.status(400).json({ message: error?.message || "Failed to resend the request" });
+  }
+});
+
+/**
+ * Record a document signed outside the native ceremony.
+ *
+ * Kept clearly distinct: no token, no consent record, no signing IP and no
+ * certificate are created, because none of those things happened.
+ */
+router.post("/native/manual-upload", signedUpload.single("file"), async (req, res) => {
+  let audit = null;
+  try {
+    const documentType = cleanString(req.body?.documentType, 40).toUpperCase();
+    const documentId = cleanString(req.body?.documentId, 80);
+    if (!["CONTRACT", "CHANGE_ORDER"].includes(documentType)) {
+      return res.status(400).json({ message: "documentType must be CONTRACT or CHANGE_ORDER" });
+    }
+    if (!mongoose.isValidObjectId(documentId)) {
+      return res.status(400).json({ message: "Invalid document ID" });
+    }
+    if (!req.file) return res.status(400).json({ message: "A signed PDF is required" });
+
+    audit = await createAdminActivityLog(req, {
+      action: "Signed Document Manually Uploaded",
+      entityType: documentType === "CONTRACT" ? "Contract" : "ChangeOrder",
+      entityId: documentId,
+      details: { fileName: req.file.originalname, size: req.file.size },
+    });
+
+    const signature = await nativeService.recordManualUpload({
+      documentType,
+      documentId,
+      buffer: req.file.buffer,
+      fileName: req.file.originalname,
+      uploadedBy: req.user.id,
+      context: { ...native.requestEvidence(req), actorEmail: actorEmail(req) },
+    });
+
+    await markAdminActivityLog(audit, {
+      action: "Signed Document Recorded",
+      details: { signatureId: String(signature._id), mode: "MANUAL_UPLOAD" },
+    });
+
+    return res.status(201).json({ signature: serializeSignature(signature) });
+  } catch (error) {
+    console.error("POST /admin/signatures/native/manual-upload failed:", error?.message);
+    await markAdminActivityLog(audit, {
+      action: "Signed Document Upload Failed",
+      details: { message: error?.message || "Unknown error" },
+    });
+    return res.status(400).json({ message: error?.message || "Failed to record the signed document" });
+  }
+});
+
+/** Revoke a pending request. The frozen document and history are retained. */
+router.post("/native/:id/revoke", async (req, res) => {
+  try {
+    const signature = await getSignatureOr404(req.params.id, res);
+    if (!signature) return null;
+    await nativeService.revokeSignature({
+      signature,
+      reason: cleanString(req.body?.reason, 500),
+      context: { ...native.requestEvidence(req), actorEmail: actorEmail(req) },
+    });
+    return res.json({ signature: serializeSignature(signature) });
+  } catch (error) {
+    console.error("POST /admin/signatures/native/:id/revoke failed:", error?.message);
+    return res.status(400).json({ message: error?.message || "Failed to revoke the request" });
+  }
+});
+
+/** Stream a stored artifact: frozen original, executed document or certificate. */
+router.get("/native/:id/document", async (req, res) => {
+  try {
+    const signature = await getSignatureOr404(req.params.id, res);
+    if (!signature) return null;
+
+    const kind = cleanString(req.query.kind || "executed", 20);
+    const slot =
+      kind === "frozen"
+        ? signature.frozenDocument
+        : kind === "certificate"
+          ? signature.certificatePdf
+          : signature.executedPdf;
+
+    if (!slot?.key) return res.status(404).json({ message: `No ${kind} document is available` });
+
+    const buffer = await signatureService.readStoredPdf(slot.key);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `${req.query.disposition === "inline" ? "inline" : "attachment"}; filename="${sanitizeFilenamePart(
+        slot.fileName || `${signature.documentNumber || "document"}-${kind}.pdf`
+      )}"`
+    );
+    return res.send(buffer);
+  } catch (error) {
+    console.error("GET /admin/signatures/native/:id/document failed:", error?.message);
+    return res.status(500).json({ message: "Failed to load the document" });
+  }
+});
+
+/* ------------------------------------------------------------------ */
 /* Send                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -334,6 +597,7 @@ router.post("/send", async (req, res) => {
       signers,
       message: cleanString(req.body?.message, 2000),
       createdBy: req.user.id,
+      inPerson: req.body?.inPerson === true,
     });
 
     // Link the document to its signature and record the send.
@@ -377,6 +641,60 @@ router.post("/send", async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Read                                                                */
 /* ------------------------------------------------------------------ */
+
+/**
+ * The Adobe hosted signing URL for the customer on this agreement.
+ *
+ * Used for in-person signing: the admin opens it on their phone and hands the
+ * device to the customer. The ceremony runs inside Adobe, so the signature,
+ * the audit trail, the executed PDF and the completion webhook are identical
+ * to a remote signature - nothing about the record is special-cased.
+ *
+ * The URL is short-lived and specific to the signer, and is returned only to
+ * an authenticated admin.
+ */
+router.post("/:id/signing-url", async (req, res) => {
+  try {
+    const signature = await getSignatureOr404(req.params.id, res);
+    if (!signature) return null;
+    if (!signature.providerAgreementId) {
+      return res.status(409).json({ message: "This document has not been sent for signature yet" });
+    }
+    if (signature.isTerminal()) {
+      return res
+        .status(409)
+        .json({ message: `This document is already ${signature.status.toLowerCase()}.` });
+    }
+
+    const urls = await adobe.getSigningUrls(signature.providerAgreementId);
+    if (!urls.length) {
+      return res.status(409).json({
+        message:
+          "Adobe has no signing URL for this agreement yet. It may still be processing - try again shortly.",
+      });
+    }
+
+    // Prefer the customer; fall back to whoever is next to act.
+    const customer = signature.signers.find((signer) => signer.role === "CUSTOMER");
+    const match =
+      (customer && urls.find((entry) => entry.email === String(customer.email).toLowerCase())) ||
+      urls[0];
+
+    signature.providerMeta = {
+      ...(signature.providerMeta || {}),
+      lastInPersonAt: new Date().toISOString(),
+    };
+    await signature.save();
+
+    return res.json({ signingUrl: match.url, email: match.email });
+  } catch (error) {
+    console.error("POST /admin/signatures/:id/signing-url failed:", error?.message);
+    if (error?.name === "AdobeSignError") {
+      return providerErrorResponse(res, error, "Failed to open the in-person signing session");
+    }
+    return res.status(500).json({ message: "Failed to open the in-person signing session" });
+  }
+});
 
 router.get("/document/:documentType/:documentId", async (req, res) => {
   try {

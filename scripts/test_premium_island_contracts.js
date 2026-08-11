@@ -386,7 +386,7 @@ async function main() {
   };
 
   const filename = buildContractFilename(contract);
-  assert.strictEqual(filename, "Contract-000007-Grant-Bathroom-Contract.pdf");
+  assert.strictEqual(filename, "Agreement-000007-Grant-Bathroom-Contract.pdf");
 
   const pdf = await generateContractPdfBuffer(contract);
   assert(pdf.length > 1000, "PDF should not be empty");
@@ -474,8 +474,8 @@ async function main() {
     "discount breakdown table should render only for multiple discounts"
   );
   assert(
-    pdfSource.includes("Final Contract Price"),
-    "PDF must label adjusted pricing as Final Contract Price"
+    pdfSource.includes("Final Agreement Price"),
+    "PDF must label adjusted pricing as Final Agreement Price"
   );
 
   console.log("Premium Island Homes contract tests passed.");

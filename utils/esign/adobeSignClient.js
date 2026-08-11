@@ -302,7 +302,7 @@ async function uploadTransientDocument({ buffer, fileName }) {
  * `signers` is [{ email, role, order }]. Distinct order values produce
  * sequential signing; equal values sign in parallel.
  */
-async function createAgreement({ name, transientDocumentId, signers, message }) {
+async function createAgreement({ name, transientDocumentId, signers, message, inPerson = false }) {
   const participantSetsInfo = signers.map((signer) => ({
     memberInfos: [{ email: signer.email }],
     order: Number(signer.order || 1),
@@ -318,6 +318,12 @@ async function createAgreement({ name, transientDocumentId, signers, message }) 
       signatureType: "ESIGN",
       state: "IN_PROCESS",
       ...(message ? { message } : {}),
+      // In-person signing happens on the admin's device, so the "please sign"
+      // email would be noise. Completion emails are left on: the customer
+      // still receives their executed copy.
+      ...(inPerson
+        ? { emailOption: { sendOptions: { initEmails: "NONE", inFlightEmails: "NONE", completionEmails: "ALL" } } }
+        : {}),
     },
   });
 
@@ -336,6 +342,28 @@ async function createAgreement({ name, transientDocumentId, signers, message }) 
  */
 async function getBaseUris() {
   return request("/baseUris");
+}
+
+/**
+ * Signing URLs for the participants who still have to act.
+ *
+ * This is what makes in-person signing legitimate rather than a local drawing
+ * pad: the customer signs inside Adobe's own hosted ceremony on the admin's
+ * phone, so the agreement is executed, audited and stored by Adobe exactly as
+ * it would be for a remote signer.
+ */
+async function getSigningUrls(agreementId) {
+  const json = await request(`/agreements/${encodeURIComponent(agreementId)}/signingUrls`);
+  const sets = json?.signingUrlSetInfos || [];
+  const urls = [];
+  for (const set of Array.isArray(sets) ? sets : []) {
+    for (const entry of set?.signingUrls || []) {
+      if (entry?.esignUrl) {
+        urls.push({ email: String(entry.email || "").toLowerCase(), url: entry.esignUrl });
+      }
+    }
+  }
+  return urls;
 }
 
 async function getAgreement(agreementId) {
@@ -457,6 +485,7 @@ module.exports = {
   createAgreement,
   getBaseUris,
   getAgreement,
+  getSigningUrls,
   getAgreementMembers,
   getCombinedDocument,
   getAuditTrail,

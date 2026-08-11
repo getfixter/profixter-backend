@@ -314,6 +314,15 @@ async function provisionWebhook({ force = false } = {}) {
  * problem must not stop the rest of the application from serving.
  */
 async function runStartupProvisioning() {
+  // Native signing is the production path. Adobe is retained only so historical
+  // adobe_sign records stay readable, and it is deliberately NOT a startup
+  // dependency: the server must boot and sign natively with no Adobe
+  // credentials present at all. Set ESIGN_ADOBE_STARTUP=true to re-enable.
+  if (String(process.env.ESIGN_ADOBE_STARTUP || "").toLowerCase() !== "true") {
+    console.log("esign: Adobe startup provisioning disabled; native signing is the active provider");
+    return;
+  }
+
   if (!adobe.isConfigured()) {
     console.log("esign: Adobe Acrobat Sign not configured; e-signature disabled");
     return;

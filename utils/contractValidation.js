@@ -194,7 +194,7 @@ function customerContractNumber(value) {
 }
 
 function contractDisplayLabel(contractOrNumber) {
-  return `Contract #${customerContractNumber(contractOrNumber)}`;
+  return `Agreement #${customerContractNumber(contractOrNumber)}`;
 }
 
 function customerLastName(customerName) {
@@ -288,7 +288,7 @@ function buildContractFilename(contract) {
     contract.workType === "Other"
       ? contract.otherWorkType || "Project"
       : contract.workType || "Project";
-  return `${sanitizeFilenamePart(contractDisplayLabel(contract), "Contract")}-${sanitizeFilenamePart(
+  return `${sanitizeFilenamePart(contractDisplayLabel(contract), "Agreement")}-${sanitizeFilenamePart(
     customerLastName(contract.customerSnapshot?.fullName),
     "Customer"
   )}-${sanitizeFilenamePart(workType, "Project")}-Contract.pdf`;

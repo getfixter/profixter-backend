@@ -130,12 +130,14 @@ function buildChangeOrderFilename(changeOrder) {
 }
 
 /** Renders the document and resolves with a Buffer. */
-async function generateChangeOrderPdfBuffer(changeOrder) {
+async function generateChangeOrderPdfBuffer(changeOrder, options = {}) {
   const doc = new PDFDocument({
     size: [PAGE.width, PAGE.height],
     margins: { top: PAGE.top, bottom: PAGE.bottom, left: PAGE.marginX, right: PAGE.marginX },
     bufferPages: true,
     info: {
+      // Pinned so the same inputs render byte-identical output.
+      ...(options.pinnedDate ? { CreationDate: new Date(options.pinnedDate) } : {}),
       Title: `Change Order ${changeOrder.changeOrderNumber}`,
       Author: COMPANY_INFO.legalName,
       Subject: `Change Order to Contract ${changeOrder.contractSnapshot?.contractNumber || ""}`,
@@ -172,13 +174,13 @@ async function generateChangeOrderPdfBuffer(changeOrder) {
   rule(doc, "#111827");
 
   /* ---------------- parties & reference ---------------- */
-  sectionTitle(doc, "Project and Contract Reference");
+  sectionTitle(doc, "Project and Agreement Reference");
   twoColumnRows(doc, [
     { label: "Customer", value: changeOrder.customerSnapshot?.fullName },
     { label: "Property Address", value: changeOrder.propertySnapshot?.address },
     { label: "Project Number", value: changeOrder.propertySnapshot?.projectNumber },
-    { label: "Original Contract", value: changeOrder.contractSnapshot?.contractNumber },
-    { label: "Original Contract Date", value: formatDate(changeOrder.contractSnapshot?.contractDate) },
+    { label: "Original Agreement", value: changeOrder.contractSnapshot?.contractNumber },
+    { label: "Original Agreement Date", value: formatDate(changeOrder.contractSnapshot?.contractDate) },
     { label: "Change Order Date", value: formatDate(changeOrder.createdAt || new Date()) },
   ]);
 
@@ -221,12 +223,12 @@ async function generateChangeOrderPdfBuffer(changeOrder) {
   sectionTitle(doc, "Contract Price Adjustment");
 
   const summaryRows = [
-    ["Original Contract Amount", formatMoney(changeOrder.contractSnapshot?.originalContractAmountCents || 0)],
+    ["Original Agreement Amount", formatMoney(changeOrder.contractSnapshot?.originalContractAmountCents || 0)],
     [
       "Previous Approved Change Orders",
       formatSignedCents(changeOrder.previousChangeOrderAdjustmentCents || 0),
     ],
-    ["Current Contract Amount", formatMoney(changeOrder.contractAmountBeforeChangeCents || 0)],
+    ["Current Agreement Amount", formatMoney(changeOrder.contractAmountBeforeChangeCents || 0)],
     ["This Change Order", formatSignedCents(changeOrder.netAdjustmentCents || 0)],
   ];
 
@@ -247,7 +249,7 @@ async function generateChangeOrderPdfBuffer(changeOrder) {
   rule(doc, "#111827");
   ensureRoom(doc, 30);
   const totalY = doc.y;
-  doc.font("Helvetica-Bold").fontSize(11.5).fillColor("#111827").text("NEW CONTRACT TOTAL", PAGE.marginX, totalY, {
+  doc.font("Helvetica-Bold").fontSize(11.5).fillColor("#111827").text("NEW AGREEMENT TOTAL", PAGE.marginX, totalY, {
     width: CONTENT_WIDTH - 150,
   });
   doc
@@ -317,9 +319,48 @@ async function generateChangeOrderPdfBuffer(changeOrder) {
       doc.font("Helvetica").fontSize(9.5).fillColor("#111827").text(party.name, x, nameY - 13, { width: colWidth });
     }
 
+    if (options.collectAnchors && index === 0) {
+      options.collectAnchors.push({
+        field: "customer",
+        pageIndex: Math.max(0, doc.bufferedPageRange().count - 1),
+        x: x + 2,
+        topY: lineY,
+        width: colWidth - 8,
+        height: 34,
+      });
+      options.collectAnchors.push({
+        field: "customerDate",
+        pageIndex: Math.max(0, doc.bufferedPageRange().count - 1),
+        x: x + 2,
+        topY: nameY + 40,
+        width: colWidth,
+        height: 13,
+      });
+    }
+
+    // Signatures are drawn onto the rule: the company's when the change order
+    // is issued, the customer's when it is executed.
+    const image = index === 0 ? options.customerSignatureImage : options.companySignatureImage;
+    if (image) {
+      try {
+        doc.image(image, x + 2, lineY - 34, { fit: [colWidth - 8, 30], align: "left" });
+      } catch (error) {
+        console.error("changeOrderPdf: signature image could not be drawn:", error?.message);
+      }
+    }
+
     const dateY = nameY + 40;
     doc.save().strokeColor("#9ca3af").lineWidth(0.7).moveTo(x, dateY).lineTo(x + colWidth, dateY).stroke().restore();
     doc.font("Helvetica").fontSize(8).fillColor("#6b7280").text("Date", x, dateY + 4, { width: colWidth });
+
+    // Authoritative server timestamps, never typed by the signer.
+    const signedDate = index === 0 ? options.customerSignedDate : options.companySignedDate;
+    if (signedDate) {
+      doc.font("Helvetica").fontSize(9.5).fillColor("#111827").text(signedDate, x + 2, dateY - 13, {
+        width: colWidth,
+        lineBreak: false,
+      });
+    }
   });
 
   doc.y = blockY + 150;

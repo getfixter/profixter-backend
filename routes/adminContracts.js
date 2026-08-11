@@ -28,6 +28,7 @@ const {
   ZERO_ADJUSTED_PRICE_WARNING,
 } = require("../utils/contractValidation");
 const { generateContractPdfBuffer } = require("../utils/contractPdf");
+const { getCompanySignatureImage } = require("../utils/companySignature");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -138,8 +139,8 @@ function defaultEmailBody(contract) {
   return [
     `Hi ${name},`,
     "",
-    "Attached is your Premium Island Homes contract for review.",
-    "Please review the scope, pricing, discounts if listed, payment schedule, terms, and signature page. If everything looks good, sign and return the contract so we can move forward.",
+    "Attached is your Premium Island Homes home improvement agreement for review.",
+    "Please review the scope, pricing, discounts if listed, payment schedule, terms, and signature page. If everything looks good, sign and return the agreement so we can move forward.",
     "",
     "Thank you,",
     "Premium Island Homes Inc.",
@@ -400,7 +401,20 @@ router.post("/:id/generate", async (req, res) => {
       },
     });
 
-    const pdfBuffer = await generateContractPdfBuffer(contract);
+    // Countersign before the customer sees it. A missing asset yields null and
+    // the block falls back to an empty signature rule.
+    const companySignatureImage = await getCompanySignatureImage();
+    const pdfBuffer = await generateContractPdfBuffer(contract, {
+      companySignatureImage,
+      companySignedDate: companySignatureImage
+        ? new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }).format(new Date())
+        : "",
+    });
     const fileName = buildContractFilename(contract);
     const key = `${CONTRACT_S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
       contract.contractNumber
@@ -506,7 +520,7 @@ router.post("/:id/email", async (req, res) => {
     }
     const recipient = cleanString(req.body.recipient || contract.customerSnapshot?.email, 254).toLowerCase();
     const subject = cleanString(
-      req.body.subject || `Your Premium Island Homes Contract - ${contract.workType}`,
+      req.body.subject || `Your Premium Island Homes Agreement - ${contract.workType}`,
       240
     );
     const message = cleanString(req.body.message || defaultEmailBody(contract), 10000);

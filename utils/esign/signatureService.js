@@ -78,6 +78,7 @@ async function sendForSignature({
   message = "",
   provider = "adobe_sign",
   createdBy = null,
+  inPerson = false,
 }) {
   if (!Array.isArray(signers) || !signers.length) {
     throw new Error("At least one signer is required");
@@ -129,9 +130,13 @@ async function sendForSignature({
       transientDocumentId,
       signers: signature.signers,
       message,
+      inPerson,
     });
 
     signature.providerAgreementId = agreementId;
+    if (inPerson) {
+      signature.providerMeta = { ...(signature.providerMeta || {}), inPerson: true };
+    }
     signature.status = "Sent";
     signature.providerStatus = "OUT_FOR_SIGNATURE";
     signature.sentAt = new Date();

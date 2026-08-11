@@ -312,7 +312,7 @@ function drawFirstPageHeader(doc, contract) {
     width: rightWidth,
     align: "right",
   });
-  doc.font("Helvetica").fontSize(8.5).fillColor("#6b7280").text("Contract Date", rightX, PAGE.top + 24, {
+  doc.font("Helvetica").fontSize(8.5).fillColor("#6b7280").text("Agreement Date", rightX, PAGE.top + 24, {
     width: rightWidth,
     align: "right",
   });
@@ -343,7 +343,7 @@ function drawPriceSummary(doc, contract) {
   const cardHeight = 106;
   doc.roundedRect(PAGE.marginX, startY, cardWidth, cardHeight, 5).fillAndStroke("#f8fafc", "#dbe3ee");
   doc.fillColor("#64748b").font("Helvetica-Bold").fontSize(8.5).text(
-    "Final Contract Price",
+    "Final Agreement Price",
     PAGE.marginX + 14,
     startY + 14,
     {
@@ -615,7 +615,7 @@ function secondCustomerName(contract) {
   );
 }
 
-function drawSignatureBlock(doc, title, printedName = "") {
+function drawSignatureBlock(doc, title, printedName = "", options = {}) {
   const blockWidth = PAGE.width - PAGE.marginX * 2;
   const startY = doc.y;
   const lineWidth = blockWidth;
@@ -647,6 +647,35 @@ function drawSignatureBlock(doc, title, printedName = "") {
     width: lineWidth,
   });
 
+  // Anchor for the executed-document overlay. Recorded at the moment the rule
+  // is drawn, including which page we are on, so the signature can later be
+  // placed onto the frozen bytes at exactly this spot.
+  if (options.collectAnchors) {
+    options.collectAnchors.push({
+      field: options.anchorField || "signature",
+      pageIndex: Math.max(0, doc.bufferedPageRange().count - 1),
+      x: PAGE.marginX + 4,
+      // pdfkit measures from the top; the overlay converts to PDF coordinates.
+      topY: signatureLineY,
+      width: 210,
+      height: 40,
+    });
+  }
+
+  // Both parties' signatures are drawn the same way. The company's is applied
+  // when the agreement is generated; the customer's when it is executed.
+  if (options.signatureImage) {
+    try {
+      doc.image(options.signatureImage, PAGE.marginX + 4, signatureLineY - 42, {
+        fit: [200, 38],
+        align: "left",
+      });
+    } catch (error) {
+      // A bad asset must never stop an agreement being produced.
+      console.error("contractPdf: company signature image could not be drawn:", error?.message);
+    }
+  }
+
   const dateLineWidth = 190;
   const dateLineY = signatureLineY + 48;
   doc.moveTo(PAGE.marginX, dateLineY).lineTo(PAGE.marginX + dateLineWidth, dateLineY).strokeColor("#9ca3af").lineWidth(0.8).stroke();
@@ -654,10 +683,29 @@ function drawSignatureBlock(doc, title, printedName = "") {
     width: dateLineWidth,
   });
 
+  if (options.collectAnchors) {
+    options.collectAnchors.push({
+      field: options.anchorField ? `${options.anchorField}Date` : "signatureDate",
+      pageIndex: Math.max(0, doc.bufferedPageRange().count - 1),
+      x: PAGE.marginX + 4,
+      topY: dateLineY,
+      width: dateLineWidth,
+      height: 14,
+    });
+  }
+
+  // Dates come from an authoritative server timestamp, never typed by hand.
+  if (options.signedDate) {
+    doc.font("Helvetica").fontSize(10.5).fillColor("#111827").text(options.signedDate, PAGE.marginX + 4, dateLineY - 16, {
+      width: dateLineWidth,
+      lineBreak: false,
+    });
+  }
+
   doc.y = dateLineY + 38;
 }
 
-function drawSignaturePage(doc, contract) {
+function drawSignaturePage(doc, contract, options = {}) {
   doc.addPage();
   doc.font("Helvetica-Bold").fontSize(22).fillColor("#111827").text("Accepted and Agreed", PAGE.marginX, PAGE.top, {
     width: PAGE.width - PAGE.marginX * 2,
@@ -670,14 +718,24 @@ function drawSignaturePage(doc, contract) {
     "By signing below, the parties acknowledge that they have reviewed and accepted the project description, scope of work, pricing, listed discounts if any, payment schedule, and terms of this agreement, and that the customer has received a copy of the agreement.",
     { size: 10, color: "#374151", lineGap: 2.4, after: 1.2 }
   );
-  drawSignatureBlock(doc, "Customer", contract.customerSnapshot?.fullName || "");
+  // The customer block is the only one the executed-document overlay writes
+  // into, so it is the only one that contributes anchors.
+  drawSignatureBlock(doc, "Customer", contract.customerSnapshot?.fullName || "", {
+    collectAnchors: options.collectAnchors,
+    anchorField: "customer",
+  });
   const secondaryName = secondCustomerName(contract);
   if (secondaryName) {
     doc.moveDown(0.25);
     drawSignatureBlock(doc, "Customer 2", secondaryName);
   }
   doc.moveDown(0.45);
-  drawSignatureBlock(doc, COMPANY_INFO.legalName, `${COMPANY_INFO.projectManager}\nProject Manager`);
+  // The company signs when the agreement is issued, so its signature is baked
+  // into the frozen document the customer reviews.
+  drawSignatureBlock(doc, COMPANY_INFO.legalName, `${COMPANY_INFO.projectManager}\nProject Manager`, {
+    signatureImage: options.companySignatureImage || null,
+    signedDate: options.companySignedDate || "",
+  });
 }
 
 function addFooter(doc, contract) {
@@ -730,7 +788,8 @@ async function generateContractPdfBuffer(contract, options = {}) {
       },
       bufferPages: true,
       info: {
-        Title: `${contractDisplayLabel(contract)} Premium Island Homes Agreement`,
+        ...(options.pinnedDate ? { CreationDate: new Date(options.pinnedDate) } : {}),
+        Title: `Home Improvement ${contractDisplayLabel(contract)} - Premium Island Homes Inc.`,
         Author: COMPANY_INFO.legalName,
         Subject: "Home improvement agreement",
       },
@@ -810,7 +869,7 @@ async function generateContractPdfBuffer(contract, options = {}) {
     }
 
     drawTerms(doc, options);
-    drawSignaturePage(doc, contract);
+    drawSignaturePage(doc, contract, options);
     addFooter(doc, contract);
     doc.end();
   });

@@ -18,6 +18,8 @@ const SUITES = [
   "test_change_order_totals.js",
   "test_change_order_document.js",
   "test_esign_signature_flow.js",
+  "test_native_signing.js",
+  "test_executed_document.js",
   "test_intro_visit_eligibility.js",
   "test_one_time_booking_policy.js",
   "test_one_time_visit_payment_flow.js",
@@ -38,6 +40,8 @@ const SUITES = [
  *   test_intro_visit_flows_live.js   needs a live MongoDB
  *   test_intro_visit_race_live.js    needs a live MongoDB + running backend
  *   test_intro_visit_photo_live.js   needs a live MongoDB + running backend + S3 stub
+ *   test_native_signing_integration.js  boots an in-memory MongoDB binary
+ *   test_native_signing_routes.js       boots an in-memory MongoDB binary
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test
  */

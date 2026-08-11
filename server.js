@@ -54,9 +54,22 @@ app.get(["/uploads/*", "/api/uploads/*"], (req, res) => {
 });
 
 // ✅ 1. CORS — FIX CORS + allow all headers
+/**
+ * Additional allowed origins, comma separated.
+ *
+ * Exists so an isolated QA stack on a non-default port can call this API.
+ * Production leaves it unset, so the allowlist below is unchanged there - this
+ * widens nothing by default and never uses a wildcard.
+ */
+const EXTRA_CORS_ORIGINS = String(process.env.EXTRA_CORS_ORIGINS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
     origin: [
+  ...EXTRA_CORS_ORIGINS,
   "http://localhost:3000",
   "http://handyman-frontend-v1.s3-website-us-east-1.amazonaws.com",
   "http://handyman-v2-env.eba-fq3ppgr4.us-east-1.elasticbeanstalk.com",
@@ -208,6 +221,10 @@ app.use("/api/estimates", require("./routes/estimates"));
 // itself with the client-id header the provider echoes, and rejects anything
 // that does not match.
 app.use("/api/esign/webhook", require("./routes/esignWebhook"));
+// Public by necessity: the customer signs here with only an opaque token.
+// No account, no login, no code sent to a phone - the token is the credential,
+// and every substantive value is read server-side.
+app.use("/api/sign", require("./routes/publicSigning"));
 
 
 

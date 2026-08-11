@@ -35,7 +35,7 @@ const CHANGE_ORDER_TERMS_VERSION = "PIH-CO-2026-001";
  */
 const CHANGE_ORDER_SURVIVAL_CLAUSE =
   "Except as expressly modified by this Change Order, all terms, conditions, and provisions of " +
-  "the original Contract referenced above remain unchanged and in full force and effect. This " +
+  "the original Agreement referenced above remain unchanged and in full force and effect. This " +
   "Change Order is not valid until signed by both parties.";
 
 const CHANGE_ORDER_AUTHORIZATION_CLAUSE =
