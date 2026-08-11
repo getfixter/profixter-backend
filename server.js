@@ -528,4 +528,15 @@ if (process.env.BOOKING_REMINDERS_ENABLED !== "false") {
   console.log("✅ Booking reminders enabled");
 }
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+
+  // E-signature provisioning: confirm Adobe connectivity and make sure our
+  // webhook is registered and ACTIVE. Deliberately started only once we are
+  // listening, because Adobe verifies the webhook URL by calling it back
+  // during registration - registering before we can answer would fail.
+  // Best-effort and non-blocking; it logs no tokens or secrets.
+  require("./utils/esign/webhookProvisioner")
+    .runStartupProvisioning()
+    .catch((error) => console.error("esign: startup provisioning error:", error?.message));
+});

@@ -363,6 +363,69 @@ async function getAuditTrail(agreementId) {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Webhooks                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every webhook visible to this application.
+ * Adobe has used more than one envelope key for this list over the API's life,
+ * so all the known shapes are accepted rather than assuming one.
+ */
+async function listWebhooks() {
+  const json = await request("/webhooks");
+  const list =
+    json?.userWebhookList || json?.webhookList || json?.webhooks || json?.items || [];
+  return Array.isArray(list) ? list : [];
+}
+
+async function getWebhook(webhookId) {
+  return request(`/webhooks/${encodeURIComponent(webhookId)}`);
+}
+
+/**
+ * Register a webhook. The client id Adobe later echoes in
+ * X-AdobeSign-ClientId is the id of the application making THIS call, which is
+ * why registration belongs here and not in the Acrobat Sign web UI.
+ */
+async function createWebhook({ name, url, scope = "ACCOUNT", events, state = "ACTIVE" }) {
+  const json = await request("/webhooks", {
+    method: "POST",
+    json: {
+      name,
+      scope,
+      state,
+      webhookUrlInfo: { url },
+      webhookSubscriptionEvents: events,
+    },
+  });
+  if (!json?.id) {
+    throw new AdobeSignError("Adobe Sign did not return a webhook id", { code: "NO_WEBHOOK_ID" });
+  }
+  return json.id;
+}
+
+/** Replace a webhook's subscription. Used when the event set drifts. */
+async function updateWebhook(webhookId, { name, url, scope = "ACCOUNT", events, state = "ACTIVE" }) {
+  return request(`/webhooks/${encodeURIComponent(webhookId)}`, {
+    method: "PUT",
+    json: {
+      name,
+      scope,
+      state,
+      webhookUrlInfo: { url },
+      webhookSubscriptionEvents: events,
+    },
+  });
+}
+
+async function setWebhookState(webhookId, state) {
+  return request(`/webhooks/${encodeURIComponent(webhookId)}/state`, {
+    method: "PUT",
+    json: { state },
+  });
+}
+
 /** Recall an agreement that is still out for signature. */
 async function cancelAgreement(agreementId, reason = "Cancelled by Premium Island Homes Inc.") {
   return request(`/agreements/${encodeURIComponent(agreementId)}/state`, {
@@ -398,6 +461,11 @@ module.exports = {
   getCombinedDocument,
   getAuditTrail,
   cancelAgreement,
+  listWebhooks,
+  getWebhook,
+  createWebhook,
+  updateWebhook,
+  setWebhookState,
   mapAgreementStatus,
   mapWebhookEvent,
   _resetTokenCache,

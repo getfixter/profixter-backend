@@ -20,6 +20,7 @@ const signatureService = require("../utils/esign/signatureService");
 const esignWebhook = require("../routes/esignWebhook");
 const ESignature = require("../models/ESignature");
 const bootstrap = require("./adobe_oauth_bootstrap");
+const provisioner = require("../utils/esign/webhookProvisioner");
 
 let passed = 0;
 const failures = [];
@@ -141,6 +142,110 @@ async function main() {
 
   await test("an unknown event maps to null rather than a guess", () =>
     assert.strictEqual(adobe.mapWebhookEvent("AGREEMENT_SOMETHING_ELSE"), null));
+
+  /* ---------------- webhook provisioning ---------------- */
+
+  console.log("\nWebhook provisioning");
+
+  await test("the eight events ProFixter acts on are all subscribed", () => {
+    for (const event of [
+      "AGREEMENT_CREATED",
+      "AGREEMENT_ACTION_REQUESTED",
+      "AGREEMENT_EMAIL_VIEWED",
+      "AGREEMENT_ACTION_COMPLETED",
+      "AGREEMENT_WORKFLOW_COMPLETED",
+      "AGREEMENT_REJECTED",
+      "AGREEMENT_RECALLED",
+      "AGREEMENT_EXPIRED",
+    ]) {
+      assert.ok(provisioner.WEBHOOK_EVENTS.includes(event), `missing subscription: ${event}`);
+    }
+  });
+
+  await test("every subscribed event is one the client can map", () => {
+    for (const event of provisioner.WEBHOOK_EVENTS) {
+      assert.ok(
+        adobe.mapWebhookEvent(event) !== null,
+        `${event} is subscribed but maps to nothing`
+      );
+    }
+  });
+
+  await test("the webhook URL is built from the public base URL", () => {
+    const saved = process.env.PUBLIC_API_BASE_URL;
+    process.env.PUBLIC_API_BASE_URL = "https://api.profixter.com";
+    try {
+      assert.strictEqual(
+        provisioner.webhookUrl(),
+        "https://api.profixter.com/api/esign/webhook/adobe-sign"
+      );
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_API_BASE_URL;
+      else process.env.PUBLIC_API_BASE_URL = saved;
+    }
+  });
+
+  await test("a trailing slash on the base URL does not double up", () => {
+    const saved = process.env.PUBLIC_API_BASE_URL;
+    process.env.PUBLIC_API_BASE_URL = "https://api.profixter.com/";
+    try {
+      assert.strictEqual(
+        provisioner.webhookUrl(),
+        "https://api.profixter.com/api/esign/webhook/adobe-sign"
+      );
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_API_BASE_URL;
+      else process.env.PUBLIC_API_BASE_URL = saved;
+    }
+  });
+
+  await test("no public base URL yields no webhook URL rather than a broken one", () => {
+    const saved = process.env.PUBLIC_API_BASE_URL;
+    delete process.env.PUBLIC_API_BASE_URL;
+    try {
+      assert.strictEqual(provisioner.webhookUrl(), "");
+    } finally {
+      if (saved !== undefined) process.env.PUBLIC_API_BASE_URL = saved;
+    }
+  });
+
+  await test("URL comparison ignores trailing slash and host case", () => {
+    assert.ok(provisioner.sameUrl("https://api.profixter.com/x", "https://API.profixter.com/x/"));
+    assert.ok(!provisioner.sameUrl("https://api.profixter.com/x", "https://api.profixter.com/y"));
+  });
+
+  await test("empty URLs never compare equal", () => {
+    assert.ok(!provisioner.sameUrl("", ""));
+    assert.ok(!provisioner.sameUrl(undefined, null));
+  });
+
+  await test("event comparison ignores order and duplicates", () => {
+    assert.ok(provisioner.sameEvents(["B", "A"], ["A", "B"]));
+    assert.ok(provisioner.sameEvents(["A", "A", "B"], ["B", "A"]));
+    assert.ok(!provisioner.sameEvents(["A"], ["A", "B"]));
+    assert.ok(!provisioner.sameEvents([], ["A"]));
+  });
+
+  await test("auto-provisioning is on by default and only off when explicitly disabled", () => {
+    const saved = process.env.ESIGN_WEBHOOK_AUTO_PROVISION;
+    try {
+      delete process.env.ESIGN_WEBHOOK_AUTO_PROVISION;
+      assert.strictEqual(provisioner.autoProvisionEnabled(), true);
+      process.env.ESIGN_WEBHOOK_AUTO_PROVISION = "false";
+      assert.strictEqual(provisioner.autoProvisionEnabled(), false);
+      process.env.ESIGN_WEBHOOK_AUTO_PROVISION = "true";
+      assert.strictEqual(provisioner.autoProvisionEnabled(), true);
+    } finally {
+      if (saved === undefined) delete process.env.ESIGN_WEBHOOK_AUTO_PROVISION;
+      else process.env.ESIGN_WEBHOOK_AUTO_PROVISION = saved;
+    }
+  });
+
+  await test("ensureWebhook refuses to run without a public base URL", () =>
+    assert.rejects(
+      () => provisioner.ensureWebhook({ url: "" }),
+      /PUBLIC_API_BASE_URL/
+    ));
 
   /* ---------------- shard resolution ---------------- */
 

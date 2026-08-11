@@ -18,11 +18,13 @@ const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const Contract = require("../models/Contract");
 const ChangeOrder = require("../models/ChangeOrder");
 const ESignature = require("../models/ESignature");
+const ESignWebhook = require("../models/ESignWebhook");
 const { cleanString, sanitizeFilenamePart } = require("../utils/contractValidation");
 const { COMPANY_INFO } = require("../config/premiumIslandHomesContract");
 const { getObjectBuffer } = require("../utils/s3");
 const adobe = require("../utils/esign/adobeSignClient");
 const signatureService = require("../utils/esign/signatureService");
+const provisioner = require("../utils/esign/webhookProvisioner");
 const { createAdminActivityLog, markAdminActivityLog } = require("../utils/adminActivityLog");
 
 const router = express.Router();
@@ -215,8 +217,34 @@ function providerErrorResponse(res, error, fallback) {
 /* Meta                                                                */
 /* ------------------------------------------------------------------ */
 
-/** Whether the server can actually talk to the provider, for the admin UI. */
-router.get("/meta", (_req, res) => {
+/**
+ * Provider readiness for the admin UI.
+ *
+ * Reads only stored state - no provider calls - so it is cheap enough to load
+ * with every project page.
+ */
+router.get("/meta", async (_req, res) => {
+  let webhook = null;
+  try {
+    const record = await ESignWebhook.findOne({
+      provider: "adobe_sign",
+      url: provisioner.webhookUrl(),
+    }).lean();
+    if (record) {
+      webhook = {
+        registered: record.provisionState === "active",
+        providerWebhookId: record.providerWebhookId || "",
+        state: record.providerState || "",
+        eventCount: (record.events || []).length,
+        url: record.url,
+        lastCheckedAt: record.lastCheckedAt || null,
+        lastError: record.lastError || "",
+      };
+    }
+  } catch (error) {
+    console.error("GET /admin/signatures/meta webhook lookup failed:", error?.message);
+  }
+
   return res.json({
     provider: "adobe_sign",
     configured: adobe.isConfigured(),
@@ -226,98 +254,8 @@ router.get("/meta", (_req, res) => {
     webhookConfigured: Boolean(
       process.env.ADOBE_SIGN_WEBHOOK_CLIENT_ID || process.env.ADOBE_SIGN_CLIENT_ID
     ),
-    webhookPath: "/api/esign/webhook/adobe-sign",
-  });
-});
-
-/**
- * Live, read-only proof that THIS running environment can talk to Adobe using
- * its own configuration.
- *
- * The only calls it makes are a token refresh and GET /baseUris. It creates
- * nothing, sends nothing, and registers nothing. It exists so a deployed
- * environment can be verified without shipping credentials anywhere or reading
- * them back out - no secret or token value appears in the response.
- */
-router.get("/connectivity", async (req, res) => {
-  const configuredHost = String(process.env.ADOBE_SIGN_TOKEN_HOST || "").trim().replace(/\/+$/, "");
-  const expectedShard = String(process.env.ADOBE_SIGN_SHARD || "").trim().toLowerCase();
-
-  const result = {
-    configured: adobe.isConfigured(),
-    authMode: adobe.authMode(),
-    tokenHostConfigured: configuredHost || null,
-    shardExpected: expectedShard || null,
-    webhookClientIdConfigured: Boolean(
-      process.env.ADOBE_SIGN_WEBHOOK_CLIENT_ID || process.env.ADOBE_SIGN_CLIENT_ID
-    ),
-    webhookPath: "/api/esign/webhook/adobe-sign",
-    authentication: { ok: false },
-    baseUris: null,
-    shardReported: null,
-    shardMatch: false,
-    tokenHostCorrect: false,
-  };
-
-  if (!result.configured) {
-    return res.status(503).json({
-      ...result,
-      message:
-        "Adobe Acrobat Sign is not configured in this environment. A client id and secret " +
-        "alone cannot authenticate; a refresh token or integration key is required.",
-    });
-  }
-
-  try {
-    const token = await adobe.getAccessToken();
-    result.authentication = {
-      ok: true,
-      // Length only - never the token itself.
-      accessTokenLength: String(token?.accessToken || "").length,
-      apiAccessPointFromToken: token?.apiAccessPoint || null,
-    };
-  } catch (error) {
-    return res.status(502).json({
-      ...result,
-      authentication: {
-        ok: false,
-        // AdobeSignError messages are written to carry no token material.
-        error: String(error?.message || "Authentication failed").slice(0, 300),
-        status: Number(error?.status || 0) || null,
-        code: String(error?.code || "") || null,
-      },
-      message: "Adobe authentication failed. Nothing else was attempted.",
-    });
-  }
-
-  try {
-    const baseUris = await adobe.getBaseUris();
-    const apiAccessPoint = String(baseUris?.apiAccessPoint || "").replace(/\/+$/, "");
-    const match = apiAccessPoint.match(/(?:^|\/\/|\.)([a-z]{2,4}\d{1,2})\.adobesign\.com/i);
-
-    result.baseUris = {
-      apiAccessPoint: apiAccessPoint || null,
-      webAccessPoint: String(baseUris?.webAccessPoint || "").replace(/\/+$/, "") || null,
-    };
-    result.shardReported = match ? match[1].toLowerCase() : null;
-    result.shardMatch = Boolean(
-      result.shardReported && (!expectedShard || result.shardReported === expectedShard)
-    );
-    result.tokenHostCorrect = Boolean(apiAccessPoint) && configuredHost === apiAccessPoint;
-  } catch (error) {
-    return res.status(502).json({
-      ...result,
-      message: String(error?.message || "Base URI lookup failed").slice(0, 300),
-    });
-  }
-
-  const ready = result.shardMatch && result.tokenHostCorrect;
-  return res.status(ready ? 200 : 409).json({
-    ...result,
-    ready,
-    message: ready
-      ? "Adobe authentication succeeded. No agreement, document or webhook was touched."
-      : "Authenticated, but the configured API host does not match the shard Adobe reports.",
+    webhookPath: provisioner.WEBHOOK_PATH,
+    webhook,
   });
 });
 
