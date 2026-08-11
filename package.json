@@ -60,8 +60,7 @@
     "test:change-order-totals": "node scripts/test_change_order_totals.js",
     "test:change-order-document": "node scripts/test_change_order_document.js",
     "test:esign-signature-flow": "node scripts/test_esign_signature_flow.js",
-    "esign:oauth-bootstrap": "node scripts/adobe_oauth_bootstrap.js",
-    "esign:check": "node scripts/adobe_connectivity_check.js"
+    "esign:oauth-bootstrap": "node scripts/adobe_oauth_bootstrap.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

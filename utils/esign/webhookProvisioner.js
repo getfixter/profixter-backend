@@ -205,7 +205,7 @@ async function claimProvisioning(url) {
       provider: "adobe_sign",
       url,
       $or: [
-        { provisionState: { $ne: "active" }, provisionStartedAt: { $lt: staleBefore } },
+        { provisionState: { $ne: "active" }, provisionStartedAt: { $lte: staleBefore } },
         { provisionState: { $ne: "active" }, provisionStartedAt: null },
       ],
     },
@@ -273,7 +273,7 @@ async function provisionWebhook({ force = false } = {}) {
   }
 
   const claim = await claimProvisioning(url);
-  if (!claim) return null;
+  if (!claim) return { action: "skipped", webhookId: "", state: "" };
 
   try {
     const result = await ensureWebhook({ url });
@@ -281,10 +281,15 @@ async function provisionWebhook({ force = false } = {}) {
     claim.providerState = result.state;
     claim.events = result.events;
     claim.scope = "ACCOUNT";
-    claim.provisionState = result.state === "ACTIVE" ? "active" : "failed";
+    const healthy = result.state === "ACTIVE";
+    claim.provisionState = healthy ? "active" : "failed";
     claim.expectedClientId = String(process.env.ADOBE_SIGN_CLIENT_ID || "");
     claim.lastCheckedAt = new Date();
-    claim.lastError = "";
+    claim.lastError = healthy ? "" : `Provider reported status "${result.state || "unknown"}"`;
+    // Any outcome short of ACTIVE releases the claim, so the next boot retries
+    // straight away. Holding it would make an unhealthy webhook look like work
+    // in progress for the whole stale-lock window.
+    if (!healthy) claim.provisionStartedAt = null;
     await claim.save();
     return result;
   } catch (error) {
@@ -351,8 +356,10 @@ async function runStartupProvisioning() {
     if (attempt > 1) await delay(PROVISION_RETRY_MS);
     try {
       const result = await provisionWebhook();
-      if (!result) {
-        console.log("esign: webhook provisioning already handled by another instance");
+      if (result.action === "skipped") {
+        console.log(
+          "esign: webhook provisioning skipped - the provisioning claim is held elsewhere"
+        );
         return;
       }
       console.log(
