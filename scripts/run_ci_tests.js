@@ -15,6 +15,9 @@ const path = require("path");
 /** Deterministic, dependency-free suites. */
 const SUITES = [
   "test_service_area.js",
+  "test_change_order_totals.js",
+  "test_change_order_document.js",
+  "test_esign_signature_flow.js",
   "test_intro_visit_eligibility.js",
   "test_one_time_booking_policy.js",
   "test_one_time_visit_payment_flow.js",

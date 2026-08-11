@@ -179,6 +179,8 @@ app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/contracts", require("./routes/adminContracts"));
+app.use("/api/admin/change-orders", require("./routes/adminChangeOrders"));
+app.use("/api/admin/signatures", require("./routes/adminSignatures"));
 app.use("/api/admin/invoices", require("./routes/adminInvoices"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
@@ -202,6 +204,10 @@ app.use("/api/chatbot", require("./routes/chatbot"));
 app.use("/api/users", usersRouter);
 app.use("/api/google", require("./routes/google"));
 app.use("/api/estimates", require("./routes/estimates"));
+// Public by necessity: the e-signature provider calls this. It authenticates
+// itself with the client-id header the provider echoes, and rejects anything
+// that does not match.
+app.use("/api/esign/webhook", require("./routes/esignWebhook"));
 
 
 
