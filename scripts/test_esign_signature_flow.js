@@ -241,6 +241,27 @@ async function main() {
     }
   });
 
+  await test("webhook status is read from Adobe's response field, not the request field", () => {
+    // Adobe is asymmetric: requests send `state`, responses return `status`.
+    assert.strictEqual(provisioner.webhookStatus({ status: "ACTIVE" }), "ACTIVE");
+    assert.strictEqual(provisioner.webhookStatus({ status: "INACTIVE" }), "INACTIVE");
+  });
+
+  await test("the request-shaped field is still accepted as a fallback", () =>
+    assert.strictEqual(provisioner.webhookStatus({ state: "ACTIVE" }), "ACTIVE"));
+
+  await test("status wins over state when both are present", () =>
+    assert.strictEqual(
+      provisioner.webhookStatus({ status: "INACTIVE", state: "ACTIVE" }),
+      "INACTIVE"
+    ));
+
+  await test("a missing status reads as empty, never as active", () => {
+    assert.strictEqual(provisioner.webhookStatus({}), "");
+    assert.strictEqual(provisioner.webhookStatus(null), "");
+    assert.notStrictEqual(provisioner.webhookStatus({}), "ACTIVE");
+  });
+
   await test("ensureWebhook refuses to run without a public base URL", () =>
     assert.rejects(
       () => provisioner.ensureWebhook({ url: "" }),

@@ -57,6 +57,17 @@ function autoProvisionEnabled() {
   return String(process.env.ESIGN_WEBHOOK_AUTO_PROVISION || "true").toLowerCase() !== "false";
 }
 
+/**
+ * Read a webhook's ACTIVE/INACTIVE value.
+ *
+ * Adobe is asymmetric here: requests carry the value as `state`, responses
+ * return it as `status`. Reading `state` off a response silently yields
+ * undefined, so both are accepted and `status` is preferred.
+ */
+function webhookStatus(hook) {
+  return String(hook?.status || hook?.state || "").toUpperCase();
+}
+
 /** Trailing slashes and case in the host must not read as a different webhook. */
 function sameUrl(a, b) {
   const normalize = (value) => String(value || "").trim().replace(/\/+$/, "").toLowerCase();
@@ -142,15 +153,15 @@ async function ensureWebhook({ url, events = WEBHOOK_EVENTS, name = WEBHOOK_NAME
     return {
       action: "created",
       webhookId,
-      state: String(created?.state || "").toUpperCase(),
+      state: webhookStatus(created),
       events: created?.webhookSubscriptionEvents || [...events],
     };
   }
 
   const webhookId = match.id;
-  let state = String(match.state || "").toUpperCase();
+  let state = webhookStatus(match);
   let currentEvents = match.webhookSubscriptionEvents || [];
-  let action = "unchanged";
+  const actions = [];
 
   if (!sameEvents(currentEvents, events)) {
     await adobe.updateWebhook(webhookId, {
@@ -160,19 +171,23 @@ async function ensureWebhook({ url, events = WEBHOOK_EVENTS, name = WEBHOOK_NAME
       events: [...events],
       state: "ACTIVE",
     });
-    action = "updated";
-  } else if (state !== "ACTIVE") {
-    await adobe.setWebhookState(webhookId, "ACTIVE");
-    action = "reactivated";
+    actions.push("updated");
   }
 
-  if (action !== "unchanged") {
+  // Independent of the event check: a webhook can be both out of date AND
+  // deactivated, and Adobe only changes the status through its own endpoint.
+  if (state && state !== "ACTIVE") {
+    await adobe.setWebhookState(webhookId, "ACTIVE");
+    actions.push("reactivated");
+  }
+
+  if (actions.length) {
     const refreshed = await adobe.getWebhook(webhookId);
-    state = String(refreshed?.state || "").toUpperCase();
+    state = webhookStatus(refreshed);
     currentEvents = refreshed?.webhookSubscriptionEvents || currentEvents;
   }
 
-  return { action, webhookId, state, events: currentEvents };
+  return { action: actions.join("+") || "unchanged", webhookId, state, events: currentEvents };
 }
 
 /**
@@ -226,19 +241,35 @@ async function provisionWebhook({ force = false } = {}) {
   const record = await ESignWebhook.findOne({ provider: "adobe_sign", url });
 
   // Already good, and the caller is not asking us to re-verify.
-  if (!force && record?.provisionState === "active" && record?.providerState === "ACTIVE") {
+  if (
+    !force &&
+    record?.provisionState === "active" &&
+    record?.providerState === "ACTIVE" &&
+    record?.providerWebhookId
+  ) {
     // Still confirm against Adobe, cheaply, so a webhook deleted in the console
     // is noticed rather than assumed present.
+    let live = null;
     try {
-      const live = await adobe.getWebhook(record.providerWebhookId);
-      if (String(live?.state || "").toUpperCase() === "ACTIVE") {
-        record.lastCheckedAt = new Date();
-        await record.save();
-        return { action: "verified", webhookId: record.providerWebhookId, state: "ACTIVE" };
-      }
+      live = await adobe.getWebhook(record.providerWebhookId);
     } catch {
-      // Fall through and re-provision: the recorded webhook is gone or unusable.
+      live = null;
     }
+
+    if (live && webhookStatus(live) === "ACTIVE") {
+      record.lastCheckedAt = new Date();
+      await record.save();
+      return { action: "verified", webhookId: record.providerWebhookId, state: "ACTIVE" };
+    }
+
+    // Gone or deactivated. Stand the record down so the claim below can take
+    // it - leaving it "active" would make it permanently unrepairable.
+    record.provisionState = "failed";
+    record.providerState = live ? webhookStatus(live) : "";
+    record.provisionStartedAt = null;
+    record.lastError = live ? "Webhook is not ACTIVE at the provider" : "Webhook not found at the provider";
+    record.lastCheckedAt = new Date();
+    await record.save();
   }
 
   const claim = await claimProvisioning(url);
@@ -351,6 +382,7 @@ module.exports = {
   autoProvisionEnabled,
   sameUrl,
   sameEvents,
+  webhookStatus,
   checkConnectivity,
   ensureWebhook,
   provisionWebhook,
