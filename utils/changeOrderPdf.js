@@ -14,6 +14,7 @@ const {
 } = require("../config/changeOrderTerms");
 const { formatMoney } = require("./contractValidation");
 const { lineAmountCents, formatSignedCents } = require("./changeOrderTotals");
+const { placeInkInBox } = require("./pngInkBox");
 
 const PAGE = { width: 612, height: 792, marginX: 54, top: 54, bottom: 62 };
 const CONTENT_WIDTH = PAGE.width - PAGE.marginX * 2;
@@ -341,9 +342,25 @@ async function generateChangeOrderPdfBuffer(changeOrder, options = {}) {
     // Signatures are drawn onto the rule: the company's when the change order
     // is issued, the customer's when it is executed.
     const image = index === 0 ? options.customerSignatureImage : options.companySignatureImage;
+    const inkBox = index === 0 ? options.customerSignatureInkBox : options.companySignatureInkBox;
     if (image) {
       try {
-        doc.image(image, x + 2, lineY - 34, { fit: [colWidth - 8, 30], align: "left" });
+        // Place the ink rather than the canvas, so a stroke floating in a large
+        // transparent field still fills the signature rule. See pngInkBox.
+        const placement = placeInkInBox(inkBox, {
+          x: x + 2,
+          y: lineY - 30,
+          width: colWidth - 8,
+          height: 26,
+        });
+        if (placement) {
+          doc.image(image, placement.x, placement.y, {
+            width: placement.width,
+            height: placement.height,
+          });
+        } else {
+          doc.image(image, x + 2, lineY - 34, { fit: [colWidth - 8, 30], align: "left" });
+        }
       } catch (error) {
         console.error("changeOrderPdf: signature image could not be drawn:", error?.message);
       }

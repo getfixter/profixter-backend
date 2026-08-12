@@ -4,6 +4,7 @@ const {
   COMPANY_INFO,
   CONTRACT_TERMS_SECTIONS,
 } = require("../config/premiumIslandHomesContract");
+const { placeInkInBox } = require("./pngInkBox");
 const {
   buildContractFilename,
   contractDisplayLabel,
@@ -666,10 +667,27 @@ function drawSignatureBlock(doc, title, printedName = "", options = {}) {
   // when the agreement is generated; the customer's when it is executed.
   if (options.signatureImage) {
     try {
-      doc.image(options.signatureImage, PAGE.marginX + 4, signatureLineY - 42, {
-        fit: [200, 38],
-        align: "left",
+      // Place the ink, not the canvas. A signature exported from a drawing app
+      // is a stroke floating in a large transparent field; fitting the whole
+      // canvas to the box shrinks the writing to an illegible smudge. The
+      // transparent surround spills outside the box and draws nothing.
+      const placement = placeInkInBox(options.signatureInkBox, {
+        x: PAGE.marginX + 4,
+        y: signatureLineY - 34,
+        width: 200,
+        height: 30,
       });
+      if (placement) {
+        doc.image(options.signatureImage, placement.x, placement.y, {
+          width: placement.width,
+          height: placement.height,
+        });
+      } else {
+        doc.image(options.signatureImage, PAGE.marginX + 4, signatureLineY - 42, {
+          fit: [200, 38],
+          align: "left",
+        });
+      }
     } catch (error) {
       // A bad asset must never stop an agreement being produced.
       console.error("contractPdf: company signature image could not be drawn:", error?.message);
@@ -734,6 +752,7 @@ function drawSignaturePage(doc, contract, options = {}) {
   // into the frozen document the customer reviews.
   drawSignatureBlock(doc, COMPANY_INFO.legalName, `${COMPANY_INFO.projectManager}\nProject Manager`, {
     signatureImage: options.companySignatureImage || null,
+    signatureInkBox: options.companySignatureInkBox || null,
     signedDate: options.companySignedDate || "",
   });
 }

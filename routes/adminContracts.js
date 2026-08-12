@@ -30,7 +30,7 @@ const {
   ZERO_ADJUSTED_PRICE_WARNING,
 } = require("../utils/contractValidation");
 const { generateContractPdfBuffer } = require("../utils/contractPdf");
-const { getCompanySignatureImage } = require("../utils/companySignature");
+const { getCompanySignatureAsset } = require("../utils/companySignature");
 const { formatSigningDate } = require("../utils/esign/executedDocument");
 const {
   autoIssueDate,
@@ -488,7 +488,8 @@ router.post("/:id/generate", async (req, res) => {
 
     // Countersign before the customer sees it. A missing asset yields null and
     // the block falls back to an empty signature rule.
-    const companySignatureImage = await getCompanySignatureImage();
+    const companySignature = await getCompanySignatureAsset();
+    const companySignatureImage = companySignature?.buffer || null;
 
     // Stamped on the first generation that actually applies the signature, then
     // reused verbatim. Reading the clock here instead would silently re-date
@@ -497,6 +498,7 @@ router.post("/:id/generate", async (req, res) => {
 
     const pdfBuffer = await generateContractPdfBuffer(contract, {
       companySignatureImage,
+      companySignatureInkBox: companySignature?.inkBox || null,
       companySignedDate: companySignedAt ? formatSigningDate(companySignedAt) : "",
     });
     const fileName = buildContractFilename(contract);

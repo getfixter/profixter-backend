@@ -29,7 +29,8 @@ const { PDFDocument } = require("pdf-lib");
 
 const { generateContractPdfBuffer } = require("../contractPdf");
 const { generateChangeOrderPdfBuffer } = require("../changeOrderPdf");
-const { getCompanySignatureImage } = require("../companySignature");
+const { getCompanySignatureAsset } = require("../companySignature");
+const { pngInkBox } = require("../pngInkBox");
 const { sha256 } = require("./nativeSigning");
 
 /** Dates on documents are formatted identically everywhere. */
@@ -55,7 +56,8 @@ async function renderFrozenDocument({
   pinnedDate = null,
   companySignedAt = null,
 }) {
-  const companySignatureImage = await getCompanySignatureImage();
+  const asset = await getCompanySignatureAsset();
+  const companySignatureImage = asset?.buffer || null;
   const collectAnchors = [];
 
   // The company execution date is a stored fact, not the render clock. Freezing
@@ -65,6 +67,7 @@ async function renderFrozenDocument({
 
   const options = {
     companySignatureImage,
+    companySignatureInkBox: asset?.inkBox || null,
     companySignedDate:
       companySignatureImage && companyDate ? formatSigningDate(companyDate) : "",
     collectAnchors,
@@ -117,18 +120,42 @@ async function overlayExecution({ frozenBuffer, anchors, signatureImage, signedA
   const pageHeight = page.getHeight();
   const png = await pdf.embedPng(signatureImage);
 
-  // Fit inside the anchor box while preserving aspect ratio, so a wide or tall
-  // signature is never stretched.
+  /*
+   * Place the customer's ink, not their canvas.
+   *
+   * A signature pad returns the whole pad, so someone who signs small leaves a
+   * stroke in a mostly empty image. Fitting that image to the anchor box scales
+   * the emptiness and renders the signature tiny. Measuring the ink and scaling
+   * that instead makes every signature land on the rule at a consistent size,
+   * whether it was drawn large or small.
+   */
+  const ink = pngInkBox(signatureImage);
   const box = { width: signatureAnchor.width, height: signatureAnchor.height };
-  const scale = Math.min(box.width / png.width, box.height / png.height, 1);
-  const drawWidth = png.width * scale;
-  const drawHeight = png.height * scale;
+  let drawWidth;
+  let drawHeight;
+  let drawX = signatureAnchor.x;
+  let drawTopY = signatureAnchor.topY;
+
+  if (ink) {
+    const scale = Math.min(box.width / ink.width, box.height / ink.height);
+    drawWidth = ink.canvasWidth * scale;
+    drawHeight = ink.canvasHeight * scale;
+    // Sit the ink's baseline on the rule and centre it horizontally in the box.
+    drawX = signatureAnchor.x + (box.width - ink.width * scale) / 2 - ink.x * scale;
+    drawTopY = signatureAnchor.topY - (ink.canvasHeight - (ink.y + ink.height)) * scale;
+  } else {
+    // Unreadable or fully transparent: fall back to fitting the whole canvas,
+    // never stretched.
+    const scale = Math.min(box.width / png.width, box.height / png.height, 1);
+    drawWidth = png.width * scale;
+    drawHeight = png.height * scale;
+  }
 
   // pdfkit measured from the top of the page; pdf-lib measures from the bottom.
   // Sit the signature on the rule rather than through it.
   page.drawImage(png, {
-    x: signatureAnchor.x,
-    y: pageHeight - signatureAnchor.topY + 2,
+    x: drawX,
+    y: pageHeight - drawTopY + 2,
     width: drawWidth,
     height: drawHeight,
   });

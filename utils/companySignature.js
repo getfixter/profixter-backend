@@ -18,9 +18,10 @@
  */
 
 const { getObjectBuffer } = require("./s3");
+const { pngInkBox } = require("./pngInkBox");
 
 /** Cached in memory: it is small, immutable, and read on every generation. */
-let cache = { key: "", buffer: null, fetchedAt: 0 };
+let cache = { key: "", buffer: null, inkBox: null, fetchedAt: 0 };
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -34,7 +35,7 @@ function isConfigured() {
 
 /** Exposed for tests. */
 function _resetCache() {
-  cache = { key: "", buffer: null, fetchedAt: 0 };
+  cache = { key: "", buffer: null, inkBox: null, fetchedAt: 0 };
 }
 
 /**
@@ -53,7 +54,10 @@ async function getCompanySignatureImage() {
   try {
     const buffer = await getObjectBuffer({ Key: key });
     if (!buffer || !buffer.length) return null;
-    cache = { key, buffer, fetchedAt: Date.now() };
+    // Measured once per fetch: a signature exported from a drawing app is a
+    // small stroke in a large transparent canvas, and scaling the canvas
+    // instead of the stroke renders the signature as a smudge.
+    cache = { key, buffer, inkBox: pngInkBox(buffer), fetchedAt: Date.now() };
     return buffer;
   } catch (error) {
     console.error("companySignature: could not read the signature asset:", error?.message);
@@ -61,9 +65,20 @@ async function getCompanySignatureImage() {
   }
 }
 
+/**
+ * The signature plus where its ink sits, for renderers that place rather than
+ * merely fit. Returns null when nothing is configured or readable.
+ */
+async function getCompanySignatureAsset() {
+  const buffer = await getCompanySignatureImage();
+  if (!buffer) return null;
+  return { buffer, inkBox: cache.inkBox };
+}
+
 module.exports = {
   isConfigured,
   getCompanySignatureImage,
+  getCompanySignatureAsset,
   configuredKey,
   _resetCache,
 };
