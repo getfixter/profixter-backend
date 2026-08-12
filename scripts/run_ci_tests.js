@@ -19,6 +19,7 @@ const SUITES = [
   "test_project_financials.js",
   "test_document_dates.js",
   "test_png_ink_box.js",
+  "test_invoice_online_payments.js",
   "test_change_order_document.js",
   "test_esign_signature_flow.js",
   "test_native_signing.js",

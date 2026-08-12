@@ -1270,6 +1270,74 @@ async function handleInvoicePaid(invoice) {
   return subscription;
 }
 
+/**
+ * Money collected online for a ProFixter project invoice.
+ *
+ * Deliberately separate from handleInvoicePaid, which serves subscriptions.
+ * This one only acts on invoices carrying our own metadata, so the two can
+ * never process each other's objects even though they observe the same event.
+ *
+ * All the safety lives in recordStripePayment: it re-reads nothing it should
+ * not trust, applies at most the outstanding balance in integer cents, and is
+ * idempotent on the PaymentIntent so retries and duplicate deliveries record
+ * one payment.
+ */
+async function handleProjectInvoicePaid(stripeInvoice, eventId) {
+  if (!stripeInvoice) return null;
+  // Subscriptions are the other handler's business.
+  if (stripeInvoice.subscription) return null;
+
+  const invoiceId = stripeInvoice.metadata?.profixterInvoiceId;
+  if (!invoiceId || stripeInvoice.metadata?.source !== "profixter_invoice") return null;
+
+  const Invoice = require("../models/Invoice");
+  const {
+    recordStripePayment,
+    classifyInvoicePayment,
+    flagOutOfBandSettlement,
+  } = require("../utils/invoiceOnlinePayments");
+
+  // Always read the current invoice: the balance may have moved since the
+  // Stripe invoice was issued.
+  const invoice = await Invoice.findById(invoiceId);
+  if (!invoice) return null;
+
+  /*
+   * invoice.paid also fires when an invoice is marked paid out of band in the
+   * Stripe Dashboard, where no money moved through Stripe. Recording that as a
+   * customer online payment would invent revenue, so a payment is only recorded
+   * when a real PaymentIntent backs it.
+   */
+  const classification = classifyInvoicePayment(stripeInvoice);
+  if (!classification.online) {
+    const flagged = flagOutOfBandSettlement(invoice, {
+      reason: classification.reason,
+      amountCents: stripeInvoice.amount_paid,
+      stripeInvoiceId: stripeInvoice.id,
+    });
+    await invoice.save();
+    return flagged;
+  }
+
+  const result = recordStripePayment(invoice, {
+    paymentIntentId: classification.paymentIntentId,
+    stripeInvoiceId: stripeInvoice.id,
+    eventId,
+    amountCents: stripeInvoice.amount_paid,
+    paidAt: stripeInvoice.status_transitions?.paid_at
+      ? new Date(stripeInvoice.status_transitions.paid_at * 1000)
+      : new Date(),
+    paymentMethodType: stripeInvoice.payments?.data?.[0]?.payment?.type,
+  });
+
+  invoice.onlinePayment.stripeStatus = stripeInvoice.status || invoice.onlinePayment.stripeStatus;
+  // A paid invoice is no longer a place to send someone to pay.
+  if (stripeInvoice.status === "paid") invoice.onlinePayment.hostedInvoiceUrl = "";
+  invoice.markModified("onlinePayment");
+  await invoice.save();
+  return result;
+}
+
 const ymdInTZ = (d, tz) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
 const hhmmInTZ = (d, tz) =>
@@ -1528,7 +1596,13 @@ module.exports = async (req, res) => {
         break;
 
       case "invoice.paid":
+        // Two independent consumers of the same event. The subscription handler
+        // guards on invoice.subscription and ignores everything else; the
+        // project handler guards on our own metadata. Neither can process the
+        // other's invoices, and the subscription path sees exactly the events it
+        // saw before.
         syncResult = await handleInvoicePaid(event.data.object);
+        await handleProjectInvoicePaid(event.data.object, event.id);
         break;
 
       case "invoice.payment_failed":

@@ -32,6 +32,17 @@ const {
   autoIssueDate,
   invoiceIsIssued: invoiceHasBeenIssued,
 } = require("../utils/documentDates");
+const User = require("../models/User");
+const {
+  OnlinePaymentError,
+  onlinePaymentsEnabled,
+  ensureCollectible,
+  invalidateIfStale,
+  isCollectible,
+  outstandingCents,
+  reconcileInvoice,
+  voidDestination,
+} = require("../utils/invoiceOnlinePayments");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -214,6 +225,56 @@ function defaultEmailBody(invoice) {
     "Premium Island Homes Inc.",
     "631-599-1363",
   ].join("\n");
+}
+
+/**
+ * The invoice email.
+ *
+ * Plain, table-based HTML because that is what survives Outlook and the mobile
+ * clients customers actually use. The Pay button only appears when there is a
+ * real destination for it: a paid, voided or unprovisioned invoice gets the
+ * same email without one, never a button that fails when tapped.
+ */
+function buildInvoiceEmailHtml({ invoice, message, payUrl }) {
+  const body = htmlEscape(message).replace(/\n/g, "<br>");
+  const outstanding = outstandingCents(invoice);
+  const rows = [
+    ["Invoice", invoiceDisplayLabel(invoice)],
+    ["Total", formatMoney(invoice.invoiceTotalCents)],
+    ["Outstanding balance", formatMoney(outstanding)],
+  ]
+    .map(
+      ([label, value]) =>
+        `<tr><td style="padding:4px 0;color:#6b7280;font-size:14px;">${htmlEscape(label)}</td>` +
+        `<td style="padding:4px 0;text-align:right;color:#111827;font-size:14px;font-weight:bold;">${htmlEscape(value)}</td></tr>`
+    )
+    .join("");
+
+  const payButton = payUrl
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+         <tr><td style="border-radius:10px;background:#0B1628;">
+           <a href="${htmlEscape(payUrl)}" style="display:inline-block;padding:14px 28px;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:10px;">Pay Invoice</a>
+         </td></tr>
+       </table>
+       <p style="margin:0 0 20px;color:#6b7280;font-size:12px;line-height:18px;">Payment is processed securely by Stripe. You do not need an account to pay.</p>`
+    : "";
+
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#f5f7fb;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;padding:28px;font-family:Helvetica,Arial,sans-serif;">
+        <tr><td style="color:#111827;font-size:15px;line-height:23px;">${body}</td></tr>
+        <tr><td style="padding-top:22px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e5e7eb;padding-top:12px;">${rows}</table>
+        </td></tr>
+        <tr><td>${payButton}</td></tr>
+        <tr><td style="border-top:1px solid #e5e7eb;padding-top:14px;color:#9ca3af;font-size:12px;line-height:18px;">
+          Premium Island Homes Inc. &nbsp;|&nbsp; 631-599-1363
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
 }
 
 function contentSignature(invoiceLike) {
@@ -647,6 +708,9 @@ router.post("/project/:projectId/draft", async (req, res) => {
     } else {
       Object.assign(invoice, update);
       invoice.updatedBy = req.user.id;
+      // Editing after sending changes what is collectible; the old Stripe page
+      // must not keep collecting the previous amount.
+      await invalidateIfStale(invoice, "Invoice edited after sending");
       live = await refreshFinancialSnapshot(invoice);
       const nextSignature = contentSignature(invoice.toObject());
       if ((invoice.generatedPdfs || []).length && previousSignature !== nextSignature) {
@@ -829,12 +893,42 @@ router.post("/:id/email", async (req, res) => {
     if (!subject) return res.status(400).json({ message: "Email subject is required" });
     if (!message) return res.status(400).json({ message: "Email message is required" });
 
+    /*
+     * Provision the payment destination BEFORE sending. If Stripe cannot give
+     * us a page, the email must not go out carrying a Pay button that leads
+     * nowhere - the admin sees the failure and can retry instead.
+     */
+    let payUrl = "";
+    if (isCollectible(invoice) && onlinePaymentsEnabled()) {
+      try {
+        payUrl = await ensureCollectible(invoice, { User });
+        await invoice.save();
+      } catch (paymentError) {
+        await invoice.save().catch(() => {});
+        const code = paymentError instanceof OnlinePaymentError ? paymentError.code : "stripe_error";
+        /*
+         * Default to refusing: an email carrying a Pay button that fails when
+         * tapped is worse than no email. But a Stripe outage must not be able to
+         * stop the business invoicing, so the admin can knowingly send without
+         * online payment. Never silently.
+         */
+        if (req.body?.allowWithoutOnlinePayment !== true) {
+          return res.status(502).json({
+            message: `The invoice was not sent because the online payment page could not be created: ${paymentError.message}`,
+            code,
+            canSendWithoutOnlinePayment: true,
+          });
+        }
+        invoice.addEvent("Sent without online payment", req, { reason: paymentError.message });
+      }
+    }
+
     const pdfBuffer = await getObjectBuffer({ Key: pdf.key });
     const info = await sendRaw({
       to: recipient,
       subject,
-      html: `<p>${htmlEscape(message).replace(/\n/g, "<br>")}</p>`,
-      text: message,
+      html: buildInvoiceEmailHtml({ invoice, message, payUrl }),
+      text: payUrl ? `${message}\n\nPay online: ${payUrl}` : message,
       attachments: [
         {
           filename: pdf.fileName || buildInvoiceFilename(invoice),
@@ -895,6 +989,9 @@ router.post("/:id/payments", async (req, res) => {
     });
     const financials = calculateInvoiceFinancials(invoice);
     if (financials.errors.length) return res.status(400).json({ message: financials.errors[0], errors: financials.errors });
+    // An offline payment reduces what is still owed, so any Stripe page issued
+    // for the previous balance is now collecting the wrong amount.
+    await invalidateIfStale(invoice, "Offline payment recorded");
     if ((invoice.generatedPdfs || []).length) invoice.requiresRegeneration = true;
     invoice.updatedBy = req.user.id;
     invoice.addEvent("Payment added", req, {
@@ -987,6 +1084,9 @@ router.post("/:id/void", async (req, res) => {
     if (confirmation !== "VOID") {
       return res.status(400).json({ message: "Type VOID to confirm invoice voiding" });
     }
+    // A voided invoice must not leave a live page still able to take money.
+    await voidDestination(invoice, "Invoice voided");
+
     invoice.status = "Voided";
     invoice.voidedAt = new Date();
     invoice.voidedBy = req.user.id;
@@ -998,6 +1098,40 @@ router.post("/:id/void", async (req, res) => {
     return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
   } catch (error) {
     return handleWriteError(error, res, "Failed to void invoice");
+  }
+});
+
+/**
+ * Repair local state from Stripe.
+ *
+ * Financial state must not depend on one webhook arriving exactly once. If a
+ * delivery was lost or processed during a deploy, this re-reads the Stripe
+ * invoice and applies anything missing. Idempotent: running it twice records
+ * one payment.
+ */
+router.post("/:id/reconcile-payment", async (req, res) => {
+  try {
+    const invoice = await getInvoiceForProjectOr404(req.params.id, req, res);
+    if (!invoice) return null;
+    if (!invoice.onlinePayment?.stripeInvoiceId) {
+      return res.status(409).json({ message: "This invoice has no online payment destination to reconcile." });
+    }
+
+    const result = await reconcileInvoice(invoice);
+    invoice.updatedBy = req.user.id;
+    invoice.addEvent("Online payment reconciled", req, {
+      applied: !!result.applied,
+      appliedCents: result.appliedCents || 0,
+    });
+    await invoice.save();
+
+    return res.json({
+      invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }),
+      result,
+    });
+  } catch (error) {
+    console.error("POST /admin/invoices/:id/reconcile-payment failed:", error?.message);
+    return res.status(502).json({ message: "Could not reconcile this invoice with Stripe." });
   }
 });
 

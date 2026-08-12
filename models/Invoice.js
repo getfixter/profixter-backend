@@ -42,6 +42,32 @@ const PaymentSchema = new mongoose.Schema(
     note: { type: String, trim: true, maxlength: 1000, default: "" },
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     recordedByEmail: { type: String, trim: true, lowercase: true, maxlength: 254, default: "" },
+
+    /*
+     * Where this payment came from. "manual" is an admin recording a cheque,
+     * cash or a transfer that happened outside the system; "stripe" is money
+     * collected online. Existing payments have no provider field and read as
+     * manual, which is what they are.
+     */
+    provider: { type: String, enum: ["manual", "stripe"], default: "manual", index: true },
+
+    /*
+     * Stripe identifiers. The PaymentIntent is the idempotency key: it is
+     * stable across webhook retries and across the several event types that can
+     * announce the same payment, so it is what stops one payment being recorded
+     * twice.
+     */
+    stripePaymentIntentId: { type: String, trim: true, maxlength: 120, default: "" },
+    stripeInvoiceId: { type: String, trim: true, maxlength: 120, default: "" },
+    /** The event that produced this record, kept for audit rather than matching. */
+    stripeEventId: { type: String, trim: true, maxlength: 120, default: "" },
+    /**
+     * What Stripe actually collected, which is not always what we applied.
+     * If an offline payment landed after the Stripe invoice was issued, we
+     * apply only what was still owed and record the full collected amount here
+     * so the difference is visible rather than lost.
+     */
+    providerAmountCents: { type: Number, min: 0, default: 0 },
   },
   { _id: true, timestamps: true }
 );
@@ -191,6 +217,39 @@ const InvoiceSchema = new mongoose.Schema(
       previouslyPaidCents: { type: Number, min: 0, default: 0 },
       uninvoicedApprovedCents: { type: Number, min: 0, default: 0 },
       capturedAt: { type: Date, default: null },
+    },
+
+    /**
+     * The online payment destination for this invoice.
+     *
+     * ProFixter stays the source of truth: this records only how the customer
+     * can pay and what Stripe was told to collect. `amountDueCents` is the
+     * figure the Stripe invoice was finalized for, and it is what makes staleness
+     * detectable - if the invoice is edited or an offline payment lands, the
+     * outstanding balance no longer matches this, and the destination must be
+     * voided and reissued rather than left collecting the wrong amount.
+     */
+    onlinePayment: {
+      provider: { type: String, enum: ["stripe", ""], default: "" },
+      stripeInvoiceId: { type: String, trim: true, maxlength: 120, default: "" },
+      stripeCustomerId: { type: String, trim: true, maxlength: 120, default: "" },
+      /** The Stripe Hosted Invoice Page. Safe to email; not a secret, but not guessable. */
+      hostedInvoiceUrl: { type: String, trim: true, maxlength: 1000, default: "" },
+      /** Stripe's own state, kept separate from the ProFixter invoice status. */
+      stripeStatus: { type: String, trim: true, maxlength: 40, default: "" },
+      /** Cents the Stripe invoice was finalized to collect. */
+      amountDueCents: { type: Number, min: 0, default: 0 },
+      finalizedAt: { type: Date, default: null },
+      voidedAt: { type: Date, default: null },
+      lastSyncedAt: { type: Date, default: null },
+      /** Set when provisioning failed, so the admin sees why no Pay button was sent. */
+      lastError: { type: String, trim: true, maxlength: 500, default: "" },
+      /**
+       * Money Stripe collected that could not be applied because the balance
+       * had already been reduced offline. Never silently dropped: it is surfaced
+       * to the admin as a reconciliation condition.
+       */
+      unappliedCents: { type: Number, min: 0, default: 0 },
     },
 
     lineItems: {
