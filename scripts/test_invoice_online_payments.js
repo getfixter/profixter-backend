@@ -107,8 +107,9 @@ async function test(name, fn) {
 const $ = (dollars) => Math.round(dollars * 100);
 
 /** A plain invoice-shaped object with just enough behaviour for these rules. */
-function makeInvoice({ total = $(6700), payments = [], status = "Sent", link = null } = {}) {
+function makeInvoice({ total = $(6700), payments = [], status = "Sent", link = null, dueDate = new Date("2026-08-12T12:00:00.000Z") } = {}) {
   return {
+    dates: { dueDate },
     _id: "inv1",
     invoiceNumber: "000123",
     projectId: "proj1",
@@ -373,6 +374,88 @@ async function main() {
     assert.strictEqual(p.stripeInvoiceId, "in_1");
     assert.strictEqual(p.stripeEventId, "evt_1");
     assert.ok(!/\d{13,}/.test(JSON.stringify(p)), "something card-number shaped was stored");
+  });
+
+  /* ---------------- due dates ---------------- */
+  console.log("\nDue dates");
+
+  const dayOf = (unix, tz) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
+      .format(new Date(unix * 1000));
+
+  await test("Stripe is given the invoice's own due date, not a 30 day default", async () => {
+    const invoice = makeInvoice({ dueDate: new Date("2026-08-12T12:00:00.000Z") });
+    await online.ensureCollectible(invoice);
+    const created = calls.find((c) => c.name === "invoices.create");
+    assert.ok(!("days_until_due" in created.args), "Stripe must not compute its own due date");
+    assert.strictEqual(dayOf(created.args.due_date, "America/New_York"), "2026-08-12");
+  });
+
+  await test("the same calendar day is shown in New York and in UTC", () => {
+    const unix = online.dueDateUnix(makeInvoice({ dueDate: new Date("2026-08-12T12:00:00.000Z") }));
+    assert.strictEqual(dayOf(unix, "America/New_York"), "2026-08-12");
+    assert.strictEqual(dayOf(unix, "UTC"), "2026-08-12", "the date must not shift for a UTC reader");
+    assert.strictEqual(dayOf(unix, "America/Los_Angeles"), "2026-08-12");
+  });
+
+  await test("a due date stored late at night in New York does not roll forward", () => {
+    // 2026-08-12T23:30 New York is 2026-08-13T03:30 UTC. Reading the calendar
+    // day in UTC would say the 13th, which is the classic off by one.
+    const unix = online.dueDateUnix(makeInvoice({ dueDate: new Date("2026-08-13T03:30:00.000Z") }));
+    assert.strictEqual(dayOf(unix, "America/New_York"), "2026-08-12");
+    assert.strictEqual(dayOf(unix, "UTC"), "2026-08-12");
+  });
+
+  await test("a due date stored just after midnight UTC does not roll back", () => {
+    // 2026-08-12T00:30 UTC is still 2026-08-11 in New York.
+    const unix = online.dueDateUnix(makeInvoice({ dueDate: new Date("2026-08-12T00:30:00.000Z") }));
+    assert.strictEqual(dayOf(unix, "America/New_York"), "2026-08-11");
+    assert.strictEqual(dayOf(unix, "UTC"), "2026-08-11");
+  });
+
+  await test("due today, tomorrow and in thirty days each map to their own day", () => {
+    const cases = [
+      ["2026-08-12T12:00:00.000Z", "2026-08-12"],
+      ["2026-08-13T12:00:00.000Z", "2026-08-13"],
+      ["2026-09-11T12:00:00.000Z", "2026-09-11"],
+    ];
+    for (const [stored, expected] of cases) {
+      const unix = online.dueDateUnix(makeInvoice({ dueDate: new Date(stored) }));
+      assert.strictEqual(dayOf(unix, "America/New_York"), expected, `${stored} produced the wrong day`);
+    }
+  });
+
+  await test("a due date across the winter time change still holds", () => {
+    // Standard time, where New York is UTC-5 rather than UTC-4.
+    const unix = online.dueDateUnix(makeInvoice({ dueDate: new Date("2026-12-15T12:00:00.000Z") }));
+    assert.strictEqual(dayOf(unix, "America/New_York"), "2026-12-15");
+    assert.strictEqual(dayOf(unix, "UTC"), "2026-12-15");
+  });
+
+  await test("a missing or invalid due date is handled rather than crashing", () => {
+    assert.strictEqual(online.dueDateUnix({ dates: {} }), null);
+    assert.strictEqual(online.dueDateUnix({}), null);
+    assert.strictEqual(online.dueDateUnix({ dates: { dueDate: new Date("nonsense") } }), null);
+  });
+
+  await test("changing the due date invalidates the destination", async () => {
+    const invoice = makeInvoice({ dueDate: new Date("2026-08-12T12:00:00.000Z") });
+    await online.ensureCollectible(invoice);
+    assert.strictEqual(online.destinationIsCurrent(invoice), true);
+
+    invoice.dates.dueDate = new Date("2026-08-20T12:00:00.000Z");
+    assert.strictEqual(online.destinationIsCurrent(invoice), false, "a stale due date must not stand");
+    assert.strictEqual(await online.invalidateIfStale(invoice, "due date changed"), true);
+  });
+
+  await test("reissuing after a due date change sends the new date and voids the old invoice", async () => {
+    const invoice = makeInvoice({ dueDate: new Date("2026-08-12T12:00:00.000Z") });
+    await online.ensureCollectible(invoice);
+    invoice.dates.dueDate = new Date("2026-08-20T12:00:00.000Z");
+    await online.ensureCollectible(invoice);
+    assert.strictEqual(countCalls("invoices.voidInvoice"), 1, "the wrongly dated invoice was left collectible");
+    const latest = calls.filter((c) => c.name === "invoices.create").pop();
+    assert.strictEqual(dayOf(latest.args.due_date, "America/New_York"), "2026-08-20");
   });
 
   /* ---------------- paid out of band ---------------- */

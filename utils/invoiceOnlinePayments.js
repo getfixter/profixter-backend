@@ -84,7 +84,48 @@ function destinationIsCurrent(invoice) {
   const link = invoice?.onlinePayment;
   if (!link?.stripeInvoiceId) return false;
   if (!COLLECTIBLE_STRIPE_STATUSES.includes(String(link.stripeStatus || ""))) return false;
-  return toCents(link.amountDueCents) === outstandingCents(invoice);
+  if (toCents(link.amountDueCents) !== outstandingCents(invoice)) return false;
+  // A Stripe page promising a different due date than the invoice is telling
+  // the customer something we did not say, so it counts as stale too.
+  const expectedDue = dueDateUnix(invoice);
+  if (expectedDue && Number(link.dueDateUnix || 0) !== expectedDue) return false;
+  return true;
+}
+
+/**
+ * The Stripe due date for a ProFixter invoice, as a Unix timestamp.
+ *
+ * ProFixter owns the due date. Letting Stripe compute its own with
+ * days_until_due produced a hosted page saying September 11 for an invoice due
+ * August 12, which is the customer being told the wrong thing by our own
+ * payment page.
+ *
+ * The conversion is the delicate part. A date-only due date is stored at noon
+ * UTC (see parseDate in invoiceValidation), and the PDF renders it in
+ * America/New_York. So the calendar day is read back in New York, then pinned
+ * to noon UTC on that day: midday is far enough from both midnight boundaries
+ * that the same calendar date is displayed whether Stripe renders in UTC or in
+ * any US timezone. Anchoring to midnight would shift the date by one day for
+ * half the world.
+ */
+function dueDateUnix(invoice, timeZone = "America/New_York") {
+  const due = invoice?.dates?.dueDate;
+  if (!due) return null;
+  const date = new Date(due);
+  if (Number.isNaN(date.getTime())) return null;
+
+  // en-CA formats as YYYY-MM-DD, which parses back without ambiguity.
+  const [year, month, day] = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(date)
+    .split("-")
+    .map(Number);
+
+  return Math.floor(Date.UTC(year, month - 1, day, 12, 0, 0) / 1000);
 }
 
 /**
@@ -197,18 +238,20 @@ async function ensureCollectible(invoice, { User } = {}) {
   }
 
   const amountDue = outstandingCents(invoice);
+  const dueUnix = dueDateUnix(invoice);
   const customerId = await resolveStripeCustomerId(invoice, { User });
   const metadata = invoiceMetadata(invoice);
   // Distinguishes one collectible attempt from the next for the same invoice,
   // so a retry reuses objects but a genuine reissue does not collide.
-  const attemptKey = `pfx-inv-${invoice._id}-${amountDue}-${Number(invoice.version || 1)}`;
+  const attemptKey = `pfx-inv-${invoice._id}-${amountDue}-${dueUnix || 0}-${Number(invoice.version || 1)}`;
 
   try {
     const draft = await stripe.invoices.create(
       {
         customer: customerId,
         collection_method: "send_invoice",
-        days_until_due: 30,
+        // The ProFixter due date, never a Stripe-computed one.
+        ...(dueUnix ? { due_date: dueUnix } : { days_until_due: 30 }),
         auto_advance: false,
         currency: "usd",
         description: `ProFixter Invoice #${invoice.invoiceNumber}`,
@@ -249,6 +292,7 @@ async function ensureCollectible(invoice, { User } = {}) {
       hostedInvoiceUrl: finalized.hosted_invoice_url,
       stripeStatus: finalized.status,
       amountDueCents: amountDue,
+      dueDateUnix: dueUnix || 0,
       finalizedAt: new Date(),
       voidedAt: null,
       lastSyncedAt: new Date(),
@@ -493,6 +537,7 @@ async function reconcileInvoice(invoice) {
 
 module.exports = {
   OnlinePaymentError,
+  dueDateUnix,
   extractPaymentIntentId,
   classifyInvoicePayment,
   flagOutOfBandSettlement,

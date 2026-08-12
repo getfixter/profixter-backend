@@ -239,6 +239,8 @@ const InvoiceSchema = new mongoose.Schema(
       stripeStatus: { type: String, trim: true, maxlength: 40, default: "" },
       /** Cents the Stripe invoice was finalized to collect. */
       amountDueCents: { type: Number, min: 0, default: 0 },
+      /** The due date Stripe was given, so a changed one is detectable. */
+      dueDateUnix: { type: Number, min: 0, default: 0 },
       finalizedAt: { type: Date, default: null },
       voidedAt: { type: Date, default: null },
       lastSyncedAt: { type: Date, default: null },
