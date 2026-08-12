@@ -117,7 +117,7 @@ async function cleanup() {
   }
 }
 
-async function main() {
+async function main(options = {}) {
   console.log("\nAdmin QA environment\n");
 
   await assertPortFree(BACKEND_PORT, "backend");
@@ -296,7 +296,34 @@ async function main() {
   console.log(`  frontend   ${FRONTEND_URL}`);
   console.log(`  project    ${seed.projectId} (${seed.projectNumber})`);
   console.log(`  admin      ${seed.adminId} <${ADMIN_EMAIL}>`);
+
+  /*
+   * Hand the live, authenticated page to a caller so other QA suites can drive
+   * the real Admin without standing up their own stack. Anything it throws
+   * propagates, so a failing suite still tears the environment down.
+   */
+  if (typeof options.afterReady === "function") {
+    console.log("");
+    await options.afterReady({
+      page,
+      frontendUrl: FRONTEND_URL,
+      backendUrl: BACKEND_URL,
+      projectId: String(seed.projectId),
+      projectNumber: seed.projectNumber,
+    });
+  }
 }
+
+/** Reusable entry point for suites that need an authenticated Admin. */
+async function runAdminQaEnvironment(options = {}) {
+  try {
+    await main(options);
+  } finally {
+    await cleanup();
+  }
+}
+
+module.exports = { runAdminQaEnvironment };
 
 /**
  * The project financial summary, as actually rendered.
@@ -372,7 +399,8 @@ process.on("SIGINT", async () => {
   process.exit(130);
 });
 
-main()
+if (require.main === module) {
+  main()
   .then(async () => {
     await cleanup();
     console.log("\n  cleanup complete — no processes left running.\n");
@@ -384,3 +412,5 @@ main()
     console.error("  cleanup complete — no processes left running.\n");
     process.exit(1);
   });
+
+}

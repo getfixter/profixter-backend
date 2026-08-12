@@ -21,6 +21,8 @@ const ChangeOrder = require("../models/ChangeOrder");
 const ESignature = require("../models/ESignature");
 const Project = require("../models/Project");
 const User = require("../models/User");
+const Invoice = require("../models/Invoice");
+const Estimate = require("../models/Estimate");
 
 /* ------------------------------------------------------------------ */
 /* Hostile layout content                                              */
@@ -293,7 +295,45 @@ async function seedAdminFixtures() {
     signingToken: { hash: "6".repeat(64), state: "completed", issuedAt: DATE },
   });
 
+  /*
+   * One Invoice and one Estimate, so the Admin QA can open a real document in
+   * those sections. Without them the Invoice and Estimate tabs only ever show
+   * an empty list, and any check of their UI passes vacuously.
+   */
+  const estimate = await Estimate.create({
+    projectId: project._id,
+    status: "Sent",
+    title: "Kitchen and bathroom proposal",
+    description: "Full scope proposal for QA.",
+    lineItems: [
+      { description: "Cabinetry and installation", quantity: 1, unitPrice: 12000 },
+      { description: "Counters", quantity: 1, unitPrice: 6500 },
+    ],
+    expirationDate: new Date("2026-12-31"),
+    createdBy: admin._id,
+  });
+
+  const invoice = await Invoice.create({
+    projectId: project._id,
+    status: "Sent",
+    sentAt: DATE,
+    source: "contract",
+    contractId: agreements.signed._id,
+    customerSnapshot: { fullName: LONG_NAME, email: "qa-customer@profixter.test", phone: "6315991363" },
+    propertySnapshot: { address: LONG_ADDRESS, formattedAddress: LONG_ADDRESS },
+    projectSnapshot: { projectNumber: "P-QA-0001", workType: "Kitchen", projectDescription: "QA project" },
+    contractSnapshot: { contractNumber: "QA0003", finalContractPriceCents: BIG_AMOUNT_CENTS },
+    lineItems: [
+      { description: "Progress payment", quantity: 1, unitPriceCents: 5000000, amountCents: 5000000, category: "Contract work" },
+    ],
+    dates: { invoiceDate: DATE, dueDate: DATE },
+    paymentInstructions: "Checks payable to Premium Island Homes Inc.",
+    createdBy: admin._id,
+  });
+
   return {
+    estimateId: String(estimate._id),
+    invoiceId: String(invoice._id),
     adminId: String(admin._id),
     adminEmail: ADMIN_EMAIL,
     projectId: String(project._id),
