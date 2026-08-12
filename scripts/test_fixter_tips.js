@@ -463,6 +463,60 @@ async function main() {
     assert.strictEqual(created.args.line_items[0].quantity, 1);
   });
 
+  await test("the amount box starts at $20 rather than at nothing", () => {
+    const price = state.prices[0];
+    assert.strictEqual(price.custom_unit_amount.preset, 2000, "the box does not start at $20.00");
+    assert.strictEqual(tips.TIP_PRESET_CENTS, 2000);
+  });
+
+  await test("the preset suggests, it does not restrict", () => {
+    // The whole risk of a default is that it quietly becomes the only option.
+    const price = state.prices[0];
+    assert.strictEqual(price.custom_unit_amount.enabled, true, "free entry was turned off");
+    assert.ok(!("unit_amount" in price), "the preset became a fixed price");
+    assert.ok(!("unit_amount_decimal" in price), "the preset became a fixed price");
+    assert.strictEqual(price.custom_unit_amount.minimum, 100, "the floor moved with the preset");
+    assert.strictEqual(price.custom_unit_amount.maximum, 200000, "the ceiling moved with the preset");
+    assert.ok(
+      price.custom_unit_amount.minimum < tips.TIP_PRESET_CENTS &&
+        tips.TIP_PRESET_CENTS < price.custom_unit_amount.maximum,
+      "the customer can no longer type an amount either side of the default"
+    );
+  });
+
+  await test("no preset buttons were smuggled in alongside it", async () => {
+    // A default amount is one field. Preset-only choices would be a different
+    // product, and the brief was explicit that free entry stays.
+    await tips.createTipCheckoutSession({ fixter: ROMAN, bookingId: "booking1" });
+    const created = calls.find((c) => c.name === "checkout.sessions.create");
+    assert.strictEqual(created.args.line_items.length, 1, "extra amount options appeared");
+    assert.ok(created.args.line_items[0].price, "the shared custom-amount price stopped being used");
+    assert.ok(!("price_data" in created.args.line_items[0]), "an inline amount replaced the price");
+    assert.ok(!("adjustable_quantity" in created.args.line_items[0]), "quantity became an amount dial");
+  });
+
+  await test("the preset change did not disturb attribution or the session shape", async () => {
+    // This is a change to one number. Everything the money depends on must be
+    // byte for byte what it was.
+    await tips.createTipCheckoutSession({ fixter: ROMAN, bookingId: "booking1", userId: "user1" });
+    const created = calls.find((c) => c.name === "checkout.sessions.create");
+    assert.strictEqual(created.args.mode, "payment");
+    assert.strictEqual(created.args.submit_type, "pay");
+    assert.strictEqual(created.args.metadata.productKind, "fixter_tip");
+    assert.strictEqual(created.args.metadata.fixterId, "fixter1");
+    assert.strictEqual(created.args.metadata.bookingId, "booking1");
+    assert.deepStrictEqual(created.args.payment_intent_data.metadata, created.args.metadata);
+    assert.match(created.args.success_url, /\/tip\/thank-you\?status=complete$/);
+  });
+
+  await test("the price is versioned, because Stripe cannot edit one in place", async () => {
+    // custom_unit_amount is absent from Stripe's price update params, so a
+    // changed preset has to arrive as a new price rather than an edit.
+    assert.match(tips.TIP_PRICE_LOOKUP_KEY, /_v2$/);
+    const price = state.prices[0];
+    assert.strictEqual(price.lookup_key, tips.TIP_PRICE_LOOKUP_KEY);
+  });
+
   await test("attribution rides in metadata and no personal data goes with it", async () => {
     const created = (
       await (async () => {

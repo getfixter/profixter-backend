@@ -56,13 +56,31 @@ const TIP_MIN_CENTS = 100;
 const TIP_MAX_CENTS = 200000;
 
 /**
+ * What the amount box starts at.
+ *
+ * A suggestion, not a price. Stripe pre-fills the field and the customer types
+ * over it, so this is the difference between a box reading $0.00 and one
+ * reading $20.00 - it never restricts what can be paid, and the free-entry
+ * behaviour either side of it is untouched.
+ */
+const TIP_PRESET_CENTS = 2000;
+
+/**
  * The reusable custom-amount Price behind every tip.
  *
  * Checkout Sessions cannot declare a customer-chosen amount inline: only a
  * Price carries custom_unit_amount. One shared Price gives the Payment Link's
  * free-entry box back, while the session around it carries the attribution.
+ *
+ * WHY THE KEY CARRIES A VERSION
+ * custom_unit_amount is fixed at creation: Stripe's price update accepts
+ * active, metadata, nickname, lookup_key and tax_behavior, and nothing that
+ * would let the amount configuration be edited. Changing the preset therefore
+ * means provisioning a new Price, and the version in the key is what makes that
+ * happen by itself on deploy rather than needing anyone in the dashboard. The
+ * superseded price is simply no longer referenced.
  */
-const TIP_PRICE_LOOKUP_KEY = "profixter_fixter_tip_usd";
+const TIP_PRICE_LOOKUP_KEY = "profixter_fixter_tip_usd_v2";
 
 /**
  * How long one tip attempt reuses the same Checkout Session.
@@ -274,9 +292,12 @@ async function ensureTipPriceId() {
         lookup_key: TIP_PRICE_LOOKUP_KEY,
         nickname: "Fixter tip - customer chooses the amount",
         custom_unit_amount: {
+          // enabled keeps the amount the customer's to type. preset only
+          // decides what is already in the box when they get there.
           enabled: true,
           minimum: TIP_MIN_CENTS,
           maximum: TIP_MAX_CENTS,
+          preset: TIP_PRESET_CENTS,
         },
         product_data: { name: "Tip for your Fixter" },
         metadata: { source: FIXTER_TIP_PRODUCT_KIND },
@@ -647,6 +668,7 @@ module.exports = {
   TIPPABLE_POSITIONS,
   TIP_MIN_CENTS,
   TIP_MAX_CENTS,
+  TIP_PRESET_CENTS,
   TIP_PRICE_LOOKUP_KEY,
   TIP_SESSION_WINDOW_MS,
   applyRefundToTip,
