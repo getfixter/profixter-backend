@@ -71,7 +71,53 @@ async function resolveOr(res, rawToken) {
       revoked: "This signing link is no longer active. Please contact us for a new one.",
       expired: "This signing link has expired. Please contact us for a new one.",
     };
-    res.status(200).json({ state: reason, message: messages[reason] || "This link is no longer active." });
+    res.status(200).json({
+      state: reason,
+      message: messages[reason] || "This link is no longer active.",
+      // A customer returning to their own link later can still open what they
+      // signed. Only ever true for a token that completed its own signing and
+      // has a stored executed document.
+      executedDocumentAvailable:
+        reason === "completed" &&
+        signature.signingToken?.state === "completed" &&
+        signature.status === "Completed" &&
+        Boolean(signature.executedPdf?.key),
+      documentType: reason === "completed" ? signature.documentType : undefined,
+    });
+    return null;
+  }
+
+  return signature;
+}
+
+/**
+ * Resolve a token that has finished signing, for read-only document access.
+ *
+ * Deliberately separate from resolveOr, which treats "completed" as a dead end
+ * because nothing may be SIGNED again. Retrieving the document you just signed
+ * is a different capability, and giving it its own resolver is what keeps the
+ * sign route terminal: signing capability is not reopened anywhere.
+ *
+ * All three conditions must hold, so a declined, revoked or expired request can
+ * never reach an executed document:
+ *   - the token itself completed (not merely a terminal signature record)
+ *   - the signature is Completed
+ *   - an executed document was actually stored
+ *
+ * Failures answer exactly like every other failure here, so this route cannot
+ * be used to learn whether a token exists or which state it is in.
+ */
+async function resolveCompletedOr(res, rawToken) {
+  const { signature } = await native.findByToken(rawToken);
+
+  const usable =
+    signature &&
+    signature.signingToken?.state === "completed" &&
+    signature.status === "Completed" &&
+    Boolean(signature.executedPdf?.key);
+
+  if (!usable) {
+    res.status(404).json({ state: "invalid", message: "This signing link is not valid." });
     return null;
   }
 
@@ -146,6 +192,52 @@ router.get("/:token/document", scanLimiter, readLimiter, async (req, res) => {
   }
 });
 
+/**
+ * The executed document, for the customer who signed it.
+ *
+ * Streamed through this route from private storage, exactly as the frozen
+ * document is: the S3 object stays private, and no storage URL, key, id or
+ * provider metadata ever reaches the browser. Read-only by construction - this
+ * route has no write path and cannot alter any signing state.
+ *
+ * Inline by default so a phone opens it in the built-in viewer; `?download=1`
+ * asks the browser to save it instead.
+ */
+router.get("/:token/executed", scanLimiter, readLimiter, async (req, res) => {
+  try {
+    const signature = await resolveCompletedOr(res, req.params.token);
+    if (!signature) return null;
+
+    const buffer = await service.readStoredExecuted(signature);
+    if (!buffer || !buffer.length) {
+      return res.status(404).json({ state: "invalid", message: "This signing link is not valid." });
+    }
+
+    const download = String(req.query?.download || "") === "1";
+    const fileName = executedFileName(signature);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `${download ? "attachment" : "inline"}; filename="${fileName}"`
+    );
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(buffer);
+  } catch (error) {
+    console.error("GET /sign/:token/executed failed:", error?.message);
+    return res.status(500).json({ state: "error", message: "The document could not be loaded." });
+  }
+});
+
+/**
+ * A customer-facing filename. Built from the document number already printed on
+ * the page the customer is holding, never from a storage key.
+ */
+function executedFileName(signature) {
+  const label = signature.documentType === "CHANGE_ORDER" ? "Change-Order" : "Agreement";
+  const number = String(signature.documentNumber || "").replace(/[^\w.-]+/g, "-").slice(0, 60);
+  return `${label}${number ? `-${number}` : ""}-Signed.pdf`;
+}
+
 /* ------------------------------------------------------------------ */
 /* Sign                                                                */
 /* ------------------------------------------------------------------ */
@@ -217,6 +309,10 @@ router.post("/:token/sign", scanLimiter, submitLimiter, async (req, res) => {
       state: "completed",
       message: "Thank you. Your signature has been recorded.",
       completedAt: completed.completedAt,
+      // Tells the completion screen it can offer the signed document. False
+      // only if storing the executed PDF somehow produced nothing, in which
+      // case the screen simply omits the button rather than linking to a 404.
+      executedDocumentAvailable: Boolean(completed.executedPdf?.key),
     });
   } catch (error) {
     console.error("POST /sign/:token/sign failed:", error?.message);

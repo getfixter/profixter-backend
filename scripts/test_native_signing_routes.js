@@ -431,6 +431,148 @@ async function main() {
       assert.strictEqual(retry.json.state, "completed");
     });
 
+    /* ---------------- executed document access ---------------- */
+    console.log("\nExecuted document access after signing");
+
+    await test("a completed token can retrieve its own executed PDF", async () => {
+      const res = await api("GET", `/api/sign/${httpToken}/executed`, null, true);
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get("content-type"), "application/pdf");
+      assert.ok(res.buffer.subarray(0, 5).toString() === "%PDF-", "a real PDF is returned");
+    });
+
+    await test("the bytes are exactly the stored executed document", async () => {
+      const stored = await ESignature.findById(httpReq.signature.id);
+      const fromStorage = s3Store.get(stored.executedPdf.key);
+      const res = await api("GET", `/api/sign/${httpToken}/executed`, null, true);
+      assert.ok(fromStorage && fromStorage.length, "the executed PDF was stored");
+      assert.ok(res.buffer.equals(fromStorage), "served bytes differ from stored bytes");
+      // The same bytes the certificate hash was taken over.
+      assert.strictEqual(
+        require("crypto").createHash("sha256").update(res.buffer).digest("hex"),
+        stored.executedSha256
+      );
+    });
+
+    await test("no storage URL, key or identifier is exposed", async () => {
+      const res = await api("GET", `/api/sign/${httpToken}/executed`, null, true);
+      assert.ok(!res.headers.get("location"), "must not redirect to storage");
+      const disposition = res.headers.get("content-disposition") || "";
+      assert.ok(disposition.includes("inline"), "opens in the browser by default");
+      assert.ok(!/amazonaws|s3\.|private\/admin/i.test(disposition), "no storage path leaked");
+      const stored = await ESignature.findById(httpReq.signature.id);
+      assert.ok(!disposition.includes(String(stored._id)), "no database id in the filename");
+      assert.ok(!disposition.includes(stored.executedPdf.key), "no storage key in the filename");
+    });
+
+    await test("download=1 asks the browser to save it instead", async () => {
+      const res = await api("GET", `/api/sign/${httpToken}/executed?download=1`, null, true);
+      assert.strictEqual(res.status, 200);
+      assert.ok((res.headers.get("content-disposition") || "").includes("attachment"));
+    });
+
+    await test("retrieving the document does not reopen signing", async () => {
+      // A fresh request, so this proves the rule rather than the rate limiter.
+      const fresh = await sendRemote((await makeContract())._id);
+      const freshToken = fresh.signingUrl.split("/sign/")[1];
+      await api("POST", `/api/sign/${freshToken}/sign`, {
+        consentAccepted: true,
+        signatureImage: SIGNATURE_DATA_URL,
+      });
+      const before = await ESignature.findById(fresh.signature.id);
+      const executedSha = before.executedSha256;
+
+      const doc = await api("GET", `/api/sign/${freshToken}/executed`, null, true);
+      assert.strictEqual(doc.status, 200);
+
+      const retry = await api("POST", `/api/sign/${freshToken}/sign`, {
+        consentAccepted: true,
+        signatureImage: SIGNATURE_DATA_URL,
+      });
+      assert.strictEqual(retry.json.state, "completed", "the sign route stays terminal");
+
+      const after = await ESignature.findById(fresh.signature.id);
+      assert.strictEqual(after.signingToken.state, "completed");
+      assert.strictEqual(after.signers.filter((x) => x.status === "Signed").length, 1);
+      assert.strictEqual(after.executedSha256, executedSha, "the executed document was replaced");
+    });
+
+    await test("the completed page payload advertises the signed document", async () => {
+      const res = await api("GET", `/api/sign/${httpToken}`);
+      assert.strictEqual(res.json.state, "completed");
+      assert.strictEqual(res.json.executedDocumentAvailable, true);
+      assert.strictEqual(res.json.documentType, "CONTRACT");
+    });
+
+    await test("an active token has no executed document to retrieve", async () => {
+      const pending = await sendRemote((await makeContract())._id);
+      const pendingToken = pending.signingUrl.split("/sign/")[1];
+      const res = await api("GET", `/api/sign/${pendingToken}/executed`);
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.json.state, "invalid");
+    });
+
+    await test("an unrelated, unknown or malformed token is refused identically", async () => {
+      const unknown = await api("GET", `/api/sign/${native.generateToken()}/executed`);
+      const malformed = await api("GET", "/api/sign/not-a-real-token/executed");
+      assert.strictEqual(unknown.status, 404);
+      assert.strictEqual(malformed.status, 404);
+      assert.deepStrictEqual(unknown.json, malformed.json, "responses must be indistinguishable");
+    });
+
+    await test("a revoked token cannot reach anyone's executed document", async () => {
+      const rv = await sendRemote((await makeContract())._id);
+      const rvToken = rv.signingUrl.split("/sign/")[1];
+      await api("POST", `/api/admin/signatures/native/${rv.signature.id}/revoke`, { reason: "test" });
+      const res = await api("GET", `/api/sign/${rvToken}/executed`);
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.json.state, "invalid");
+    });
+
+    await test("a declined token cannot reach an executed document", async () => {
+      const dc = await sendRemote((await makeContract())._id);
+      const dcToken = dc.signingUrl.split("/sign/")[1];
+      await api("POST", `/api/sign/${dcToken}/decline`, { reason: "No thanks" });
+      const res = await api("GET", `/api/sign/${dcToken}/executed`);
+      assert.strictEqual(res.status, 404);
+    });
+
+    await test("a Change Order's executed document is retrievable the same way", async () => {
+      const parent = await makeContract();
+      const sequence = await ChangeOrder.nextSequence(parent.contractNumber);
+      const co = await ChangeOrder.create({
+        changeOrderNumber: ChangeOrder.formatNumber(parent.contractNumber, sequence),
+        sequence,
+        projectId: parent.projectId,
+        contractId: parent._id,
+        status: "Ready to Send",
+        title: "Additional electrical work",
+        customerSnapshot: { fullName: "Jane Homeowner", email: "jane@example.com" },
+        propertySnapshot: { address: "12 Ocean Ave" },
+        contractSnapshot: {
+          contractNumber: parent.contractNumber,
+          originalContractAmountCents: 2000000,
+        },
+        lines: [{ description: "Add", direction: "add", amountCents: 150000 }],
+        contractAmountBeforeChangeCents: 2000000,
+        generatedPdf: { key: "co-exec", fileName: "co.pdf" },
+        createdBy: OID(),
+      });
+      const req = await sendRemote(co._id, "CHANGE_ORDER");
+      const coToken = req.signingUrl.split("/sign/")[1];
+      const signed = await api("POST", `/api/sign/${coToken}/sign`, {
+        consentAccepted: true,
+        signatureImage: SIGNATURE_DATA_URL,
+      });
+      assert.strictEqual(signed.json.state, "completed");
+      assert.strictEqual(signed.json.executedDocumentAvailable, true);
+
+      const res = await api("GET", `/api/sign/${coToken}/executed`, null, true);
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get("content-type"), "application/pdf");
+      assert.ok((res.headers.get("content-disposition") || "").includes("Change-Order"));
+    });
+
     await test("revoked and declined links are rejected over HTTP", async () => {
       const rv = await sendRemote((await makeContract())._id);
       const rvToken = rv.signingUrl.split("/sign/")[1];
