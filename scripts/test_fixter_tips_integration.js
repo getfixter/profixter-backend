@@ -67,7 +67,9 @@ const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Tip = require("../models/Tip");
 const webhook = require("../routes/webhook");
+const tipRoutes = require("../routes/tips");
 const { summarizeTips, netCents } = require("../utils/fixterTips");
+const { createFixterChoiceToken, createTipToken } = require("../utils/tipToken");
 
 let passed = 0;
 const failures = [];
@@ -345,6 +347,140 @@ async function main() {
         null
       );
       assert.strictEqual(await Tip.countDocuments(), before);
+    });
+
+    console.log("\nThe public chooser, against real records");
+
+    const chooserOnly = await makeFixter({ name: "Nina Alvarez", firstName: "Nina" });
+    const generalFixter = await makeFixter({
+      name: "Sam Okafor",
+      firstName: "Sam",
+      employeePosition: "General Fixter",
+    });
+    const deactivated = await makeFixter({
+      name: "Gone Away",
+      firstName: "Gone",
+      isActive: false,
+    });
+    const officeStaff = await makeFixter({
+      name: "Office Person",
+      firstName: "Office",
+      employeePosition: null,
+    });
+
+    await test("the chooser offers active tippable Fixters and nobody else", async () => {
+      const list = await tipRoutes.loadSelectableFixters();
+      const names = list.map((row) => row.firstName);
+      assert.ok(names.includes("Nina"), "an active Fixter was missing from the chooser");
+      assert.ok(names.includes("Sam"), "an active General Fixter was missing from the chooser");
+      assert.ok(!names.includes("Gone"), "a deactivated employee was offered to customers");
+      assert.ok(!names.includes("Office"), "an employee with no tippable position was offered");
+    });
+
+    await test("the chooser payload carries no private employee data", async () => {
+      const list = await tipRoutes.loadSelectableFixters();
+      const serialized = JSON.stringify(list);
+      for (const row of list) {
+        assert.deepStrictEqual(Object.keys(row).sort(), ["choice", "firstName"]);
+      }
+      for (const secret of [
+        String(chooserOnly._id),
+        chooserOnly.email,
+        chooserOnly.userId,
+        "Alvarez",
+        "employee",
+        "General Fixter",
+        "isActive",
+      ]) {
+        assert.ok(!serialized.includes(secret), `private employee data leaked: ${secret}`);
+      }
+    });
+
+    await test("a chosen Fixter is revalidated against the database, not trusted", async () => {
+      const resolved = await tipRoutes.resolveChoice(createFixterChoiceToken(chooserOnly._id));
+      assert.ok(resolved.fixter, "a legitimate choice was refused");
+      assert.strictEqual(String(resolved.fixter._id), String(chooserOnly._id));
+    });
+
+    await test("a choice naming a deactivated Fixter is refused", async () => {
+      const resolved = await tipRoutes.resolveChoice(createFixterChoiceToken(deactivated._id));
+      assert.strictEqual(resolved.fixter, null, "a deactivated employee could still be tipped");
+      assert.strictEqual(resolved.reason, "fixter_not_selectable");
+    });
+
+    await test("a choice naming a non-tippable employee is refused", async () => {
+      const resolved = await tipRoutes.resolveChoice(createFixterChoiceToken(officeStaff._id));
+      assert.strictEqual(resolved.fixter, null);
+    });
+
+    await test("a Fixter deactivated after the page rendered can no longer be chosen", async () => {
+      // The window between rendering the chooser and pressing Continue is real.
+      const leaving = await makeFixter({ name: "Just Left", firstName: "Just" });
+      const choice = createFixterChoiceToken(leaving._id);
+      assert.ok((await tipRoutes.resolveChoice(choice)).fixter, "setup failed");
+
+      await User.updateOne({ _id: leaving._id }, { $set: { isActive: false } });
+      const after = await tipRoutes.resolveChoice(choice);
+      assert.strictEqual(after.fixter, null, "a stale choice outlived the employee record");
+    });
+
+    await test("a forged choice cannot attribute a tip", async () => {
+      const forged = Buffer.concat([
+        Buffer.alloc(12),
+        Buffer.alloc(16),
+        Buffer.from(JSON.stringify({ v: 1, k: "c", f: String(chooserOnly._id), exp: Date.now() + 10000 })),
+      ]).toString("base64url");
+      const resolved = await tipRoutes.resolveChoice(forged);
+      assert.strictEqual(resolved.fixter, null, "a forged handle named a real Fixter");
+      assert.strictEqual(resolved.reason, "unreadable_choice");
+    });
+
+    await test("a raw database id is not a usable choice", async () => {
+      // The browser never sees an id, and sending one anyway must achieve nothing.
+      const resolved = await tipRoutes.resolveChoice(String(chooserOnly._id));
+      assert.strictEqual(resolved.fixter, null, "a raw Fixter id was accepted from the browser");
+    });
+
+    await test("a completion token cannot be spent as a choice", async () => {
+      const booking = createTipToken({ fixterId: String(chooserOnly._id), bookingId: "", userId: "" });
+      const resolved = await tipRoutes.resolveChoice(booking);
+      assert.strictEqual(resolved.fixter, null);
+    });
+
+    await test("two different choices resolve to two different Fixters", async () => {
+      const one = await tipRoutes.resolveChoice(createFixterChoiceToken(chooserOnly._id));
+      const two = await tipRoutes.resolveChoice(createFixterChoiceToken(generalFixter._id));
+      assert.strictEqual(String(one.fixter._id), String(chooserOnly._id));
+      assert.strictEqual(String(two.fixter._id), String(generalFixter._id));
+      assert.notStrictEqual(String(one.fixter._id), String(two.fixter._id));
+    });
+
+    console.log("\nThe tokenized completion link still skips the chooser");
+
+    await test("a valid completion token still resolves its Fixter directly", async () => {
+      const worker = await makeFixter({ name: "Token Worker", firstName: "Token" });
+      const cust = await makeCustomer();
+      const bk = await makeBooking(cust);
+      await Booking.updateOne({ _id: bk._id }, { $set: { assignedFixterId: worker._id } });
+
+      const token = createTipToken({
+        bookingId: String(bk._id),
+        fixterId: String(worker._id),
+        userId: String(cust._id),
+      });
+      const context = await tipRoutes.resolveTipContext(token);
+      assert.ok(context.fixter, "a valid completion link stopped attributing");
+      assert.strictEqual(String(context.fixter._id), String(worker._id));
+      assert.strictEqual(String(context.booking._id), String(bk._id));
+    });
+
+    await test("an invalid or tampered token yields no attribution, so the page can offer the chooser", async () => {
+      for (const bad of ["", "not-a-token", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]) {
+        const context = await tipRoutes.resolveTipContext(bad);
+        assert.strictEqual(context.fixter, null, `"${bad}" produced an attribution`);
+      }
+      const list = await tipRoutes.loadSelectableFixters();
+      assert.ok(list.length > 0, "there would be nothing to fall back to");
     });
 
     console.log("\nTotals over real records");

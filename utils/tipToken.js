@@ -24,6 +24,23 @@ const TIP_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
 const TOKEN_VERSION = 1;
 
+/**
+ * What a token is for.
+ *
+ * "b" is the completion-email token that names a booking and the Fixter who
+ * worked it. "c" is a choice token: the public tip page hands one to the
+ * browser for each Fixter it lists, so a customer can say who they want to tip
+ * without the page ever seeing, or being able to invent, a database id.
+ *
+ * The kind is checked on read so the two can never be swapped. A token issued
+ * before this field existed has no kind and reads as a booking token, which is
+ * what it is.
+ */
+const TOKEN_KINDS = Object.freeze({ BOOKING: "b", CHOICE: "c" });
+
+/** A choice is made and spent in one sitting, so it does not need a year. */
+const CHOICE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
 function secret() {
   const value = process.env.TIP_TOKEN_SECRET || process.env.JWT_SECRET;
   if (!value) throw new Error("TIP_TOKEN_SECRET or JWT_SECRET is required");
@@ -42,13 +59,21 @@ function idString(value) {
  * when the token is redeemed, so a token can never assert a fact about a
  * customer, and stale context in an old email cannot be replayed as truth.
  */
-function createTipToken({ bookingId, fixterId, userId, now = Date.now() }) {
+function createTipToken({
+  bookingId,
+  fixterId,
+  userId,
+  kind = TOKEN_KINDS.BOOKING,
+  ttlMs = TIP_TOKEN_TTL_MS,
+  now = Date.now(),
+}) {
   const payload = JSON.stringify({
     v: TOKEN_VERSION,
+    k: kind,
     b: idString(bookingId),
     f: idString(fixterId),
     u: idString(userId),
-    exp: now + TIP_TOKEN_TTL_MS,
+    exp: now + ttlMs,
   });
 
   const iv = crypto.randomBytes(12);
@@ -65,7 +90,7 @@ function createTipToken({ bookingId, fixterId, userId, now = Date.now() }) {
  * context" and falls back to an unattributed tip, so there is one obvious way
  * to fail and it never ends in a guess.
  */
-function readTipToken(token) {
+function readTipToken(token, { kind = TOKEN_KINDS.BOOKING } = {}) {
   const data = Buffer.from(String(token || ""), "base64url");
   if (data.length < 29) throw new Error("Invalid tip token");
 
@@ -80,6 +105,10 @@ function readTipToken(token) {
   );
 
   if (Number(payload.v) !== TOKEN_VERSION) throw new Error("Unsupported tip token");
+  // Tokens issued before kinds existed carry no k and are booking tokens.
+  if ((payload.k || TOKEN_KINDS.BOOKING) !== kind) {
+    throw new Error("Tip token is not of the expected kind");
+  }
   if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) < Date.now()) {
     throw new Error("Expired tip token");
   }
@@ -92,6 +121,28 @@ function readTipToken(token) {
   };
 }
 
+/**
+ * A handle the public tip page can give back to say who to pay.
+ *
+ * The Fixter id goes in encrypted, so the list a customer sees carries no
+ * database identifiers and a browser cannot name an employee we did not offer.
+ * It is still only a claim: the server revalidates the employee before any
+ * attribution reaches Stripe.
+ */
+function createFixterChoiceToken(fixterId, { now = Date.now() } = {}) {
+  return createTipToken({
+    fixterId,
+    kind: TOKEN_KINDS.CHOICE,
+    ttlMs: CHOICE_TOKEN_TTL_MS,
+    now,
+  });
+}
+
+/** Read a choice token. Throws for anything that is not one. */
+function readFixterChoiceToken(token) {
+  return readTipToken(token, { kind: TOKEN_KINDS.CHOICE });
+}
+
 /** Whether a token can be issued at all, so callers can degrade rather than throw. */
 function tipTokensAvailable() {
   return !!(process.env.TIP_TOKEN_SECRET || process.env.JWT_SECRET);
@@ -99,7 +150,11 @@ function tipTokensAvailable() {
 
 module.exports = {
   TIP_TOKEN_TTL_MS,
+  CHOICE_TOKEN_TTL_MS,
+  TOKEN_KINDS,
   createTipToken,
   readTipToken,
+  createFixterChoiceToken,
+  readFixterChoiceToken,
   tipTokensAvailable,
 };

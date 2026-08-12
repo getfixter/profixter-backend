@@ -18,9 +18,17 @@ const express = require("express");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
-const { readTipToken } = require("../utils/tipToken");
-const { createTipCheckoutSession, isEligibleFixter } = require("../utils/fixterTips");
+const { readTipToken, readFixterChoiceToken } = require("../utils/tipToken");
+const {
+  createTipCheckoutSession,
+  isEligibleFixter,
+  isSelectableFixter,
+  publicFixterList,
+} = require("../utils/fixterTips");
 const { rateLimit } = require("../utils/rateLimit");
+
+/** Everything the chooser and the choice check need, and nothing more. */
+const FIXTER_SELECT = "_id name firstName role employeePosition isActive";
 
 const router = express.Router();
 
@@ -39,6 +47,10 @@ function clientIp(req) {
 
 function requestToken(req) {
   return String(req.body?.token || req.query?.token || "").trim();
+}
+
+function requestChoice(req) {
+  return String(req.body?.choice || "").trim();
 }
 
 /*
@@ -104,9 +116,7 @@ async function resolveTipContext(token) {
     objectIdOrNull(claims.fixterId) || objectIdOrNull(booking?.assignedFixterId);
   let fixter = null;
   if (fixterId) {
-    fixter = await User.findById(fixterId)
-      .select("_id name firstName role employeePosition isActive")
-      .lean();
+    fixter = await User.findById(fixterId).select(FIXTER_SELECT).lean();
   }
 
   const userId = objectIdOrNull(claims.userId) || objectIdOrNull(booking?.user);
@@ -127,23 +137,113 @@ async function resolveTipContext(token) {
   return { fixter, booking, user, reason: "" };
 }
 
+/** Every Fixter a customer may currently choose to tip. */
+async function loadSelectableFixters() {
+  const employees = await User.find({ role: "employee", isActive: { $ne: false } })
+    .select(FIXTER_SELECT)
+    .lean();
+  return publicFixterList(employees);
+}
+
+/**
+ * Turn a choice token back into an employee.
+ *
+ * The token is a claim, not an authorisation. It proves only that this server
+ * offered the name; the employee is loaded and revalidated here, so a Fixter
+ * deactivated since the page was rendered cannot still be selected.
+ *
+ * Never throws.
+ */
+async function resolveChoice(choice) {
+  if (!choice) return { fixter: null, reason: "no_choice" };
+
+  let claims;
+  try {
+    claims = readFixterChoiceToken(choice);
+  } catch {
+    return { fixter: null, reason: "unreadable_choice" };
+  }
+
+  const fixterId = objectIdOrNull(claims.fixterId);
+  if (!fixterId) return { fixter: null, reason: "no_fixter" };
+
+  const fixter = await User.findById(fixterId).select(FIXTER_SELECT).lean();
+  if (!isSelectableFixter(fixter)) {
+    return { fixter: null, reason: "fixter_not_selectable" };
+  }
+  return { fixter, reason: "" };
+}
+
+/**
+ * Who a customer can tip from the public page.
+ *
+ * Public and unauthenticated, like the page itself. It returns first names and
+ * opaque handles: see publicFixterDTO for exactly what is and is not exposed.
+ */
+router.get("/fixters", perIpLimit, async (_req, res) => {
+  try {
+    return res.json({ fixters: await loadSelectableFixters() });
+  } catch (error) {
+    logTip("error", "tip_fixter_list_failed", { message: error?.message || "" });
+    // An empty list is not an error to the customer: the page falls back to an
+    // unattributed tip rather than refusing to take their money.
+    return res.json({ fixters: [] });
+  }
+});
+
 /**
  * Open a Stripe Checkout for a tip and hand back the URL.
  *
  * POST rather than GET on purpose: the page redirects with JavaScript, so link
  * scanners and inbox prefetchers never create Checkout Sessions just by
  * following the link in an email.
+ *
+ * Three ways in, and only the first two attribute:
+ *   - a choice the customer made on the public page
+ *   - a completion-email token, which already knows the Fixter
+ *   - neither, which asks the page to show the chooser instead
+ *
+ * Falling back to the chooser is what a failed token now does. Attribution can
+ * fail; the ability to tip must not. Only when there is nobody to choose from
+ * does this open an unattributed checkout, because a customer with their card
+ * out and nowhere to go is the one outcome worth avoiding at any cost.
  */
 router.post("/session", perTokenLimit, perIpLimit, async (req, res) => {
   const token = requestToken(req);
+  const choice = requestChoice(req);
 
   let context = { fixter: null, booking: null, user: null, reason: "no_token" };
   try {
-    context = await resolveTipContext(token);
+    if (choice) {
+      const chosen = await resolveChoice(choice);
+      context = { fixter: chosen.fixter, booking: null, user: null, reason: chosen.reason };
+    } else {
+      context = await resolveTipContext(token);
+    }
   } catch (error) {
-    // A lookup failure must not cost the tip; carry on unattributed.
+    // A lookup failure must not cost the tip; carry on without attribution.
     logTip("error", "tip_context_lookup_failed", { message: error?.message || "" });
     context = { fixter: null, booking: null, user: null, reason: "lookup_failed" };
+  }
+
+  if (!context.fixter) {
+    let choosable = [];
+    try {
+      choosable = await loadSelectableFixters();
+    } catch (error) {
+      logTip("error", "tip_fixter_list_failed", { message: error?.message || "" });
+    }
+
+    if (choosable.length) {
+      logTip("info", "tip_chooser_required", {
+        hasToken: !!token,
+        hadChoice: !!choice,
+        reason: context.reason || null,
+        options: choosable.length,
+      });
+      return res.json({ needsChoice: true, fixters: choosable });
+    }
+    // Nobody to choose from. Take the tip unattributed rather than lose it.
   }
 
   try {
@@ -158,6 +258,7 @@ router.post("/session", perTokenLimit, perIpLimit, async (req, res) => {
       stripeSessionId: result.sessionId,
       attributed: result.attributed,
       hasToken: !!token,
+      hadChoice: !!choice,
       reason: context.reason || null,
     });
 
@@ -178,3 +279,5 @@ router.post("/session", perTokenLimit, perIpLimit, async (req, res) => {
 
 module.exports = router;
 module.exports.resolveTipContext = resolveTipContext;
+module.exports.resolveChoice = resolveChoice;
+module.exports.loadSelectableFixters = loadSelectableFixters;

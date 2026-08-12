@@ -34,7 +34,11 @@
  */
 
 const { stripe, hasStripeSecretKey } = require("./subscriptionManagement");
-const { createTipToken, tipTokensAvailable } = require("./tipToken");
+const {
+  createFixterChoiceToken,
+  createTipToken,
+  tipTokensAvailable,
+} = require("./tipToken");
 const { tipPageUrl } = require("./tipPage");
 
 /** Marks our Checkout Sessions, exactly as the one-time visit flow does. */
@@ -130,6 +134,44 @@ function isEligibleFixter(user) {
   if (!user) return false;
   if (String(user.role || "") !== "employee") return false;
   return TIPPABLE_POSITIONS.includes(String(user.employeePosition || ""));
+}
+
+/**
+ * Whether this Fixter may be offered to a customer to tip right now.
+ *
+ * Eligibility plus currently active, and the difference between the two is
+ * deliberate. isEligibleFixter decides who may be CREDITED, and does not check
+ * isActive, because someone who has since left still earned the tips they were
+ * paid. This decides who may be CHOSEN, and does check it: a customer must not
+ * be offered somebody who no longer works here.
+ */
+function isSelectableFixter(user) {
+  return isEligibleFixter(user) && user.isActive !== false;
+}
+
+/**
+ * What a customer standing on the public tip page is allowed to see.
+ *
+ * A first name and an opaque handle. Nothing else leaves the building: no
+ * database id, no email, no phone, no position, no availability, no earnings,
+ * no employment status. The handle is an encrypted choice token, so the page
+ * cannot read who it refers to and cannot invent one for somebody we did not
+ * offer.
+ */
+function publicFixterDTO(user) {
+  const first =
+    cleanText(user?.firstName, 60) ||
+    cleanText(user?.name, 60).split(/\s+/)[0] ||
+    "Fixter";
+  return { choice: createFixterChoiceToken(idString(user?._id)), firstName: first };
+}
+
+/** The chooser list: selectable Fixters only, in a stable, friendly order. */
+function publicFixterList(users = []) {
+  return users
+    .filter(isSelectableFixter)
+    .map(publicFixterDTO)
+    .sort((left, right) => left.firstName.localeCompare(right.firstName));
 }
 
 /* ------------------------------------------------------------------ */
@@ -613,7 +655,10 @@ module.exports = {
   ensureTipPriceId,
   isEligibleFixter,
   isFixterTipCheckoutSession,
+  isSelectableFixter,
   netCents,
+  publicFixterDTO,
+  publicFixterList,
   recentWeekStarts,
   summarizeTips,
   tipCheckoutMetadata,

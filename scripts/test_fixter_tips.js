@@ -84,7 +84,12 @@ require.cache[subsPath] = {
 
 const mongoose = require("mongoose");
 const tips = require("../utils/fixterTips");
-const { createTipToken, readTipToken } = require("../utils/tipToken");
+const {
+  createFixterChoiceToken,
+  createTipToken,
+  readFixterChoiceToken,
+  readTipToken,
+} = require("../utils/tipToken");
 const { safeTipUrl } = require("../utils/tipPage");
 const { PERMISSIONS, permissionsForUser } = require("../middleware/authorize");
 
@@ -250,6 +255,142 @@ async function main() {
     assert.strictEqual(safeTipUrl("http://www.profixter.com/tip"), page);
     assert.strictEqual(safeTipUrl("javascript:alert(1)"), page);
     assert.strictEqual(safeTipUrl(""), page);
+  });
+
+  /* ---------------- the public chooser ---------------- */
+  console.log("\nChoosing a Fixter on the public page");
+
+  const ALEX = {
+    _id: "fixter2",
+    name: "Alex Moreau",
+    firstName: "Alex",
+    email: "alex@profixter.com",
+    phone: "+15550001111",
+    role: "employee",
+    employeePosition: "General Fixter",
+    isActive: true,
+  };
+  const ROSTER = [
+    { ...ROMAN, firstName: "Roman" },
+    ALEX,
+    { ...ROMAN, _id: "f3", firstName: "Dormant", employeePosition: "Fixter", isActive: false },
+    { ...ROMAN, _id: "f4", firstName: "Office", employeePosition: null },
+    { _id: "f5", firstName: "Customer", name: "A Customer", role: "customer", isActive: true },
+    { _id: "f6", firstName: "Boss", name: "The Boss", role: "admin", isActive: true },
+  ];
+
+  await test("active tippable Fixters appear in the chooser", () => {
+    const list = tips.publicFixterList(ROSTER);
+    assert.deepStrictEqual(
+      list.map((row) => row.firstName).sort(),
+      ["Alex", "Roman"],
+      "the chooser did not offer exactly the active tippable Fixters"
+    );
+  });
+
+  await test("an inactive Fixter is never offered", () => {
+    const list = tips.publicFixterList(ROSTER);
+    assert.ok(!list.some((row) => row.firstName === "Dormant"), "a deactivated employee was offered");
+    assert.strictEqual(tips.isSelectableFixter({ ...ROMAN, isActive: false }), false);
+  });
+
+  await test("an employee with no tippable position is never offered", () => {
+    const list = tips.publicFixterList(ROSTER);
+    assert.ok(!list.some((row) => row.firstName === "Office"));
+  });
+
+  await test("customers and admins are never offered", () => {
+    const list = tips.publicFixterList(ROSTER);
+    assert.ok(!list.some((row) => ["Customer", "Boss"].includes(row.firstName)));
+  });
+
+  await test("a departed Fixter can still be credited even though nobody may choose them", () => {
+    // The two predicates answer different questions and must not be merged:
+    // money already earned still belongs to whoever earned it.
+    const departed = { ...ROMAN, isActive: false };
+    assert.strictEqual(tips.isSelectableFixter(departed), false, "a leaver was offered to customers");
+    assert.strictEqual(tips.isEligibleFixter(departed), true, "a leaver lost tips they had earned");
+  });
+
+  await test("the public list exposes a first name and nothing else", () => {
+    const list = tips.publicFixterList(ROSTER);
+    for (const row of list) {
+      assert.deepStrictEqual(
+        Object.keys(row).sort(),
+        ["choice", "firstName"],
+        "the public payload grew a field"
+      );
+    }
+    const serialized = JSON.stringify(list);
+    for (const [label, secret] of [
+      ["email", "profixter.com"],
+      ["phone", "5550001111"],
+      ["database id", "fixter1"],
+      ["database id", "fixter2"],
+      ["surname", "Moreau"],
+      ["position", "General Fixter"],
+      ["employment status", "isActive"],
+      ["role", "employee"],
+    ]) {
+      assert.ok(!serialized.includes(secret), `${label} leaked to the public tip page: ${secret}`);
+    }
+  });
+
+  await test("the handle is opaque and cannot be read by the browser", () => {
+    const [row] = tips.publicFixterList([{ ...ROMAN, firstName: "Roman" }]);
+    const decoded = Buffer.from(row.choice, "base64url").toString("utf8");
+    assert.ok(!decoded.includes("fixter1"), "the Fixter id is readable in the handle");
+    assert.strictEqual(readFixterChoiceToken(row.choice).fixterId, "fixter1");
+  });
+
+  await test("a forged handle cannot name a Fixter", () => {
+    const forged = Buffer.concat([
+      Buffer.alloc(12),
+      Buffer.alloc(16),
+      Buffer.from(JSON.stringify({ v: 1, k: "c", f: "fixter1", exp: Date.now() + 10000 })),
+    ]).toString("base64url");
+    assert.throws(() => readFixterChoiceToken(forged));
+  });
+
+  await test("a tampered handle is rejected rather than resolving elsewhere", () => {
+    const token = createFixterChoiceToken("fixter1");
+    const bytes = Buffer.from(token, "base64url");
+    bytes[bytes.length - 1] ^= 0xff;
+    assert.throws(() => readFixterChoiceToken(bytes.toString("base64url")));
+  });
+
+  await test("a completion token cannot be spent as a choice, or the reverse", () => {
+    // The two kinds authorise different things, so they must never be
+    // interchangeable even though they share a secret and a format.
+    const booking = createTipToken({ bookingId: "b1", fixterId: "f1", userId: "u1" });
+    const choice = createFixterChoiceToken("f1");
+    assert.throws(() => readFixterChoiceToken(booking), /kind/i);
+    assert.throws(() => readTipToken(choice), /kind/i);
+  });
+
+  await test("tokens issued before kinds existed still read as completion links", () => {
+    // Live links are already in customer inboxes. They carry no kind field and
+    // must keep working exactly as they did.
+    const legacy = createTipToken({ bookingId: "b9", fixterId: "f9", userId: "u9" });
+    assert.strictEqual(readTipToken(legacy).fixterId, "f9");
+  });
+
+  await test("two different Fixters produce two distinct attributions", async () => {
+    await tips.createTipCheckoutSession({ fixter: { ...ROMAN, _id: "fixter1" } });
+    await tips.createTipCheckoutSession({ fixter: { ...ALEX, _id: "fixter2" } });
+    const [first, second] = calls.filter((c) => c.name === "checkout.sessions.create");
+    assert.strictEqual(first.args.metadata.fixterId, "fixter1");
+    assert.strictEqual(second.args.metadata.fixterId, "fixter2");
+    assert.match(first.args.payment_intent_data.description, /Roman/);
+    assert.match(second.args.payment_intent_data.description, /Alex/);
+  });
+
+  await test("a chosen Fixter still gets the free-entry Stripe amount", async () => {
+    const result = await tips.createTipCheckoutSession({ fixter: ALEX });
+    assert.strictEqual(result.attributed, true);
+    const created = calls.find((c) => c.name === "checkout.sessions.create");
+    assert.ok(!("amount" in created.args), "an amount was forced onto a chosen tip");
+    assert.strictEqual(state.prices[0].custom_unit_amount.enabled, true);
   });
 
   /* ---------------- who may see tips ---------------- */
