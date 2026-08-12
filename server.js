@@ -165,6 +165,11 @@ mongoose
     await require("./models/Tip").init();
     console.log("✅ Tip indexes ready");
 
+    // The membership lead dedupe is a unique index, so repeated taps can only
+    // become one lead once it exists.
+    await require("./models/Request").syncIndexes();
+    console.log("✅ Request indexes ready");
+
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");
   })

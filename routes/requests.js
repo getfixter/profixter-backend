@@ -3,8 +3,11 @@ const express = require("express");
 const router = express.Router();
 const Request = require("../models/Request");
 const {
+  sendAdminEventNotification,
   sendAdminLeadNotification,
+  formatSubmittedAt,
 } = require("../utils/adminLeadNotification");
+const { normalizePhoneE164, digitsOnlyPhone } = require("../utils/identity");
 
 function clean(v) {
   return String(v || "").trim();
@@ -21,6 +24,7 @@ function serviceLabel(serviceType) {
       on_demand: "On-Demand Service",
       general_contractor: "General Contractor",
       home_improvement: "Home Improvement",
+      membership_interest: "Membership / Subscription interest",
     }[serviceType] || serviceType
   );
 }
@@ -178,6 +182,114 @@ router.post("/public", async (req, res) => {
       success: false,
       message: "Server error",
     });
+  }
+});
+
+/* -----------------------------------------------------------------------------
+ * Membership callback request
+ *
+ * "This sounds interesting, call me and explain it." A name and a phone number,
+ * nothing else. Every field this does not ask for is a field somebody would
+ * have abandoned the form over, and we can ask the rest on the call.
+ *
+ * It is a Request like every other enquiry rather than a new collection, so it
+ * appears in the Leads list the admin already works from with no Admin changes
+ * beyond the one new serviceType.
+ * -------------------------------------------------------------------------- */
+
+/** How long an identical number is treated as the same enquiry. */
+const MEMBERSHIP_LEAD_DEDUPE_MS = 10 * 60 * 1000;
+
+router.post("/membership", async (req, res) => {
+  try {
+    const name = clean(req.body.name).slice(0, 120);
+    const rawPhone = clean(req.body.phone);
+
+    /*
+     * Validated here and not only in the browser. The endpoint is public, so
+     * the form is a convenience rather than a control.
+     */
+    if (!name) {
+      return res.status(400).json({ success: false, message: "Please tell us your name." });
+    }
+    if (name.length < 2) {
+      return res.status(400).json({ success: false, message: "Please enter your full name." });
+    }
+
+    const phone = normalizePhoneE164(rawPhone);
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a valid US phone number so we can call you.",
+      });
+    }
+
+    /*
+     * A double tap, a retried request or an impatient second submission should
+     * not become two leads for one person. The window is short so somebody who
+     * genuinely enquires again later still gets through.
+     *
+     * The key is what makes this hold: three taps arriving together would all
+     * pass a read-then-write check, so the unique index on dedupeKey decides
+     * instead and the losers come back as duplicates.
+     */
+    const bucket = Math.floor(Date.now() / MEMBERSHIP_LEAD_DEDUPE_MS);
+    const dedupeKey = `membership:${phone}:${bucket}`;
+
+    const newRequest = new Request({
+      name,
+      phone,
+      // Deliberately no email: this form does not ask for one, and inventing a
+      // placeholder would put junk in the Leads list.
+      email: "",
+      message: "Asked us to call and explain ProFixter Membership.",
+      serviceType: "membership_interest",
+      sourcePage: clean(req.body.sourcePage).slice(0, 200) || "/",
+      status: "new",
+      dedupeKey,
+    });
+
+    try {
+      await newRequest.save();
+    } catch (saveErr) {
+      if (saveErr?.code === 11000) {
+        // Somebody else's tap won the race. Same enquiry, one lead.
+        return res.status(200).json({
+          success: true,
+          message: "Request received",
+          duplicate: true,
+        });
+      }
+      throw saveErr;
+    }
+
+    try {
+      await sendAdminEventNotification({
+        // Exactly this subject, so it is filterable in the inbox.
+        subject: "Subscription Lead!",
+        heading: "Subscription Lead!",
+        templateKey: "admin_membership_lead",
+        customerName: name,
+        source: "membershipLeadForm",
+        fields: [
+          ["Name", name],
+          ["Phone", digitsOnlyPhone(phone).replace(/^1(\d{3})(\d{3})(\d{4})$/, "$1-$2-$3") || phone],
+          ["Source", "Membership / Home website"],
+          ["Submitted", formatSubmittedAt(newRequest.createdAt)],
+        ],
+      });
+    } catch (emailErr) {
+      // The lead is already saved. Losing the email must not lose the lead.
+      console.error("Membership lead notification failed; lead was saved:", {
+        requestId: newRequest._id,
+        message: emailErr.message,
+      });
+    }
+
+    return res.status(201).json({ success: true, message: "Request received" });
+  } catch (err) {
+    console.error("Membership lead save error:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 

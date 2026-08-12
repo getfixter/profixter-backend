@@ -25,6 +25,10 @@ const RequestSchema = new mongoose.Schema({
       "on_demand",
       "general_contractor",
       "home_improvement",
+      // Somebody on the home page who wants membership explained on the phone.
+      // The same Lead record as every other enquiry, so it lands in the one
+      // Leads list the admin already works from.
+      "membership_interest",
     ],
   },
   sourcePage: { type: String, trim: true, default: "" },
@@ -35,10 +39,32 @@ const RequestSchema = new mongoose.Schema({
     enum: ["new", "contacted", "won", "lost"],
   },
 
+  /**
+   * Collapses repeat submissions of the same enquiry into one lead.
+   *
+   * A read-then-write check cannot do this: three taps arrive together, all
+   * three read "nothing yet", and all three insert. Only a unique index
+   * serialises them, so the key is written on the document and the database
+   * refuses the second.
+   *
+   * Sparse, so every request that does not set one is unaffected, and scoped to
+   * a short time window by its caller so a genuine later enquiry still lands.
+   */
+  dedupeKey: {
+    type: String,
+    trim: true,
+    default: undefined,
+  },
+
   createdAt: {
     type: Date,
     default: Date.now,
   },
 });
+
+RequestSchema.index(
+  { dedupeKey: 1 },
+  { unique: true, sparse: true, name: "request_dedupe_key_idx" }
+);
 
 module.exports = mongoose.model("Request", RequestSchema);
