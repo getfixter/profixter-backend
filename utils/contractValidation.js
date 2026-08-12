@@ -439,6 +439,13 @@ function validateContractInput(body = {}, project = null) {
       contractDate: parseDate(body.dates?.contractDate || body.contractDate, "Contract date", errors, {
         required: true,
       }),
+      /**
+       * Set only when the admin actually changed the date away from today's
+       * default. A deliberate backdate - a paper agreement signed last week -
+       * is then never overwritten when the Agreement is generated.
+       */
+      contractDateIsManual:
+        body.dates?.contractDateIsManual === true || body.contractDateIsManual === true,
       estimatedStartDate: parseDate(
         body.dates?.estimatedStartDate || body.estimatedStartDate,
         "Estimated start date",

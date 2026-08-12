@@ -1034,6 +1034,84 @@ async function main() {
 
   /* ---------------- Direct service checks ---------------- */
 
+  /* ---------------- document dates ---------------- */
+
+  console.log("\nDocument dates");
+
+  await test("an invoice drafted days ago is dated the day its PDF is produced", async () => {
+    const project = await makeProject();
+    await makeAgreement(project, $(20000));
+    const draft = await createInvoiceFromAgreement(project, {
+      billing: { mode: "amount", amountCents: $(5000), label: "Deposit" },
+    });
+
+    // Backdate the draft to simulate one written earlier in the week.
+    const monday = new Date("2026-08-03T15:00:00.000Z");
+    await Invoice.updateOne(
+      { _id: draft.json.invoice.id },
+      { $set: { "dates.invoiceDate": monday, "dates.dueDate": monday } }
+    );
+
+    const generated = await api("POST", `/api/admin/invoices/${draft.json.invoice.id}/generate`, {
+      projectId: String(project._id),
+    });
+    assert.strictEqual(generated.status, 200, JSON.stringify(generated.json));
+    const stored = await Invoice.findById(draft.json.invoice.id).lean();
+    assert.notStrictEqual(
+      new Date(stored.dates.invoiceDate).getTime(),
+      monday.getTime(),
+      "an unissued draft must be dated when it is actually issued"
+    );
+  });
+
+  await test("a deliberately dated invoice is left exactly as entered", async () => {
+    const project = await makeProject();
+    await makeAgreement(project, $(20000));
+    const draft = await createInvoiceFromAgreement(project, {
+      billing: { mode: "amount", amountCents: $(5000), label: "Deposit" },
+    });
+    const backdated = new Date("2026-07-20T15:00:00.000Z");
+    await Invoice.updateOne(
+      { _id: draft.json.invoice.id },
+      { $set: { "dates.invoiceDate": backdated, "dates.invoiceDateIsManual": true } }
+    );
+
+    await api("POST", `/api/admin/invoices/${draft.json.invoice.id}/generate`, {
+      projectId: String(project._id),
+    });
+    const stored = await Invoice.findById(draft.json.invoice.id).lean();
+    assert.strictEqual(
+      new Date(stored.dates.invoiceDate).getTime(),
+      backdated.getTime(),
+      "a deliberate choice outranks the convenience default"
+    );
+  });
+
+  await test("regenerating an issued invoice never re-dates it", async () => {
+    const project = await makeProject();
+    await makeAgreement(project, $(20000));
+    const invoice = await createInvoiceFromAgreement(project, {
+      billing: { mode: "amount", amountCents: $(5000), label: "Deposit" },
+    });
+    await issueInvoice(project, invoice.json.invoice.id);
+    const afterIssue = await Invoice.findById(invoice.json.invoice.id).lean();
+
+    // Move it into the past to prove the roll is genuinely skipped rather than
+    // coincidentally landing on the same day.
+    const backdated = new Date("2026-07-01T15:00:00.000Z");
+    await Invoice.updateOne(
+      { _id: invoice.json.invoice.id },
+      { $set: { "dates.invoiceDate": backdated } }
+    );
+    await api("POST", `/api/admin/invoices/${invoice.json.invoice.id}/generate`, {
+      projectId: String(project._id),
+    });
+
+    const stored = await Invoice.findById(invoice.json.invoice.id).lean();
+    assert.strictEqual(new Date(stored.dates.invoiceDate).getTime(), backdated.getTime());
+    assert.ok(afterIssue.dates.invoiceDate, "the issued invoice had a date");
+  });
+
   await test("the summary service agrees with the route it serves", async () => {
     const project = await makeProject();
     const agreement = await makeAgreement(project, $(20000));

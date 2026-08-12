@@ -185,6 +185,15 @@ const ChangeOrderSchema = new mongoose.Schema(
 
     auditHistory: { type: [AuditEventSchema], default: [] },
 
+    /**
+     * When Premium Island Homes executed this Change Order.
+     *
+     * Stamped at the first generation that applied the company signature and
+     * reused verbatim afterwards, so regenerating the PDF cannot re-date a
+     * document the customer already holds.
+     */
+    companySignedAt: { type: Date, default: null },
+
     sentAt: { type: Date, default: null },
     executedAt: { type: Date, default: null },
     declinedAt: { type: Date, default: null },

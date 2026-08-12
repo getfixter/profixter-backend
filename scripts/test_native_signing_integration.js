@@ -646,6 +646,56 @@ async function main() {
         process.env.ESIGN_ALLOW_UNSIGNED_COMPANY = "true";
       }
     });
+
+    await test("a refused send leaves no company execution date behind", async () => {
+      delete process.env.ESIGN_ALLOW_UNSIGNED_COMPANY;
+      const doc = await makeContract();
+      try {
+        await createRemote(doc).catch(() => {});
+        const stored = await Contract.findById(doc._id).lean();
+        assert.ok(
+          !stored.dates?.companySignedAt,
+          "a document that was never issued must not be recorded as executed"
+        );
+      } finally {
+        process.env.ESIGN_ALLOW_UNSIGNED_COMPANY = "true";
+      }
+    });
+
+    /* ---------------- company execution date ---------------- */
+    console.log("\nCompany execution date");
+
+    await test("an Agreement already generated keeps the date it was generated with", async () => {
+      const doc = await makeContract();
+      // As if the Agreement PDF had been produced last Monday.
+      const monday = new Date("2026-08-03T15:00:00.000Z");
+      doc.dates.companySignedAt = monday;
+      doc.markModified("dates");
+      await doc.save();
+
+      await createRemote(doc);
+      const stored = await Contract.findById(doc._id).lean();
+      assert.strictEqual(
+        new Date(stored.dates.companySignedAt).getTime(),
+        monday.getTime(),
+        "freezing for signature must not re-date the company signature"
+      );
+    });
+
+    await test("a first send stamps the execution date and persists it", async () => {
+      const doc = await makeContract();
+      assert.ok(!doc.dates.companySignedAt, "starts unstamped");
+      await createRemote(doc);
+      const stored = await Contract.findById(doc._id).lean();
+      assert.ok(stored.dates.companySignedAt, "the execution date is recorded on the document");
+    });
+
+    await test("a Change Order records its own execution date", async () => {
+      const co = await makeChangeOrder(await makeContract());
+      await createRemote(co, "CHANGE_ORDER");
+      const stored = await ChangeOrder.findById(co._id).lean();
+      assert.ok(stored.companySignedAt, "a change order is executed by the company too");
+    });
   } finally {
     await mongoose.disconnect();
     await server.stop();

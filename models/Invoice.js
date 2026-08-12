@@ -220,6 +220,12 @@ const InvoiceSchema = new mongoose.Schema(
     dueTerm: { type: String, enum: DUE_TERMS, default: "due_on_receipt" },
     dates: {
       invoiceDate: { type: Date, required: true },
+      /**
+       * True when an admin deliberately set the invoice date rather than
+       * accepting today's. Entering an invoice raised last week is a real
+       * need, so a deliberate choice is never rolled forward at issue.
+       */
+      invoiceDateIsManual: { type: Boolean, default: false },
       dueDate: { type: Date, required: true },
       serviceDate: { type: Date, default: null },
       paidInFullAt: { type: Date, default: null },

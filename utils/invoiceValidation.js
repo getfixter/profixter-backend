@@ -630,6 +630,10 @@ function validateInvoiceDraftInput(body = {}, project = null, existingInvoice = 
     dueTerm,
     dates: {
       invoiceDate,
+      invoiceDateIsManual:
+        request.dates?.invoiceDateIsManual === true ||
+        request.invoiceDateIsManual === true ||
+        fallback.dates?.invoiceDateIsManual === true,
       dueDate,
       serviceDate,
       paidInFullAt: fallback.dates?.paidInFullAt || null,
@@ -693,6 +697,7 @@ module.exports = {
   cleanString,
   customerInvoiceNumber,
   dateOnlyString,
+  dueDateForTerm,
   fileExtension,
   formatMoney,
   invoiceDisplayLabel,

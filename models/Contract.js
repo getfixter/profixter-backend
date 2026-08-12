@@ -134,6 +134,21 @@ const ContractSchema = new mongoose.Schema(
     paymentSchedule: { type: [PaymentScheduleSchema], default: [] },
     dates: {
       contractDate: { type: Date, required: true },
+      /**
+       * True when an admin deliberately set the Agreement date rather than
+       * accepting today's. Backdating a paper agreement is a real need, so a
+       * deliberate choice is never overwritten by the convenience default.
+       */
+      contractDateIsManual: { type: Boolean, default: false },
+      /**
+       * When Premium Island Homes executed this Agreement.
+       *
+       * The company signs at issue, before the customer sees the document, so
+       * this is stamped at the first generation that actually applied the
+       * signature and reused verbatim afterwards. Without it the printed
+       * company date was recomputed on every render and silently moved.
+       */
+      companySignedAt: { type: Date, default: null },
       estimatedStartDate: { type: Date, default: null },
       estimatedCompletionDate: { type: Date, default: null },
       cancellationDeadline: { type: Date, default: null },

@@ -38,6 +38,7 @@ const {
 } = require("../../config/electronicSignatureDisclosure");
 const companySignature = require("../companySignature");
 const { renderFrozenDocument, overlayExecution } = require("./executedDocument");
+const { resolveCompanySignedAt } = require("../documentDates");
 const { generateSignatureCertificateBuffer } = require("./signatureCertificate");
 const native = require("./nativeSigning");
 
@@ -202,10 +203,18 @@ async function createSignatureRequest({
   // Freeze: render once, hash, store. The pinned date keeps the render
   // deterministic so the same inputs reproduce the same bytes.
   const pinnedDate = new Date();
+
+  // The company executed this document when it was issued. If a generated PDF
+  // already carried that date, reuse it verbatim - the frozen document the
+  // customer signs must not show a different company date than the Agreement
+  // the admin already produced.
+  const companySignedAt = resolveCompanySignedAt(target.doc, true, pinnedDate);
+
   const frozen = await renderFrozenDocument({
     documentType,
     document: target.doc,
     pinnedDate,
+    companySignedAt,
   });
 
   try {
@@ -215,6 +224,11 @@ async function createSignatureRequest({
     await ESignature.deleteOne({ _id: signature._id });
     throw error;
   }
+
+  // resolveCompanySignedAt stamped the document in memory; it is persisted only
+  // now that the signature really was applied, so a refused send never leaves an
+  // execution date behind on a document that was never issued.
+  await target.doc.save();
 
   const fileName = `${sanitizePart(target.number)}-frozen.pdf`;
   const key = storageKey(signature, "frozen", fileName);

@@ -34,6 +34,9 @@ const {
   generateChangeOrderPdfBuffer,
 } = require("../utils/changeOrderPdf");
 const { createAdminActivityLog, markAdminActivityLog } = require("../utils/adminActivityLog");
+const { getCompanySignatureImage } = require("../utils/companySignature");
+const { formatSigningDate } = require("../utils/esign/executedDocument");
+const { resolveCompanySignedAt } = require("../utils/documentDates");
 
 const router = express.Router();
 
@@ -560,7 +563,17 @@ router.post("/:id/generate", async (req, res) => {
       details: { projectId: changeOrder.projectId, contractId: changeOrder.contractId },
     });
 
-    const pdfBuffer = await generateChangeOrderPdfBuffer(changeOrder);
+    // Countersigned before the customer sees it, exactly as an Agreement is -
+    // the generated PDF and the frozen copy sent for signature must be the same
+    // document. The execution date is stamped once and reused, never re-read
+    // from the clock at render time.
+    const companySignatureImage = await getCompanySignatureImage();
+    const companySignedAt = resolveCompanySignedAt(changeOrder, Boolean(companySignatureImage));
+
+    const pdfBuffer = await generateChangeOrderPdfBuffer(changeOrder, {
+      companySignatureImage,
+      companySignedDate: companySignedAt ? formatSigningDate(companySignedAt) : "",
+    });
     const fileName = buildChangeOrderFilename(changeOrder);
     const key = `${CHANGE_ORDER_S3_PREFIX}/projects/${changeOrder.projectId}/contracts/${sanitizeFilenamePart(
       changeOrder.contractSnapshot.contractNumber || "contract"

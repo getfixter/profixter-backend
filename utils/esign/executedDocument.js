@@ -49,15 +49,24 @@ function formatSigningDate(value) {
  * document as the company has already executed it. Returns the bytes, their
  * hash, and the anchors the overlay will need later.
  */
-async function renderFrozenDocument({ documentType, document, pinnedDate = null }) {
+async function renderFrozenDocument({
+  documentType,
+  document,
+  pinnedDate = null,
+  companySignedAt = null,
+}) {
   const companySignatureImage = await getCompanySignatureImage();
   const collectAnchors = [];
 
+  // The company execution date is a stored fact, not the render clock. Freezing
+  // a document for signature must print the same company date the generated
+  // Agreement printed, and every later regeneration must print it too.
+  const companyDate = companySignedAt || pinnedDate || document.createdAt || null;
+
   const options = {
     companySignatureImage,
-    companySignedDate: companySignatureImage
-      ? formatSigningDate(pinnedDate || document.createdAt || new Date())
-      : "",
+    companySignedDate:
+      companySignatureImage && companyDate ? formatSigningDate(companyDate) : "",
     collectAnchors,
     pinnedDate,
   };

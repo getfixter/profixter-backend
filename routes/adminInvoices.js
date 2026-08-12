@@ -11,6 +11,7 @@ const {
   buildInvoiceFilename,
   calculateInvoiceFinancials,
   cleanString,
+  dueDateForTerm,
   formatMoney,
   invoiceDisplayLabel,
   normalizePaymentInput,
@@ -27,6 +28,10 @@ const {
   invoiceIsIssued,
 } = require("../utils/projectFinancialsService");
 const { formatSignedCents } = require("../utils/changeOrderTotals");
+const {
+  autoIssueDate,
+  invoiceIsIssued: invoiceHasBeenIssued,
+} = require("../utils/documentDates");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -693,6 +698,25 @@ router.post("/:id/generate", async (req, res) => {
     // Last refresh before the document exists. After the invoice is issued this
     // is a no-op, so regenerating a sent invoice never rewrites its history.
     await refreshFinancialSnapshot(invoice);
+
+    /*
+     * An invoice drafted on Monday and issued on Friday is a Friday invoice.
+     * Rolling the date here - the moment the customer-facing document is
+     * produced - keeps the PDF and the record saying the same thing, and stops
+     * net terms being counted from a date that has already passed. Skipped
+     * entirely once the invoice has been issued, and whenever the admin set the
+     * date deliberately.
+     */
+    const rolledInvoiceDate = autoIssueDate({
+      isIssued: invoiceHasBeenIssued(invoice),
+      isManual: invoice.dates?.invoiceDateIsManual,
+      currentDate: invoice.dates?.invoiceDate,
+    });
+    if (rolledInvoiceDate) {
+      invoice.dates.invoiceDate = rolledInvoiceDate;
+      invoice.dates.dueDate = dueDateForTerm(rolledInvoiceDate, invoice.dueTerm, invoice.dates.dueDate, []);
+      invoice.markModified("dates");
+    }
 
     const nextVersion = Math.max(
       Number(invoice.version || 1),

@@ -31,6 +31,12 @@ const {
 } = require("../utils/contractValidation");
 const { generateContractPdfBuffer } = require("../utils/contractPdf");
 const { getCompanySignatureImage } = require("../utils/companySignature");
+const { formatSigningDate } = require("../utils/esign/executedDocument");
+const {
+  autoIssueDate,
+  contractIsIssued,
+  resolveCompanySignedAt,
+} = require("../utils/documentDates");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -468,19 +474,30 @@ router.post("/:id/generate", async (req, res) => {
       },
     });
 
+    // An unissued draft is dated the day it is issued, not the day it was
+    // started. Once issued the date is history and this does nothing.
+    const rolledContractDate = autoIssueDate({
+      isIssued: contractIsIssued(contract),
+      isManual: contract.dates?.contractDateIsManual,
+      currentDate: contract.dates?.contractDate,
+    });
+    if (rolledContractDate) {
+      contract.dates.contractDate = rolledContractDate;
+      contract.markModified("dates");
+    }
+
     // Countersign before the customer sees it. A missing asset yields null and
     // the block falls back to an empty signature rule.
     const companySignatureImage = await getCompanySignatureImage();
+
+    // Stamped on the first generation that actually applies the signature, then
+    // reused verbatim. Reading the clock here instead would silently re-date
+    // the Agreement every time the PDF was regenerated.
+    const companySignedAt = resolveCompanySignedAt(contract, Boolean(companySignatureImage));
+
     const pdfBuffer = await generateContractPdfBuffer(contract, {
       companySignatureImage,
-      companySignedDate: companySignatureImage
-        ? new Intl.DateTimeFormat("en-US", {
-            timeZone: "America/New_York",
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          }).format(new Date())
-        : "",
+      companySignedDate: companySignedAt ? formatSigningDate(companySignedAt) : "",
     });
     const fileName = buildContractFilename(contract);
     const key = `${CONTRACT_S3_PREFIX}/projects/${contract.projectId}/contracts/${sanitizeFilenamePart(
