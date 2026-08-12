@@ -349,17 +349,22 @@ async function createTipCheckoutSession({
    * session, which costs nothing.
    */
   const scopedToBooking = idString(bookingId);
-  const options = scopedToBooking
-    ? {
+
+  /*
+   * The options argument is omitted entirely rather than passed empty.
+   * stripe-node rejects `create(params, {})` client side with "Unknown
+   * arguments", so an empty object here would fail every unscoped tip before
+   * it reached Stripe at all.
+   */
+  const session = scopedToBooking
+    ? await stripe.checkout.sessions.create(params, {
         idempotencyKey: tipIdempotencyKey({
           fixterId: eligible ? idString(fixter?._id) : "",
           bookingId: scopedToBooking,
           now,
         }),
-      }
-    : {};
-
-  const session = await stripe.checkout.sessions.create(params, options);
+      })
+    : await stripe.checkout.sessions.create(params);
 
   if (!session?.url) {
     const error = new Error("Stripe did not return a checkout page for this tip.");

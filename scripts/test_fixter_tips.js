@@ -30,7 +30,18 @@ const assert = require("assert");
 const calls = [];
 const state = { prices: [], seq: 0, failOn: null, priceCreates: 0 };
 
-function record(name, args, options) {
+function record(name, args, options, optionsWasPassed) {
+  /*
+   * stripe-node rejects an empty options object client side with "Unknown
+   * arguments", so a call that passes `{}` never reaches Stripe at all. A fake
+   * that quietly accepted it let exactly that bug ship, so this one refuses it
+   * the same way the real library does.
+   */
+  if (optionsWasPassed && options && Object.keys(options).length === 0) {
+    throw new Error(
+      `Stripe: Unknown arguments ([object Object]). Did you mean to pass an options object? (on API request to ${name})`
+    );
+  }
   calls.push({ name, args, idempotencyKey: options?.idempotencyKey });
   if (state.failOn === name) throw new Error(`Injected Stripe failure on ${name}`);
 }
@@ -55,7 +66,7 @@ const fakeStripe = {
   checkout: {
     sessions: {
       async create(args, options) {
-        record("checkout.sessions.create", args, options);
+        record("checkout.sessions.create", args, options, arguments.length > 1);
         const id = `cs_fake_${++state.seq}`;
         return { id, url: `https://checkout.stripe.test/${id}` };
       },
@@ -381,6 +392,9 @@ async function main() {
      * Right for one customer refreshing their own link; catastrophic for two
      * unrelated visitors, where the second would be handed a session that may
      * already be paid and their tip would vanish.
+     *
+     * The fake also rejects an empty options object exactly as stripe-node
+     * does, so "no key" has to mean "no second argument", not "{}".
      */
     await tips.createTipCheckoutSession({ fixter: null });
     await tips.createTipCheckoutSession({ fixter: null });
@@ -392,6 +406,15 @@ async function main() {
         "an unscoped tip reused a key, so one visitor could inherit another's session"
       );
     }
+  });
+
+  await test("an unattributed tip actually reaches Stripe", async () => {
+    // The regression that shipped: `create(params, {})` is rejected by
+    // stripe-node before any network call, so every tip without a booking
+    // failed with a 503 and the customer saw the fallback page.
+    const result = await tips.createTipCheckoutSession({ fixter: null });
+    assert.ok(result.url.startsWith("https://checkout.stripe.test/"));
+    assert.strictEqual(result.attributed, false);
   });
 
   await test("one custom-amount price serves every tip, created once", async () => {
