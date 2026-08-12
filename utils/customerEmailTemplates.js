@@ -1,4 +1,5 @@
 const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
+const { safeTipUrl, tipPageUrl } = require("./tipPage");
 
 function createCustomerEmailTemplates({
   escapeHtml,
@@ -6,7 +7,7 @@ function createCustomerEmailTemplates({
   urls,
 }) {
   const SUPPORT_EMAIL = PUBLIC_CONTACT_EMAIL;
-  const TIP_URL = "https://www.profixter.com/tip";
+  const TIP_URL = tipPageUrl();
   const REVIEW_URL = "https://www.profixter.com/review";
   const ACCOUNT_URL = "https://www.profixter.com/account";
   const BOOK_URL = "https://www.profixter.com/book";
@@ -16,6 +17,16 @@ function createCustomerEmailTemplates({
 
   const safe = (value, fallback = "") =>
     escapeHtml(String(value || fallback).trim());
+
+  /**
+   * The tip link for this email.
+   *
+   * Callers pass a per-booking link carrying an opaque token, which is what
+   * makes the tip attributable to the Fixter who did the visit. Anything that
+   * is not provably our own tip page is replaced with the plain page: a
+   * customer who lands there still tips, the tip just needs assigning by hand.
+   */
+  const tipHref = (value) => safeTipUrl(value) || TIP_URL;
 
   const isOneTimeVisit = (vars = {}) =>
     vars.bookingType === "one_time_handyman_visit" ||
@@ -248,6 +259,7 @@ function createCustomerEmailTemplates({
     booking_completed: (vars = {}) => {
       const { name = "there", bookingNumber } = vars;
       const oneTime = isOneTimeVisit(vars);
+      const tipUrl = tipHref(vars.tipUrl);
       return email({
         subject: `Your Profixter appointment is complete${bookingNumber ? ` — #${bookingNumber}` : ""}`,
         preheader: "Your Profixter appointment has been marked complete.",
@@ -257,8 +269,8 @@ function createCustomerEmailTemplates({
           <p style="margin:0 0 16px;">Thank you for inviting Profixter into your home. ${oneTime ? "Your One-Time Visit" : "Booking"} ${bookingNumber ? `<strong>#${safe(bookingNumber)}</strong>` : ""} has been marked complete.</p>
           <p style="margin:0 0 16px;">If notes or photos were added to your appointment, they may be available with your booking information.</p>
           <p style="margin:0;">${oneTime ? "Need more ongoing help? You can book another visit or compare membership when it makes sense." : "If you would like to thank your Fixter, leaving a tip is always optional."}</p>
-          ${oneTime ? button(MEMBERSHIP_URL, "Compare membership") : button(TIP_URL, "Leave an optional tip")}`,
-        text: `${greeting(name)}\n\nYour Profixter appointment${bookingNumber ? ` #${bookingNumber}` : ""} is complete. Thank you for choosing us.\n\nIf notes or photos were added, they may be available with your booking information.\n\n${oneTime ? `Compare membership: ${MEMBERSHIP_URL}\nBook another visit: ${BOOK_URL}` : `Optional tip: ${TIP_URL}`}\n\n${SUPPORT_EMAIL}`,
+          ${oneTime ? button(MEMBERSHIP_URL, "Compare membership") : button(tipUrl, "Leave an optional tip")}`,
+        text: `${greeting(name)}\n\nYour Profixter appointment${bookingNumber ? ` #${bookingNumber}` : ""} is complete. Thank you for choosing us.\n\nIf notes or photos were added, they may be available with your booking information.\n\n${oneTime ? `Compare membership: ${MEMBERSHIP_URL}\nBook another visit: ${BOOK_URL}` : `Optional tip: ${tipUrl}`}\n\n${SUPPORT_EMAIL}`,
       });
     },
 

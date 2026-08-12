@@ -24,7 +24,7 @@ const assert = require("assert");
 /* ------------------------------------------------------------------ */
 
 const calls = [];
-const state = { failOn: null, invoices: new Map(), seq: 0 };
+const state = { failOn: null, invoices: new Map(), paymentIntents: new Map(), seq: 0 };
 
 function record(name, args, options) {
   calls.push({ name, args, idempotencyKey: options?.idempotencyKey });
@@ -73,6 +73,14 @@ const fakeStripe = {
     async retrieve(id) {
       record("invoices.retrieve", { id });
       return state.invoices.get(id) || { id, status: "open" };
+    },
+  },
+  paymentIntents: {
+    async retrieve(id, args) {
+      record("paymentIntents.retrieve", { id, ...args });
+      const intent = state.paymentIntents.get(id);
+      if (!intent) throw new Error(`No such payment intent: ${id}`);
+      return intent;
     },
   },
 };
@@ -374,6 +382,95 @@ async function main() {
     assert.strictEqual(p.stripeInvoiceId, "in_1");
     assert.strictEqual(p.stripeEventId, "evt_1");
     assert.ok(!/\d{13,}/.test(JSON.stringify(p)), "something card-number shaped was stored");
+  });
+
+  /* ---------------- how they paid ---------------- */
+  console.log("\nHow the customer paid");
+
+  await test("a card payment is filed as a Credit Card, not as Other", async () => {
+    state.paymentIntents.set("pi_card", {
+      id: "pi_card",
+      latest_charge: { id: "ch_1", payment_method_details: { type: "card" } },
+    });
+    const type = await online.resolvePaymentMethodType("pi_card");
+    assert.strictEqual(type, "card");
+    assert.strictEqual(online.methodFromStripe(type), "Credit Card");
+  });
+
+  await test("a bank payment is filed as ACH", async () => {
+    state.paymentIntents.set("pi_bank", {
+      id: "pi_bank",
+      latest_charge: { payment_method_details: { type: "us_bank_account" } },
+    });
+    assert.strictEqual(
+      online.methodFromStripe(await online.resolvePaymentMethodType("pi_bank")),
+      "ACH / Bank Transfer"
+    );
+  });
+
+  await test("the method comes from the PaymentIntent, never from the invoice payload", async () => {
+    /*
+     * This is the bug this exists to prevent. `invoice.payments[].payment.type`
+     * names the kind of object the payment points at, not the payment method,
+     * so putting it through the mapping filed every card payment as "Other".
+     */
+    assert.strictEqual(online.methodFromStripe("payment_intent"), "Other");
+    state.paymentIntents.set("pi_real", {
+      id: "pi_real",
+      latest_charge: { payment_method_details: { type: "card" } },
+    });
+    assert.strictEqual(
+      online.methodFromStripe(await online.resolvePaymentMethodType("pi_real")),
+      "Credit Card"
+    );
+  });
+
+  await test("a single allowed method is still enough when there is no charge yet", async () => {
+    state.paymentIntents.set("pi_pending", {
+      id: "pi_pending",
+      latest_charge: null,
+      payment_method_types: ["card"],
+    });
+    assert.strictEqual(await online.resolvePaymentMethodType("pi_pending"), "card");
+  });
+
+  await test("an ambiguous PaymentIntent is left as Other rather than guessed", async () => {
+    state.paymentIntents.set("pi_ambiguous", {
+      id: "pi_ambiguous",
+      latest_charge: null,
+      payment_method_types: ["card", "us_bank_account"],
+    });
+    assert.strictEqual(await online.resolvePaymentMethodType("pi_ambiguous"), "");
+    assert.strictEqual(online.methodFromStripe(""), "Other");
+  });
+
+  await test("a Stripe failure degrades to Other and never throws at the webhook", async () => {
+    // Resolving the method must not be able to fail a payment that is already
+    // recorded correctly: Stripe would retry the webhook forever.
+    await assert.doesNotReject(() => online.resolvePaymentMethodType("pi_missing"));
+    assert.strictEqual(await online.resolvePaymentMethodType("pi_missing"), "");
+    assert.strictEqual(await online.resolvePaymentMethodType(""), "");
+    assert.strictEqual(await online.resolvePaymentMethodType(null), "");
+  });
+
+  await test("resolving the method touches nothing but the method", async () => {
+    state.paymentIntents.set("pi_card2", {
+      id: "pi_card2",
+      latest_charge: { payment_method_details: { type: "card" } },
+    });
+    const invoice = makeInvoice();
+    const before = online.outstandingCents(invoice);
+    online.recordStripePayment(invoice, {
+      paymentIntentId: "pi_card2",
+      stripeInvoiceId: "in_1",
+      eventId: "evt_1",
+      amountCents: $(2000),
+      paidAt: new Date("2026-08-12T12:00:00Z"),
+      paymentMethodType: await online.resolvePaymentMethodType("pi_card2"),
+    });
+    assert.strictEqual(invoice.payments[0].method, "Credit Card");
+    assert.strictEqual(invoice.payments[0].amountCents, $(2000));
+    assert.strictEqual(online.outstandingCents(invoice), before - $(2000));
   });
 
   /* ---------------- due dates ---------------- */

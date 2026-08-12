@@ -399,6 +399,51 @@ function flagOutOfBandSettlement(invoice, { reason, amountCents, stripeInvoiceId
   return { applied: false, reason };
 }
 
+/**
+ * How the customer actually paid, resolved from the PaymentIntent.
+ *
+ * WHY NOT READ IT OFF THE INVOICE
+ * `invoice.payments[].payment.type` looks like the answer and is not: it names
+ * the kind of object the payment points at ("payment_intent"), not the payment
+ * method. Feeding that to methodFromStripe returns "Other", which is why every
+ * card payment was being filed as Other on the invoice. The PaymentIntent's
+ * latest charge carries payment_method_details.type, which is the real thing.
+ *
+ * Never throws and never blocks. A failure here degrades to "Other", exactly
+ * the behaviour before this existed - the payment amount, the balance and the
+ * idempotency key are all decided elsewhere and none of them depend on this.
+ */
+async function resolvePaymentMethodType(paymentIntentId) {
+  const id = String(paymentIntentId || "").trim();
+  if (!id) return "";
+
+  try {
+    const intent = await stripe.paymentIntents.retrieve(id, {
+      expand: ["latest_charge"],
+    });
+
+    const charge = intent?.latest_charge;
+    const type =
+      charge && typeof charge === "object"
+        ? charge?.payment_method_details?.type
+        : "";
+    if (type) return String(type);
+
+    // No charge to read yet. A single allowed method is still unambiguous.
+    const allowed = Array.isArray(intent?.payment_method_types)
+      ? intent.payment_method_types
+      : [];
+    if (allowed.length === 1) return String(allowed[0]);
+  } catch (error) {
+    console.warn(
+      "Unable to resolve the Stripe payment method type:",
+      error?.message || error
+    );
+  }
+
+  return "";
+}
+
 /** Stripe payment method type mapped onto the existing ProFixter methods. */
 function methodFromStripe(type) {
   if (type === "us_bank_account" || type === "ach_debit" || type === "ach_credit_transfer") {
@@ -530,7 +575,7 @@ async function reconcileInvoice(invoice) {
     paidAt: remote.status_transitions?.paid_at
       ? new Date(remote.status_transitions.paid_at * 1000)
       : new Date(),
-    paymentMethodType: undefined,
+    paymentMethodType: await resolvePaymentMethodType(classification.paymentIntentId),
   });
   return { reconciled: true, ...result };
 }
@@ -552,5 +597,6 @@ module.exports = {
   recordStripePayment,
   reconcileInvoice,
   methodFromStripe,
+  resolvePaymentMethodType,
   invoiceMetadata,
 };

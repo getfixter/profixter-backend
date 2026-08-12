@@ -86,6 +86,29 @@ assert.match(completed.text, /https:\/\/www\.profixter\.com\/tip/);
 assert.doesNotMatch(completed.html, /profixter\.com\/review/i);
 assert.doesNotMatch(completed.text, /profixter\.com\/review/i);
 
+// The tip link carries the token that makes the tip attributable. Without it
+// the tip still works, it just lands in the admin's unassigned list.
+const completedWithTip = TEMPLATES.booking_completed({
+  ...sample,
+  tipUrl: "https://www.profixter.com/tip?t=opaque-token-value",
+});
+assert.match(completedWithTip.html, /\/tip\?t=opaque-token-value/);
+assert.match(completedWithTip.text, /\/tip\?t=opaque-token-value/);
+
+// A tip URL is a link we put in front of a customer with a card in hand.
+// Anything that is not our own tip page is dropped rather than followed.
+for (const hostile of [
+  "https://evil.example.com/steal",
+  "http://www.profixter.com/tip",
+  "javascript:alert(1)",
+  "",
+]) {
+  const rendered = TEMPLATES.booking_completed({ ...sample, tipUrl: hostile });
+  assert.match(rendered.html, /https:\/\/www\.profixter\.com\/tip/);
+  assert.doesNotMatch(rendered.html, /evil\.example\.com/);
+  assert.doesNotMatch(rendered.html, /javascript:/i);
+}
+
 const oneTimeReceipt = TEMPLATES.one_time_visit_payment_received(oneTimeSample);
 assert.match(oneTimeReceipt.html, /\$99/);
 assert.match(oneTimeReceipt.html, /90-minute One-Time Visit/);

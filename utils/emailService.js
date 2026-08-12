@@ -511,10 +511,15 @@ const TEMPLATES = {
   `, { preheader: "Your visit is locked in — here's what to expect." }),
   }),
 
-  booking_completed: ({ name = "there", bookingNumber, email }) => {
-    const tipHref = URLS.tip
-      ? `${URLS.tip}${email ? `?prefilled_email=${encodeURIComponent(email)}` : ""}`
-      : null;
+  booking_completed: ({ name = "there", bookingNumber, email, tipUrl }) => {
+    // tipUrl is the attributed link built for this booking. Without one this
+    // falls back to the bare tip page, which still takes a tip; it just lands
+    // in the admin's unassigned list instead of on a Fixter's ledger.
+    const tipHref =
+      tipUrl ||
+      (URLS.tip
+        ? `${URLS.tip}${email ? `?prefilled_email=${encodeURIComponent(email)}` : ""}`
+        : null);
 
     return {
       subject: `All done 🎉 — booking #${bookingNumber || ""}`,
@@ -1014,6 +1019,56 @@ const TEMPLATES = {
       — The Profixter Team
     </p>
   `, { preheader: "We couldn't process your membership payment. Please update your card." }),
+  }),
+
+  /**
+   * "A customer left you a tip."
+   *
+   * Goes to the employee's own User.email. There is no address in this file and
+   * none in the caller: the Fixter is looked up from the tip, which is the same
+   * record the money is credited to, so the person who is told is by
+   * construction the person who was paid.
+   */
+  fixter_tip_received: ({
+    name = "there",
+    amount,
+    tipperName,
+    bookingNumber,
+    receivedAt,
+  }) => ({
+    subject: `You received a tip${amount ? ` of ${amount}` : ""}`,
+    html: frame(`
+      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">A customer left you a tip</h2>
+
+      <p style="margin:0 0 12px">
+        Nice work, ${escapeHtml(name)}. A customer chose to say thank you.
+      </p>
+
+      <div style="margin:14px 0; padding:14px; background:${BRAND.gray100}; border-radius:10px; border:1px solid ${BRAND.border};">
+        <table cellpadding="0" cellspacing="0" border="0" style="font-size:15px; line-height:1.9;">
+          <tr><td><strong>Amount:</strong>&nbsp;${escapeHtml(amount || "-")}</td></tr>
+          ${tipperName ? `<tr><td><strong>From:</strong>&nbsp;${escapeHtml(tipperName)}</td></tr>` : ""}
+          ${bookingNumber ? `<tr><td><strong>Booking:</strong>&nbsp;#${escapeHtml(bookingNumber)}</td></tr>` : ""}
+          ${receivedAt ? `<tr><td><strong>Received:</strong>&nbsp;${escapeHtml(formatNYCTime(receivedAt))}</td></tr>` : ""}
+        </table>
+      </div>
+
+      <p style="margin:0 0 12px; color:${BRAND.gray700};">
+        Your running tip total is on the Tips tab of your Profixter workspace.
+      </p>
+    `, { preheader: "A customer left you a tip." }),
+    text: [
+      `A customer left you a tip.`,
+      "",
+      `Amount: ${amount || "-"}`,
+      tipperName ? `From: ${tipperName}` : "",
+      bookingNumber ? `Booking: #${bookingNumber}` : "",
+      receivedAt ? `Received: ${formatNYCTime(receivedAt)}` : "",
+      "",
+      "Your running tip total is on the Tips tab of your Profixter workspace.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
   }),
 
   nurture_1: ({ name = "there" }) => ({

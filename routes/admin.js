@@ -32,6 +32,7 @@ const {
   evaluateReviewRequest,
   isCompletionTransition,
 } = require("../utils/bookingReviewRequestPolicy");
+const { tipUrlForBooking } = require("../utils/fixterTips");
 const {
   cancelBookingWithReservation,
   findEligibleTechnicians,
@@ -2501,6 +2502,10 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
             bookingType: booking.bookingType,
             accessType: booking.accessType,
             address,
+            // Only the completion email uses this. It carries the token that
+            // makes a tip attributable to the Fixter who did this visit; every
+            // other template ignores it.
+            tipUrl: key === "booking_completed" ? tipUrlForBooking(booking) : undefined,
           },
           {
             bccAdmin: false,

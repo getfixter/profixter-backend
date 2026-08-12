@@ -159,6 +159,12 @@ mongoose
     }
     console.log("✅ Reservation indexes ready");
 
+    // The unique index on the PaymentIntent is what stops one tip payment
+    // becoming two Tip records, so it is built before traffic rather than
+    // whenever Mongoose gets round to it.
+    await require("./models/Tip").init();
+    console.log("✅ Tip indexes ready");
+
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");
   })
@@ -196,6 +202,7 @@ app.use("/api/admin/change-orders", require("./routes/adminChangeOrders"));
 app.use("/api/admin/signatures", require("./routes/adminSignatures"));
 app.use("/api/admin/invoices", require("./routes/adminInvoices"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
+app.use("/api/admin/tips", require("./routes/adminTips"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 app.use(
   "/api/admin/ai-commander/ghl",
@@ -225,6 +232,11 @@ app.use("/api/esign/webhook", require("./routes/esignWebhook"));
 // No account, no login, no code sent to a phone - the token is the credential,
 // and every substantive value is read server-side.
 app.use("/api/sign", require("./routes/publicSigning"));
+// Public by necessity: someone leaving a tip after a visit has no reason to
+// hold an account. The token in the request only says which booking the link
+// came from; the Fixter, the customer and the amount are all resolved server
+// side, and a request without usable context still takes the money.
+app.use("/api/tips", require("./routes/tips"));
 
 
 

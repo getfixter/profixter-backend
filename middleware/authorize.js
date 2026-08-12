@@ -8,6 +8,12 @@ const PERMISSIONS = Object.freeze({
   MEMBERS_READ: "members.read",
   SCHEDULE_READ: "schedule.read",
   SCHEDULE_WRITE: "schedule.write",
+  /**
+   * Read tips. Held by every employee, because a Fixter seeing what they earned
+   * is the point of the feature. The route still scopes the query to the caller:
+   * this permission says "may look at tips", not "may look at everyone's".
+   */
+  TIPS_READ: "tips.read",
 });
 
 const ADMIN_EMAIL = String(
@@ -31,10 +37,11 @@ function permissionsForUser(user) {
       PERMISSIONS.MEMBERS_READ,
       PERMISSIONS.SCHEDULE_READ,
       PERMISSIONS.SCHEDULE_WRITE,
+      PERMISSIONS.TIPS_READ,
     ];
   }
   if (user.employeePosition === "Fixter") {
-    return [PERMISSIONS.BOOKINGS_READ, PERMISSIONS.BOOKINGS_WRITE];
+    return [PERMISSIONS.BOOKINGS_READ, PERMISSIONS.BOOKINGS_WRITE, PERMISSIONS.TIPS_READ];
   }
   return [];
 }

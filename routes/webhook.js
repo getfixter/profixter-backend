@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const mongoose = require("mongoose");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Subscription = require("../models/Subscription");
@@ -8,7 +9,14 @@ const BookingSlotReservation = require("../models/BookingSlotReservation");
 const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 const RepAttribution = require("../models/RepAttribution");
+const Tip = require("../models/Tip");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
+const {
+  applyRefundToTip,
+  isEligibleFixter,
+  isFixterTipCheckoutSession,
+  tipRecordFromCheckoutSession,
+} = require("../utils/fixterTips");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const mail = require("../utils/emailService");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
@@ -950,7 +958,203 @@ async function handleOneTimeCheckoutExpired(session, status = "expired") {
   return { bookingId: String(booking._id), status };
 }
 
-async function handleCheckoutCompleted(session) {
+/* ------------------------------------------------------------------ */
+/* Fixter tips                                                         */
+/* ------------------------------------------------------------------ */
+
+function objectIdOrNull(value) {
+  const text = String(value || "").trim();
+  return mongoose.isValidObjectId(text) ? text : null;
+}
+
+/**
+ * The Fixter this tip claims to be for, re-validated here.
+ *
+ * The session was created minutes ago and metadata is not evidence: the
+ * employee could have been edited or removed since. Anything that is not
+ * currently a Fixter or General Fixter resolves to null and the tip is recorded
+ * unassigned rather than credited to a record that no longer means what it did.
+ */
+async function loadTipFixter(fixterId) {
+  const id = objectIdOrNull(fixterId);
+  if (!id) return null;
+  const fixter = await User.findById(id)
+    .select("_id name email role employeePosition isActive")
+    .lean();
+  return isEligibleFixter(fixter) ? fixter : null;
+}
+
+/**
+ * The person who tipped, where we can say so honestly.
+ *
+ * The account from our own token is the strong answer. Failing that, an exact
+ * match on the email Stripe collected is an identity link, not a guess about
+ * who earned the money, so it is safe to record - it never affects attribution.
+ */
+async function loadTipUser(userId, booking, session) {
+  const fromToken = objectIdOrNull(userId) || objectIdOrNull(booking?.user);
+  if (fromToken) {
+    const user = await User.findById(fromToken).select("_id name email role").lean();
+    if (user) return user;
+  }
+
+  const email = String(
+    session?.customer_details?.email || session?.customer_email || ""
+  )
+    .trim()
+    .toLowerCase();
+  if (!email) return null;
+
+  return User.findOne({ email, role: "customer" }).select("_id name email role").lean();
+}
+
+/** Tell the Fixter. Uses their own account email; no address is written here. */
+async function notifyFixterOfTip(tip, fixter) {
+  if (!fixter?.email) return;
+  try {
+    await mail.sendTx(
+      "fixter_tip_received",
+      fixter.email,
+      {
+        name: String(fixter.name || "").split(/\s+/)[0] || "there",
+        amount: formatAdminMoney(tip.amountCents, tip.currency),
+        tipperName: tip.tipperName || "",
+        bookingNumber: tip.bookingNumberSnapshot || "",
+        receivedAt: tip.receivedAt,
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          userId: fixter._id,
+          recipientName: fixter.name || "",
+          recipientEmail: fixter.email,
+          customerName: tip.tipperName || "",
+          customerEmail: tip.tipperEmail || "",
+          emailType: "transactional",
+          source: "stripeWebhookFixterTip",
+        },
+      }
+    );
+    await Tip.updateOne({ _id: tip._id }, { $set: { notificationSentAt: new Date() } });
+  } catch (error) {
+    console.error("fixter_tip_received email failed:", error.message);
+  }
+}
+
+/**
+ * Record a tip.
+ *
+ * Idempotent on the PaymentIntent in two layers: a read first so the common
+ * redelivery is cheap, and the unique index behind it so two deliveries racing
+ * each other still produce one Tip.
+ */
+async function handleFixterTipCheckoutCompleted(session, eventId) {
+  const metadata = session.metadata || {};
+  const paymentIntentId = stripeId(session.payment_intent);
+
+  if (!paymentIntentId) {
+    logWebhook("error", "fixter_tip_missing_payment_intent", {
+      stripeSessionId: session.id,
+    });
+    return null;
+  }
+
+  if (String(session.payment_status || "").toLowerCase() !== "paid") {
+    logWebhook("warn", "fixter_tip_not_paid", {
+      stripeSessionId: session.id,
+      paymentStatus: session.payment_status || null,
+    });
+    return null;
+  }
+
+  const existing = await Tip.findOne({ stripePaymentIntentId: paymentIntentId }).lean();
+  if (existing) {
+    logWebhook("info", "fixter_tip_duplicate_event", {
+      stripeSessionId: session.id,
+      tipId: String(existing._id),
+    });
+    return { tipId: String(existing._id), duplicate: true };
+  }
+
+  const fixter = await loadTipFixter(metadata.fixterId);
+  const bookingId = objectIdOrNull(metadata.bookingId);
+  const booking = bookingId
+    ? await Booking.findById(bookingId).select("_id bookingNumber name email user").lean()
+    : null;
+  const user = await loadTipUser(metadata.userId, booking, session);
+
+  const record = tipRecordFromCheckoutSession(session, {
+    fixter,
+    booking,
+    user,
+    eventId,
+  });
+
+  let tip;
+  try {
+    tip = await Tip.create(record);
+  } catch (error) {
+    if (error?.code === 11000) {
+      const winner = await Tip.findOne({ stripePaymentIntentId: paymentIntentId }).lean();
+      logWebhook("info", "fixter_tip_concurrent_duplicate", {
+        stripeSessionId: session.id,
+        tipId: winner ? String(winner._id) : null,
+      });
+      return winner ? { tipId: String(winner._id), duplicate: true } : null;
+    }
+    throw error;
+  }
+
+  logWebhook("info", "fixter_tip_recorded", {
+    stripeSessionId: session.id,
+    tipId: String(tip._id),
+    amountCents: tip.amountCents,
+    attributed: !!tip.fixter,
+    assignmentStatus: tip.assignmentStatus,
+  });
+
+  await notifyFixterOfTip(tip, fixter);
+
+  return { tipId: String(tip._id), attributed: !!tip.fixter };
+}
+
+/**
+ * A refunded tip.
+ *
+ * charge.refunded is a broad event: it fires for memberships, one-time visits
+ * and project invoices too. The guard is the Tip collection itself - only tips
+ * live there, so a refund for anything else finds no record and this handler
+ * does nothing at all. That keeps the new handling strictly tip-specific, which
+ * is the whole reason charge.refunded can be added safely now.
+ */
+async function handleTipChargeRefunded(charge) {
+  const paymentIntentId = stripeId(charge?.payment_intent);
+  if (!paymentIntentId) return null;
+
+  const tip = await Tip.findOne({ stripePaymentIntentId: paymentIntentId });
+  if (!tip) return null;
+
+  const result = applyRefundToTip(tip, charge);
+  if (!result.changed) {
+    return { tipId: String(tip._id), changed: false };
+  }
+
+  await tip.save();
+  logWebhook("info", "fixter_tip_refund_applied", {
+    tipId: String(tip._id),
+    amountCents: tip.amountCents,
+    refundedCents: result.refundedCents,
+    retainedCents: result.retainedCents,
+    status: tip.status,
+  });
+  return { tipId: String(tip._id), ...result };
+}
+
+async function handleCheckoutCompleted(session, eventId) {
+  if (isFixterTipCheckoutSession(session)) {
+    return handleFixterTipCheckoutCompleted(session, eventId);
+  }
+
   if (isOneTimeCheckoutSession(session)) {
     return handleOneTimeCheckoutCompleted(session);
   }
@@ -1295,7 +1499,11 @@ async function handleProjectInvoicePaid(stripeInvoice, eventId) {
     recordStripePayment,
     classifyInvoicePayment,
     flagOutOfBandSettlement,
+    resolvePaymentMethodType,
   } = require("../utils/invoiceOnlinePayments");
+  const {
+    sendInvoicePaymentNotification,
+  } = require("../utils/invoicePaymentNotification");
 
   // Always read the current invoice: the balance may have moved since the
   // Stripe invoice was issued.
@@ -1319,15 +1527,25 @@ async function handleProjectInvoicePaid(stripeInvoice, eventId) {
     return flagged;
   }
 
+  /*
+   * The method comes from the PaymentIntent, not from the invoice payload.
+   * `payments.data[0].payment.type` is the kind of object the payment points
+   * at, not the payment method, so reading it filed every card payment as
+   * "Other". Resolving it cannot fail the payment: it returns "" on any
+   * problem and the mapping falls back to "Other" exactly as before.
+   */
+  const paidAt = stripeInvoice.status_transitions?.paid_at
+    ? new Date(stripeInvoice.status_transitions.paid_at * 1000)
+    : new Date();
+  const paymentMethodType = await resolvePaymentMethodType(classification.paymentIntentId);
+
   const result = recordStripePayment(invoice, {
     paymentIntentId: classification.paymentIntentId,
     stripeInvoiceId: stripeInvoice.id,
     eventId,
     amountCents: stripeInvoice.amount_paid,
-    paidAt: stripeInvoice.status_transitions?.paid_at
-      ? new Date(stripeInvoice.status_transitions.paid_at * 1000)
-      : new Date(),
-    paymentMethodType: stripeInvoice.payments?.data?.[0]?.payment?.type,
+    paidAt,
+    paymentMethodType,
   });
 
   invoice.onlinePayment.stripeStatus = stripeInvoice.status || invoice.onlinePayment.stripeStatus;
@@ -1335,6 +1553,27 @@ async function handleProjectInvoicePaid(stripeInvoice, eventId) {
   if (stripeInvoice.status === "paid") invoice.onlinePayment.hostedInvoiceUrl = "";
   invoice.markModified("onlinePayment");
   await invoice.save();
+
+  /*
+   * Only on applied: true. One payment record equals one email, which is the
+   * idempotency the PaymentIntent already provides, and an invoice settled out
+   * of band never gets here at all. The send is wrapped because a mail failure
+   * must never fail the webhook - Stripe would retry a payment that is already
+   * recorded correctly.
+   */
+  if (result.applied) {
+    try {
+      await sendInvoicePaymentNotification(invoice, {
+        appliedCents: result.appliedCents,
+        unappliedCents: result.unappliedCents,
+        method: invoice.payments.at(-1)?.method || "",
+        paidAt,
+      });
+    } catch (error) {
+      console.error("admin invoice paid email failed:", error.message);
+    }
+  }
+
   return result;
 }
 
@@ -1561,7 +1800,13 @@ module.exports = async (req, res) => {
     let syncResult = null;
     switch (event.type) {
       case "checkout.session.completed":
-        syncResult = await handleCheckoutCompleted(event.data.object);
+        syncResult = await handleCheckoutCompleted(event.data.object, event.id);
+        break;
+
+      case "charge.refunded":
+        // Tip-specific and nothing else: the handler returns immediately unless
+        // the charge belongs to a Tip record we already hold.
+        syncResult = await handleTipChargeRefunded(event.data.object);
         break;
 
       case "checkout.session.expired":
@@ -1677,3 +1922,11 @@ module.exports = async (req, res) => {
     return res.status(500).send("Server error");
   }
 };
+
+/*
+ * Exposed for the tip integration suite. Reaching them through the exported
+ * handler would mean forging a Stripe signature, which would test the fake
+ * rather than the behaviour that matters.
+ */
+module.exports.handleFixterTipCheckoutCompleted = handleFixterTipCheckoutCompleted;
+module.exports.handleTipChargeRefunded = handleTipChargeRefunded;

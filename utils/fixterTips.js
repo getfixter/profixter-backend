@@ -1,0 +1,620 @@
+/**
+ * Tips for Fixters, from the completion email through to the ledger.
+ *
+ * WHAT CHANGED AND WHY
+ * Tipping used to be a single static Stripe Payment Link. Every customer, every
+ * visit and every Fixter shared one URL, so a tip arrived as an anonymous
+ * payment with nothing tying it to the person who earned it. Attribution was
+ * not hard, it was impossible. The flow now runs through this server:
+ *
+ *   completion email -> /tip?t=<opaque token> -> Checkout Session we created
+ *   -> Stripe -> verified webhook -> Tip record -> notification and totals
+ *
+ * THE RULES THAT MATTER
+ *
+ * 1. The browser never chooses who gets paid. The link carries a token this
+ *    server issued and can decrypt (utils/tipToken); the Fixter is looked up
+ *    and re-validated here, on both the create and the record paths.
+ *
+ * 2. Attribution is recorded or it is absent. There is no inference step. A
+ *    tip whose context cannot be resolved is stored unassigned and shown to the
+ *    admin to place by hand. Crediting the likely Fixter would be a bookkeeping
+ *    error that looks exactly like a correct entry.
+ *
+ * 3. A failed page is lost money. Every failure to resolve context degrades to
+ *    an unattributed tip rather than an error, because a customer with their
+ *    card out and a broken page is worse than a tip that needs assigning later.
+ *
+ * 4. The customer experience stays what it was. One click from the email, then
+ *    Stripe Checkout with a free-entry amount - the same custom-amount price
+ *    behaviour the Payment Link had, not a form of our own.
+ *
+ * Everything except the two Stripe calls is a pure function, so the rules are
+ * testable without a network, a database or money.
+ */
+
+const { stripe, hasStripeSecretKey } = require("./subscriptionManagement");
+const { createTipToken, tipTokensAvailable } = require("./tipToken");
+const { tipPageUrl } = require("./tipPage");
+
+/** Marks our Checkout Sessions, exactly as the one-time visit flow does. */
+const FIXTER_TIP_PRODUCT_KIND = "fixter_tip";
+
+/** Positions that can receive a tip. Anything else is not a Fixter. */
+const TIPPABLE_POSITIONS = Object.freeze(["Fixter", "General Fixter"]);
+
+/**
+ * Stripe's own floor for a card charge is 50 cents; a dollar is the friendlier
+ * one. The ceiling is deliberately far above any real tip: it exists to catch a
+ * mistyped amount, not to tell a generous customer no.
+ */
+const TIP_MIN_CENTS = 100;
+const TIP_MAX_CENTS = 200000;
+
+/**
+ * The reusable custom-amount Price behind every tip.
+ *
+ * Checkout Sessions cannot declare a customer-chosen amount inline: only a
+ * Price carries custom_unit_amount. One shared Price gives the Payment Link's
+ * free-entry box back, while the session around it carries the attribution.
+ */
+const TIP_PRICE_LOOKUP_KEY = "profixter_fixter_tip_usd";
+
+/**
+ * How long one tip attempt reuses the same Checkout Session.
+ *
+ * A refresh, a back button or a double click inside this window resolves to the
+ * same session rather than a second one. Beyond it a genuinely new tip for the
+ * same visit is allowed through, because refusing a customer who wants to tip
+ * twice would be the wrong failure. Two Tip records can never come from one
+ * payment regardless: that is guaranteed by the PaymentIntent index.
+ *
+ * Only ever applied to a tip scoped to a booking. See createTipCheckoutSession.
+ */
+const TIP_SESSION_WINDOW_MS = 60 * 60 * 1000;
+
+const TIME_ZONE = "America/New_York";
+
+let cachedTipPriceId = null;
+
+function toCents(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.round(numeric) : 0;
+}
+
+function cleanText(value, max = 240) {
+  return String(value ?? "").trim().slice(0, max);
+}
+
+function cleanEmail(value) {
+  const email = String(value ?? "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+/**
+ * A hex id from whatever shape the caller happened to have.
+ *
+ * The ObjectId check comes first on purpose: `id` on a Mongo ObjectId is the
+ * raw twelve byte buffer, not the hex string everything else means by "id", so
+ * reading `.id` first would put binary into Stripe metadata and into the tip
+ * link. Stripe objects are the ones that carry a string `id`.
+ */
+function idString(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value.toHexString === "function") return value.toHexString();
+  if (typeof value.id === "string" && value.id) return value.id;
+  if (value._id) return idString(value._id);
+
+  const text = String(value);
+  return text && text !== "null" && text !== "undefined" ? text : "";
+}
+
+function firstName(fullName) {
+  return cleanText(fullName, 160).split(/\s+/)[0] || "";
+}
+
+/* ------------------------------------------------------------------ */
+/* Who may be tipped                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether this user record can receive a tip.
+ *
+ * Checked when the session is created and again when the payment is recorded,
+ * because the two happen minutes apart and an employee can be edited in
+ * between. Deliberately does not require isActive: a Fixter who has since left
+ * still earned the money, and refusing to credit them would misstate the books.
+ */
+function isEligibleFixter(user) {
+  if (!user) return false;
+  if (String(user.role || "") !== "employee") return false;
+  return TIPPABLE_POSITIONS.includes(String(user.employeePosition || ""));
+}
+
+/* ------------------------------------------------------------------ */
+/* The link in the completion email                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The tip URL for one completed booking.
+ *
+ * Falls back to the bare page whenever a token cannot be issued: a customer who
+ * still reaches Stripe and leaves an unassigned tip is a bookkeeping task, a
+ * customer who reaches a dead link is lost revenue.
+ */
+function tipUrlForBooking(booking) {
+  const page = tipPageUrl();
+  if (!booking || !tipTokensAvailable()) return page;
+
+  const fixterId = idString(booking.assignedFixterId);
+  const bookingId = idString(booking._id);
+  if (!fixterId && !bookingId) return page;
+
+  try {
+    const token = createTipToken({
+      bookingId,
+      fixterId,
+      userId: idString(booking.user),
+    });
+    return `${page}?t=${encodeURIComponent(token)}`;
+  } catch {
+    return page;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Creating the Checkout Session                                       */
+/* ------------------------------------------------------------------ */
+
+function isFixterTipCheckoutSession(session) {
+  return (
+    String(session?.mode || "").toLowerCase() === "payment" &&
+    session?.metadata?.productKind === FIXTER_TIP_PRODUCT_KIND
+  );
+}
+
+/**
+ * Identifiers only. No names, no email addresses, no amounts.
+ *
+ * The booking rides along even when no Fixter could be validated. It is not
+ * attribution - nothing is credited on the strength of it - but it is the
+ * evidence an admin needs to place the tip by hand afterwards, and throwing it
+ * away would make the unassigned list harder to clear for no gain.
+ */
+function tipCheckoutMetadata({ fixterId, bookingId, userId }) {
+  const booking = idString(bookingId);
+  return {
+    productKind: FIXTER_TIP_PRODUCT_KIND,
+    fixterId: idString(fixterId),
+    bookingId: booking,
+    userId: idString(userId),
+    source: booking ? "completion_email" : "direct",
+  };
+}
+
+/**
+ * Stable within one attempt window, distinct between real attempts.
+ * See TIP_SESSION_WINDOW_MS for the reasoning.
+ */
+function tipIdempotencyKey({ fixterId, bookingId, now = Date.now(), windowMs = TIP_SESSION_WINDOW_MS }) {
+  const window = Math.floor(Number(now) / windowMs);
+  return `pfx-tip-${idString(bookingId) || "none"}-${idString(fixterId) || "none"}-${window}`;
+}
+
+/**
+ * The Price customers choose an amount on.
+ *
+ * Resolved from the environment first, then by lookup key, and only created
+ * when neither exists, so a deployment never depends on someone having clicked
+ * through the Stripe dashboard. The lookup key is unique in Stripe, which makes
+ * the create idempotent in practice; a lost race re-reads instead of failing.
+ */
+async function ensureTipPriceId() {
+  const configured = String(process.env.STRIPE_TIP_PRICE_ID || "").trim();
+  if (configured) return configured;
+  if (cachedTipPriceId) return cachedTipPriceId;
+
+  const existing = await stripe.prices.list({
+    lookup_keys: [TIP_PRICE_LOOKUP_KEY],
+    active: true,
+    limit: 1,
+  });
+  if (existing?.data?.[0]?.id) {
+    cachedTipPriceId = existing.data[0].id;
+    return cachedTipPriceId;
+  }
+
+  try {
+    const created = await stripe.prices.create(
+      {
+        currency: "usd",
+        lookup_key: TIP_PRICE_LOOKUP_KEY,
+        nickname: "Fixter tip - customer chooses the amount",
+        custom_unit_amount: {
+          enabled: true,
+          minimum: TIP_MIN_CENTS,
+          maximum: TIP_MAX_CENTS,
+        },
+        product_data: { name: "Tip for your Fixter" },
+        metadata: { source: FIXTER_TIP_PRODUCT_KIND },
+      },
+      { idempotencyKey: `pfx-tip-price-${TIP_PRICE_LOOKUP_KEY}` }
+    );
+    cachedTipPriceId = created.id;
+    return cachedTipPriceId;
+  } catch (error) {
+    const retry = await stripe.prices.list({
+      lookup_keys: [TIP_PRICE_LOOKUP_KEY],
+      active: true,
+      limit: 1,
+    });
+    if (retry?.data?.[0]?.id) {
+      cachedTipPriceId = retry.data[0].id;
+      return cachedTipPriceId;
+    }
+    throw error;
+  }
+}
+
+function clientUrl() {
+  return String(process.env.CLIENT_URL || "https://www.profixter.com").replace(/\/+$/, "");
+}
+
+/**
+ * Everything Stripe is told about one tip.
+ *
+ * Kept pure and separate from the call so a test can assert on the payload -
+ * that the amount is the customer's to choose, that attribution rides in
+ * metadata, and that no personal data is sent that Stripe does not need.
+ */
+function buildTipCheckoutParams({ priceId, fixter, bookingId, userId, prefillEmail }) {
+  const name = firstName(fixter?.name) || cleanText(fixter?.firstName, 160);
+  const metadata = tipCheckoutMetadata({
+    fixterId: idString(fixter?._id),
+    bookingId,
+    userId,
+  });
+  const base = clientUrl();
+
+  const params = {
+    mode: "payment",
+    // "pay", not "donate". A tip goes to a person for work done; labelling the
+    // button Donate would imply a charitable gift, which this is not.
+    submit_type: "pay",
+    line_items: [{ price: priceId, quantity: 1 }],
+    metadata,
+    payment_intent_data: {
+      description: name ? `Tip for ${name}` : "Tip for the Profixter team",
+      metadata,
+    },
+    custom_text: {
+      submit: {
+        message: name
+          ? `Your tip goes to ${name}. Thank you for looking after the people who look after your home.`
+          : "Thank you for looking after the people who look after your home.",
+      },
+    },
+    success_url: `${base}/tip/thank-you?status=complete`,
+    cancel_url: `${base}/tip/thank-you?status=canceled`,
+  };
+
+  const email = cleanEmail(prefillEmail);
+  if (email) params.customer_email = email;
+
+  return params;
+}
+
+/**
+ * Open a tip checkout. Returns the URL to send the customer to.
+ *
+ * `attributed` says whether a Fixter was resolved. The caller does not branch
+ * on it: an unattributed tip goes through the identical flow and lands in the
+ * admin's unassigned list.
+ */
+async function createTipCheckoutSession({
+  fixter = null,
+  bookingId = "",
+  userId = "",
+  prefillEmail = "",
+  now = Date.now(),
+} = {}) {
+  if (!hasStripeSecretKey()) {
+    const error = new Error("Stripe is not configured.");
+    error.code = "stripe_not_configured";
+    throw error;
+  }
+
+  const eligible = isEligibleFixter(fixter);
+  const priceId = await ensureTipPriceId();
+  const params = buildTipCheckoutParams({
+    priceId,
+    // Only a validated employee reaches the metadata. An unvalidated one is
+    // dropped here rather than being written down and trusted later.
+    fixter: eligible ? fixter : null,
+    bookingId,
+    userId,
+    prefillEmail,
+  });
+
+  /*
+   * The idempotency key is scoped to a booking, and is omitted when there is
+   * no booking to scope it to.
+   *
+   * A shared key returns the FIRST session created under it. That is exactly
+   * right for one customer refreshing their own tip link, and exactly wrong for
+   * two strangers who both arrived without context: the second would be handed
+   * the first one's session, which may already be paid, and their tip would be
+   * lost. Letting Stripe generate a key there costs at most an abandoned
+   * session, which costs nothing.
+   */
+  const scopedToBooking = idString(bookingId);
+  const options = scopedToBooking
+    ? {
+        idempotencyKey: tipIdempotencyKey({
+          fixterId: eligible ? idString(fixter?._id) : "",
+          bookingId: scopedToBooking,
+          now,
+        }),
+      }
+    : {};
+
+  const session = await stripe.checkout.sessions.create(params, options);
+
+  if (!session?.url) {
+    const error = new Error("Stripe did not return a checkout page for this tip.");
+    error.code = "checkout_url_missing";
+    throw error;
+  }
+
+  return { url: session.url, sessionId: session.id, attributed: eligible };
+}
+
+/* ------------------------------------------------------------------ */
+/* Recording the payment                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The Tip record for a completed checkout.
+ *
+ * Pure, so the interesting decisions are visible in one place: which Fixter is
+ * credited, whose name and email are kept, and what an unresolvable tip looks
+ * like in the ledger.
+ */
+function tipRecordFromCheckoutSession(session, { fixter = null, booking = null, user = null, eventId = "" } = {}) {
+  const metadata = session?.metadata || {};
+  const eligible = isEligibleFixter(fixter);
+
+  /*
+   * ProFixter's own record of this customer outranks whatever was typed into
+   * Stripe Checkout. The booking is what we actually know; the checkout form is
+   * whatever the person at the keyboard entered, which may be a card holder who
+   * is not the customer at all.
+   */
+  const tipperName =
+    cleanText(booking?.name, 160) ||
+    cleanText(user?.name, 160) ||
+    cleanText(session?.customer_details?.name, 160);
+  const tipperEmail =
+    cleanEmail(booking?.email) ||
+    cleanEmail(user?.email) ||
+    cleanEmail(session?.customer_details?.email) ||
+    cleanEmail(session?.customer_email);
+
+  const paidStatus = String(session?.payment_status || "").toLowerCase();
+
+  return {
+    fixter: eligible ? fixter._id : null,
+    fixterNameSnapshot: eligible ? cleanText(fixter.name, 160) : "",
+    fixterPositionSnapshot: eligible ? String(fixter.employeePosition || "") : "",
+
+    amountCents: Math.max(toCents(session?.amount_total), 0),
+    currency: String(session?.currency || "usd").toLowerCase(),
+    receivedAt: new Date(),
+    status: paidStatus === "paid" ? "succeeded" : "pending",
+
+    stripePaymentIntentId: idString(session?.payment_intent),
+    stripeCheckoutSessionId: idString(session?.id),
+    stripeEventId: cleanText(eventId, 120),
+
+    tipperName,
+    tipperEmail,
+    user: user?._id || null,
+    /*
+     * A booking or an account means ProFixter already knows this person. An
+     * email Stripe collected and nothing else means a visitor. Nothing else is
+     * inferred: an anonymous tip stays unknown rather than being filed as a
+     * customer on a hunch.
+     */
+    tipperKind: user || booking ? "customer" : tipperEmail ? "visitor" : "unknown",
+
+    booking: booking?._id || null,
+    bookingNumberSnapshot: cleanText(booking?.bookingNumber, 60),
+
+    refundedCents: 0,
+    refundStatus: "",
+    refundedAt: null,
+
+    assignmentStatus: eligible ? "attributed" : "unassigned",
+    unassignedReason: eligible
+      ? ""
+      : metadata.fixterId
+        ? "The Fixter recorded on this tip is no longer a valid employee account."
+        : "This tip arrived without Fixter context and must be assigned by hand.",
+
+    source: metadata.source === "completion_email" ? "completion_email" : "direct",
+  };
+}
+
+/**
+ * Reduce a tip by what was refunded.
+ *
+ * The record is never deleted: the tip happened, and a history that quietly
+ * loses refunded entries cannot be reconciled against Stripe. `amount_refunded`
+ * is cumulative in Stripe, so this is idempotent across repeated deliveries and
+ * correct for a partial refund followed by another.
+ */
+function applyRefundToTip(tip, charge) {
+  const collected = Math.max(toCents(tip?.amountCents), 0);
+  const already = Math.max(toCents(tip?.refundedCents), 0);
+  const refunded = Math.min(Math.max(toCents(charge?.amount_refunded), 0), collected);
+
+  if (refunded <= already) {
+    return { changed: false, refundedCents: already, retainedCents: collected - already };
+  }
+
+  const full = refunded >= collected && collected > 0;
+  tip.refundedCents = refunded;
+  tip.refundStatus = full ? "full" : "partial";
+  tip.status = full ? "refunded" : "partially_refunded";
+  tip.refundedAt = new Date();
+
+  return { changed: true, refundedCents: refunded, retainedCents: collected - refunded };
+}
+
+/* ------------------------------------------------------------------ */
+/* Totals                                                              */
+/* ------------------------------------------------------------------ */
+
+/** What was kept: the tip less anything given back. Never negative. */
+function netCents(tip) {
+  return Math.max(toCents(tip?.amountCents) - toCents(tip?.refundedCents), 0);
+}
+
+const WEEKDAY_INDEX = Object.freeze({
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+});
+
+/**
+ * The Monday that starts this date's week, as YYYY-MM-DD in New York.
+ *
+ * The business week is a New York week. Reading the calendar day in UTC would
+ * put a Sunday evening tip into the following week for half the year, which is
+ * the kind of error nobody notices until a payout is short.
+ */
+function weekStartNY(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const [year, month, day] = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(date)
+    .split("-")
+    .map(Number);
+
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: TIME_ZONE,
+    weekday: "short",
+  }).format(date);
+  const daysSinceMonday = (WEEKDAY_INDEX[weekday] + 6) % 7;
+
+  const monday = new Date(Date.UTC(year, month - 1, day - daysSinceMonday));
+  return monday.toISOString().slice(0, 10);
+}
+
+/** The last `count` week starts, oldest first, ending with the current week. */
+function recentWeekStarts({ now = new Date(), count = 8 } = {}) {
+  const current = weekStartNY(now);
+  if (!current) return [];
+  const [year, month, day] = current.split("-").map(Number);
+  const weeks = [];
+  for (let index = count - 1; index >= 0; index -= 1) {
+    const start = new Date(Date.UTC(year, month - 1, day - index * 7));
+    weeks.push(start.toISOString().slice(0, 10));
+  }
+  return weeks;
+}
+
+/**
+ * Every figure the admin and the Fixters see, summed from the records.
+ *
+ * There is no stored total to drift: pass the tips, get the numbers. Refunded
+ * cents are subtracted rather than the record being skipped, so a partially
+ * refunded tip reduces the week by exactly what went back.
+ */
+function summarizeTips(tips = [], { now = new Date(), weeks = 8 } = {}) {
+  const weekStarts = recentWeekStarts({ now, count: weeks });
+  const currentWeek = weekStarts[weekStarts.length - 1] || "";
+  const byFixter = new Map();
+  const unassigned = { allTimeCents: 0, thisWeekCents: 0, count: 0 };
+  const totals = { allTimeCents: 0, thisWeekCents: 0, count: 0 };
+
+  for (const tip of tips) {
+    const cents = netCents(tip);
+    const week = weekStartNY(tip?.receivedAt);
+    const isCurrentWeek = week === currentWeek;
+
+    totals.allTimeCents += cents;
+    totals.count += 1;
+    if (isCurrentWeek) totals.thisWeekCents += cents;
+
+    const fixterId = idString(tip?.fixter);
+    if (!fixterId) {
+      unassigned.allTimeCents += cents;
+      unassigned.count += 1;
+      if (isCurrentWeek) unassigned.thisWeekCents += cents;
+      continue;
+    }
+
+    if (!byFixter.has(fixterId)) {
+      byFixter.set(fixterId, {
+        fixterId,
+        name: cleanText(tip?.fixterNameSnapshot, 160),
+        position: String(tip?.fixterPositionSnapshot || ""),
+        allTimeCents: 0,
+        thisWeekCents: 0,
+        count: 0,
+        weekly: Object.fromEntries(weekStarts.map((start) => [start, 0])),
+      });
+    }
+
+    const row = byFixter.get(fixterId);
+    row.allTimeCents += cents;
+    row.count += 1;
+    if (isCurrentWeek) row.thisWeekCents += cents;
+    if (week in row.weekly) row.weekly[week] += cents;
+    if (!row.name) row.name = cleanText(tip?.fixterNameSnapshot, 160);
+  }
+
+  return {
+    weekStarts,
+    currentWeek,
+    fixters: [...byFixter.values()].sort((left, right) => right.allTimeCents - left.allTimeCents),
+    unassigned,
+    totals,
+  };
+}
+
+module.exports = {
+  FIXTER_TIP_PRODUCT_KIND,
+  TIPPABLE_POSITIONS,
+  TIP_MIN_CENTS,
+  TIP_MAX_CENTS,
+  TIP_PRICE_LOOKUP_KEY,
+  TIP_SESSION_WINDOW_MS,
+  applyRefundToTip,
+  buildTipCheckoutParams,
+  createTipCheckoutSession,
+  ensureTipPriceId,
+  isEligibleFixter,
+  isFixterTipCheckoutSession,
+  netCents,
+  recentWeekStarts,
+  summarizeTips,
+  tipCheckoutMetadata,
+  tipIdempotencyKey,
+  tipPageUrl,
+  tipRecordFromCheckoutSession,
+  tipUrlForBooking,
+  weekStartNY,
+};
