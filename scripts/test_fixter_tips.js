@@ -802,77 +802,220 @@ async function main() {
   });
 
   /* ---------------- totals ---------------- */
-  console.log("\nTotals");
+  /* ---------------- pay periods ---------------- */
+  console.log("\nPay periods, Friday to Thursday in New York");
 
-  await test("the business week starts on Monday in New York", () => {
-    assert.strictEqual(tips.weekStartNY(new Date("2026-08-12T16:00:00Z")), "2026-08-10");
-    assert.strictEqual(tips.weekStartNY(new Date("2026-08-10T13:00:00Z")), "2026-08-10");
+  /*
+   * August 2026: the 14th and 21st are Fridays, the 20th a Thursday. So tips
+   * from Fri Aug 14 to Thu Aug 20 are the cheque written Fri Aug 21, which is
+   * the example this was specified against.
+   */
+  await test("a pay period opens on Friday and the Friday after closes it", () => {
+    const period = tips.payPeriodForDate(new Date("2026-08-17T16:00:00Z"));
+    assert.strictEqual(period.start, "2026-08-14", "the period did not open on Friday");
+    assert.strictEqual(period.end, "2026-08-20", "the period did not close on Thursday");
+    assert.strictEqual(period.payday, "2026-08-21", "the cheque is not written the next Friday");
   });
 
-  await test("a Sunday evening tip stays in the week it was earned", () => {
-    // 2026-08-17T02:30Z is Sunday 22:30 in New York. Reading the day in UTC
-    // would push it into the next week and short that week's payout.
-    assert.strictEqual(tips.weekStartNY(new Date("2026-08-17T02:30:00Z")), "2026-08-10");
+  await test("Friday 12:00 AM starts a new pay period", () => {
+    // Midnight opening Friday Aug 21 in New York is 04:00 UTC the same day.
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-08-21T04:00:00Z")), "2026-08-21");
   });
 
-  const now = new Date("2026-08-12T16:00:00Z");
+  await test("Thursday 11:59:59 PM is still the closing period", () => {
+    // One second earlier, and a whole cheque apart.
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-08-21T03:59:59Z")), "2026-08-14");
+  });
+
+  await test("a Thursday late-night tip lands on the cheque written the next morning", () => {
+    // This is the failure the whole change exists to prevent: 03:59Z is already
+    // Friday by the UTC calendar, and reading it there would push the tip onto
+    // next week's cheque and short the one being written.
+    const period = tips.payPeriodForDate(new Date("2026-08-21T03:59:59Z"));
+    assert.strictEqual(period.payday, "2026-08-21", "a Thursday night tip missed Friday's cheque");
+  });
+
+  await test("a Friday early-morning tip belongs to the following payday", () => {
+    const period = tips.payPeriodForDate(new Date("2026-08-21T12:00:00Z"));
+    assert.strictEqual(period.start, "2026-08-21");
+    assert.strictEqual(period.payday, "2026-08-28", "it was paid on the cheque already written");
+  });
+
+  await test("every day of one period resolves to the same Friday", () => {
+    const expected = {
+      "2026-08-14": "Fri", "2026-08-15": "Sat", "2026-08-16": "Sun", "2026-08-17": "Mon",
+      "2026-08-18": "Tue", "2026-08-19": "Wed", "2026-08-20": "Thu",
+    };
+    for (const day of Object.keys(expected)) {
+      assert.strictEqual(
+        tips.payPeriodStartNY(new Date(`${day}T16:00:00Z`)),
+        "2026-08-14",
+        `${day} (${expected[day]}) fell outside its own period`
+      );
+    }
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-08-21T16:00:00Z")), "2026-08-21");
+  });
+
+  await test("a UTC date that differs from the New York date uses New York", () => {
+    // 2026-12-11T04:59Z is Thursday 11:59pm in New York during standard time,
+    // when the offset is five hours rather than four.
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-12-11T04:59:00Z")), "2026-12-04");
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-12-11T05:00:00Z")), "2026-12-11");
+  });
+
+  await test("the spring forward does not move a tip between periods", () => {
+    // Daylight saving begins Sunday 8 March 2026, inside the period that opens
+    // Friday 6 March. Tips either side of the change have different UTC offsets
+    // and must still land in the same period.
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-03-07T19:00:00Z")), "2026-03-06");
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-03-09T18:00:00Z")), "2026-03-06");
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-03-13T03:59:00Z")), "2026-03-06");
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-03-13T04:00:00Z")), "2026-03-13");
+  });
+
+  await test("the autumn fall back does not move a tip between periods", () => {
+    // The repeated 1am hour on Sunday 1 November 2026, read both times.
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-11-01T05:30:00Z")), "2026-10-30");
+    assert.strictEqual(tips.payPeriodStartNY(new Date("2026-11-01T06:30:00Z")), "2026-10-30");
+  });
+
+  await test("a missing or unreadable date does not invent a period", () => {
+    assert.strictEqual(tips.payPeriodStartNY(null), "");
+    assert.strictEqual(tips.payPeriodStartNY("not a date"), "");
+    assert.strictEqual(tips.payPeriodForDate(null), null);
+  });
+
+  /* ---------------- totals over pay periods ---------------- */
+  console.log("\nTotals over pay periods");
+
+  // Friday morning, 21 August 2026, cheque in hand.
+  const now = new Date("2026-08-21T13:00:00Z");
   const ledger = [
-    { fixter: "f1", fixterNameSnapshot: "Roman", amountCents: $(20), refundedCents: 0, receivedAt: new Date("2026-08-11T14:00:00Z") },
-    { fixter: "f1", fixterNameSnapshot: "Roman", amountCents: $(30), refundedCents: $(10), receivedAt: new Date("2026-08-12T14:00:00Z") },
-    { fixter: "f2", fixterNameSnapshot: "Alex", amountCents: $(15), refundedCents: 0, receivedAt: new Date("2026-08-04T14:00:00Z") },
-    { fixter: null, amountCents: $(25), refundedCents: 0, receivedAt: new Date("2026-08-12T15:00:00Z") },
+    // Inside the closing period, so on today's cheque.
+    { fixter: "f1", fixterNameSnapshot: "Roman", amountCents: $(20), refundedCents: 0, receivedAt: new Date("2026-08-14T16:00:00Z") },
+    { fixter: "f1", fixterNameSnapshot: "Roman", amountCents: $(30), refundedCents: $(10), receivedAt: new Date("2026-08-21T03:59:00Z") },
+    // The previous period.
+    { fixter: "f2", fixterNameSnapshot: "Alex", amountCents: $(15), refundedCents: 0, receivedAt: new Date("2026-08-10T16:00:00Z") },
+    // Unassigned, inside the closing period.
+    { fixter: null, amountCents: $(25), refundedCents: 0, receivedAt: new Date("2026-08-19T16:00:00Z") },
   ];
+  const CLOSING = "2026-08-14";
 
   await test("totals are summed from the records, in integer cents", () => {
-    const summary = tips.summarizeTips(ledger, { now, weeks: 4 });
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
     assert.strictEqual(summary.totals.allTimeCents, $(20) + $(20) + $(15) + $(25));
     assert.strictEqual(summary.totals.count, 4);
-    assert.ok(
-      Number.isInteger(summary.totals.allTimeCents),
-      "a total came out as a fraction of a cent"
-    );
+    assert.ok(Number.isInteger(summary.totals.allTimeCents), "a total came out as a fraction of a cent");
   });
 
-  await test("a refunded tip reduces the week by exactly what went back", () => {
-    const summary = tips.summarizeTips(ledger, { now, weeks: 4 });
+  await test("Friday morning shows the cheque being written and the period just opened", () => {
+    // The moment the whole change is for. Opened on payday: the closing period
+    // is what is being paid today, and the current one started this morning
+    // and will be paid next Friday. Neither needs working out by hand.
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
+    assert.strictEqual(summary.closingPeriod.start, CLOSING);
+    assert.strictEqual(summary.closingPeriod.end, "2026-08-20");
+    assert.strictEqual(summary.closingPeriod.payday, "2026-08-21", "today is not this cheque payday");
+    assert.strictEqual(summary.currentPeriod.start, "2026-08-21");
+    assert.strictEqual(summary.currentPeriod.payday, "2026-08-28");
+  });
+
+  await test("a refund reduces the pay period by exactly what went back", () => {
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
     const roman = summary.fixters.find((row) => row.fixterId === "f1");
-    assert.strictEqual(roman.thisWeekCents, $(20) + $(20));
-    assert.strictEqual(roman.weekly["2026-08-10"], $(40));
+    assert.strictEqual(roman.closingPeriodCents, $(20) + $(20), "the cheque is wrong");
+    assert.strictEqual(roman.byPeriod[CLOSING], $(40));
+    assert.strictEqual(roman.currentPeriodCents, 0, "a closed tip leaked into the open period");
   });
 
-  await test("last week's tips stay in last week", () => {
-    const summary = tips.summarizeTips(ledger, { now, weeks: 4 });
+  await test("the previous period stays in the previous period", () => {
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
     const alex = summary.fixters.find((row) => row.fixterId === "f2");
-    assert.strictEqual(alex.thisWeekCents, 0);
-    assert.strictEqual(alex.weekly["2026-08-03"], $(15));
+    assert.strictEqual(alex.currentPeriodCents, 0);
+    assert.strictEqual(alex.byPeriod["2026-08-07"], $(15));
     assert.strictEqual(alex.allTimeCents, $(15));
   });
 
-  await test("unassigned tips are kept apart, never spread across the Fixters", () => {
-    const summary = tips.summarizeTips(ledger, { now, weeks: 4 });
+  await test("tips across two periods are not run together", () => {
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
+    assert.strictEqual(summary.totals.closingPeriodCents, $(20) + $(20) + $(25));
+    assert.strictEqual(summary.totals.currentPeriodCents, 0);
+    const older = summary.fixters.reduce((sum, row) => sum + (row.byPeriod["2026-08-07"] || 0), 0);
+    assert.strictEqual(older, $(15));
+  });
+
+  await test("unassigned tips never appear under a Fixter until assigned", () => {
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
     assert.strictEqual(summary.unassigned.allTimeCents, $(25));
-    assert.strictEqual(summary.unassigned.count, 1);
+    assert.strictEqual(summary.unassigned.closingPeriodCents, $(25));
     const credited = summary.fixters.reduce((sum, row) => sum + row.allTimeCents, 0);
     assert.strictEqual(
       credited,
       summary.totals.allTimeCents - summary.unassigned.allTimeCents,
       "unassigned money was credited to someone"
     );
+    for (const row of summary.fixters) {
+      assert.ok(row.byPeriod[CLOSING] !== $(25), "an unassigned tip landed on a Fixter");
+    }
   });
 
-  await test("the week list ends on the current week", () => {
-    const summary = tips.summarizeTips(ledger, { now, weeks: 4 });
-    assert.strictEqual(summary.weekStarts.length, 4);
-    assert.strictEqual(summary.weekStarts.at(-1), "2026-08-10");
-    assert.strictEqual(summary.weekStarts[0], "2026-07-20");
-    assert.strictEqual(summary.currentWeek, "2026-08-10");
+  await test("Admin and Fixter see the same number for the same period", () => {
+    // The Fixter view is the same function over a narrower set of records, so
+    // the two cannot drift. If they ever did, a payout conversation would
+    // become an argument.
+    const adminView = tips.summarizeTips(ledger, { now, periods: 4 });
+    const romanRows = ledger.filter((tip) => tip.fixter === "f1");
+    const fixterView = tips.summarizeTips(romanRows, { now, periods: 4 });
+
+    const adminRoman = adminView.fixters.find((row) => row.fixterId === "f1");
+    assert.strictEqual(fixterView.totals.closingPeriodCents, adminRoman.closingPeriodCents);
+    assert.strictEqual(fixterView.totals.currentPeriodCents, adminRoman.currentPeriodCents);
+    assert.strictEqual(fixterView.totals.allTimeCents, adminRoman.allTimeCents);
+    assert.strictEqual(fixterView.currentPeriod.start, adminView.currentPeriod.start);
+    assert.strictEqual(fixterView.currentPeriod.payday, adminView.currentPeriod.payday);
+  });
+
+  await test("summarising never edits the tip records it reads", () => {
+    const snapshot = JSON.stringify(ledger);
+    tips.summarizeTips(ledger, { now, periods: 4 });
+    tips.summarizeTips(ledger, { now, periods: 12 });
+    assert.strictEqual(JSON.stringify(ledger), snapshot, "reading the ledger changed it");
+  });
+
+  await test("the period list ends on the period being paid", () => {
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
+    assert.strictEqual(summary.payPeriods.length, 4);
+    assert.strictEqual(summary.periodStarts.at(-1), "2026-08-21");
+    assert.strictEqual(summary.periodStarts[0], "2026-07-31");
+    for (const period of summary.payPeriods) {
+      const [y, m, d] = period.start.split("-").map(Number);
+      const startDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+      assert.strictEqual(startDay, 5, `${period.start} does not open on a Friday`);
+      const [ey, em, ed] = period.end.split("-").map(Number);
+      assert.strictEqual(new Date(Date.UTC(ey, em - 1, ed)).getUTCDay(), 4, "a period did not close on a Thursday");
+    }
   });
 
   await test("an empty ledger reports zeros rather than failing", () => {
-    const summary = tips.summarizeTips([], { now, weeks: 4 });
+    const summary = tips.summarizeTips([], { now, periods: 4 });
     assert.strictEqual(summary.totals.allTimeCents, 0);
+    assert.strictEqual(summary.totals.currentPeriodCents, 0);
+    assert.strictEqual(summary.totals.closingPeriodCents, 0);
     assert.strictEqual(summary.fixters.length, 0);
     assert.strictEqual(summary.unassigned.allTimeCents, 0);
+    assert.ok(summary.currentPeriod, "there is always a period, even with no tips");
+  });
+
+  await test("no Monday-to-Sunday calculation survives anywhere", () => {
+    // Mixing the two would be the worst outcome: totals that look right and
+    // disagree with the cheque.
+    assert.strictEqual(typeof tips.weekStartNY, "undefined", "the Monday week helper is still exported");
+    assert.strictEqual(typeof tips.recentWeekStarts, "undefined", "the Monday week list is still exported");
+    const summary = tips.summarizeTips(ledger, { now, periods: 4 });
+    assert.strictEqual(summary.weekStarts, undefined);
+    assert.strictEqual(summary.currentWeek, undefined);
+    assert.strictEqual(summary.fixters[0].thisWeekCents, undefined);
+    assert.strictEqual(summary.fixters[0].weekly, undefined);
   });
 
   console.log(`\n${passed} passed, ${failures.length} failed.`);

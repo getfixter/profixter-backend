@@ -13,7 +13,34 @@ const {
 } = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
+const {
+  findCustomerByEmail,
+  findUsersByEmail,
+  isEmployeeRecord,
+} = require("../utils/userLookup");
 const router = express.Router();
+
+/**
+ * Which account somebody is signing in to, when one email has two.
+ *
+ * The password does the work. A customer account and a Fixter account are
+ * separate records with separate credentials, so in practice only one of them
+ * matches what was typed and there is nothing to disambiguate. Only when both
+ * records happen to share a password is the request genuinely ambiguous, and
+ * that is the one case this refuses to guess at: it asks, rather than picking
+ * one and hoping. Guessing would drop a Fixter into the customer app, or
+ * worse, hand somebody the wrong account entirely.
+ */
+const ACCOUNT_KINDS = Object.freeze({ CUSTOMER: "customer", EMPLOYEE: "employee" });
+
+function accountKind(user) {
+  return isEmployeeRecord(user) ? ACCOUNT_KINDS.EMPLOYEE : ACCOUNT_KINDS.CUSTOMER;
+}
+
+function accountChoiceLabel(user) {
+  if (!isEmployeeRecord(user)) return "Customer account";
+  return user.employeePosition ? `${user.employeePosition} account` : "Employee account";
+}
 
 function authUserDTO(user, coverageMap) {
   return {
@@ -348,14 +375,43 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Missing credentials" });
     }
 
-    const user = await User.findOne({ email: cleanEmail });
-    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    /*
+     * One email can now belong to a customer account and a separate Fixter
+     * account, so the password is checked against every record on the address
+     * and the one it actually opens is the one signed in to. An unqualified
+     * findOne here would have picked whichever document Mongo returned first.
+     */
+    const candidates = await findUsersByEmail(cleanEmail);
+    if (!candidates.length) return res.status(400).json({ message: "Invalid credentials" });
+
+    const matches = [];
+    for (const candidate of candidates) {
+      if (!candidate.password) continue;
+      if (await bcrypt.compare(password, candidate.password)) matches.push(candidate);
+    }
+    if (!matches.length) return res.status(400).json({ message: "Invalid credentials" });
+
+    let user = matches[0];
+    if (matches.length > 1) {
+      // Both accounts share a password. Never guess which one was meant.
+      const requested = String(req.body.accountRole || "").trim().toLowerCase();
+      const chosen = matches.find((match) => accountKind(match) === requested);
+      if (!chosen) {
+        return res.status(409).json({
+          message: "This email has more than one account. Choose which one to open.",
+          code: "ACCOUNT_CHOICE_REQUIRED",
+          accounts: matches.map((match) => ({
+            accountRole: accountKind(match),
+            label: accountChoiceLabel(match),
+          })),
+        });
+      }
+      user = chosen;
+    }
+
     if (effectiveRole(user) === "employee" && user.isActive === false) {
       return res.status(403).json({ message: "Employee account is inactive" });
     }
-
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
 
     await ensurePrimaryFromLegacy(user);
 
@@ -474,7 +530,10 @@ router.post("/google", async (req, res) => {
       return res.status(401).json({ message: "Google account profile is incomplete" });
     }
 
-    let user = await User.findOne({ email: googleEmail });
+    // Google sign-in is the customer app's front door, so it resolves the
+    // customer record. A Fixter account on the same address is not it, and
+    // must not be handed a customer session.
+    let user = await findCustomerByEmail(googleEmail);
 
     if (user) {
       if (!user.googleId) {

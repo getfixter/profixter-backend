@@ -199,8 +199,19 @@ router.post("/", async (req, res) => {
     if (!POSITIONS.includes(employeePosition)) {
       return res.status(400).json({ message: "Invalid employee position" });
     }
-    if (await User.exists({ email })) {
-      return res.status(409).json({ message: "Email already belongs to an account" });
+    /*
+     * The duplicate-email exception, and the only one in the system.
+     *
+     * This route is admin-only (see router.use above), so the check is scoped
+     * to employee accounts rather than removed: one person may hold a customer
+     * account and one Fixter account on the same email, and no more than that.
+     * Public registration still refuses any address that exists at all, so this
+     * cannot be reached from outside the admin tools.
+     */
+    if (await User.exists({ email, role: "employee" })) {
+      return res.status(409).json({
+        message: "This email already has a Fixter account.",
+      });
     }
 
     const user = await User.create({

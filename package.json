@@ -68,7 +68,8 @@
     "test:executed-document": "node scripts/test_executed_document.js",
     "test:native-integration": "node scripts/test_native_signing_integration.js",
     "test:native-routes": "node scripts/test_native_signing_routes.js",
-    "esign:oauth-bootstrap": "node scripts/adobe_oauth_bootstrap.js"
+    "esign:oauth-bootstrap": "node scripts/adobe_oauth_bootstrap.js",
+    "test:dual-account-users": "node scripts/test_dual_account_users.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.876.0",

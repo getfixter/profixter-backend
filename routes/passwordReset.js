@@ -7,6 +7,7 @@ const jwt = require("jsonwebtoken");
 const Otp = require("../models/Otp");
 const User = require("../models/User");
 const mail = require("../utils/emailService");
+const { findCustomerByEmail } = require("../utils/userLookup");
 
 const RESET_SECRET = process.env.JWT_RESET_SECRET;
 
@@ -92,7 +93,14 @@ router.post("/set-password", async (req, res) => {
     const { email } = jwt.verify(token, RESET_SECRET);
 
 
-    const user = await User.findOne({ email });
+    /*
+     * Self-serve reset belongs to the customer account. An email can also carry
+     * a Fixter account, and resetting that from a public form would let anyone
+     * with inbox access take over a staff login. Employee passwords stay on the
+     * existing admin-managed path: admin resets to a temporary one and the
+     * account carries mustChangePassword until it is replaced.
+     */
+    const user = await findCustomerByEmail(email);
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const hashedPassword = await bcrypt.hash(password, 10);

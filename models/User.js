@@ -32,7 +32,11 @@ const UserSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, unique: true },
     name: { type: String, required: true },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    /**
+     * Not unique on its own. See the {email, role} index below: one person may
+     * hold a customer account and a separate Fixter account on the same address.
+     */
+    email: { type: String, required: true, lowercase: true, trim: true },
     password: { type: String, required: false }, // Optional for Google OAuth users
     phone: { type: String, required: false }, // Optional for Google OAuth users
     firstName: { type: String, trim: true, default: "" },
@@ -106,6 +110,37 @@ const UserSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+/**
+ * One account per email PER ROLE, rather than one account per email.
+ *
+ * WHY THIS LOOSENED
+ * The same person can be both a customer and a Fixter. Somebody who pays for
+ * their own membership and also works here had to choose which one their email
+ * belonged to, and creating their employee account meant either giving them a
+ * second address or damaging the customer record they already had. Neither is
+ * acceptable, so the two are now separate User documents that happen to share
+ * an email.
+ *
+ * WHAT IT STILL GUARANTEES
+ * Two customers can never share an email, and two employees can never share
+ * one, which is the duplicate that actually causes harm. The database enforces
+ * both; the application does not have to be trusted for it.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO
+ * It does not merge the records, and nothing reads one to answer questions
+ * about the other. Every lookup that could now match two documents goes through
+ * utils/userLookup, which makes the caller say which kind of account it means.
+ *
+ * A note on the 115 legacy documents with role null: they predate the field and
+ * are never rewritten. A null-role record and a customer record could in
+ * principle share an email under this index, but no code path can create that,
+ * because registration still refuses any email that already exists at all.
+ */
+UserSchema.index(
+  { email: 1, role: 1 },
+  { unique: true, name: "user_email_role_unique_idx" }
 );
 
 UserSchema.index(

@@ -11,6 +11,12 @@ const ReservationCapacityBucket = require("../models/ReservationCapacityBucket")
 const RepAttribution = require("../models/RepAttribution");
 const Tip = require("../models/Tip");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
+/*
+ * Money is always the customer's. An email can now also carry a Fixter
+ * account, and letting one answer a billing lookup would attach a real
+ * subscription or invoice to a staff record that has neither.
+ */
+const { findBillingUserByEmail } = require("../utils/userLookup");
 const {
   applyRefundToTip,
   isEligibleFixter,
@@ -237,7 +243,7 @@ async function findUserForStripeObject(stripeObject) {
 
   const metadataEmail = String(metadata.email || "").trim().toLowerCase();
   if (metadataEmail) {
-    const byEmail = await User.findOne({ email: metadataEmail });
+    const byEmail = await findBillingUserByEmail(metadataEmail);
     if (byEmail) return byEmail;
   }
 
@@ -246,7 +252,7 @@ async function findUserForStripeObject(stripeObject) {
       const customer = await stripe.customers.retrieve(stripeObject.customer);
       const customerEmail = String(customer?.email || "").trim().toLowerCase();
       if (customerEmail) {
-        const byCustomerEmail = await User.findOne({ email: customerEmail });
+        const byCustomerEmail = await findBillingUserByEmail(customerEmail);
         if (byCustomerEmail) return byCustomerEmail;
       }
     } catch (error) {
@@ -1173,7 +1179,7 @@ async function handleCheckoutCompleted(session, eventId) {
     return;
   }
 
-  const user = await User.findOne({ email: String(email).toLowerCase() });
+  const user = await findBillingUserByEmail(email);
   if (!user) {
     logWebhook("warn", "checkout_completed_user_not_found", {
       stripeSessionId: session.id,

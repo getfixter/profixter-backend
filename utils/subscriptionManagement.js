@@ -1212,7 +1212,8 @@ async function syncCustomerFromStripe(stripeCustomerId) {
 
   let user = await findUserForStripeCustomerId(customer.id);
   if (!user && customer.email) {
-    user = await User.findOne({ email: String(customer.email).trim().toLowerCase() });
+    // The customer record, never a Fixter account sharing the same email.
+    user = await require("./userLookup").findBillingUserByEmail(customer.email);
   }
   if (!user) return null;
 

@@ -8,10 +8,15 @@
  * cannot widen their own scope by asking differently.
  *
  * EVERY FIGURE IS DERIVED
- * Nothing on this route reads a stored total. Weekly and all-time amounts are
- * summed from Tip records in integer cents on each request (see
+ * Nothing on this route reads a stored total. Pay-period and all-time amounts
+ * are summed from Tip records in integer cents on each request (see
  * utils/fixterTips.summarizeTips), so what the payout conversation is based on
  * is always the transactions themselves.
+ *
+ * PERIODS ARE FRIDAY TO THURSDAY
+ * Cheques are written on Friday morning, so a period opens as Friday begins in
+ * New York and closes on Thursday night. Admin and Fixter are summarised by the
+ * same function, which is what stops the two views disagreeing about a period.
  */
 
 const express = require("express");
@@ -73,7 +78,7 @@ function fixterLabel(user) {
 router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, res) => {
   try {
     const isAdmin = req.accessRole === "admin";
-    const weeks = clampNumber(req.query.weeks, 8, 1, 26);
+    const periods = clampNumber(req.query.periods ?? req.query.weeks, 8, 1, 26);
     const transactionLimit = clampNumber(req.query.limit, 100, 1, 500);
 
     const scope = isAdmin ? {} : { fixter: req.accessUser._id };
@@ -82,7 +87,7 @@ router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, r
       .limit(TIP_SCAN_LIMIT)
       .lean();
 
-    const summary = summarizeTips(tips, { weeks });
+    const summary = summarizeTips(tips, { periods });
     const byFixterId = new Map(summary.fixters.map((row) => [row.fixterId, row]));
 
     /*
@@ -99,7 +104,7 @@ router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, r
           .lean()
       : [req.accessUser];
 
-    const emptyWeekly = Object.fromEntries(summary.weekStarts.map((start) => [start, 0]));
+    const emptyPeriods = Object.fromEntries(summary.periodStarts.map((start) => [start, 0]));
     const fixters = employees.map((employee) => {
       const id = String(employee._id);
       const row = byFixterId.get(id);
@@ -109,9 +114,10 @@ router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, r
         position: employee.employeePosition || "",
         isActive: employee.isActive !== false,
         allTimeCents: row?.allTimeCents || 0,
-        thisWeekCents: row?.thisWeekCents || 0,
+        currentPeriodCents: row?.currentPeriodCents || 0,
+        closingPeriodCents: row?.closingPeriodCents || 0,
         count: row?.count || 0,
-        weekly: row?.weekly || { ...emptyWeekly },
+        byPeriod: row?.byPeriod || { ...emptyPeriods },
       };
     });
 
@@ -128,18 +134,22 @@ router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, r
         position: row.position || "",
         isActive: false,
         allTimeCents: row.allTimeCents,
-        thisWeekCents: row.thisWeekCents,
+        currentPeriodCents: row.currentPeriodCents,
+        closingPeriodCents: row.closingPeriodCents,
         count: row.count,
-        weekly: row.weekly,
+        byPeriod: row.byPeriod,
       });
     }
 
     return res.json({
       scope: isAdmin ? "admin" : "fixter",
-      weekStarts: summary.weekStarts,
-      currentWeek: summary.currentWeek,
+      payPeriods: summary.payPeriods,
+      currentPeriod: summary.currentPeriod,
+      closingPeriod: summary.closingPeriod,
       totals: summary.totals,
-      unassignedTotals: isAdmin ? summary.unassigned : { allTimeCents: 0, thisWeekCents: 0, count: 0 },
+      unassignedTotals: isAdmin
+        ? summary.unassigned
+        : { allTimeCents: 0, currentPeriodCents: 0, closingPeriodCents: 0, count: 0 },
       fixters: fixters.sort((left, right) => right.allTimeCents - left.allTimeCents),
       transactions: tips.slice(0, transactionLimit).map(tipDTO),
       unassigned: isAdmin

@@ -559,18 +559,12 @@ const WEEKDAY_INDEX = Object.freeze({
   Sat: 6,
 });
 
-/**
- * The Monday that starts this date's week, as YYYY-MM-DD in New York.
- *
- * The business week is a New York week. Reading the calendar day in UTC would
- * put a Sunday evening tip into the following week for half the year, which is
- * the kind of error nobody notices until a payout is short.
- */
-function weekStartNY(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
+/** Friday. The pay period opens as Friday begins in New York. */
+const PAY_PERIOD_START_WEEKDAY = WEEKDAY_INDEX.Fri;
 
-  const [year, month, day] = new Intl.DateTimeFormat("en-CA", {
+/** The New York calendar day for an instant, as [year, month, day]. */
+function nyCalendarDay(date) {
+  return new Intl.DateTimeFormat("en-CA", {
     timeZone: TIME_ZONE,
     year: "numeric",
     month: "2-digit",
@@ -579,28 +573,78 @@ function weekStartNY(value) {
     .format(date)
     .split("-")
     .map(Number);
+}
 
+function ymd(year, monthIndex, day) {
+  return new Date(Date.UTC(year, monthIndex, day)).toISOString().slice(0, 10);
+}
+
+/**
+ * The Friday that opens this tip's pay period, as YYYY-MM-DD in New York.
+ *
+ * WHY FRIDAY AND NOT MONDAY
+ * Cheques are written on Friday morning. A Monday-to-Sunday week meant working
+ * out by hand which tips belonged on the cheque in your hand, and the answer
+ * straddled two of the columns on screen. The period now closes on Thursday
+ * night, so what you see on Friday morning is exactly what you are paying.
+ *
+ * BOUNDARIES ARE NEW YORK BUSINESS DAYS, NOT UTC INSTANTS
+ * The calendar day and the weekday are both read in America/New_York and the
+ * arithmetic is done on those numbers. A tip at 11:59pm on Thursday in New York
+ * is already Friday in UTC, and reading the day in UTC would push it into the
+ * next period and short that cheque. Because only calendar numbers are
+ * manipulated, daylight saving cannot move a tip either: an hour that repeats
+ * or never happens does not change which day it falls on.
+ */
+function payPeriodStartNY(value) {
+  // new Date(null) is the epoch, not an error, so an absent date would
+  // otherwise resolve to a real period in 1970 rather than to nothing.
+  if (value === null || value === undefined || value === "") return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const [year, month, day] = nyCalendarDay(date);
   const weekday = new Intl.DateTimeFormat("en-US", {
     timeZone: TIME_ZONE,
     weekday: "short",
   }).format(date);
-  const daysSinceMonday = (WEEKDAY_INDEX[weekday] + 6) % 7;
 
-  const monday = new Date(Date.UTC(year, month - 1, day - daysSinceMonday));
-  return monday.toISOString().slice(0, 10);
+  const daysSinceFriday = (WEEKDAY_INDEX[weekday] - PAY_PERIOD_START_WEEKDAY + 7) % 7;
+  return ymd(year, month - 1, day - daysSinceFriday);
 }
 
-/** The last `count` week starts, oldest first, ending with the current week. */
-function recentWeekStarts({ now = new Date(), count = 8 } = {}) {
-  const current = weekStartNY(now);
+/**
+ * The whole period a start Friday describes.
+ *
+ * `end` is the Thursday it closes on and `payday` is the Friday morning the
+ * cheque is written, which is the day after it closes. Tips received on that
+ * Friday belong to the next cheque, not the one being written.
+ */
+function payPeriodFromStart(start) {
+  if (!start) return null;
+  const [year, month, day] = start.split("-").map(Number);
+  return {
+    start,
+    end: ymd(year, month - 1, day + 6),
+    payday: ymd(year, month - 1, day + 7),
+  };
+}
+
+/** The period an instant falls in, as {start, end, payday}. */
+function payPeriodForDate(value) {
+  return payPeriodFromStart(payPeriodStartNY(value));
+}
+
+/** The last `count` pay periods, oldest first, ending with the current one. */
+function recentPayPeriods({ now = new Date(), count = 8 } = {}) {
+  const current = payPeriodStartNY(now);
   if (!current) return [];
   const [year, month, day] = current.split("-").map(Number);
-  const weeks = [];
+  const periods = [];
   for (let index = count - 1; index >= 0; index -= 1) {
-    const start = new Date(Date.UTC(year, month - 1, day - index * 7));
-    weeks.push(start.toISOString().slice(0, 10));
+    periods.push(payPeriodFromStart(ymd(year, month - 1, day - index * 7)));
   }
-  return weeks;
+  return periods;
 }
 
 /**
@@ -608,29 +652,54 @@ function recentWeekStarts({ now = new Date(), count = 8 } = {}) {
  *
  * There is no stored total to drift: pass the tips, get the numbers. Refunded
  * cents are subtracted rather than the record being skipped, so a partially
- * refunded tip reduces the week by exactly what went back.
+ * refunded tip reduces its period by exactly what went back.
+ *
+ * Admin and Fixter both come through here, which is what stops the two views
+ * ever disagreeing about the same period.
  */
-function summarizeTips(tips = [], { now = new Date(), weeks = 8 } = {}) {
-  const weekStarts = recentWeekStarts({ now, count: weeks });
-  const currentWeek = weekStarts[weekStarts.length - 1] || "";
+function summarizeTips(tips = [], { now = new Date(), periods = 8 } = {}) {
+  const payPeriods = recentPayPeriods({ now, count: Math.max(periods, 2) });
+  const periodStarts = payPeriods.map((period) => period.start);
+
+  /*
+   * TWO PERIODS MATTER, NOT ONE.
+   *
+   * `current` is the one accumulating right now. `closing` is the one before
+   * it, and its payday is exactly the Friday that opens `current` - so on a
+   * Friday morning, `closing` is the cheque being written and `current` is the
+   * period that began hours ago and will be paid next week. Reporting only one
+   * would either hide today's cheque or misfile a Friday tip, and the whole
+   * point of this change is that neither needs working out by hand.
+   */
+  const currentPeriod = payPeriods[payPeriods.length - 1] || null;
+  const closingPeriod = payPeriods[payPeriods.length - 2] || null;
+  const currentStart = currentPeriod?.start || "";
+  const closingStart = closingPeriod?.start || "";
+
   const byFixter = new Map();
-  const unassigned = { allTimeCents: 0, thisWeekCents: 0, count: 0 };
-  const totals = { allTimeCents: 0, thisWeekCents: 0, count: 0 };
+  const blank = () => ({ allTimeCents: 0, currentPeriodCents: 0, closingPeriodCents: 0, count: 0 });
+  const unassigned = blank();
+  const totals = blank();
 
   for (const tip of tips) {
     const cents = netCents(tip);
-    const week = weekStartNY(tip?.receivedAt);
-    const isCurrentWeek = week === currentWeek;
+    const start = payPeriodStartNY(tip?.receivedAt);
+    const isCurrent = start === currentStart;
+    const isClosing = start === closingStart;
 
     totals.allTimeCents += cents;
     totals.count += 1;
-    if (isCurrentWeek) totals.thisWeekCents += cents;
+    if (isCurrent) totals.currentPeriodCents += cents;
+    if (isClosing) totals.closingPeriodCents += cents;
 
     const fixterId = idString(tip?.fixter);
     if (!fixterId) {
+      // Unassigned money is kept out of every Fixter total until an admin
+      // places it, so a period never credits somebody who was not chosen.
       unassigned.allTimeCents += cents;
       unassigned.count += 1;
-      if (isCurrentWeek) unassigned.thisWeekCents += cents;
+      if (isCurrent) unassigned.currentPeriodCents += cents;
+      if (isClosing) unassigned.closingPeriodCents += cents;
       continue;
     }
 
@@ -639,24 +708,25 @@ function summarizeTips(tips = [], { now = new Date(), weeks = 8 } = {}) {
         fixterId,
         name: cleanText(tip?.fixterNameSnapshot, 160),
         position: String(tip?.fixterPositionSnapshot || ""),
-        allTimeCents: 0,
-        thisWeekCents: 0,
-        count: 0,
-        weekly: Object.fromEntries(weekStarts.map((start) => [start, 0])),
+        ...blank(),
+        byPeriod: Object.fromEntries(periodStarts.map((value) => [value, 0])),
       });
     }
 
     const row = byFixter.get(fixterId);
     row.allTimeCents += cents;
     row.count += 1;
-    if (isCurrentWeek) row.thisWeekCents += cents;
-    if (week in row.weekly) row.weekly[week] += cents;
+    if (isCurrent) row.currentPeriodCents += cents;
+    if (isClosing) row.closingPeriodCents += cents;
+    if (start in row.byPeriod) row.byPeriod[start] += cents;
     if (!row.name) row.name = cleanText(tip?.fixterNameSnapshot, 160);
   }
 
   return {
-    weekStarts,
-    currentWeek,
+    payPeriods,
+    periodStarts,
+    currentPeriod,
+    closingPeriod,
     fixters: [...byFixter.values()].sort((left, right) => right.allTimeCents - left.allTimeCents),
     unassigned,
     totals,
@@ -679,14 +749,16 @@ module.exports = {
   isFixterTipCheckoutSession,
   isSelectableFixter,
   netCents,
+  payPeriodForDate,
+  payPeriodFromStart,
+  payPeriodStartNY,
   publicFixterDTO,
   publicFixterList,
-  recentWeekStarts,
+  recentPayPeriods,
   summarizeTips,
   tipCheckoutMetadata,
   tipIdempotencyKey,
   tipPageUrl,
   tipRecordFromCheckoutSession,
   tipUrlForBooking,
-  weekStartNY,
 };

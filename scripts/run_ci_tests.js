@@ -49,6 +49,7 @@ const SUITES = [
  *   test_native_signing_integration.js  boots an in-memory MongoDB binary
  *   test_native_signing_routes.js       boots an in-memory MongoDB binary
  *   test_fixter_tips_integration.js     boots an in-memory MongoDB binary
+ *   test_dual_account_users.js          boots an in-memory MongoDB binary
  *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test
