@@ -113,6 +113,10 @@ function evaluateRetentionOfferAcceptance(subscription = {}, env = process.env) 
   return { eligible: true, reason: "eligible" };
 }
 
+function isAnnualCycle(billingCycle) {
+  return String(billingCycle || "").toLowerCase() === "annual";
+}
+
 function planPriceToCents(planPrice) {
   const numeric = Number(planPrice);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
@@ -251,8 +255,14 @@ function buildRetentionAcceptedAdminSections({
       fields: [
         ["Membership plan", subscription.subscriptionType],
         [
-          "Current monthly price",
-          planPriceCents ? `${formatMoney(planPriceCents, currency)}/month` : NOT_AVAILABLE,
+          // planPrice follows the billing cycle, so an annual member's figure is
+          // the yearly one and must not be labelled per month.
+          isAnnualCycle(subscription.billingCycle) ? "Current annual price" : "Current monthly price",
+          planPriceCents
+            ? `${formatMoney(planPriceCents, currency)}/${
+                isAnnualCycle(subscription.billingCycle) ? "year" : "month"
+              }`
+            : NOT_AVAILABLE,
         ],
         ["Next renewal date", formatDateTime(subscription.currentPeriodEnd || subscription.nextPaymentDate)],
         ["Current status", subscription.status],

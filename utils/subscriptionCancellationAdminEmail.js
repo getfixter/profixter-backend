@@ -5,7 +5,12 @@ function clean(value, fallback = NOT_AVAILABLE) {
   return result || fallback;
 }
 
-function formatMoneyPerMonth(value) {
+/*
+ * planPrice is what the member is charged per billing period, which for an
+ * annual member is the yearly figure. Labelling that "/month" would tell whoever
+ * is reconciling the cancellation that a $1,490 annual plan bills monthly.
+ */
+function formatMoneyPerPeriod(value, billingCycle) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric < 0) return NOT_AVAILABLE;
   const dollars = numeric.toLocaleString("en-US", {
@@ -14,7 +19,8 @@ function formatMoneyPerMonth(value) {
     minimumFractionDigits: Number.isInteger(numeric) ? 0 : 2,
     maximumFractionDigits: 2,
   });
-  return `${dollars}/month`;
+  const period = String(billingCycle || "").toLowerCase() === "annual" ? "year" : "month";
+  return `${dollars}/${period}`;
 }
 
 function formatAddressParts(parts = {}) {
@@ -101,7 +107,12 @@ function buildSubscriptionCanceledAdminFields({
     ["ZIP", addressSnapshot.zip],
     ["County", addressSnapshot.county],
     ["Plan name", subscription.subscriptionType],
-    ["Monthly price", formatMoneyPerMonth(subscription.planPrice)],
+    [
+      String(subscription.billingCycle || "").toLowerCase() === "annual"
+        ? "Annual price"
+        : "Monthly price",
+      formatMoneyPerPeriod(subscription.planPrice, subscription.billingCycle),
+    ],
     ["Stripe customer ID", stripeSubscription.customer || subscription.stripeCustomerId],
     ["Stripe subscription ID", stripeSubscription.id || subscription.stripeSubscriptionId],
     ["Local subscription ID", subscription._id],

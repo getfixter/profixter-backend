@@ -17,20 +17,64 @@ if (!hasStripeSecretKey()) {
   );
 }
 
-const PLAN_PRICES = {
-  basic: 149,
-  plus: 249,
-  premium: 349,
-  elite: 499,
+/*
+ * The number of months an annual member is charged for. They get twelve.
+ *
+ * This is not a local convention: every annual Stripe price is exactly ten
+ * times its monthly counterpart, so the offer and the money agree.
+ */
+const ANNUAL_MONTHS_CHARGED = 10;
+
+/*
+ * One canonical description of a membership plan: what it costs on each billing
+ * cycle, and which Stripe price sells it.
+ *
+ * The monthly price table, the plan/cycle to price-id map, the env override keys
+ * and the plan ranking are all derived from this below, so a plan, a price or a
+ * Stripe id is only ever changed in one place.
+ *
+ * The prices here mirror live Stripe. Stripe stays authoritative: resolution
+ * still prefers an env override, then price metadata, and only falls back to the
+ * ids below.
+ */
+const PLAN_CATALOG = {
+  basic: {
+    rank: 1,
+    monthly: { price: 149, stripePriceId: "price_1RUdq2Bw0RtvSZjMnnI6uRgn" },
+    annual: { price: 1490, stripePriceId: "price_1U3g22Bw0RtvSZjMRc5ecQP1" },
+  },
+  plus: {
+    rank: 2,
+    monthly: { price: 249, stripePriceId: "price_1RUds8Bw0RtvSZjMFS1BoQEU" },
+    annual: { price: 2490, stripePriceId: "price_1U3g4HBw0RtvSZjMQBVZnV3f" },
+  },
+  premium: {
+    rank: 3,
+    monthly: { price: 349, stripePriceId: "price_1RUdtWBw0RtvSZjMOo8Q1as9" },
+    annual: { price: 3490, stripePriceId: "price_1U3g6fBw0RtvSZjMx1XMpek2" },
+  },
+  elite: {
+    rank: 4,
+    monthly: { price: 499, stripePriceId: "price_1RUduRBw0RtvSZjMy6ySmgHk" },
+    annual: { price: 4990, stripePriceId: "price_1U3g7XBw0RtvSZjMRSHEhcqC" },
+  },
 };
 
-const LEGACY_PRICE_MAP = {
-  monthly: {
-    basic: "price_1RUdq2Bw0RtvSZjMnnI6uRgn",
-    plus: "price_1RUds8Bw0RtvSZjMFS1BoQEU",
-    premium: "price_1RUdtWBw0RtvSZjMOo8Q1as9",
-    elite: "price_1RUduRBw0RtvSZjMy6ySmgHk",
-  },
+const PLAN_NAMES = Object.keys(PLAN_CATALOG);
+const BILLING_CYCLES = ["monthly", "annual"];
+
+/*
+ * Prices we no longer sell.
+ *
+ * They are kept only so a webhook for a subscription created against one of them
+ * can still be mapped back to a plan instead of throwing. They are never
+ * resolved for a new checkout.
+ *
+ * This first annual set was archived, and two of them deleted outright, after
+ * being priced at eleven months instead of ten. No subscription was ever created
+ * against any of them, so this is belt-and-braces rather than a live concern.
+ */
+const RETIRED_PRICE_IDS = {
   annual: {
     basic: "price_1T1FWUBw0RtvSZjMFXMTrt9o",
     plus: "price_1T1FXiBw0RtvSZjMTmqGIl2d",
@@ -39,27 +83,42 @@ const LEGACY_PRICE_MAP = {
   },
 };
 
-const PRICE_ENV_KEYS = {
-  monthly: {
-    basic: "STRIPE_PRICE_BASIC_MONTHLY",
-    plus: "STRIPE_PRICE_PLUS_MONTHLY",
-    premium: "STRIPE_PRICE_PREMIUM_MONTHLY",
-    elite: "STRIPE_PRICE_ELITE_MONTHLY",
-  },
-  annual: {
-    basic: "STRIPE_PRICE_BASIC_ANNUAL",
-    plus: "STRIPE_PRICE_PLUS_ANNUAL",
-    premium: "STRIPE_PRICE_PREMIUM_ANNUAL",
-    elite: "STRIPE_PRICE_ELITE_ANNUAL",
-  },
-};
+function buildCycleMap(read) {
+  return BILLING_CYCLES.reduce((byCycle, cycle) => {
+    byCycle[cycle] = PLAN_NAMES.reduce((byPlan, plan) => {
+      byPlan[plan] = read(PLAN_CATALOG[plan][cycle], plan, cycle);
+      return byPlan;
+    }, {});
+    return byCycle;
+  }, {});
+}
+
+const PLAN_PRICES = PLAN_NAMES.reduce((acc, plan) => {
+  acc[plan] = PLAN_CATALOG[plan].monthly.price;
+  return acc;
+}, {});
+
+const PLAN_ANNUAL_PRICES = PLAN_NAMES.reduce((acc, plan) => {
+  acc[plan] = PLAN_CATALOG[plan].annual.price;
+  return acc;
+}, {});
+
+const LEGACY_PRICE_MAP = buildCycleMap((entry) => entry.stripePriceId);
+
+const PRICE_ENV_KEYS = buildCycleMap(
+  (entry, plan, cycle) => `STRIPE_PRICE_${plan.toUpperCase()}_${cycle.toUpperCase()}`
+);
 
 const PRICE_CACHE_TTL_MS = 5 * 60 * 1000;
 const priceResolutionCache = new Map();
 
-const PRICE_LOOKUP = Object.entries(LEGACY_PRICE_MAP).reduce((acc, [billingCycle, plans]) => {
-  for (const [plan, priceId] of Object.entries(plans)) {
-    acc[priceId] = { plan, billingCycle };
+// Retired ids are seeded first so a currently sold price always wins if an id
+// were ever to appear in both.
+const PRICE_LOOKUP = [RETIRED_PRICE_IDS, LEGACY_PRICE_MAP].reduce((acc, map) => {
+  for (const [billingCycle, plans] of Object.entries(map)) {
+    for (const [plan, priceId] of Object.entries(plans)) {
+      if (priceId) acc[priceId] = { plan, billingCycle };
+    }
   }
   return acc;
 }, {});
@@ -647,16 +706,21 @@ function latestInvoiceDetails(stripeSubscription) {
   };
 }
 
-function getPlanPrice(plan) {
-  return PLAN_PRICES[String(plan || "").toLowerCase()] || 0;
+/*
+ * What this plan actually charges per billing period.
+ *
+ * The cycle matters: an annual member is billed 1490, not 149, and callers that
+ * pair this with a "/year" suffix were already passing a cycle in expectation of
+ * that. Defaults to monthly so existing single-argument callers are unaffected.
+ */
+function getPlanPrice(plan, billingCycle = "monthly") {
+  const entry = PLAN_CATALOG[String(plan || "").toLowerCase()];
+  if (!entry) return 0;
+  return entry[normalizeBillingCycle(billingCycle)].price;
 }
 
 function getPlanRank(plan) {
-  if (plan === "basic") return 1;
-  if (plan === "plus") return 2;
-  if (plan === "premium") return 3;
-  if (plan === "elite") return 4;
-  return 0;
+  return PLAN_CATALOG[String(plan || "").toLowerCase()]?.rank || 0;
 }
 
 function classifyPlanChange({
@@ -1163,7 +1227,7 @@ async function upsertSubscriptionRecordFromStripe({
   subscription.pendingBillingCycle = pendingChange.pendingBillingCycle;
   subscription.pendingStripePriceId = pendingChange.pendingStripePriceId;
   subscription.pendingChangeEffectiveDate = pendingChange.pendingChangeEffectiveDate;
-  subscription.planPrice = getPlanPrice(plan);
+  subscription.planPrice = getPlanPrice(plan, billingCycle);
   subscription.paymentMethod = "card";
 
   await subscription.save();
@@ -1458,9 +1522,13 @@ async function getOwnedSubscriptionForAddress({ userId, addressId, statuses = nu
 module.exports = {
   stripe,
   hasStripeSecretKey,
+  ANNUAL_MONTHS_CHARGED,
+  PLAN_CATALOG,
   PLAN_PRICES,
+  PLAN_ANNUAL_PRICES,
   PRICE_MAP: LEGACY_PRICE_MAP,
   LEGACY_PRICE_MAP,
+  RETIRED_PRICE_IDS,
   PRICE_LOOKUP,
   normalizePlanType,
   normalizeBillingCycle,

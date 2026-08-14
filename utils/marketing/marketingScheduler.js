@@ -8,7 +8,12 @@ const {
   TIMEZONE,
 } = require("./marketingConfig");
 const { daysSince, templateEligible } = require("./marketingEligibility");
-const { stripe, hasStripeSecretKey, PLAN_PRICES } = require("../subscriptionManagement");
+const {
+  stripe,
+  hasStripeSecretKey,
+  PLAN_PRICES,
+  resolveStripePriceId,
+} = require("../subscriptionManagement");
 
 /**
  * Choosing what to send, and whether now is the time to send it.
@@ -87,14 +92,25 @@ async function annualPricingHealthy(now = new Date(), options = {}) {
     return false;
   }
 
-  const priceIds = {
-    basic: process.env.STRIPE_PRICE_BASIC_ANNUAL || "price_1T1FWUBw0RtvSZjMFXMTrt9o",
-    plus: process.env.STRIPE_PRICE_PLUS_ANNUAL || "price_1T1FXiBw0RtvSZjMTmqGIl2d",
-    premium: process.env.STRIPE_PRICE_PREMIUM_ANNUAL || "price_1T1FYPBw0RtvSZjMEYMourmW",
-    elite: process.env.STRIPE_PRICE_ELITE_ANNUAL || "price_1T1FZGBw0RtvSZjMSoBGm4p6",
-  };
+  /*
+   * Ask the same resolver checkout uses rather than keeping a second copy of the
+   * annual price ids here. A private copy went stale once already: checkout was
+   * repointed at the corrected annual prices while this gate carried on checking
+   * the retired ones, so the gate's answer stopped describing what a reader of
+   * the email could actually buy.
+   */
+  const priceIds = {};
+  for (const plan of Object.keys(PLAN_PRICES)) {
+    const { priceId } = await resolveStripePriceId({ plan, billingCycle: "annual" });
+    priceIds[plan] = priceId;
+  }
 
   for (const [plan, priceId] of Object.entries(priceIds)) {
+    if (!priceId) {
+      detail[plan] = { ok: false, error: "no_price_mapped" };
+      healthy = false;
+      continue;
+    }
     const monthlyDollars = PLAN_PRICES[plan];
     const expectedCents = Math.round(monthlyDollars * ANNUAL_MONTHS_CHARGED * 100);
     try {

@@ -365,13 +365,17 @@ function subscriptionPrice(stripeSubscription) {
   return item?.price || item?.plan || null;
 }
 
-function subscriptionPriceCents(stripeSubscription, fallbackPlan) {
+function subscriptionPriceCents(stripeSubscription, fallbackPlan, fallbackBillingCycle) {
   const price = subscriptionPrice(stripeSubscription);
+  // Stripe's own amount first. The plan table is only reached when the price did
+  // not expand, and it has to follow the cycle or an annual sale falls back to
+  // the monthly figure.
+  const planDollars = getPlanPrice(fallbackPlan, fallbackBillingCycle);
   return firstNumber(
     price?.unit_amount,
     price?.amount,
     price?.unit_amount_decimal,
-    getPlanPrice(fallbackPlan) ? getPlanPrice(fallbackPlan) * 100 : null
+    planDollars ? planDollars * 100 : null
   );
 }
 
@@ -695,7 +699,7 @@ async function buildNewMemberAdminSections({
   const paymentIntent = expandedPaymentIntent(invoice);
   const lineItems = await retrieveCheckoutLineItemsForAdmin(session.id);
   const currency = subscriptionCurrency(stripeSubscription, session, subscription?.currency || "usd");
-  const priceCents = subscriptionPriceCents(stripeSubscription, plan);
+  const priceCents = subscriptionPriceCents(stripeSubscription, plan, billingCycle);
   const interval = subscriptionInterval(stripeSubscription, billingCycle);
   const promotion = promotionDetails({
     session,
@@ -1593,7 +1597,7 @@ async function handleCheckoutCompleted(session, eventId) {
 
   const plan = String(subscription.subscriptionType || "").toLowerCase();
   const billingCycle = subscription.billingCycle || "monthly";
-  const value = subscription.planPrice || getPlanPrice(plan);
+  const value = subscription.planPrice || getPlanPrice(plan, billingCycle);
   const currency = "USD";
   const now = new Date();
 

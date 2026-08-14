@@ -45,6 +45,7 @@ const SUITES = [
   "test_marketing_longterm.js",
   "test_unsubscribe_token.js",
   "test_membership_coupon_details.js",
+  "test_membership_annual_pricing.js",
 ];
 
 /**
