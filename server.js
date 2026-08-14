@@ -12,6 +12,7 @@ const User = require("./models/User");
 const cron = require("node-cron");
 const { sendTx } = require("./utils/emailService");
 const { startBookingReminders } = require("./jobs/bookingReminders");
+const { startMarketingEmails } = require("./jobs/marketingEmails");
 const {
   startBookingReviewRequests,
 } = require("./jobs/bookingReviewRequests");
@@ -219,6 +220,7 @@ app.use(
   require("./src/jarvisSkills/roofingSalesAgent/roofingSalesAgent.routes")
 );
 app.use("/api/admin", require("./routes/adminCampaigns"));
+app.use("/api/admin/marketing", require("./routes/adminMarketing"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/email", require("./routes/email"));
 app.use("/api/calendar", require("./routes/calendar"));
@@ -561,6 +563,14 @@ if (process.env.BOOKING_REMINDERS_ENABLED !== "false") {
   startBookingReminders();
   console.log("✅ Booking reminders enabled");
 }
+
+/*
+ * Marketing runs on the opposite default to everything above: opt IN, not opt
+ * out. The cron registers either way and does nothing until
+ * ENABLE_MARKETING_EMAILS is true, so deploying the code and turning marketing
+ * on stay two separate decisions.
+ */
+startMarketingEmails();
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

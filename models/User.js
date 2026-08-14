@@ -54,6 +54,15 @@ const UserSchema = new mongoose.Schema(
       default: null,
     },
     isActive: { type: Boolean, default: true, required: true, index: true },
+    /**
+     * Explicitly keep this account out of lifecycle marketing.
+     *
+     * For internal, demo and test accounts. Deliberately an explicit flag
+     * rather than a guess at the address: excluding domains that merely look
+     * like tests would eventually hide a real customer, and "test.com" is a
+     * genuine registered domain somebody could be using.
+     */
+    excludeFromMarketing: { type: Boolean, default: false },
     mustChangePassword: { type: Boolean, default: false },
     isDefaultFixter: { type: Boolean, default: false },
     employeeAvailabilityStatus: {

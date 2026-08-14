@@ -41,12 +41,16 @@ const SUITES = [
   "test_customer_availability_readiness.js",
   "test_calendar_deployment_gate.js",
   "test_booking_content_updates.js",
+  "test_marketing_system.js",
+  "test_marketing_longterm.js",
+  "test_unsubscribe_token.js",
 ];
 
 /**
  * Suites intentionally NOT run in CI, and why:
  *   test_intro_visit_flows_live.js   needs a live MongoDB
  *   test_booking_reminders_integration.js  boots an in-memory MongoDB binary
+ *   test_marketing_engine_integration.js   boots an in-memory MongoDB binary
  *   test_intro_visit_race_live.js    needs a live MongoDB + running backend
  *   test_intro_visit_photo_live.js   needs a live MongoDB + running backend + S3 stub
  *   test_native_signing_integration.js  boots an in-memory MongoDB binary
