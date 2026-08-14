@@ -14,6 +14,8 @@ const path = require("path");
 
 /** Deterministic, dependency-free suites. */
 const SUITES = [
+  // First: nothing below is worth running if the app cannot even be loaded.
+  "test_module_load.js",
   "test_service_area.js",
   "test_change_order_totals.js",
   "test_project_financials.js",
@@ -46,6 +48,7 @@ const SUITES = [
   "test_unsubscribe_token.js",
   "test_membership_coupon_details.js",
   "test_membership_annual_pricing.js",
+  "test_subscription_cancellation_admin_email.js",
 ];
 
 /**

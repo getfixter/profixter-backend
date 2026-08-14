@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildSubscriptionCanceledAdminFields,
-  formatMoneyPerMonth,
+  formatMoneyPerPeriod,
   shouldSendSubscriptionCanceledAdminEmail,
 } = require("../utils/subscriptionCancellationAdminEmail");
 const {
@@ -87,8 +87,12 @@ const stripeAfterScheduled = {
   status: "active",
 };
 
-assert.equal(formatMoneyPerMonth(149), "$149/month");
-assert.equal(formatMoneyPerMonth(149.5), "$149.50/month");
+assert.equal(formatMoneyPerPeriod(149), "$149/month");
+assert.equal(formatMoneyPerPeriod(149.5), "$149.50/month");
+assert.equal(formatMoneyPerPeriod(149, "monthly"), "$149/month");
+// An annual member's planPrice is the yearly figure and must not read "/month".
+assert.equal(formatMoneyPerPeriod(1490, "annual"), "$1,490/year");
+assert.equal(formatMoneyPerPeriod(4990, "annual"), "$4,990/year");
 
 assert.equal(
   shouldSendSubscriptionCanceledAdminEmail({

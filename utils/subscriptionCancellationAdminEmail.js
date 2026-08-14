@@ -151,6 +151,6 @@ function buildSubscriptionCanceledAdminFields({
 
 module.exports = {
   buildSubscriptionCanceledAdminFields,
-  formatMoneyPerMonth,
+  formatMoneyPerPeriod,
   shouldSendSubscriptionCanceledAdminEmail,
 };
