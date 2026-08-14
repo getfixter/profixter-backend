@@ -3,13 +3,15 @@ const Booking = require("../models/Booking");
 const User = require("../models/User");
 const { sendTx } = require("../utils/emailService");
 const {
-  REMINDER_24H_CATCHUP_MIN_MS,
-  REMINDER_24H_MS,
-  REMINDER_60M_MS,
+  REMINDER_24H_LEAD_MS,
+  REMINDER_24H_MIN_LEAD_MS,
+  REMINDER_60M_GRACE_AFTER_START_MS,
+  REMINDER_60M_LEAD_MS,
   REMINDER_LOCK_STALE_MS,
-  REMINDER_WINDOW_MS,
+  REMINDER_MAX_ATTEMPTS,
   evaluate24HourReminder,
   evaluate60MinuteReminder,
+  evaluateTagRetry,
 } = require("../utils/bookingReminderPolicy");
 const {
   createOrUpdateContact,
@@ -19,6 +21,91 @@ const {
 } = require("../utils/ghlContact");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The two reminder sweeps.
+ *
+ * Each sweep asks one question: which bookings are due a reminder they have not
+ * successfully received? Not "which bookings fall inside the slice of time this
+ * particular cron tick happens to be looking at", which is what the previous
+ * implementation asked and why a deploy or a crash could destroy a reminder
+ * permanently and silently.
+ *
+ * The two sweeps are independent. They were previously awaited in sequence in
+ * one try block, so a throw in the 24-hour sweep skipped the 60-minute sweep
+ * for that cycle without either being logged as a failure.
+ */
+
+const SELECT_FIELDS = [
+  "status userId name email phone bookingNumber date service selectedTask",
+  "bookingType accessType address city state zip",
+  "reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hAttempts",
+  "reminder60mQueuedAt reminder60mSentAt reminder60mSkippedAt reminder60mAttempts",
+].join(" ");
+
+const REMINDERS = {
+  "24h": {
+    label: "24h",
+    templateKey: "booking_reminder_24h",
+    ghlTag: "reminder_24h",
+    leadMs: REMINDER_24H_LEAD_MS,
+    queuedField: "reminder24hQueuedAt",
+    sentField: "reminder24hSentAt",
+    skippedField: "reminder24hSkippedAt",
+    skipReasonField: "reminder24hSkipReason",
+    attemptsField: "reminder24hAttempts",
+    lastErrorField: "reminder24hLastError",
+    messageIdField: "reminder24hMessageId",
+    tagField: "reminder24hTagAt",
+    tagAttemptsField: "reminder24hTagAttempts",
+    tagErrorField: "reminder24hTagError",
+    evaluate: evaluate24HourReminder,
+    /*
+     * Selection bounds. The upper bound is "due", the lower bound is "still
+     * worth sending". Between them the reminder stays selectable on every
+     * cycle, which is what makes an outage recoverable rather than fatal.
+     */
+    dateRange: (now) => ({
+      $gt: new Date(now.getTime() + REMINDER_24H_MIN_LEAD_MS),
+      $lte: new Date(now.getTime() + REMINDER_24H_LEAD_MS),
+    }),
+    /*
+     * Past the point of usefulness and never sent: give it a terminal reason.
+     * Reaches back six hours so an appointment that has already happened also
+     * gets one, rather than sitting undecided forever with no record of why it
+     * was never reminded.
+     */
+    abandonRange: (now) => ({
+      $gt: new Date(now.getTime() - 6 * 60 * 60 * 1000),
+      $lte: new Date(now.getTime() + REMINDER_24H_MIN_LEAD_MS),
+    }),
+  },
+  "60m": {
+    label: "60m",
+    templateKey: "booking_reminder_60m",
+    ghlTag: "reminder_60m",
+    leadMs: REMINDER_60M_LEAD_MS,
+    queuedField: "reminder60mQueuedAt",
+    sentField: "reminder60mSentAt",
+    skippedField: "reminder60mSkippedAt",
+    skipReasonField: "reminder60mSkipReason",
+    attemptsField: "reminder60mAttempts",
+    lastErrorField: "reminder60mLastError",
+    messageIdField: "reminder60mMessageId",
+    tagField: "reminder60mTagAt",
+    tagAttemptsField: "reminder60mTagAttempts",
+    tagErrorField: "reminder60mTagError",
+    evaluate: evaluate60MinuteReminder,
+    dateRange: (now) => ({
+      $gte: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS),
+      $lte: new Date(now.getTime() + REMINDER_60M_LEAD_MS),
+    }),
+    abandonRange: (now) => ({
+      $gt: new Date(now.getTime() - 6 * 60 * 60 * 1000),
+      $lt: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS),
+    }),
+  },
+};
 
 function buildAddress(booking) {
   return [booking.address, booking.city, booking.state, booking.zip]
@@ -31,31 +118,34 @@ function safeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
+/**
+ * What a reminder attempt is allowed to write to the log.
+ *
+ * The domain, never the address: enough to tell an SES suppression from a typo
+ * without putting a customer's email in a log aggregator.
+ */
 function bookingLogShape(booking) {
   const email = safeEmail(booking.email);
   return {
     bookingId: String(booking._id || ""),
     bookingNumber: booking.bookingNumber || "",
     status: booking.status || "",
-    date: booking.date || null,
+    appointmentAt: booking.date ? new Date(booking.date).toISOString() : null,
     emailDomain: email.includes("@") ? email.split("@").pop() : "",
   };
 }
 
 function errorDetails(error) {
   return {
-    message: error?.message || "Unknown error",
+    message: String(error?.message || "Unknown error").slice(0, 300),
     name: error?.name || "",
     code: error?.code || "",
     responseCode: error?.responseCode || "",
-    command: error?.command || "",
   };
 }
 
 function emptyField(field) {
-  return {
-    $or: [{ [field]: { $exists: false } }, { [field]: null }],
-  };
+  return { $or: [{ [field]: { $exists: false } }, { [field]: null }] };
 }
 
 function availableLock(field, staleBefore) {
@@ -73,9 +163,7 @@ async function sendReminderEmail({ templateKey, booking, vars }) {
   if (!to) {
     throw new Error(`Missing customer email for booking ${booking._id}`);
   }
-
-  console.log(`Sending ${templateKey} email`, bookingLogShape(booking));
-  const info = await sendTx(templateKey, to, vars, {
+  return sendTx(templateKey, to, vars, {
     logContext: {
       bookingId: booking._id,
       bookingNumber: booking.bookingNumber,
@@ -87,11 +175,6 @@ async function sendReminderEmail({ templateKey, booking, vars }) {
       source: "bookingReminders",
     },
   });
-  console.log(`${templateKey} email sent`, {
-    ...bookingLogShape(booking),
-    messageId: info?.messageId || "",
-  });
-  return info;
 }
 
 async function sendReminderSmsTag({ booking, tag }) {
@@ -104,7 +187,6 @@ async function sendReminderSmsTag({ booking, tag }) {
   if (!contactId) {
     throw new Error(`Could not sync GHL contact for booking ${booking._id}`);
   }
-
   const pretty = formatBookingDateTime(booking.date);
   const updated = await updateContactFields(contactId, [
     { key: "booking_datetime_pretty", value: pretty },
@@ -115,112 +197,220 @@ async function sendReminderSmsTag({ booking, tag }) {
   if (!(await addTag(contactId, tag))) {
     throw new Error(`Failed adding GHL tag ${tag} for booking ${booking._id}`);
   }
-
-  console.log("GHL reminder tag added", {
-    ...bookingLogShape(booking),
-    tag,
-  });
 }
 
-async function process24HourReminders(now, stats) {
-  const catchupFloor = new Date(
-    now.getTime() + REMINDER_24H_CATCHUP_MIN_MS
+/**
+ * Apply the CRM tag that triggers the SMS, and record that channel separately.
+ *
+ * Returns rather than throws: the email has already been delivered by the time
+ * this runs, and an exception here would roll the caller into a retry that
+ * resends it. A failure is recorded and left for the tag-only sweep.
+ */
+async function applyReminderTag(config, booking, stats) {
+  /*
+   * Claim by writing the completion field up front, then undo it if the call
+   * fails. Only one worker can win that conditional update, so four EB
+   * instances racing the same booking produce one tag and therefore one SMS.
+   * Incrementing a counter first and then calling out would let every worker
+   * through, which is exactly what the concurrency test caught.
+   *
+   * The residual risk is a crash between the claim and the CRM call, which
+   * leaves the tag recorded but unsent. The email has already gone by then, and
+   * an unsent text is a smaller harm than a duplicated one, so this errs that
+   * way deliberately.
+   */
+  const claim = await Booking.updateOne(
+    { _id: booking._id, [config.tagField]: null },
+    {
+      $set: { [config.tagField]: new Date() },
+      $inc: { [config.tagAttemptsField]: 1 },
+    }
   );
-  const windowCeiling = new Date(
-    now.getTime() + REMINDER_24H_MS + REMINDER_WINDOW_MS
-  );
-  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
-  const notSent = emptyField("reminder24hSentAt");
-  const lockAvailable = availableLock("reminder24hQueuedAt", staleBefore);
+  if (claim.modifiedCount !== 1) return false;
 
+  try {
+    await sendReminderSmsTag({ booking, tag: config.ghlTag });
+    await Booking.updateOne(
+      { _id: booking._id },
+      { $set: { [config.tagErrorField]: "" } }
+    );
+    stats.tagged += 1;
+    console.log(
+      JSON.stringify({
+        event: "reminder_tag_applied",
+        reminder: config.label,
+        tag: config.ghlTag,
+        ...bookingLogShape(booking),
+      })
+    );
+    return true;
+  } catch (error) {
+    // Release the claim so a later cycle retries the tag, without touching the
+    // email, which has already been delivered.
+    await Booking.updateOne(
+      { _id: booking._id },
+      {
+        $set: {
+          [config.tagField]: null,
+          [config.tagErrorField]: String(error?.message || "").slice(0, 300),
+        },
+      }
+    );
+    stats.tagFailed += 1;
+    console.warn(
+      JSON.stringify({
+        event: "reminder_tag_failed",
+        reminder: config.label,
+        tag: config.ghlTag,
+        ...bookingLogShape(booking),
+        error: errorDetails(error),
+      })
+    );
+    return false;
+  }
+}
+
+/**
+ * Retry the SMS tag for reminders whose email already went out.
+ *
+ * This is the pass that makes the two channels genuinely independent. Without
+ * it, a CRM outage would mean the customer got the email and never the text,
+ * with nothing in the system that could put that right.
+ */
+async function retryPendingTags(config, now, stats) {
   const candidates = await Booking.find({
-    status: /^confirmed$/i,
-    date: { $gt: catchupFloor, $lte: windowCeiling },
-    $and: [notSent, lockAvailable],
+    [config.sentField]: { $ne: null },
+    [config.tagField]: null,
+    date: { $gt: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS) },
+    [config.tagAttemptsField]: { $lt: REMINDER_MAX_ATTEMPTS },
   })
-    .select(
-      "status userId name email phone bookingNumber date service selectedTask bookingType accessType address city state zip reminder24hQueuedAt reminder24hSentAt reminder24hSkippedAt reminder24hSkipReason"
-    )
-    .sort({ date: 1 })
-    .limit(100)
+    .select(SELECT_FIELDS + ` ${config.tagField} ${config.tagAttemptsField}`)
+    .limit(50)
     .lean();
 
-  stats.scanned24 = candidates.length;
-  const staleLocks = candidates.filter(
-    (booking) =>
-      booking.reminder24hQueuedAt &&
-      new Date(booking.reminder24hQueuedAt) <= staleBefore
-  );
-  console.log("24h reminder candidates found", {
-    catchupFloor: catchupFloor.toISOString(),
-    windowCeiling: windowCeiling.toISOString(),
-    candidates: candidates.length,
-    staleLocksRecoverable: staleLocks.length,
-  });
-  if (staleLocks.length) {
-    console.warn("24h reminder lock recovery", {
-      bookings: staleLocks.map(bookingLogShape),
-    });
+  for (const booking of candidates) {
+    const verdict = evaluateTagRetry(booking, config.label, now);
+    if (!verdict.eligible) continue;
+    await applyReminderTag(config, booking, stats);
+    await sleep(80);
   }
+}
+
+/** Give one booking's reminder a terminal reason, once. */
+async function abandonOne(config, booking, reason, stats) {
+  const result = await Booking.updateOne(
+    {
+      _id: booking._id,
+      $and: [emptyField(config.sentField), emptyField(config.skippedField)],
+    },
+    {
+      $set: {
+        [config.skippedField]: new Date(),
+        [config.skipReasonField]: reason,
+      },
+      $unset: { [config.queuedField]: 1 },
+    }
+  );
+  if (result.modifiedCount !== 1) return false;
+  stats.abandoned += 1;
+  console.log(
+    JSON.stringify({
+      event: "reminder_abandoned",
+      reminder: config.label,
+      reason,
+      ...bookingLogShape(booking),
+    })
+  );
+  return true;
+}
+
+/**
+ * Abandon reminders that can no longer be delivered usefully.
+ *
+ * Recording the reason is the point. A reminder that was never sent because the
+ * booking was confirmed ninety minutes beforehand is a decision; one that
+ * vanished because a cron tick did not happen is a defect, and previously both
+ * looked identical from the outside.
+ *
+ * This pass catches bookings the send sweep does not select at all, because
+ * they sit outside its range. Ones it does select are settled inline.
+ */
+async function markAbandoned(config, now, stats) {
+  const candidates = await Booking.find({
+    status: /^confirmed$/i,
+    date: config.abandonRange(now),
+    $and: [emptyField(config.sentField), emptyField(config.skippedField)],
+  })
+    .select(`_id bookingNumber status date email ${config.attemptsField}`)
+    .limit(200)
+    .lean();
 
   for (const booking of candidates) {
-    const eligibility = evaluate24HourReminder(booking, now);
-    if (!eligibility.eligible) {
-      stats.notDue24++;
-      console.log("24h reminder skipped", {
-        ...bookingLogShape(booking),
-        reason: eligibility.reason,
-      });
+    const verdict = config.evaluate(booking, now);
+    if (!verdict.shouldMarkSkipped) continue;
+    await abandonOne(config, booking, verdict.reason, stats);
+  }
+}
+
+async function processReminder(kind, now, stats) {
+  const config = REMINDERS[kind];
+  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
+  const notSent = emptyField(config.sentField);
+  const notSkipped = emptyField(config.skippedField);
+  const lockAvailable = availableLock(config.queuedField, staleBefore);
+
+  const selector = {
+    status: /^confirmed$/i,
+    date: config.dateRange(now),
+    $and: [notSent, notSkipped, lockAvailable],
+  };
+
+  const candidates = await Booking.find(selector)
+    .select(SELECT_FIELDS)
+    .sort({ date: 1 })
+    .limit(200)
+    .lean();
+
+  stats.scanned = candidates.length;
+
+  for (const booking of candidates) {
+    const verdict = config.evaluate(booking, now);
+    if (!verdict.eligible) {
+      // Settle it here if it is finished, rather than leaving it to be
+      // re-examined every minute for the rest of its life. This is what stops a
+      // booking that has exhausted its retries from being reconsidered forever.
+      if (verdict.shouldMarkSkipped) {
+        await abandonOne(config, booking, verdict.reason, stats);
+      } else {
+        stats.notDue += 1;
+      }
       continue;
     }
 
+    // Claim it. The same conditions as the selector, so two workers racing the
+    // same booking produce one winner and one no-op rather than two emails.
     const lockTime = new Date();
     const claim = await Booking.updateOne(
       {
         _id: booking._id,
         status: /^confirmed$/i,
-        date: { $gt: catchupFloor, $lte: windowCeiling },
-        $and: [notSent, lockAvailable],
+        $and: [notSent, notSkipped, lockAvailable],
       },
-      { $set: { reminder24hQueuedAt: lockTime } }
+      {
+        $set: { [config.queuedField]: lockTime },
+        $inc: { [config.attemptsField]: 1 },
+      }
     );
     if (claim.modifiedCount !== 1) {
-      stats.locked24++;
-      console.log("24h reminder skipped", {
-        ...bookingLogShape(booking),
-        reason: "claim_lost_or_booking_changed",
-      });
+      stats.locked += 1;
       continue;
     }
 
-    stats.matched24++;
+    stats.claimed += 1;
+    const startedAt = Date.now();
     try {
-      const stillConfirmed = await Booking.exists({
-        _id: booking._id,
-        status: /^confirmed$/i,
-        date: booking.date,
-        reminder24hQueuedAt: lockTime,
-        $and: [notSent],
-      });
-      if (!stillConfirmed) {
-        await Booking.updateOne(
-          { _id: booking._id, reminder24hQueuedAt: lockTime },
-          { $unset: { reminder24hQueuedAt: 1 } }
-        );
-        stats.notDue24++;
-        console.log("24h reminder skipped", {
-          ...bookingLogShape(booking),
-          reason: "booking_changed_after_claim",
-        });
-        continue;
-      }
-
-      console.log("Processing 24h reminder", {
-        ...bookingLogShape(booking),
-        mode: eligibility.mode,
-      });
-      await sendReminderEmail({
-        templateKey: "booking_reminder_24h",
+      const info = await sendReminderEmail({
+        templateKey: config.templateKey,
         booking,
         vars: {
           name: booking.name || "there",
@@ -234,236 +424,167 @@ async function process24HourReminders(now, stats) {
         },
       });
 
+      /*
+       * Recorded only after the provider accepted it. The old order marked the
+       * reminder sent and then tried to send, so a provider outage consumed the
+       * reminder without delivering it and nothing ever retried.
+       */
       await Booking.updateOne(
-        { _id: booking._id, reminder24hQueuedAt: lockTime },
+        { _id: booking._id, [config.queuedField]: lockTime },
         {
-          $set: { reminder24hSentAt: new Date() },
-          $unset: { reminder24hQueuedAt: 1 },
+          $set: {
+            [config.sentField]: new Date(),
+            [config.messageIdField]: String(info?.messageId || "").slice(0, 200),
+            [config.lastErrorField]: "",
+          },
+          $unset: { [config.queuedField]: 1 },
         }
       );
 
-      try {
-        await sendReminderSmsTag({ booking, tag: "reminder_24h" });
-      } catch (error) {
-        console.warn("24h GHL tag failed after email sent", {
-          booking: bookingLogShape(booking),
-          error: errorDetails(error),
-        });
-      }
+      stats.sent += 1;
+      console.log(
+        JSON.stringify({
+          event: "reminder_sent",
+          reminder: config.label,
+          mode: verdict.mode,
+          minutesBefore: Math.round(verdict.msUntilBooking / 60000),
+          durationMs: Date.now() - startedAt,
+          messageId: info?.messageId || "",
+          ...bookingLogShape(booking),
+        })
+      );
 
-      stats.sent24++;
-      console.log("24h reminder sent success", {
-        ...bookingLogShape(booking),
-        mode: eligibility.mode,
-      });
+      // The tag is what makes the SMS go out, so it is tracked in its own
+      // fields. Failing it must never undo or repeat the email; the tag-only
+      // sweep below retries it on the next cycle.
+      await applyReminderTag(config, booking, stats);
       await sleep(80);
     } catch (error) {
+      // Release the lock so the next cycle retries, and keep the incremented
+      // attempt count so a permanently failing address eventually stops.
       await Booking.updateOne(
-        { _id: booking._id, reminder24hQueuedAt: lockTime },
-        { $unset: { reminder24hQueuedAt: 1 } }
-      );
-      stats.failed24++;
-      console.warn("24h reminder send failed", {
-        booking: bookingLogShape(booking),
-        error: errorDetails(error),
-      });
-    }
-  }
-
-  const notSkipped = emptyField("reminder24hSkippedAt");
-  const tooLate = await Booking.find({
-    status: /^confirmed$/i,
-    date: { $gt: now, $lte: catchupFloor },
-    $and: [notSent, notSkipped],
-  })
-    .select("_id bookingNumber status date email")
-    .limit(100)
-    .lean();
-
-  for (const booking of tooLate) {
-    const eligibility = evaluate24HourReminder(booking, now);
-    if (!eligibility.shouldMarkSkipped) continue;
-    const result = await Booking.updateOne(
-      {
-        _id: booking._id,
-        status: /^confirmed$/i,
-        $and: [notSent, notSkipped],
-      },
-      {
-        $set: {
-          reminder24hSkippedAt: new Date(),
-          reminder24hSkipReason: eligibility.reason,
-        },
-        $unset: { reminder24hQueuedAt: 1 },
-      }
-    );
-    if (result.modifiedCount === 1) {
-      console.log("24h reminder skipped", {
-        ...bookingLogShape(booking),
-        reason: eligibility.reason,
-      });
-    }
-  }
-}
-
-async function process60MinuteReminders(now, stats) {
-  const from = new Date(now.getTime() - REMINDER_WINDOW_MS);
-  const to = new Date(
-    now.getTime() + REMINDER_60M_MS + REMINDER_WINDOW_MS
-  );
-  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
-  const notSent = emptyField("reminder60mSentAt");
-  const lockAvailable = availableLock("reminder60mQueuedAt", staleBefore);
-
-  const candidates = await Booking.find({
-    status: /^confirmed$/i,
-    date: { $gte: from, $lte: to },
-    $and: [notSent, lockAvailable],
-  })
-    .select(
-      "status userId name email phone bookingNumber date service selectedTask bookingType accessType address city state zip reminder60mQueuedAt reminder60mSentAt"
-    )
-    .limit(50)
-    .lean();
-
-  stats.scanned60 = candidates.length;
-  const staleLocks = candidates.filter(
-    (booking) =>
-      booking.reminder60mQueuedAt &&
-      new Date(booking.reminder60mQueuedAt) <= staleBefore
-  );
-  console.log("60m reminder candidates found", {
-    from: from.toISOString(),
-    to: to.toISOString(),
-    candidates: candidates.length,
-    staleLocksRecoverable: staleLocks.length,
-  });
-  if (staleLocks.length) {
-    console.warn("60m reminder lock recovery", {
-      bookings: staleLocks.map(bookingLogShape),
-    });
-  }
-
-  for (const booking of candidates) {
-    const eligibility = evaluate60MinuteReminder(booking, now);
-    if (!eligibility.eligible) {
-      stats.notDue60++;
-      console.log("60m reminder skipped", {
-        ...bookingLogShape(booking),
-        reason: eligibility.reason,
-      });
-      continue;
-    }
-
-    const lockTime = new Date();
-    const claim = await Booking.updateOne(
-      {
-        _id: booking._id,
-        status: /^confirmed$/i,
-        date: { $gte: from, $lte: to },
-        $and: [notSent, lockAvailable],
-      },
-      { $set: { reminder60mQueuedAt: lockTime } }
-    );
-    if (claim.modifiedCount !== 1) {
-      stats.locked60++;
-      continue;
-    }
-
-    stats.matched60++;
-    try {
-      const stillConfirmed = await Booking.exists({
-        _id: booking._id,
-        status: /^confirmed$/i,
-        reminder60mQueuedAt: lockTime,
-        $and: [notSent],
-      });
-      if (!stillConfirmed) {
-        await Booking.updateOne(
-          { _id: booking._id, reminder60mQueuedAt: lockTime },
-          { $unset: { reminder60mQueuedAt: 1 } }
-        );
-        stats.notDue60++;
-        continue;
-      }
-
-      console.log("Processing 60m reminder", bookingLogShape(booking));
-      await sendReminderEmail({
-        templateKey: "booking_reminder_60m",
-        booking,
-        vars: {
-          name: booking.name || "there",
-          date: booking.date,
-          service: booking.service,
-          selectedTask: booking.selectedTask,
-          bookingType: booking.bookingType,
-          accessType: booking.accessType,
-          address: buildAddress(booking),
-        },
-      });
-
-      await Booking.updateOne(
-        { _id: booking._id, reminder60mQueuedAt: lockTime },
+        { _id: booking._id, [config.queuedField]: lockTime },
         {
-          $set: { reminder60mSentAt: new Date() },
-          $unset: { reminder60mQueuedAt: 1 },
+          $set: {
+            [config.lastErrorField]: String(error?.message || "").slice(0, 300),
+          },
+          $unset: { [config.queuedField]: 1 },
         }
       );
-
-      try {
-        await sendReminderSmsTag({ booking, tag: "reminder_60m" });
-      } catch (error) {
-        console.warn("60m GHL tag failed after email sent", {
-          booking: bookingLogShape(booking),
+      stats.failed += 1;
+      console.warn(
+        JSON.stringify({
+          event: "reminder_send_failed",
+          reminder: config.label,
+          attempt: Number(booking[config.attemptsField] || 0) + 1,
+          ...bookingLogShape(booking),
           error: errorDetails(error),
-        });
-      }
-
-      stats.sent60++;
-      console.log("60m reminder sent success", bookingLogShape(booking));
-      await sleep(80);
-    } catch (error) {
-      await Booking.updateOne(
-        { _id: booking._id, reminder60mQueuedAt: lockTime },
-        { $unset: { reminder60mQueuedAt: 1 } }
+        })
       );
-      stats.failed60++;
-      console.warn("60m reminder send failed", {
-        booking: bookingLogShape(booking),
-        error: errorDetails(error),
-      });
     }
   }
+
+  await markAbandoned(config, now, stats);
+  await retryPendingTags(config, now, stats);
 }
 
-async function runBookingReminderCycle(now = new Date()) {
-  const stats = {
-    scanned24: 0,
-    matched24: 0,
-    notDue24: 0,
-    locked24: 0,
-    sent24: 0,
-    failed24: 0,
-    scanned60: 0,
-    matched60: 0,
-    notDue60: 0,
-    locked60: 0,
-    sent60: 0,
-    failed60: 0,
+function emptyStats() {
+  return {
+    scanned: 0,
+    claimed: 0,
+    notDue: 0,
+    locked: 0,
+    sent: 0,
+    failed: 0,
+    abandoned: 0,
+    tagged: 0,
+    tagFailed: 0,
   };
+}
 
-  console.log("Booking reminder job cycle started", {
-    serverTime: now.toISOString(),
-    newYorkTime: now.toLocaleString("en-US", {
-      timeZone: "America/New_York",
-    }),
-  });
+/**
+ * One cycle.
+ *
+ * Each sweep is isolated, so one failing cannot silence the other, and a sweep
+ * that throws is reported as a failed sweep rather than disappearing into a
+ * shared catch.
+ */
+async function runBookingReminderCycle(now = new Date()) {
+  const stats = { "24h": emptyStats(), "60m": emptyStats(), sweepErrors: [] };
 
-  await process24HourReminders(now, stats);
-  await process60MinuteReminders(now, stats);
+  for (const kind of ["24h", "60m"]) {
+    try {
+      await processReminder(kind, now, stats[kind]);
+    } catch (error) {
+      stats.sweepErrors.push(kind);
+      console.error(
+        JSON.stringify({
+          event: "reminder_sweep_failed",
+          reminder: kind,
+          error: errorDetails(error),
+        })
+      );
+    }
+  }
 
-  console.log("Booking reminder cycle summary", stats);
+  const noteworthy =
+    stats.sweepErrors.length ||
+    ["24h", "60m"].some(
+      (k) => stats[k].sent || stats[k].failed || stats[k].abandoned || stats[k].tagged || stats[k].tagFailed
+    );
+  // A line a minute forever buries the lines that matter. Quiet cycles are
+  // summarized on the heartbeat below instead.
+  if (noteworthy) {
+    console.log(
+      JSON.stringify({
+        event: "reminder_cycle",
+        at: now.toISOString(),
+        "24h": stats["24h"],
+        "60m": stats["60m"],
+        sweepErrors: stats.sweepErrors,
+      })
+    );
+  }
   return stats;
+}
+
+/**
+ * Proof the scheduler is alive.
+ *
+ * The failure this whole rewrite exists to survive is the process not running,
+ * and the one thing a stopped process cannot do is complain. A periodic
+ * heartbeat carrying the current backlog means silence itself becomes the
+ * signal: no heartbeat for an hour means reminders are not being processed.
+ */
+async function logReminderHeartbeat(now = new Date()) {
+  const [due24, due60] = await Promise.all([
+    Booking.countDocuments({
+      status: /^confirmed$/i,
+      date: REMINDERS["24h"].dateRange(now),
+      $and: [
+        emptyField("reminder24hSentAt"),
+        emptyField("reminder24hSkippedAt"),
+      ],
+    }),
+    Booking.countDocuments({
+      status: /^confirmed$/i,
+      date: REMINDERS["60m"].dateRange(now),
+      $and: [
+        emptyField("reminder60mSentAt"),
+        emptyField("reminder60mSkippedAt"),
+      ],
+    }),
+  ]);
+  console.log(
+    JSON.stringify({
+      event: "reminder_heartbeat",
+      at: now.toISOString(),
+      newYork: now.toLocaleString("en-US", { timeZone: "America/New_York" }),
+      pending24h: due24,
+      pending60m: due60,
+    })
+  );
+  return { pending24h: due24, pending60m: due60 };
 }
 
 function startBookingReminders() {
@@ -473,14 +594,21 @@ function startBookingReminders() {
     "* * * * *",
     async () => {
       if (running) {
-        console.log("Booking reminder cycle skipped: prior local cycle still running");
+        console.warn(
+          JSON.stringify({ event: "reminder_cycle_overlapped" })
+        );
         return;
       }
       running = true;
       try {
         await runBookingReminderCycle(new Date());
       } catch (error) {
-        console.error("Booking reminders cron failed", errorDetails(error));
+        console.error(
+          JSON.stringify({
+            event: "reminder_cron_failed",
+            error: errorDetails(error),
+          })
+        );
       } finally {
         running = false;
       }
@@ -488,13 +616,37 @@ function startBookingReminders() {
     { timezone: "America/New_York" }
   );
 
-  console.log("Booking reminder cron started", {
-    schedule: "* * * * *",
-    timezone: "America/New_York",
-  });
+  cron.schedule(
+    "*/15 * * * *",
+    async () => {
+      try {
+        await logReminderHeartbeat(new Date());
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "reminder_heartbeat_failed",
+            error: errorDetails(error),
+          })
+        );
+      }
+    },
+    { timezone: "America/New_York" }
+  );
+
+  console.log(
+    JSON.stringify({
+      event: "reminder_cron_started",
+      cycle: "* * * * *",
+      heartbeat: "*/15 * * * *",
+      timezone: "America/New_York",
+    })
+  );
 }
 
 module.exports = {
+  REMINDERS,
+  logReminderHeartbeat,
+  processReminder,
   runBookingReminderCycle,
   startBookingReminders,
 };

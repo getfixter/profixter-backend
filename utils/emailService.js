@@ -11,6 +11,7 @@ const {
   createCustomerEmailTemplates,
 } = require("./customerEmailTemplates");
 const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
+const { renderOperationalEmail } = require("./operationalEmail");
 let marked;
 try {
   ({ marked } = require("marked"));
@@ -25,11 +26,6 @@ const REPLY_TO = process.env.MAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL;
 const ADMIN = process.env.MAIL_ADMIN || "getfixter@gmail.com";
 
 const MARKETING_FROM = process.env.MARKETING_FROM || FROM;
-
-/** Public logo (PNG, transparent). Replace via env if you ever move it. */
-const LOGO_URL =
-  process.env.BRAND_LOGO_URL ||
-  "https://profixter-assets.s3.us-east-1.amazonaws.com/mrfixter-logoBlackText.png";
 
 /** Primary brand colors */
 const BRAND = {
@@ -180,6 +176,19 @@ const linkRow = (links = []) => `
   </table>
 `;
 
+/*
+ * The shared customer frame.
+ *
+ * The wordmark is text rather than an image. This header used to load the old
+ * Mr. Fixter logo from S3, which put a retired mark on every email still using
+ * this frame, including the paid one-time visit and Full Day confirmations a
+ * customer receives after paying. It also meant the brand vanished entirely in
+ * the many clients that block remote images. Text fixes both, and matches the
+ * header the newer customer templates already use.
+ *
+ * This note lives out here on purpose: an HTML comment inside the literal
+ * would ship inside every email we send.
+ */
 const frame = (content, opts = {}) => {
   const preheader = (opts.preheader || "").trim();
 
@@ -202,10 +211,9 @@ const frame = (content, opts = {}) => {
 
             <tr>
               <td style="background:${BRAND.gray100};padding:20px 20px 16px;text-align:center;border-bottom:1px solid ${BRAND.border};">
-                <img src="${LOGO_URL}" alt="Profixter" height="44" width="auto"
-                     style="height:44px;max-width:100%;display:inline-block;" />
-                <div style="margin-top:10px;font-size:12px;color:#6b7280;letter-spacing:0.2px;">
-                  Long Island Home Maintenance • Predictable pricing • Real pros
+                <div style="font-size:22px;font-weight:800;line-height:28px;color:${BRAND.gray900};letter-spacing:-0.01em;">Profixter</div>
+                <div style="margin-top:6px;font-size:12px;color:#6b7280;letter-spacing:0.2px;">
+                  Long Island Home Maintenance
                 </div>
               </td>
             </tr>
@@ -811,18 +819,6 @@ const TEMPLATES = {
     ),
   }),
 
-  password_reset: ({ name = "there", link }) => ({
-    subject: `Reset your password`,
-    html: frame(`
-      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Reset your password</h2>
-      <p>Click the button below to set a new password. The link expires in 30 minutes.</p>
-      <p style="margin-top:16px;">${btn(link, "Reset password")}</p>
-      <p style="margin-top:12px; font-size:13px; color:${BRAND.gray700};">
-        If the button doesn't work, paste this link into your browser:<br>
-        <a href="${link}" style="color:#0b5cab; word-break:break-all;">${link}</a>
-      </p>
-    `, { preheader: "Use this link to reset your Profixter password. Expires in 30 minutes." }),
-  }),
 
   nudge_subscribe: ({ name = "there" }) => ({
     subject: "Make home care easy — choose your Profixter plan",
@@ -836,233 +832,9 @@ const TEMPLATES = {
     `, { preheader: "Choose a plan to start booking home maintenance visits." }),
   }),
 
-  promo_generic: ({
-    title = "Special offer",
-    body = "",
-    ctaText = "Learn more",
-    ctaUrl = URLS.site,
-  }) => ({
-    subject: title,
-    html: frame(`
-      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">${title}</h2>
-      <p>${body}</p>
-      <p style="margin-top:16px;">${btn(ctaUrl, ctaText, "dark")}</p>
-    `),
-  }),
 
-  service_request_admin: ({
-    name = "-",
-    email = "-",
-    phone = "-",
-    message = "-",
-    serviceType = "-",
-    sourcePage = "-",
-    requestId = "-",
-  }) => ({
-    subject: `🔥 New Service Request — ${serviceType}`,
-    html: frame(`
-      <h2 style="margin:0 0 10px">New Service Request</h2>
-
-      <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px; line-height:1.7;">
-        <tr><td style="padding:4px 0;"><strong>Request ID:</strong>&nbsp;${requestId}</td></tr>
-        <tr><td style="padding:4px 0;"><strong>Name:</strong>&nbsp;${name}</td></tr>
-        <tr><td style="padding:4px 0;"><strong>Email:</strong>&nbsp;${email}</td></tr>
-        <tr><td style="padding:4px 0;"><strong>Phone:</strong>&nbsp;${phone}</td></tr>
-        <tr><td style="padding:4px 0;"><strong>Service Type:</strong>&nbsp;${serviceType}</td></tr>
-        <tr><td style="padding:4px 0;"><strong>Source Page:</strong>&nbsp;${sourcePage || "-"}</td></tr>
-      </table>
-
-      <div style="margin-top:16px; padding:14px; background:${BRAND.gray100}; border-radius:12px; border:1px solid ${BRAND.border};">
-        <div style="font-weight:800; margin-bottom:8px;">Customer Message</div>
-        <div style="white-space:pre-wrap;">${escapeHtml(message)}</div>
-      </div>
-    `),
-  }),
 
   // ── Estimate Builder lead notification (admin only) ──────────────────────
-  estimate_lead_admin: ({
-    leadId = "-",
-    service = "-",
-    name = "-",
-    phone = "-",
-    email = "-",
-    address = "-",
-    contactPref = "phone",
-    notes = "",
-    estimateLow,
-    estimateHigh,
-    timeline = "-",
-    budgetRange = "-",
-    financing = "-",
-  }) => {
-    const rangeStr =
-      estimateLow && estimateHigh
-        ? `$${Math.round(estimateLow / 1000)}k – $${Math.round(estimateHigh / 1000)}k`
-        : "Not calculated";
-
-    const serviceLabel = {
-      roofing:  "🏠 1-Day Roof Replacement",
-      siding: "Siding",
-      bathroom: "🛁 Full Bathroom Remodeling",
-      kitchen:  "🍳 Full Kitchen Remodeling",
-      basement: "Basement Finishing",
-      interior: "Interior Renovations",
-      other: "Other Larger Project",
-    }[service] || service;
-
-    return {
-      subject: `🔥 New Estimate Lead — ${serviceLabel} — ${escapeHtml(name)}`,
-      html: frame(
-        `
-        <h2 style="margin:0 0 6px;">New Estimate Lead</h2>
-        <div style="font-size:13px;color:#6b7280;margin-bottom:18px;">
-          Source: Estimate Builder &nbsp;·&nbsp; ID: ${leadId}
-        </div>
-
-        <div style="padding:16px;background:#eff6ff;border-radius:12px;border:1px solid #bfdbfe;margin-bottom:20px;">
-          <div style="font-size:18px;font-weight:800;margin-bottom:4px;">${serviceLabel}</div>
-          <div style="font-size:22px;font-weight:800;color:#1d4ed8;">Estimate: ${rangeStr}</div>
-        </div>
-
-        <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px;line-height:1.8;width:100%;">
-          <tr><td style="padding:3px 0;"><strong>Name:</strong>&nbsp;${escapeHtml(name)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Phone:</strong>&nbsp;<a href="tel:${escapeHtml(phone)}" style="color:#0b5cab;">${escapeHtml(phone)}</a></td></tr>
-          <tr><td style="padding:3px 0;"><strong>Email:</strong>&nbsp;<a href="mailto:${escapeHtml(email)}" style="color:#0b5cab;">${escapeHtml(email)}</a></td></tr>
-          <tr><td style="padding:3px 0;"><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Preferred Contact:</strong>&nbsp;${escapeHtml(contactPref)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Timeline:</strong>&nbsp;${escapeHtml(timeline || "-")}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Budget Range:</strong>&nbsp;${escapeHtml(budgetRange || "-")}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Financing Interest:</strong>&nbsp;${escapeHtml(financing || "-")}</td></tr>
-        </table>
-
-        ${
-          notes
-            ? `<div style="margin-top:16px;padding:14px;background:${BRAND.gray100};border-radius:12px;border:1px solid ${BRAND.border};">
-                <div style="font-weight:800;margin-bottom:6px;">Customer Notes</div>
-                <div style="white-space:pre-wrap;font-size:15px;">${escapeHtml(notes)}</div>
-               </div>`
-            : ""
-        }
-        `,
-        { preheader: `New ${service} estimate lead — ${name} — ${rangeStr}` }
-      ),
-    };
-  },
-
-  exterior_lead_admin: ({
-    leadId = "-",
-    service = "-",
-    name = "-",
-    phone = "-",
-    email = "-",
-    address = "-",
-    contactPref = "phone",
-    bestTime = "any",
-    sourcePage = "",
-    notes = "",
-  }) => {
-    const subject =
-      service === "roofing"
-        ? "New Roofing Lead"
-        : service === "siding"
-          ? "New Siding Lead"
-          : "New Roofing & Siding Lead";
-
-    const projectLabel =
-      service === "roofing"
-        ? "Roofing"
-        : service === "siding"
-          ? "Siding"
-          : "Roofing & Siding";
-
-    const bestTimeLabel = {
-      morning:   "Morning (8am – 12pm)",
-      afternoon: "Afternoon (12pm – 5pm)",
-      evening:   "Evening (5pm – 8pm)",
-      any:       "Any time",
-    }[bestTime] || bestTime;
-
-    const contactPrefLabel = {
-      call:  "Phone Call",
-      text:  "Text Message",
-      email: "Email",
-      phone: "Phone Call",
-    }[contactPref] || contactPref;
-
-    return {
-      subject,
-      html: frame(
-        `
-        <h2 style="margin:0 0 6px;">${subject}</h2>
-        <div style="font-size:13px;color:#6b7280;margin-bottom:18px;">
-          Source: Exterior Landing Page &nbsp;&middot;&nbsp; Page: ${escapeHtml(sourcePage || "exterior")} &nbsp;&middot;&nbsp; ID: ${escapeHtml(leadId)}
-        </div>
-
-        <div style="padding:16px;background:#eff6ff;border-radius:12px;border:1px solid #bfdbfe;margin-bottom:20px;">
-          <div style="font-size:18px;font-weight:800;margin-bottom:4px;">${escapeHtml(projectLabel)}</div>
-          <div style="font-size:15px;color:#1d4ed8;font-weight:700;">Premium Island Construction lead</div>
-        </div>
-
-        <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px;line-height:1.8;width:100%;">
-          <tr><td style="padding:3px 0;"><strong>Name:</strong>&nbsp;${escapeHtml(name)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Phone:</strong>&nbsp;<a href="tel:${escapeHtml(phone)}" style="color:#0b5cab;">${escapeHtml(phone)}</a></td></tr>
-          <tr><td style="padding:3px 0;"><strong>Email:</strong>&nbsp;<a href="mailto:${escapeHtml(email)}" style="color:#0b5cab;">${escapeHtml(email)}</a></td></tr>
-          <tr><td style="padding:3px 0;"><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Project Type:</strong>&nbsp;${escapeHtml(projectLabel)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Preferred Contact:</strong>&nbsp;${escapeHtml(contactPrefLabel)}</td></tr>
-          <tr><td style="padding:3px 0;"><strong>Best Time to Reach:</strong>&nbsp;${escapeHtml(bestTimeLabel)}</td></tr>
-        </table>
-
-        ${
-          notes
-            ? `<div style="margin-top:16px;padding:14px;background:${BRAND.gray100};border-radius:12px;border:1px solid ${BRAND.border};">
-                <div style="font-weight:800;margin-bottom:6px;">Message / Notes</div>
-                <div style="white-space:pre-wrap;font-size:15px;">${escapeHtml(notes)}</div>
-               </div>`
-            : ""
-        }
-        `,
-        { preheader: `${subject} - ${name}` }
-      ),
-    };
-  },
-
-  subscription_cancellation_scheduled: ({ name = "there", plan, address, accessEndDate }) => ({
-    subject: `Cancellation scheduled — your access ends ${accessEndDate || "at period end"}`,
-    html: frame(`
-    <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Cancellation scheduled</h2>
-
-    <p style="margin:0 0 12px">
-      Hi ${name}, we've scheduled your cancellation as requested.
-    </p>
-
-    <div style="margin:14px 0; padding:14px; background:${BRAND.gray100}; border-radius:10px; border:1px solid ${BRAND.border};">
-      <table cellpadding="0" cellspacing="0" border="0" style="font-size:15px; line-height:1.9;">
-        ${plan ? `<tr><td><strong>Plan:</strong>&nbsp;${escapeHtml(plan)}</td></tr>` : ""}
-        ${address ? `<tr><td><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>` : ""}
-        ${accessEndDate ? `<tr><td><strong>Access ends:</strong>&nbsp;${escapeHtml(accessEndDate)}</td></tr>` : ""}
-      </table>
-    </div>
-
-    <p style="margin:0 0 12px">
-      Your membership stays active until this date. You can continue scheduling visits as normal.
-    </p>
-
-    <p style="margin:0 0 14px; color:${BRAND.gray700};">
-      Changed your mind? You can reactivate your membership anytime from your account before this date.
-    </p>
-
-    <div style="margin:16px 0; text-align:center;">
-      ${btn(`${URLS.site}/account?tab=plan`, "View account")}
-    </div>
-
-    <p style="margin-top:14px; font-size:14px; color:${BRAND.gray700};">
-      Thank you for being a Profixter member. We hope to see you again.
-      <br />
-      — The Profixter Team
-    </p>
-  `, { preheader: "Your Profixter membership remains active until your billing period ends." }),
-  }),
 
   subscription_canceled: ({ name = "there", plan, address, canceledDate }) => ({
     subject: "Your Profixter membership has ended",
@@ -1139,47 +911,25 @@ const TEMPLATES = {
    * record the money is credited to, so the person who is told is by
    * construction the person who was paid.
    */
+  /*
+   * A Fixter email. Short and warm, and free of Stripe internals on purpose:
+   * the amount and who sent it is the whole message.
+   */
   fixter_tip_received: ({
     name = "there",
     amount,
     tipperName,
     bookingNumber,
-    receivedAt,
-  }) => ({
-    subject: `You received a tip${amount ? ` of ${amount}` : ""}`,
-    html: frame(`
-      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">A customer left you a tip</h2>
-
-      <p style="margin:0 0 12px">
-        Nice work, ${escapeHtml(name)}. A customer chose to say thank you.
-      </p>
-
-      <div style="margin:14px 0; padding:14px; background:${BRAND.gray100}; border-radius:10px; border:1px solid ${BRAND.border};">
-        <table cellpadding="0" cellspacing="0" border="0" style="font-size:15px; line-height:1.9;">
-          <tr><td><strong>Amount:</strong>&nbsp;${escapeHtml(amount || "-")}</td></tr>
-          ${tipperName ? `<tr><td><strong>From:</strong>&nbsp;${escapeHtml(tipperName)}</td></tr>` : ""}
-          ${bookingNumber ? `<tr><td><strong>Booking:</strong>&nbsp;#${escapeHtml(bookingNumber)}</td></tr>` : ""}
-          ${receivedAt ? `<tr><td><strong>Received:</strong>&nbsp;${escapeHtml(formatNYCTime(receivedAt))}</td></tr>` : ""}
-        </table>
-      </div>
-
-      <p style="margin:0 0 12px; color:${BRAND.gray700};">
-        Your running tip total is on the Tips tab of your Profixter workspace.
-      </p>
-    `, { preheader: "A customer left you a tip." }),
-    text: [
-      `A customer left you a tip.`,
-      "",
-      `Amount: ${amount || "-"}`,
-      tipperName ? `From: ${tipperName}` : "",
-      bookingNumber ? `Booking: #${bookingNumber}` : "",
-      receivedAt ? `Received: ${formatNYCTime(receivedAt)}` : "",
-      "",
-      "Your running tip total is on the Tips tab of your Profixter workspace.",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  }),
+  }) =>
+    renderOperationalEmail({
+      subject: `You received a ${amount || "tip"}`,
+      event: `You received a ${amount || "tip"}`,
+      who: tipperName ? `From ${tipperName}` : "",
+      highlight: "",
+      rows: [["Booking", bookingNumber ? `#${bookingNumber}` : ""]],
+      note: `Nice work, ${name}.`,
+      footer: "Your running tip total is on the Tips tab of your Profixter workspace.",
+    }),
 
   nurture_1: ({ name = "there" }) => ({
     subject: `Ready when you are, ${name}`,

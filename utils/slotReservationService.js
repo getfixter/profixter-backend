@@ -14,6 +14,10 @@ const {
   logReservationAction,
 } = require("./bookingHistory");
 const { runReservationTransaction } = require("./reservationTransaction");
+const {
+  clearedReminderState,
+  isMaterialDateChange,
+} = require("./bookingReminderPolicy");
 
 const TIMEZONE = "America/New_York";
 const VISIT_DURATION_MINUTES = 90;
@@ -72,17 +76,21 @@ function appointmentTimeChanged(previousDate, nextDate) {
   return previousMs !== nextMs;
 }
 
+/**
+ * A moved appointment has had no reminders, so it starts with none recorded.
+ *
+ * The single source of the field list is the reminder policy, because a field
+ * added there and forgotten here is a reminder that silently never resends
+ * after a reschedule.
+ */
 function clearBookingReminderEmailState(booking) {
-  booking.reminder24hQueuedAt = undefined;
-  booking.reminder24hSentAt = undefined;
-  booking.reminder24hSkippedAt = undefined;
-  booking.reminder24hSkipReason = "";
-  booking.reminder60mQueuedAt = undefined;
-  booking.reminder60mSentAt = undefined;
+  for (const [field, value] of Object.entries(clearedReminderState())) {
+    booking[field] = value === null ? undefined : value;
+  }
 }
 
 function resetBookingReminderEmailStateForDateChange(booking, nextDate) {
-  if (!appointmentTimeChanged(booking?.date, nextDate)) return false;
+  if (!isMaterialDateChange(booking?.date, nextDate)) return false;
   clearBookingReminderEmailState(booking);
   return true;
 }

@@ -50,6 +50,7 @@ const {
 const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
+const { adminLink } = require("../utils/operationalEmail");
 const {
   FULL_DAY_PRODUCT_KIND,
   releaseFullDayCapacity,
@@ -275,6 +276,24 @@ async function releaseLegacyBookingCapacity(booking) {
   const ymd = ymdInTZ(new Date(booking.date), tz);
   const hh = hhmmInTZ(new Date(booking.date), tz);
   await SlotCounter.updateOne({ ymd, time: hh }, { $inc: { count: -1 } });
+}
+
+/**
+ * "Plus - $249/month", the one line that says what was actually bought.
+ *
+ * Built here rather than in the template so the plan name and the money stay
+ * together; separately they are two rows a reader has to reassemble.
+ */
+function newMemberHighlight(subscription) {
+  const plan = String(subscription?.subscriptionType || "").trim();
+  const label = plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : "Membership";
+  const price = getPlanPrice
+    ? getPlanPrice(subscription?.subscriptionType, subscription?.billingCycle)
+    : null;
+  const period = subscription?.billingCycle === "annual" ? "year" : "month";
+  return Number.isFinite(Number(price))
+    ? `${label} - $${Number(price)}/${period}`
+    : label;
 }
 
 function formatAdminMoney(amount, currency = "usd") {
@@ -723,39 +742,44 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
   }
 
   try {
+    /*
+     * Seventeen rows became six.
+     *
+     * The Stripe session id, payment intent id, entitlement id, booking id,
+     * payment state and payment status were all in here. None of them answer
+     * "what happened, who, how much, do I need to act", and every one of them
+     * is a click away in Admin. The reservation issue survives because it is
+     * the only row that ever demands action.
+     */
     await sendAdminEventNotification({
-      subject: "ONE TIME CALL",
-      heading: "ONE TIME CALL",
+      subject: `One-time visit paid - ${booking.name || user.name || "Customer"}`,
+      heading: "One-time visit paid",
       templateKey: "admin_one_time_visit_paid",
       replyToEmail: booking.email || user.email || "",
       customerName: booking.name || user.name || "",
       customerEmail: booking.email || user.email || "",
       source: "stripeWebhookOneTime",
+      who: booking.name || user.name || "Customer",
+      highlight: formatAdminMoney(
+        session?.amount_total ?? entitlement?.priceCents,
+        session?.currency || entitlement?.currency || "usd"
+      ),
       fields: [
-        ["Customer full name", booking.name || user.name],
-        ["Email", booking.email || user.email],
-        ["Phone", booking.phone || user.phone],
-        ["Service address", formatAddressParts({
+        ["When", booking.date ? mail.formatNYCTime(booking.date) : ""],
+        ["Task", booking.selectedTask || booking.service],
+        ["Address", formatAddressParts({
           address: booking.address,
           city: booking.city,
           state: booking.state,
           zip: booking.zip,
           county: booking.county,
         })],
-        ["Requested date/time", booking.date ? mail.formatNYCTime(booking.date) : ""],
-        ["Service/task type", booking.selectedTask || booking.service],
-        ["Notes/message", booking.note],
-        ["Booking ID", booking._id],
-        ["Booking #", booking.bookingNumber],
-        ["Booking status", booking.status],
-        ["Payment state", booking.paymentState],
-        ["Payment status", booking.paymentStatus],
-        ["Amount paid", formatAdminMoney(session?.amount_total ?? entitlement?.priceCents, session?.currency || entitlement?.currency || "usd")],
-        ["Stripe checkout/session ID", session?.id],
-        ["Stripe payment intent ID", session?.payment_intent],
-        ["Entitlement ID", entitlement?._id],
-        ["Reservation issue", booking.reservationIssue?.message || ""],
+        ["Phone", booking.phone || user.phone],
+        ["Booking", booking.bookingNumber ? `#${booking.bookingNumber}` : ""],
+        ["Needs attention", booking.reservationIssue?.message || ""],
       ],
+      note: booking.note || "",
+      action: { label: "View Booking", url: adminLink.booking(booking._id) },
     }, {
       logContext: {
         bookingId: booking._id,
@@ -1026,19 +1050,24 @@ async function sendFullDayPaidEmails({ booking, user, entitlement, session }) {
   try {
     await sendAdminEventNotification(
       {
-        subject: "FULL DAY PAID",
-        heading: "FULL DAY PAID",
+        subject: `Full Day paid - ${booking.name || user.name || "Customer"}`,
+        heading: "Full Day paid",
         templateKey: "admin_full_day_visit_paid",
         replyToEmail: booking.email || user.email || "",
         customerName: booking.name || user.name || "",
         customerEmail: booking.email || user.email || "",
         source: "stripeWebhookFullDay",
+        who: booking.name || user.name || "Customer",
+        highlight: formatAdminMoney(
+          session?.amount_total ?? entitlement?.priceCents,
+          session?.currency || entitlement?.currency || "usd"
+        ),
         fields: [
-          ["Customer full name", booking.name || user.name],
-          ["Email", booking.email || user.email],
-          ["Phone", booking.phone || user.phone],
+          ["Day", booking.date ? mail.formatNYCTime(booking.date) : ""],
+          ["Hours", startTime && endTime ? `${startTime} to ${endTime}` : ""],
+          ["Fixter", booking.assignedFixterName || "Not yet assigned"],
           [
-            "Service address",
+            "Address",
             formatAddressParts({
               address: booking.address,
               city: booking.city,
@@ -1047,26 +1076,14 @@ async function sendFullDayPaidEmails({ booking, user, entitlement, session }) {
               county: booking.county,
             }),
           ],
-          ["Day", booking.date ? mail.formatNYCTime(booking.date) : ""],
-          ["Hours", startTime && endTime ? `${startTime} to ${endTime}` : ""],
-          ["Assigned Fixter", booking.assignedFixterName || "Not yet assigned"],
-          ["Customer list", booking.note],
-          ["Booking ID", booking._id],
-          ["Booking #", booking.bookingNumber],
-          ["Booking status", booking.status],
-          ["Payment state", booking.paymentState],
-          [
-            "Amount paid",
-            formatAdminMoney(
-              session?.amount_total ?? entitlement?.priceCents,
-              session?.currency || entitlement?.currency || "usd"
-            ),
-          ],
-          ["Stripe checkout/session ID", session?.id],
-          ["Stripe payment intent ID", session?.payment_intent],
-          ["Entitlement ID", entitlement?._id],
-          ["Reservation issue", booking.reservationIssue?.message || ""],
+          ["Phone", booking.phone || user.phone],
+          ["Booking", booking.bookingNumber ? `#${booking.bookingNumber}` : ""],
+          ["Needs attention", booking.reservationIssue?.message || ""],
         ],
+        // The customer's job list is the one long field worth carrying: it is
+        // what the Fixter has to plan the day around.
+        note: booking.note || "",
+        action: { label: "View Booking", url: adminLink.booking(booking._id) },
       },
       {
         logContext: {
@@ -1604,15 +1621,30 @@ async function handleCheckoutCompleted(session, eventId) {
     now,
   });
 
+  /*
+   * Was seven sections of Stripe and Mongo identifiers. A new member is four
+   * facts: who, which plan, how much, where. The identifiers still exist and
+   * are still on the customer record in Admin, which is where someone
+   * reconciling a payment would look for them anyway.
+   */
   await sendAdminEventNotification({
-    subject: "NEW MEMBER",
-    heading: "NEW MEMBER",
+    subject: `New member - ${user.name || user.email}`,
+    heading: "New member",
     templateKey: "admin_subscription_started",
     replyToEmail: user.email,
     customerName: user.name || "",
     customerEmail: user.email,
     source: "stripeWebhook",
-    sections: newMemberSections,
+    who: user.name || user.email,
+    highlight: newMemberHighlight(subscription),
+    fields: [
+      ["Email", user.email],
+      ["Phone", user.phone],
+      ["Address", formatAddressParts(subscription?.addressSnapshot || {})],
+      ["Billing", subscription?.billingCycle === "annual" ? "Annual" : "Monthly"],
+      ["Member ID", user.userId],
+    ],
+    action: { label: "View Customer", url: adminLink.customer(user._id) },
   }, {
     logContext: {
       userId: user._id,

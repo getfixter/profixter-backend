@@ -3,6 +3,7 @@ const {
   REPLY_TO,
   sendRaw,
 } = require("./emailService");
+const { renderOperationalEmail } = require("./operationalEmail");
 
 const NOT_AVAILABLE = "Not Available";
 
@@ -139,22 +140,38 @@ function renderAdminEventSectionsEmail({
   };
 }
 
-function renderAdminEventEmail({ subject, heading = subject, fields = [] }) {
+/**
+ * One operational email, rendered through the shared shell.
+ *
+ * Callers pass the few things that matter and, where one exists, a link into
+ * Admin. The old renderer took an arbitrary list of label/value pairs and
+ * printed every one of them, which is how these emails became object dumps: it
+ * was easier to add a field than to decide whether it earned its place. This
+ * keeps the same input shape so nothing had to be rewritten at once, but the
+ * shell now gives the event, the person and the important value their own
+ * weight instead of burying them in row seventeen.
+ */
+function renderAdminEventEmail({
+  subject,
+  heading = subject,
+  fields = [],
+  who = "",
+  highlight = "",
+  note = "",
+  action = null,
+  footer = "",
+}) {
   const cleanSubject = normalizeFieldValue(subject, "NEW LEAD");
-  const rows = normalizeFields(fields);
-  const text = rows.map(([label, value]) => `${label}: ${value}`).join("\n");
-  const htmlRows = rows
-    .map(
-      ([label, value]) =>
-        `<tr><td style="padding:4px 12px 4px 0;vertical-align:top;font-weight:700;">${escapeHtml(label)}</td><td style="padding:4px 0;vertical-align:top;white-space:pre-wrap;">${escapeHtml(value)}</td></tr>`
-    )
-    .join("");
-
-  return {
+  return renderOperationalEmail({
     subject: cleanSubject,
-    text: `${normalizeFieldValue(heading, cleanSubject)}\n\n${text}`,
-    html: `<!doctype html><html><body style="margin:0;padding:20px;background:#ffffff;color:#111827;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;"><h1 style="margin:0 0 16px;font-size:18px;">${escapeHtml(heading || cleanSubject)}</h1><table role="presentation" cellspacing="0" cellpadding="0" border="0">${htmlRows}</table></body></html>`,
-  };
+    event: normalizeFieldValue(heading, cleanSubject),
+    who,
+    highlight,
+    rows: normalizeFields(fields),
+    note,
+    action,
+    footer,
+  });
 }
 
 function isCommunityRequest(input = {}) {

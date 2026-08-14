@@ -470,12 +470,16 @@ function testEmailCopy() {
   assert.doesNotMatch(member, /Full Day/);
   assert.match(member, /Your appointment is on the schedule/);
 
+  // The upcoming reminder is deliberately timing-neutral now: it recovers from
+  // outages and can legitimately go out far less than 24 hours ahead, so it
+  // names the product and the exact time and never a distance.
   const reminder24 = render("booking_reminder_24h", fullDayVars);
-  assert.match(reminder24, /Full Day Fixter is coming up tomorrow/);
-  assert.match(render("booking_reminder_24h", oneTimeVars), /One-Time Visit is coming up tomorrow/);
+  assert.match(reminder24, /Full Day Fixter is scheduled for/);
+  assert.doesNotMatch(reminder24, /tomorrow/i, "no reminder may promise tomorrow");
+  assert.match(render("booking_reminder_24h", oneTimeVars), /One-Time Visit is scheduled for/);
   assert.match(
     render("booking_reminder_24h", memberVars),
-    /Profixter appointment is coming up tomorrow/
+    /Profixter appointment is scheduled for/
   );
 
   const reminder60 = render("booking_reminder_60m", fullDayVars);

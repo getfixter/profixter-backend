@@ -38,6 +38,7 @@ const {
   findEligibleTechnicians,
   moveReservationForBooking,
   reservationEngineEnabled,
+  resetBookingReminderEmailStateForDateChange,
   transitionBookingWithReservation,
 } = require("../utils/slotReservationService");
 const {
@@ -2578,13 +2579,11 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
       parsedDate = d;
       dateChanged = parsedDate.getTime() !== new Date(booking.date).getTime();
       if (!useReservationEngine && dateChanged) {
+        // Same helper the reservation-engine path uses. This was a second
+        // hand-written copy of the field list and had already fallen behind it,
+        // which is how a rescheduled booking keeps a stale "already sent".
+        resetBookingReminderEmailStateForDateChange(booking, d);
         booking.date = d;
-        booking.reminder24hQueuedAt = undefined;
-        booking.reminder24hSentAt = undefined;
-        booking.reminder24hSkippedAt = undefined;
-        booking.reminder24hSkipReason = "";
-        booking.reminder60mQueuedAt = undefined;
-        booking.reminder60mSentAt = undefined;
       }
     }
     if (assignmentRequested) {

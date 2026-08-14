@@ -367,26 +367,42 @@ function createCustomerEmailTemplates({
       });
     },
 
+    /*
+     * The upcoming-visit reminder, internally the "24h" one.
+     *
+     * Nothing here says "tomorrow" or "24 hours". The reminder is durable and
+     * recovers from outages, so it can legitimately go out ten hours before the
+     * visit, and a booking made this morning for this evening gets one too.
+     * Copy that names a distance is copy that will eventually be false, and a
+     * reminder the customer can see is wrong is worse than no reminder.
+     *
+     * The exact booked time is the point of the email, so it gets its own line
+     * rather than a row in the details table. ProFixter arrives at the booked
+     * time; this is not an arrival window and must never be rendered as a range.
+     */
     booking_reminder_24h: (vars = {}) => {
       const { name = "there", bookingNumber, date, service, address } = vars;
       const oneTime = isOneTimeVisit(vars);
       const rows = [
         { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
         { label: "Service", value: service || "" },
-        { label: "Date and time", value: date ? formatNYCTime(date) : "" },
         { label: "Address", value: address || "" },
       ];
+      const exact = date ? formatNYCTime(date) : "";
       return email({
-        subject: `Reminder: your ${visitNoun(vars)} is tomorrow`,
-        preheader: `A reminder about your upcoming ${visitNoun(vars)}.`,
+        subject: `Your ${visitNoun(vars)} is coming up`,
+        preheader: exact ? `Scheduled for ${exact}.` : "Your upcoming Profixter visit.",
         content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Appointment reminder</h1>
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your visit is coming up</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">This is a reminder that your ${visitNoun(vars)} is coming up tomorrow.</p>
+          <p style="margin:0 0 8px;">Your ${visitNoun(vars)} is scheduled for</p>
+          <p style="margin:0 0 20px;font-size:22px;line-height:30px;font-weight:700;color:#172033;">${safe(exact)}</p>
           ${detailCard(rows)}
-          <p style="margin:0;">Please have the work area accessible and any required materials ready.${oneTime ? ` Cancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}</p>
+          <p style="margin:0 0 12px;">Please have the work area accessible and any required materials ready.</p>
+          <p class="email-muted" style="margin:0;color:#64748b;font-size:14px;">Your Fixter is scheduled to arrive at this exact time. Please allow up to approximately 30 minutes for unexpected traffic delays.</p>
+          ${oneTime ? `<p class="email-muted" style="margin:12px 0 0;color:#64748b;font-size:14px;">Cancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.</p>` : ""}
           ${button(urls.schedule, "Manage your appointment")}`,
-        text: `${greeting(name)}\n\nThis is a reminder that your ${visitNoun(vars)} is tomorrow.\n\n${textDetails(rows)}\n\nPlease have the work area accessible and any required materials ready.${oneTime ? `\n\nCancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nYour ${visitNoun(vars)} is scheduled for ${exact}.\n\n${textDetails(rows)}\n\nPlease have the work area accessible and any required materials ready.\n\nYour Fixter is scheduled to arrive at this exact time. Please allow up to approximately 30 minutes for unexpected traffic delays.${oneTime ? `\n\nCancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
       });
     },
 

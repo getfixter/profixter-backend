@@ -114,13 +114,47 @@ const BookingSchema = new mongoose.Schema({
     default: "",
   },
 
-  // ✅ NEW: reminder tracking (safe + helps avoid duplicates)
+  /*
+   * Reminder state.
+   *
+   * QueuedAt is a lock held while a send is in flight, SentAt is the record of
+   * success, SkippedAt records a deliberate abandonment with a reason. Attempts
+   * and LastError exist so a repeatedly failing address is visible and bounded
+   * rather than retried until the appointment. MessageId is the provider's
+   * receipt, kept for operational tracing and never shown to a customer.
+   *
+   * There is no stored "due at": it is derived from date, so a reschedule moves
+   * both reminders automatically and cannot leave a stale due time behind.
+   */
   reminder24hQueuedAt: { type: Date },
   reminder24hSentAt:   { type: Date },
   reminder24hSkippedAt: { type: Date },
   reminder24hSkipReason: { type: String, default: "" },
+  reminder24hAttempts: { type: Number, default: 0 },
+  reminder24hLastError: { type: String, default: "" },
+  reminder24hMessageId: { type: String, default: "" },
+  /*
+   * The SMS channel, tracked separately from the email.
+   *
+   * These are two independent deliveries that happen to be ordered, and one
+   * field cannot represent both: if it did, a failed CRM tag would either be
+   * silently lost or would force the email to be sent a second time to retry
+   * it. This is the same mistake that let an unrelated SMS process claim
+   * reminder24hSentAt and suppress the email entirely.
+   */
+  reminder24hTagAt: { type: Date, default: null },
+  reminder24hTagAttempts: { type: Number, default: 0 },
+  reminder24hTagError: { type: String, default: "" },
   reminder60mQueuedAt: { type: Date },
   reminder60mSentAt:   { type: Date },
+  reminder60mSkippedAt: { type: Date },
+  reminder60mSkipReason: { type: String, default: "" },
+  reminder60mAttempts: { type: Number, default: 0 },
+  reminder60mLastError: { type: String, default: "" },
+  reminder60mMessageId: { type: String, default: "" },
+  reminder60mTagAt: { type: Date, default: null },
+  reminder60mTagAttempts: { type: Number, default: 0 },
+  reminder60mTagError: { type: String, default: "" },
 
   // Delayed post-completion review request tracking.
   completedAt: { type: Date, default: null },
@@ -142,5 +176,14 @@ BookingSchema.index({
   reviewRequestSentAt: 1,
   reviewRequestLockExpiresAt: 1,
 });
+
+/*
+ * The two reminder sweeps run every minute and select on exactly these fields.
+ * Without an index each cycle is a collection scan that grows with every
+ * booking ever taken, which is the sort of cost that only shows up as a slow
+ * cycle long after it started mattering.
+ */
+BookingSchema.index({ status: 1, date: 1, reminder24hSentAt: 1, reminder24hSkippedAt: 1 });
+BookingSchema.index({ status: 1, date: 1, reminder60mSentAt: 1, reminder60mSkippedAt: 1 });
 
 module.exports = mongoose.model('Booking', BookingSchema);
