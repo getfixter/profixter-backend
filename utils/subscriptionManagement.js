@@ -40,21 +40,25 @@ const ANNUAL_MONTHS_CHARGED = 10;
 const PLAN_CATALOG = {
   basic: {
     rank: 1,
+    stripeProductId: "prod_SPSlEbSDrLapFw",
     monthly: { price: 149, stripePriceId: "price_1RUdq2Bw0RtvSZjMnnI6uRgn" },
     annual: { price: 1490, stripePriceId: "price_1U3g22Bw0RtvSZjMRc5ecQP1" },
   },
   plus: {
     rank: 2,
+    stripeProductId: "prod_SPSn3wOj7Wy1iP",
     monthly: { price: 249, stripePriceId: "price_1RUds8Bw0RtvSZjMFS1BoQEU" },
     annual: { price: 2490, stripePriceId: "price_1U3g4HBw0RtvSZjMQBVZnV3f" },
   },
   premium: {
     rank: 3,
+    stripeProductId: "prod_SPSpk7OxYGlBeG",
     monthly: { price: 349, stripePriceId: "price_1RUdtWBw0RtvSZjMOo8Q1as9" },
     annual: { price: 3490, stripePriceId: "price_1U3g6fBw0RtvSZjMx1XMpek2" },
   },
   elite: {
     rank: 4,
+    stripeProductId: "prod_SPSqqb31CpY3eL",
     monthly: { price: 499, stripePriceId: "price_1RUduRBw0RtvSZjMy6ySmgHk" },
     annual: { price: 4990, stripePriceId: "price_1U3g7XBw0RtvSZjMRSHEhcqC" },
   },

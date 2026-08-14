@@ -10,6 +10,9 @@ const {
   buildSubscriptionCanceledAdminFields,
   shouldSendSubscriptionCanceledAdminEmail,
 } = require("../utils/subscriptionCancellationAdminEmail");
+const {
+  resolveBillingPortalConfigurationId,
+} = require("../utils/billingPortalConfiguration");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const {
@@ -908,8 +911,11 @@ router.post("/create-billing-portal-session", auth, async (req, res) => {
       return_url: `${process.env.CLIENT_URL || "https://www.profixter.com"}/account?tab=plan`,
     };
 
-    if (process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID) {
-      portalSessionParams.configuration = process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID;
+    // Unset means Stripe's account default, whose plan list is Dashboard-managed
+    // and offers monthly only. See utils/billingPortalConfiguration.js.
+    const portalConfigurationId = resolveBillingPortalConfigurationId();
+    if (portalConfigurationId) {
+      portalSessionParams.configuration = portalConfigurationId;
     }
 
     const session = await stripe.billingPortal.sessions.create(portalSessionParams);

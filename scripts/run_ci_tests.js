@@ -49,6 +49,7 @@ const SUITES = [
   "test_membership_coupon_details.js",
   "test_membership_annual_pricing.js",
   "test_subscription_cancellation_admin_email.js",
+  "test_billing_portal_configuration.js",
 ];
 
 /**
