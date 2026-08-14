@@ -147,6 +147,7 @@ const adminLink = {
   booking: (id) => (id ? `/admin?tab=bookings&bookingId=${encodeURIComponent(id)}` : ""),
   customer: (id) => (id ? `/admin?tab=customers&userId=${encodeURIComponent(id)}` : ""),
   invoice: (id) => (id ? `/admin?tab=invoices&invoiceId=${encodeURIComponent(id)}` : ""),
+  bookings: () => "/admin?tab=bookings",
   lead: () => "/admin?tab=leads",
   tips: () => "/admin?tab=tips",
 };

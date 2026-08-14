@@ -1,4 +1,5 @@
 // routes/bookings.js
+const adminSubjects = require("../utils/adminSubjects");
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
@@ -2018,7 +2019,7 @@ router.post(
         );
 
         await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
-          subject: `New Booking from ${me.name}`,
+          subject: adminSubjects.booking("New Booking", { name: me.name, date: bookingDate }),
           html: `
               <h2>New Booking Created</h2>
               <ul>

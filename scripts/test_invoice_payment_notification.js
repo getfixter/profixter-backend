@@ -74,7 +74,10 @@ test("the email names the customer, the invoice and the project", () => {
   });
 
   assert.match(subject, /Dana Whitfield/);
-  assert.match(subject, /000123/);
+  assert.match(subject, /\$2,000\.00/, "the amount decides whether this is worth opening");
+  // The invoice number moved out of the subject and into the body. It is an
+  // internal identifier, and the subject has to be readable as a phone banner.
+  assert.doesNotMatch(subject, /000123/);
   assert.strictEqual(labelOf(fields, "Customer"), "Dana Whitfield");
   assert.strictEqual(labelOf(fields, "Customer email"), "dana@example.com");
   assert.strictEqual(labelOf(fields, "Invoice"), "#000123");
@@ -163,7 +166,10 @@ test("a missing customer or project degrades rather than rendering blanks", () =
   const { fields, subject } = buildInvoicePaymentNotification(invoice, { appliedCents: $(100) });
   assert.strictEqual(labelOf(fields, "Customer"), "Not available");
   assert.strictEqual(labelOf(fields, "Project"), "Not available");
-  assert.match(subject, /INVOICE PAID/);
+  // Medium importance: the amount leads, because that is what decides whether
+  // this is worth opening. No longer shouted, and no invoice number in the
+  // subject, which was an internal identifier doing no work there.
+  assert.match(subject, /^Invoice Paid - \$100\.00 - Customer$/);
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed.`);

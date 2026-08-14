@@ -1,4 +1,5 @@
 // 📁 backend/routes/requests.js
+const adminSubjects = require("../utils/adminSubjects");
 const express = require("express");
 const router = express.Router();
 const Request = require("../models/Request");
@@ -265,9 +266,10 @@ router.post("/membership", async (req, res) => {
 
     try {
       await sendAdminEventNotification({
-        // Exactly this subject, so it is filterable in the inbox.
-        subject: "Subscription Lead!",
-        heading: "Subscription Lead!",
+        // A real lead: somebody asked to be called about membership. Shouted
+        // on purpose, so it does not blend into registrations and bookings.
+        subject: adminSubjects.lead("NEW MEMBERSHIP LEAD", name),
+        heading: "New membership lead",
         templateKey: "admin_membership_lead",
         customerName: name,
         source: "membershipLeadForm",

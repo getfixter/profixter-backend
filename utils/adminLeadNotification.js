@@ -3,7 +3,8 @@ const {
   REPLY_TO,
   sendRaw,
 } = require("./emailService");
-const { renderOperationalEmail } = require("./operationalEmail");
+const { adminLink, renderOperationalEmail } = require("./operationalEmail");
+const adminSubjects = require("./adminSubjects");
 
 const NOT_AVAILABLE = "Not Available";
 
@@ -229,48 +230,61 @@ function isProjectLead(input = {}) {
 }
 
 function leadSubjectFor(input = {}) {
-  if (isCommunityRequest(input)) return "COMMUNITY REQUEST";
-  if (isOneTimeRequest(input)) return "ONE TIME CALL";
-  if (isProjectLead(input)) return "NEW LEAD";
-
-  const leadType = clean(input.leadType || input.service);
   const name = clean(input.name);
-  return `New Profixter Lead: ${leadType} - ${name}`;
+  return adminSubjects.isRegistration(input)
+    ? adminSubjects.registration(name)
+    : adminSubjects.lead(adminSubjects.leadKindFor(input), name);
 }
 
+/**
+ * A registration or a real lead, rendered through the operational shell.
+ *
+ * The split is the point. Somebody creating an account and somebody asking to
+ * be phoned about a kitchen were producing the same shape of email with the
+ * same word "Lead" in the subject, and the registrations vastly outnumber the
+ * leads, so the word stopped meaning anything. They are now different subjects
+ * with different urgency and different bodies: a registration carries who and
+ * where, a lead carries what they asked for and how to reach them.
+ *
+ * The Mongo lead id, the source page and the submitted timestamp are gone from
+ * the body. All three are on the record in Admin, which the button opens.
+ */
 function renderAdminLeadEmail(input) {
-  const leadType = clean(input.leadType || input.service);
   const name = clean(input.name);
-  const submittedAt = formatSubmittedAt(input.submittedAt);
-  const fields = [
-    ["Lead type", leadType],
-    ["Name", name],
-    ["Phone", clean(input.phone)],
-    ["Email", clean(input.email)],
-    ["Address", clean(input.address)],
-    ["Project type / service", clean(input.service)],
-    ["Description / message", clean(input.message || input.notes)],
-    ["Preferred contact", clean(input.contactPref)],
-    ["Timeline", clean(input.timeline)],
-    ["Budget", clean(input.budgetRange)],
-    ["Submitted", submittedAt],
-    ["Source page", clean(input.sourcePage)],
-    ["Mongo lead ID", clean(input.leadId)],
-  ];
-  const subject = input.subject || leadSubjectFor(input);
-  const text = fields.map(([label, value]) => `${label}: ${value}`).join("\n");
-  const htmlRows = fields
-    .map(
-      ([label, value]) =>
-        `<tr><td style="padding:4px 12px 4px 0;vertical-align:top;font-weight:700;">${escapeHtml(label)}</td><td style="padding:4px 0;vertical-align:top;white-space:pre-wrap;">${escapeHtml(value)}</td></tr>`
-    )
-    .join("");
+  const registration = adminSubjects.isRegistration(input);
 
-  return {
-    subject,
-    text,
-    html: `<!doctype html><html><body style="margin:0;padding:20px;background:#ffffff;color:#111827;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;"><h1 style="margin:0 0 16px;font-size:18px;">${escapeHtml(subject)}</h1><table role="presentation" cellspacing="0" cellpadding="0" border="0">${htmlRows}</table></body></html>`,
-  };
+  if (registration) {
+    return renderOperationalEmail({
+      subject: input.subject || adminSubjects.registration(name),
+      event: "New registration",
+      who: name,
+      rows: [
+        ["Phone", clean(input.phone, "")],
+        ["Email", clean(input.email, "")],
+        ["Address", clean(input.address, "")],
+      ],
+      action: { label: "View Customer", url: adminLink.lead() },
+      footer: "Account created. No action needed.",
+    });
+  }
+
+  const kind = adminSubjects.leadKindFor(input);
+  return renderOperationalEmail({
+    subject: input.subject || adminSubjects.lead(kind, name),
+    event: kind.charAt(0) + kind.slice(1).toLowerCase(),
+    who: name,
+    // The number leads, because the only useful response to a lead is a call.
+    highlight: clean(input.phone, ""),
+    rows: [
+      ["Email", clean(input.email, "")],
+      ["Wants", clean(input.leadType || input.service, "")],
+      ["Address", clean(input.address, "")],
+      ["Timeline", clean(input.timeline, "")],
+      ["Budget", clean(input.budgetRange, "")],
+    ],
+    note: clean(input.message || input.notes, ""),
+    action: { label: "View Lead", url: adminLink.lead() },
+  });
 }
 
 async function sendAdminEventNotification(input, options = {}) {

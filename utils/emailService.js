@@ -11,7 +11,8 @@ const {
   createCustomerEmailTemplates,
 } = require("./customerEmailTemplates");
 const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
-const { renderOperationalEmail } = require("./operationalEmail");
+const { adminLink, renderOperationalEmail } = require("./operationalEmail");
+const adminSubjects = require("./adminSubjects");
 let marked;
 try {
   ({ marked } = require("marked"));
@@ -551,38 +552,29 @@ const TEMPLATES = {
       .join("\n"),
   }),
 
+  /*
+   * Booked, not paid. Those are two different events and they keep two
+   * different subjects: collapsing them would hide whether money has arrived.
+   */
   admin_full_day_booked: ({
-    name,
-    phone,
-    address,
-    userId,
-    bookingNumber,
-    date,
-    startTime,
-    endTime,
-    fixter,
-    paymentSummary,
-    note,
-  }) => ({
-    subject: `FULL DAY - ${name || "Customer"} (#${bookingNumber || "-"})`,
-    html: frame(`
-    <h2 style="margin:0 0 10px">Full Day Fixter booked</h2>
-
-    <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px; line-height:1.6;">
-      <tr><td style="padding:4px 0;"><strong>Name:</strong>&nbsp;${name || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Phone:</strong>&nbsp;${phone || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Address:</strong>&nbsp;${address || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Member ID:</strong>&nbsp;${userId || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Booking #:</strong>&nbsp;${bookingNumber || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Date:</strong>&nbsp;${date ? formatNYCTime(date) : "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Hours:</strong>&nbsp;${startTime || "-"} to ${endTime || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Fixter:</strong>&nbsp;${fixter || "Not yet assigned"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Payment:</strong>&nbsp;${paymentSummary || "-"}</td></tr>
-    </table>
-
-    ${note ? `<p style="margin:12px 0 0"><strong>Customer list:</strong><br>${escapeHtml(note)}</p>` : ""}
-  `),
-  }),
+    name, phone, address, userId, bookingNumber, date, startTime, endTime, fixter, paymentSummary, note,
+  }) =>
+    renderOperationalEmail({
+      subject: adminSubjects.booking("Full Day Booked", { name, date, withTime: false }),
+      event: "Full Day booked",
+      who: name || "Customer",
+      highlight: date ? formatNYCTime(date) : "",
+      rows: [
+        ["Hours", startTime && endTime ? `${startTime} to ${endTime}` : ""],
+        ["Fixter", fixter || "Not yet assigned"],
+        ["Address", address || ""],
+        ["Phone", phone || ""],
+        ["Payment", paymentSummary || ""],
+      ],
+      note: note || "",
+      action: { label: "View Booking", url: adminLink.bookings() },
+      footer: `Member ID ${userId || "-"}${bookingNumber ? ` - booking #${bookingNumber}` : ""}`,
+    }),
 
   booking_confirmed: ({ name = "there", bookingNumber, date, service, address }) => ({
     subject: `Booking confirmed — #${bookingNumber || ""}`,
@@ -725,30 +717,24 @@ const TEMPLATES = {
   `, { preheader: "Your booking has been canceled. We can reschedule anytime." }),
   }),
 
-  admin_booking_canceled: ({
-    name,
-    phone,
-    address,
-    userId,
-    bookingNumber,
-    date,
-    service,
-  }) => ({
-    subject: `❌ Booking Canceled — ${name || "Customer"} (#${bookingNumber || "—"})`,
-    html: frame(`
-    <h2 style="margin:0 0 10px">Booking Canceled ❌</h2>
-
-    <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px; line-height:1.6;">
-      <tr><td style="padding:4px 0;"><strong>Name:</strong>&nbsp;${name || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Phone:</strong>&nbsp;${phone || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Address:</strong>&nbsp;${address || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Member ID:</strong>&nbsp;${userId || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Booking #:</strong>&nbsp;${bookingNumber || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Service:</strong>&nbsp;${service || "-"}</td></tr>
-      <tr><td style="padding:4px 0;"><strong>Date/Time:</strong>&nbsp;${date ? formatNYCTime(date) : "-"}</td></tr>
-    </table>
-  `),
-  }),
+  /*
+   * An ordinary booking event. The date is in the subject so this normally does
+   * not need opening at all, which is the whole reason the subject carries it.
+   */
+  admin_booking_canceled: ({ name, phone, address, userId, bookingNumber, date, service }) =>
+    renderOperationalEmail({
+      subject: adminSubjects.booking("Booking Canceled", { name, date, withTime: false }),
+      event: "Booking canceled",
+      who: name || "Customer",
+      highlight: date ? formatNYCTime(date) : "",
+      rows: [
+        ["Service", service || ""],
+        ["Address", address || ""],
+        ["Phone", phone || ""],
+      ],
+      action: { label: "View Booking", url: adminLink.bookings() },
+      footer: `Member ID ${userId || "-"}${bookingNumber ? ` - booking #${bookingNumber}` : ""}`,
+    }),
 
   booking_reminder_24h: ({
     name = "there",

@@ -22,7 +22,11 @@ const {
   safeActionUrl,
   adminLink,
 } = require("../utils/operationalEmail");
-const { renderAdminEventEmail } = require("../utils/adminLeadNotification");
+const {
+  renderAdminEventEmail,
+  renderAdminLeadEmail,
+} = require("../utils/adminLeadNotification");
+const adminSubjects = require("../utils/adminSubjects");
 
 let passed = 0;
 const failures = [];
@@ -178,6 +182,114 @@ test("an admin notification stays short", () => {
   assert.ok(rows <= 12, `an admin notification should stay compact, got ${rows} rows`);
   assert.match(out.html, /View Booking/, "and should offer one way into Admin");
 });
+
+console.log("\nAdmin subject hierarchy");
+
+const SUBJECTS = {
+  informational: [
+    adminSubjects.registration("John Smith"),
+    adminSubjects.booking("New Booking", { name: "John Smith", date: "2026-08-18T14:00:00Z" }),
+    adminSubjects.booking("Booking Canceled", { name: "John Smith", date: "2026-08-18T14:00:00Z", withTime: false }),
+    adminSubjects.booking("Full Day Booked", { name: "John Smith", date: "2026-08-18T14:00:00Z", withTime: false }),
+  ],
+  medium: [
+    adminSubjects.membership("Membership Started", { name: "John Smith", plan: "plus" }),
+    adminSubjects.membership("Membership Canceled", { name: "John Smith", plan: "premium" }),
+    adminSubjects.payment("Invoice Paid", { amount: "$500.00", name: "John Smith" }),
+    adminSubjects.payment("Full Day Paid", { amount: "$499.00", name: "John Smith" }),
+  ],
+  high: [
+    adminSubjects.lead("NEW MEMBERSHIP LEAD", "John Smith"),
+    adminSubjects.lead("NEW PROJECT LEAD", "John Smith"),
+    adminSubjects.lead("CALL REQUEST", "John Smith"),
+  ],
+};
+
+test("a registration is never called a lead", () => {
+  const reg = renderAdminLeadEmail({
+    leadType: "Website Registration",
+    service: "Customer account registration",
+    name: "John Smith",
+  });
+  assert.equal(reg.subject, "New Registration - John Smith");
+  assert.doesNotMatch(reg.subject, /lead/i, "creating an account is not asking to be contacted");
+  assert.doesNotMatch(reg.subject, /opportunity|prospect|potential/i);
+  assert.match(
+    renderAdminLeadEmail({ leadType: "Google Registration", service: "Customer account registration", name: "Ann Lee" }).subject,
+    /^New Registration - Ann Lee$/
+  );
+});
+
+test("a real lead shouts, and an ordinary event does not", () => {
+  for (const s of SUBJECTS.high) {
+    assert.match(s, /^[A-Z][A-Z ]+ - /, `high-attention subject should lead in caps: ${s}`);
+  }
+  for (const s of [...SUBJECTS.informational, ...SUBJECTS.medium]) {
+    assert.doesNotMatch(s, /^[A-Z][A-Z ]{4,} - /, `ordinary subject must not shout: ${s}`);
+  }
+});
+
+test("each lead kind is distinguishable", () => {
+  const kind = (input) => adminSubjects.leadKindFor(input);
+  assert.equal(kind({ leadType: "Membership", service: "Membership call request" }), "NEW MEMBERSHIP LEAD");
+  assert.equal(kind({ leadType: "Kitchen Remodeling" }), "NEW PROJECT LEAD");
+  assert.equal(kind({ leadType: "AI Callback Request" }), "CALL REQUEST");
+  assert.equal(kind({ leadType: "Community Partnership" }), "COMMUNITY REQUEST");
+});
+
+test("bookings, memberships and leads are not confusable", () => {
+  const all = [...SUBJECTS.informational, ...SUBJECTS.medium, ...SUBJECTS.high];
+  assert.equal(new Set(all).size, all.length, "every admin subject must be distinct");
+  for (const s of SUBJECTS.informational) assert.match(s, /^(New Registration|New Booking|Booking|Full Day Booked)/);
+  for (const s of SUBJECTS.medium) assert.match(s, /^(Membership|Invoice Paid|Full Day Paid|One-Time Visit Paid)/);
+});
+
+test("booking subjects carry the date so the email need not be opened", () => {
+  assert.match(SUBJECTS.informational[1], /Aug 18, \d{1,2}:\d{2} (AM|PM)$/);
+  assert.match(SUBJECTS.informational[2], /Aug 18$/, "a cancellation only needs the day");
+});
+
+test("membership subjects carry the plan, payment subjects carry the amount", () => {
+  assert.match(SUBJECTS.medium[0], /Plus$/);
+  assert.match(SUBJECTS.medium[1], /Premium$/);
+  assert.match(SUBJECTS.medium[2], /Invoice Paid - \$500\.00 - John Smith/);
+});
+
+test("no admin subject shouts about an ordinary appointment", () => {
+  for (const s of SUBJECTS.informational) {
+    assert.doesNotMatch(s, /URGENT|EMERGENCY|PRIORITY|ALERT|!/);
+  }
+});
+
+test("the two converted templates lost their emoji and booking numbers", () => {
+  const V = { name: "Sam Carter", phone: "x", address: "1 St", userId: "1",
+    bookingNumber: "12345678", date: "2026-08-18T14:00:00Z", service: "Labor Only",
+    startTime: "8:00 AM", endTime: "4:00 PM", fixter: "Roman" };
+  const cancelled = TEMPLATES.admin_booking_canceled(V);
+  const fullDay = TEMPLATES.admin_full_day_booked(V);
+  for (const out of [cancelled, fullDay]) {
+    assert.doesNotMatch(out.subject, /[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}\u{274C}\u{2705}]/u, `emoji in ${out.subject}`);
+    assert.doesNotMatch(out.subject, /^[A-Z ]{6,}/, `all caps in ${out.subject}`);
+    assert.doesNotMatch(out.subject, /#\d+/, `booking number in ${out.subject}`);
+  }
+  assert.equal(cancelled.subject, "Booking Canceled - Sam Carter - Aug 18");
+  assert.equal(fullDay.subject, "Full Day Booked - Sam Carter - Aug 18");
+});
+
+test("booked and paid stay semantically distinct", () => {
+  assert.notEqual(
+    adminSubjects.booking("Full Day Booked", { name: "Sam", date: "2026-08-18T14:00:00Z", withTime: false }),
+    adminSubjects.payment("Full Day Paid", { amount: "$499.00", name: "Sam" })
+  );
+});
+
+test("admin bodies stay compact at every tier", () => {
+  const lead = renderAdminLeadEmail({ leadType: "Kitchen Remodeling", name: "John", phone: "631", message: "quote please" });
+  const rows = (lead.html.match(/<tr>/g) || []).length;
+  assert.ok(rows <= 12, `a lead email should stay compact, got ${rows} rows`);
+  assert.match(lead.html, /View Lead/, "and be actionable");
+});
+
 
 console.log("\nDead templates are gone");
 

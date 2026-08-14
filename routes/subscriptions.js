@@ -1,3 +1,4 @@
+const adminSubjects = require("../utils/adminSubjects");
 const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
@@ -600,7 +601,7 @@ router.post("/manage/address/:addressId/retention-offer/accept", auth, async (re
 
     try {
       await sendAdminEventNotification({
-        subject: "RETENTION OFFER ACCEPTED",
+        subject: adminSubjects.membership("Membership Retained", { name: user?.name, plan: subscription?.subscriptionType }),
         heading: "RETENTION OFFER ACCEPTED",
         templateKey: "admin_retention_offer_accepted",
         replyToEmail: user.email,
@@ -772,7 +773,7 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
           null;
 
         await sendAdminEventNotification({
-          subject: "SUBSCRIPTION CANCELED",
+          subject: adminSubjects.membership("Membership Canceled", { name: user?.name, plan: subscription?.subscriptionType }),
           heading: "SUBSCRIPTION CANCELED",
           templateKey: "admin_subscription_canceled",
           replyToEmail: user.email,

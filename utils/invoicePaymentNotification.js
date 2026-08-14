@@ -16,6 +16,7 @@
  * be read at a glance unreadable.
  */
 
+const adminSubjects = require("./adminSubjects");
 const { ADMIN, REPLY_TO, FROM, sendRaw } = require("./emailService");
 const {
   formatSubmittedAt,
@@ -78,8 +79,8 @@ function buildInvoicePaymentNotification(invoice, {
   }
 
   return {
-    subject: `INVOICE PAID - ${customerName || "Customer"}${invoiceNumber ? ` (#${invoiceNumber})` : ""}`,
-    heading: "INVOICE PAID ONLINE",
+    subject: adminSubjects.payment("Invoice Paid", { amount: money(appliedCents), name: customerName }),
+    heading: "Invoice paid",
     fields,
   };
 }

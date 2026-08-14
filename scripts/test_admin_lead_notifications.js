@@ -25,14 +25,15 @@ const rendered = renderAdminLeadEmail({
   sourcePage: "/estimate?type=bathroom",
 });
 
-assert.equal(
-  rendered.subject,
-  "NEW LEAD"
-);
-assert.ok(rendered.text.includes("Lead type: Bathroom Remodeling"));
-assert.ok(rendered.text.includes("Mongo lead ID: 507f1f77bcf86cd799439011"));
-assert.ok(rendered.text.includes("Source page: /estimate?type=bathroom"));
+// A real project lead names the kind and the person, and shouts, so it does
+// not blend into the registrations and bookings that share the inbox.
+assert.equal(rendered.subject, "NEW PROJECT LEAD - Taylor Homeowner");
+assert.ok(rendered.text.includes("Wants: Bathroom Remodeling"));
 assert.ok(rendered.text.includes("Budget: $30,000-$60,000"));
+// The Mongo id and the source page moved to the Admin record the button opens:
+// neither helps decide whether to return the call.
+assert.ok(!rendered.text.includes("507f1f77bcf86cd799439011"));
+assert.ok(!rendered.text.includes("/estimate?type=bathroom"));
 assert.ok(rendered.html.includes("<table"));
 assert.ok(!rendered.html.includes("<img"));
 assert.ok(!rendered.html.includes("<button"));
@@ -45,8 +46,8 @@ const communityRendered = renderAdminLeadEmail({
   sourcePage: "/communities",
 });
 
-assert.equal(communityRendered.subject, "COMMUNITY REQUEST");
-assert.ok(communityRendered.text.includes("Lead type: Community Partnership"));
+assert.equal(communityRendered.subject, "COMMUNITY REQUEST - Taylor Board");
+assert.ok(communityRendered.text.includes("Community request"));
 
 const eventRendered = renderAdminEventEmail({
   subject: "NEW MEMBER",
@@ -149,10 +150,7 @@ async function run() {
 
   assert.equal(capturedMail.to, "admin@profixter.com, leads@profixter.com");
   assert.equal(capturedMail.replyTo, "customer@example.com");
-  assert.equal(
-    capturedMail.subject,
-    "NEW LEAD"
-  );
+  assert.equal(capturedMail.subject, "NEW PROJECT LEAD - Taylor Homeowner");
   assert.ok(capturedMail.text);
   assert.ok(capturedMail.html);
 

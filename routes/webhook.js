@@ -1,3 +1,4 @@
+const adminSubjects = require("../utils/adminSubjects");
 const crypto = require("crypto");
 const mongoose = require("mongoose");
 const User = require("../models/User");
@@ -752,7 +753,7 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
      * the only row that ever demands action.
      */
     await sendAdminEventNotification({
-      subject: `One-time visit paid - ${booking.name || user.name || "Customer"}`,
+      subject: adminSubjects.payment("One-Time Visit Paid", { amount: formatAdminMoney(session?.amount_total ?? entitlement?.priceCents, session?.currency || entitlement?.currency || "usd"), name: booking.name || user.name }),
       heading: "One-time visit paid",
       templateKey: "admin_one_time_visit_paid",
       replyToEmail: booking.email || user.email || "",
@@ -1050,7 +1051,7 @@ async function sendFullDayPaidEmails({ booking, user, entitlement, session }) {
   try {
     await sendAdminEventNotification(
       {
-        subject: `Full Day paid - ${booking.name || user.name || "Customer"}`,
+        subject: adminSubjects.payment("Full Day Paid", { amount: formatAdminMoney(session?.amount_total ?? entitlement?.priceCents, session?.currency || entitlement?.currency || "usd"), name: booking.name || user.name }),
         heading: "Full Day paid",
         templateKey: "admin_full_day_visit_paid",
         replyToEmail: booking.email || user.email || "",
@@ -1628,8 +1629,8 @@ async function handleCheckoutCompleted(session, eventId) {
    * reconciling a payment would look for them anyway.
    */
   await sendAdminEventNotification({
-    subject: `New member - ${user.name || user.email}`,
-    heading: "New member",
+    subject: adminSubjects.membership("Membership Started", { name: user.name || user.email, plan: subscription?.subscriptionType }),
+    heading: "Membership started",
     templateKey: "admin_subscription_started",
     replyToEmail: user.email,
     customerName: user.name || "",
