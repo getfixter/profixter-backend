@@ -126,7 +126,11 @@ async function testExpiredHoldRelease() {
 
   const BookingModel = {
     find(query) {
-      assert.equal(query.bookingType, "one_time_handyman_visit");
+      // The job sweeps both paid-up-front products now. A one-time visit must
+      // still be inside the net, which is what this asserts.
+      assert.deepEqual(query.bookingType, {
+        $in: ["one_time_handyman_visit", "full_day_visit"],
+      });
       assert.equal(query.paymentState, "pending");
       assert.deepEqual(query.paymentHoldExpiresAt, { $lte: now });
       return {

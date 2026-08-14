@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const VisitEntitlement = require("../models/VisitEntitlement");
 const {
   CHECKOUT_SESSION_INDEX_NAME,
+  MEMBERSHIP_BENEFIT_INDEX_NAME,
   PAYMENT_INTENT_INDEX_NAME,
   STRIPE_ID_INDEXES,
   ensureVisitEntitlementIndexes,
@@ -122,7 +123,11 @@ async function testStaleIndexRepair() {
     CHECKOUT_SESSION_INDEX_NAME,
     "stripePaymentIntentId_1",
   ].sort());
-  assert.equal(collection.state.created.length, 2);
+  // Two repaired Stripe indexes plus the additive membership-benefit index,
+  // which is only ever created and is never part of the dropped set.
+  assert.equal(collection.state.created.length, 3);
+  assert.equal(result.dropped.includes(MEMBERSHIP_BENEFIT_INDEX_NAME), false);
+  assert.equal(result.created.includes(MEMBERSHIP_BENEFIT_INDEX_NAME), true);
 
   const repaired = await collection.indexes();
   for (const spec of STRIPE_ID_INDEXES) {

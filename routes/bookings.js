@@ -57,6 +57,23 @@ const {
   validateOneTimeTask,
 } = require("../utils/oneTimeVisitSettings");
 const {
+  getFullDayVisitSettings,
+  publicFullDayVisitSettings,
+} = require("../utils/fullDayVisitSettings");
+const {
+  FULL_DAY_PRODUCT_KIND,
+  FULL_DAY_SERVICE,
+  assertFullDayBookable,
+  createFullDayBooking,
+  fullDayAvailabilityForRange,
+  releaseFullDayCapacity,
+} = require("../utils/fullDayVisitService");
+const {
+  consumeIncludedFullDay,
+  includedFullDayState,
+  restoreIncludedFullDay,
+} = require("../utils/fullDayEntitlements");
+const {
   uploadAppointmentPhotos,
   storeAppointmentImages,
 } = require("../utils/bookingAttachments");
@@ -486,8 +503,38 @@ async function cancelOrDelete(req, res) {
 
     const status = String(booking.status || "").toLowerCase();
     const deletable = new Set(["pending", "complete", "completed"]);
+    const isFullDay = booking.bookingType === "full_day_visit";
 
-    if (useReservationEngine) {
+    // Order matters: give the benefit back while the booking still says what it
+    // was scheduled for, because two of the three conditions are read off it.
+    let fullDayRestore = null;
+    if (isFullDay) {
+      try {
+        fullDayRestore = await restoreIncludedFullDay({ booking });
+      } catch (error) {
+        console.error("Full Day entitlement restore failed:", error.message);
+      }
+    }
+
+    if (isFullDay) {
+      // A Full Day holds a whole workday, not one slot. Releasing it through the
+      // single-slot decrement below would hand back one hour and silently keep
+      // the rest of the day off the calendar.
+      try {
+        await releaseFullDayCapacity(booking);
+      } catch (error) {
+        console.log("Full Day capacity release error:", error.message);
+      }
+      if (useReservationEngine) {
+        const result = await cancelBookingWithReservation({
+          bookingId: booking._id,
+          actorUser: me,
+          createdByType: "customer",
+          reason: "Canceled by customer",
+        });
+        booking = result.booking;
+      }
+    } else if (useReservationEngine) {
       const result = await cancelBookingWithReservation({
         bookingId: booking._id,
         actorUser: me,
@@ -505,12 +552,14 @@ async function cancelOrDelete(req, res) {
       console.log("slot decrement (cancel/delete) error:", e.message);
     }
 
-    if (!useReservationEngine && deletable.has(status)) {
+    // A Full Day is never deleted. It may have spent a membership benefit or
+    // taken $499, and both of those are questions someone will ask later.
+    if (!useReservationEngine && !isFullDay && deletable.has(status)) {
       await Booking.deleteOne({ _id: booking._id });
       return res.json({ ok: true, action: "deleted", message: "Booking deleted." });
     }
 
-    if (!useReservationEngine) {
+    if (!useReservationEngine || (isFullDay && booking.status !== "Canceled")) {
       booking.statusHistory = (booking.statusHistory || []).concat({
         status: booking.status,
         date: new Date(),
@@ -612,7 +661,19 @@ async function cancelOrDelete(req, res) {
       console.log("Mail booking_canceled/admin_booking_canceled error:", e.message);
     }
 
-    return res.json({ ok: true, action: "canceled", message: "Booking canceled." });
+    return res.json({
+      ok: true,
+      action: "canceled",
+      message: "Booking canceled.",
+      ...(isFullDay
+        ? {
+            // Told plainly so the customer knows whether the day they gave up
+            // is back in their account or gone for this period.
+            includedFullDayRestored: !!fullDayRestore?.restored,
+            includedFullDayRestoreReason: fullDayRestore?.reason || "",
+          }
+        : {}),
+    });
   } catch (e) {
     console.error("cancelOrDelete error:", e);
     res.status(500).json({ message: "Server error" });
@@ -952,6 +1013,568 @@ router.post(
       return res.status(error?.statusCode || 500).json({
         message: error.message || "Unable to start one-time checkout.",
         code: error.code || "ONE_TIME_CHECKOUT_FAILED",
+      });
+    }
+  }
+);
+
+/* ================================================================== */
+/* Full Day Fixter                                                    */
+/* ================================================================== */
+
+/** Best effort, like every other booking email here: never fail a booking on mail. */
+async function sendFullDayConfirmationEmails({
+  booking,
+  user,
+  settings,
+  included,
+  periodEnd = null,
+}) {
+  const addressLine = buildAddressLineFromBooking(booking);
+  const timeRange = booking.scheduledStart && booking.scheduledEnd
+    ? {
+        startTime: moment(booking.scheduledStart).tz("America/New_York").format("h:mm A"),
+        endTime: moment(booking.scheduledEnd).tz("America/New_York").format("h:mm A"),
+      }
+    : { startTime: "", endTime: "" };
+  const price = `$${Math.round((settings.priceCents || 49900) / 100)}`;
+
+  try {
+    await mail.sendTx(
+      "full_day_visit_booked",
+      booking.email || user.email,
+      {
+        name: booking.name || user.name || "there",
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        address: addressLine,
+        approximateHours: settings.approximateHours,
+        included,
+        price,
+        periodEnd,
+        ...timeRange,
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          customerName: booking.name || user.name || "",
+          customerEmail: booking.email || user.email || "",
+          recipientEmail: booking.email || user.email || "",
+          emailType: included ? "transactional" : "billing",
+          source: included ? "fullDayIncluded" : "fullDayPaid",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("full_day_visit_booked email failed:", error.message);
+  }
+
+  try {
+    await mail.sendTx(
+      "admin_full_day_booked",
+      process.env.MAIL_ADMIN || "getfixter@gmail.com",
+      {
+        name: booking.name || user.name || "-",
+        phone: booking.phone || user.phone || "-",
+        address: addressLine || "-",
+        userId: booking.userId || user.userId || "-",
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        fixter: booking.assignedFixterName || "",
+        paymentSummary: included
+          ? "Included with Elite membership"
+          : `${price} paid`,
+        note: booking.note || "",
+        ...timeRange,
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          templateKey: "admin_full_day_booked",
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          recipientEmail: process.env.MAIL_ADMIN || "getfixter@gmail.com",
+          emailType: "admin",
+          source: "fullDay",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("admin_full_day_booked email failed:", error.message);
+  }
+}
+
+/* ---------- GET /api/bookings/full-day/config ---------- */
+router.get("/full-day/config", async (_req, res) => {
+  try {
+    const settings = await getFullDayVisitSettings();
+    return res.json(publicFullDayVisitSettings(settings));
+  } catch (error) {
+    console.error("Full Day settings load error:", error.message);
+    return res
+      .status(500)
+      .json({ message: "Unable to load Full Day settings." });
+  }
+});
+
+/* ---------- GET /api/bookings/full-day/availability ---------- */
+router.get("/full-day/availability", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || from).trim();
+    const availability = await fullDayAvailabilityForRange({ from, to });
+    return res.json(availability);
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({
+      code: error?.code || "FULL_DAY_AVAILABILITY_ERROR",
+      message: error?.message || "Unable to load Full Day availability.",
+    });
+  }
+});
+
+/* ---------- GET /api/bookings/full-day/eligibility ---------- */
+/**
+ * What this customer would pay. Elite members get one Full Day per billing
+ * period included; everyone else, and an Elite member who has already used
+ * theirs, pays. The frontend needs to know which before it shows a price, so
+ * this is computed here rather than inferred from the plan name on the client.
+ */
+router.get("/full-day/eligibility", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    if (!me) {
+      return res.status(401).json({ message: "User not found or session expired." });
+    }
+    const addressId = req.query.addressId || me.defaultAddressId;
+    const subdoc = addressId ? me.addresses?.id?.(addressId) : null;
+    if (!subdoc) {
+      return res.json({
+        includedAvailable: false,
+        includedUsed: false,
+        periodEnd: null,
+        reason: "no_address",
+      });
+    }
+    const state = await includedFullDayState({ user: me, addressId: subdoc._id });
+    return res.json({
+      addressId: String(subdoc._id),
+      includedAvailable: state.entitled && !state.used,
+      includedUsed: state.entitled && state.used,
+      isElite: state.entitled || state.reason === "no_billing_period",
+      periodStart: state.periodStart,
+      periodEnd: state.periodEnd,
+      reason: state.reason,
+    });
+  } catch (error) {
+    console.error("Full Day eligibility error:", error.message);
+    return res.status(500).json({ message: "Unable to check Full Day eligibility." });
+  }
+});
+
+/* ---------- POST /api/bookings/full-day/book ---------- */
+/**
+ * The Elite member's included Full Day. No money changes hands, so there is no
+ * Stripe hold to hide behind: the entitlement is spent first, and only then is
+ * the day taken. Spending first is deliberate. It is the step protected by a
+ * unique index, so two taps of the button collide there, where the loser gets a
+ * clean refusal, instead of colliding over calendar capacity where the loser
+ * would have already burned the benefit.
+ */
+router.post(
+  "/full-day/book",
+  auth,
+  ensureNotBlacklisted,
+  upload.array("images", 10),
+  async (req, res) => {
+    let entitlement = null;
+    let booking = null;
+    const uploadedS3Keys = [];
+
+    try {
+      const settings = await getFullDayVisitSettings();
+      if (!settings.enabled) {
+        return res.status(503).json({
+          message: "Full Day Fixter booking is temporarily unavailable.",
+          code: "FULL_DAY_DISABLED",
+        });
+      }
+
+      const me = await User.findById(req.user.id);
+      if (!me) {
+        return res.status(401).json({ message: "User not found or session expired." });
+      }
+
+      const { addressId, date, note } = req.body;
+      if (!addressId || !mongoose.isValidObjectId(addressId)) {
+        return res.status(400).json({ message: "Please choose an address for this booking." });
+      }
+      const subdoc = me.addresses?.id?.(addressId);
+      if (!subdoc) {
+        return res.status(400).json({ message: "Address not found on your account." });
+      }
+      if (!note || String(note).trim().split(/\s+/).filter(Boolean).length < 3) {
+        return res.status(400).json({
+          message: "Tell us what you would like done, in at least a few words.",
+        });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+        return res.status(400).json({ message: "Please choose a date." });
+      }
+
+      const state = await includedFullDayState({ user: me, addressId: subdoc._id });
+      if (!state.entitled) {
+        return res.status(403).json({
+          code:
+            state.reason === "no_billing_period"
+              ? "FULL_DAY_BILLING_PERIOD_UNKNOWN"
+              : "FULL_DAY_NOT_INCLUDED",
+          message:
+            state.reason === "no_billing_period"
+              ? "We could not confirm your current billing period. Please contact us and we will book this for you."
+              : "A Full Day is included with Elite. Choose the $499 Full Day instead.",
+        });
+      }
+      if (state.used) {
+        return res.status(409).json({
+          code: "FULL_DAY_BENEFIT_ALREADY_USED",
+          message:
+            "You have already used your included Full Day for this billing period. You can book another for $499.",
+        });
+      }
+
+      // Fail before spending anything if the day is already gone.
+      await assertFullDayBookable({ date });
+      await ensureVisitEntitlementIndexesOnce();
+
+      entitlement = await consumeIncludedFullDay({
+        user: me,
+        addressId: subdoc._id,
+        addressSnapshot: {
+          line1: subdoc.line1 || "",
+          city: subdoc.city || "",
+          state: subdoc.state || "",
+          zip: subdoc.zip || "",
+          county: subdoc.county || "",
+        },
+        periodStart: state.periodStart,
+        periodEnd: state.periodEnd,
+        durationMinutes: settings.approximateHours * 60,
+      });
+
+      const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
+      const uploadResult = await uploadBookingImages({
+        files: req.files || [],
+        bookingDate: new Date(`${date}T12:00:00Z`),
+        bookingNumber,
+      });
+      uploadedS3Keys.push(...uploadResult.uploadedS3Keys);
+
+      const result = await createFullDayBooking({
+        date,
+        actorUser: me,
+        createdByType: "customer",
+        bookingData: {
+          bookingNumber,
+          service: FULL_DAY_SERVICE,
+          selectedTask: FULL_DAY_SERVICE,
+          user: req.user.id,
+          userId: me.userId,
+          name: me.name,
+          phone: me.phone,
+          email: me.email,
+          addressId: subdoc._id,
+          address: subdoc.line1 || "",
+          city: subdoc.city || "",
+          state: subdoc.state || "",
+          zip: subdoc.zip || "",
+          county: subdoc.county || "",
+          subscription: "Elite",
+          accessType: "membership",
+          bookingType: "full_day_visit",
+          paymentState: "not_required",
+          paymentStatus: "Included with Elite",
+          entitlementId: entitlement._id,
+          isFreeFirstVisit: false,
+          note: String(note || "").trim(),
+          images: uploadResult.images,
+          status: "Pending",
+        },
+      });
+      booking = result.booking;
+
+      // The day is booked and the benefit is spent. Linking the two is
+      // bookkeeping, so a failure here is logged rather than turned into an
+      // error that tells the customer their booking did not happen.
+      try {
+        entitlement.bookingId = booking._id;
+        await entitlement.save();
+      } catch (linkError) {
+        console.error("Full Day entitlement link failed:", linkError.message);
+      }
+
+      await sendFullDayConfirmationEmails({
+        booking,
+        user: me,
+        settings,
+        included: true,
+        periodEnd: state.periodEnd,
+      });
+
+      return res.json({
+        bookingId: String(booking._id),
+        bookingNumber: booking.bookingNumber,
+        entitlementId: String(entitlement._id),
+        date: booking.date,
+        scheduledStart: booking.scheduledStart,
+        scheduledEnd: booking.scheduledEnd,
+        included: true,
+      });
+    } catch (error) {
+      console.error("Full Day booking error:", error.stack || error.message);
+      try {
+        if (!booking && entitlement?._id) {
+          // The benefit was taken but the day was not. Give it straight back.
+          entitlement.status = "canceled";
+          entitlement.consumedAt = null;
+          await entitlement.save();
+        }
+      } catch (cleanupError) {
+        console.error("Full Day entitlement rollback failed:", cleanupError.message);
+      }
+      try {
+        if (!booking && uploadedS3Keys.length) {
+          await deletePublicObjects({ Bucket: S3_BUCKET, Keys: uploadedS3Keys });
+        }
+      } catch (_) {}
+      return res.status(error?.statusCode || 500).json({
+        code: error?.code || "FULL_DAY_BOOKING_FAILED",
+        message: error?.message || "Unable to book your Full Day.",
+      });
+    }
+  }
+);
+
+/* ---------- POST /api/bookings/full-day/checkout ---------- */
+/**
+ * The paid Full Day. Same shape as the one-time visit checkout: the day is held
+ * for the length of the hold, Stripe is given the same deadline through
+ * expires_at, and the webhook is what turns a hold into a reservation. Nothing
+ * about the payment lives in this route beyond starting it.
+ */
+router.post(
+  "/full-day/checkout",
+  auth,
+  ensureNotBlacklisted,
+  upload.array("images", 10),
+  async (req, res) => {
+    let booking = null;
+    let entitlement = null;
+    const uploadedS3Keys = [];
+
+    try {
+      if (!hasStripeSecretKey()) {
+        return res.status(503).json({
+          message: "Secure checkout is temporarily unavailable. Please try again shortly.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+      }
+      const settings = await getFullDayVisitSettings();
+      if (!settings.enabled) {
+        return res.status(503).json({
+          message: "Full Day Fixter booking is temporarily unavailable.",
+          code: "FULL_DAY_DISABLED",
+        });
+      }
+      const priceId = settings.stripePriceId;
+      if (!priceId) {
+        return res.status(503).json({
+          message: "Full Day checkout is not configured yet.",
+          code: "FULL_DAY_PRICE_NOT_CONFIGURED",
+        });
+      }
+
+      const me = await User.findById(req.user.id);
+      if (!me) {
+        return res.status(401).json({ message: "User not found or session expired." });
+      }
+
+      const { addressId, date, note } = req.body;
+      if (!addressId || !mongoose.isValidObjectId(addressId)) {
+        return res.status(400).json({ message: "Please choose an address for this booking." });
+      }
+      const subdoc = me.addresses?.id?.(addressId);
+      if (!subdoc) {
+        return res.status(400).json({ message: "Address not found on your account." });
+      }
+      if (!note || String(note).trim().split(/\s+/).filter(Boolean).length < 3) {
+        return res.status(400).json({
+          message: "Tell us what you would like done, in at least a few words.",
+        });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+        return res.status(400).json({ message: "Please choose a date." });
+      }
+      if (!isAddressInServiceArea(subdoc)) {
+        return res.status(403).json({
+          message: outOfServiceAreaMessage(),
+          code: "OUT_OF_SERVICE_AREA",
+        });
+      }
+
+      await assertFullDayBookable({ date });
+
+      const holdExpiresAt = new Date(Date.now() + settings.holdMinutes * 60 * 1000);
+      const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
+      const uploadResult = await uploadBookingImages({
+        files: req.files || [],
+        bookingDate: new Date(`${date}T12:00:00Z`),
+        bookingNumber,
+      });
+      uploadedS3Keys.push(...uploadResult.uploadedS3Keys);
+
+      await ensureVisitEntitlementIndexesOnce();
+      entitlement = await VisitEntitlement.create({
+        user: me._id,
+        userId: me.userId,
+        addressId: subdoc._id,
+        addressSnapshot: {
+          line1: subdoc.line1 || "",
+          city: subdoc.city || "",
+          state: subdoc.state || "",
+          zip: subdoc.zip || "",
+          county: subdoc.county || "",
+        },
+        kind: "full_day_visit",
+        source: "purchase",
+        status: "pending_payment",
+        priceCents: settings.priceCents,
+        currency: settings.currency,
+        durationMinutes: settings.approximateHours * 60,
+        holdExpiresAt,
+      });
+
+      const result = await createFullDayBooking({
+        date,
+        actorUser: me,
+        createdByType: "customer",
+        reservationStatus: "held",
+        holdExpiresAt,
+        bookingData: {
+          bookingNumber,
+          service: FULL_DAY_SERVICE,
+          selectedTask: FULL_DAY_SERVICE,
+          user: req.user.id,
+          userId: me.userId,
+          name: me.name,
+          phone: me.phone,
+          email: me.email,
+          addressId: subdoc._id,
+          address: subdoc.line1 || "",
+          city: subdoc.city || "",
+          state: subdoc.state || "",
+          zip: subdoc.zip || "",
+          county: subdoc.county || "",
+          subscription: "Full Day Fixter",
+          accessType: "one_time",
+          bookingType: "full_day_visit",
+          paymentState: "pending",
+          paymentStatus: "Pending",
+          entitlementId: entitlement._id,
+          paymentHoldExpiresAt: holdExpiresAt,
+          isFreeFirstVisit: false,
+          note: String(note || "").trim(),
+          images: uploadResult.images,
+          status: "Pending",
+        },
+      });
+      booking = result.booking;
+
+      entitlement.bookingId = booking._id;
+      await entitlement.save();
+
+      const stripeCustomerId = await resolveUserStripeCustomerId(me);
+      const metadata = {
+        productKind: FULL_DAY_PRODUCT_KIND,
+        bookingId: String(booking._id),
+        entitlementId: String(entitlement._id),
+        userMongoId: String(me._id),
+        userId: String(me.userId || me._id),
+        addressId: String(subdoc._id),
+      };
+      const sessionConfig = {
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [{ price: priceId, quantity: 1 }],
+        client_reference_id: String(booking._id),
+        metadata,
+        payment_intent_data: { metadata },
+        success_url: `${CLIENT_URL}/book/confirmation?booking_id=${booking._id}&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${CLIENT_URL}/book?visit=full-day&canceled=true&booking_id=${booking._id}`,
+        expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
+      };
+      if (stripeCustomerId) sessionConfig.customer = stripeCustomerId;
+      else sessionConfig.customer_email = me.email;
+
+      const checkoutSession = await stripe.checkout.sessions.create(sessionConfig);
+      if (!checkoutSession?.url) {
+        throw new Error("Stripe checkout did not return a redirect URL");
+      }
+
+      entitlement.stripeCheckoutSessionId = checkoutSession.id;
+      entitlement.stripeCustomerId = checkoutSession.customer
+        ? String(checkoutSession.customer)
+        : stripeCustomerId || null;
+      await entitlement.save();
+
+      return res.json({
+        url: checkoutSession.url,
+        bookingId: String(booking._id),
+        entitlementId: String(entitlement._id),
+        holdExpiresAt,
+      });
+    } catch (error) {
+      console.error("Full Day checkout error:", error.stack || error.message);
+      try {
+        if (booking?._id) {
+          await releaseFullDayCapacity(booking);
+          await Booking.updateOne(
+            { _id: booking._id },
+            {
+              $set: {
+                status: "Canceled",
+                paymentState: "failed",
+                paymentStatus: "Failed",
+              },
+            }
+          );
+        }
+      } catch (cleanupError) {
+        console.error("Full Day booking cleanup failed:", cleanupError.message);
+      }
+      try {
+        if (entitlement?._id) {
+          entitlement.status = "payment_failed";
+          await entitlement.save();
+        }
+      } catch (_) {}
+      try {
+        if (uploadedS3Keys.length) {
+          await deletePublicObjects({ Bucket: S3_BUCKET, Keys: uploadedS3Keys });
+        }
+      } catch (_) {}
+
+      if (["FULL_DAY_UNAVAILABLE", "SLOT_UNAVAILABLE", "SLOT_CONFLICT"].includes(error?.code)) {
+        return res.status(409).json({
+          code: "FULL_DAY_UNAVAILABLE",
+          message: "That day is no longer available. Please choose another date.",
+        });
+      }
+      return res.status(error?.statusCode || 500).json({
+        code: error?.code || "FULL_DAY_CHECKOUT_FAILED",
+        message: error?.message || "Unable to start Full Day checkout.",
       });
     }
   }

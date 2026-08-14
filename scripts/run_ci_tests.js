@@ -35,6 +35,7 @@ const SUITES = [
   "test_booking_slot_reservation_model.js",
   "test_explicit_appointment_starts.js",
   "test_visit_entitlement_indexes.js",
+  "test_full_day_visit.js",
   "test_admin_customer_calendar_integration.js",
   "test_customer_availability_readiness.js",
   "test_calendar_deployment_gate.js",

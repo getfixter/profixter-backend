@@ -50,6 +50,11 @@ const {
 const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
+const {
+  FULL_DAY_PRODUCT_KIND,
+  releaseFullDayCapacity,
+} = require("../utils/fullDayVisitService");
+const { getFullDayVisitSettings } = require("../utils/fullDayVisitSettings");
 
 const ONE_TIME_PRODUCT_KIND = "one_time_handyman_visit";
 
@@ -965,6 +970,270 @@ async function handleOneTimeCheckoutExpired(session, status = "expired") {
 }
 
 /* ------------------------------------------------------------------ */
+/* Full Day Fixter                                                     */
+/* ------------------------------------------------------------------ */
+
+async function sendFullDayPaidEmails({ booking, user, entitlement, session }) {
+  const settings = await getFullDayVisitSettings().catch(() => ({
+    approximateHours: 8,
+    priceCents: entitlement?.priceCents || 49900,
+  }));
+  const address = [booking.address, booking.city, booking.state, booking.zip]
+    .filter(Boolean)
+    .join(", ");
+  const startTime = booking.scheduledStart
+    ? mail.formatNYCTime(booking.scheduledStart)
+    : "";
+  const endTime = booking.scheduledEnd
+    ? mail.formatNYCTime(booking.scheduledEnd)
+    : "";
+  const price = `$${Math.round(
+    (session?.amount_total ?? entitlement?.priceCents ?? 49900) / 100
+  )}`;
+
+  try {
+    await mail.sendTx(
+      "full_day_visit_booked",
+      booking.email || user.email,
+      {
+        name: booking.name || user.name || "there",
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        address,
+        approximateHours: settings.approximateHours || 8,
+        included: false,
+        price,
+        startTime,
+        endTime,
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          customerName: booking.name || user.name || "",
+          customerEmail: booking.email || user.email || "",
+          recipientEmail: booking.email || user.email || "",
+          emailType: "billing",
+          source: "stripeWebhookFullDay",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("full_day_visit_booked email failed:", error.message);
+  }
+
+  try {
+    await sendAdminEventNotification(
+      {
+        subject: "FULL DAY PAID",
+        heading: "FULL DAY PAID",
+        templateKey: "admin_full_day_visit_paid",
+        replyToEmail: booking.email || user.email || "",
+        customerName: booking.name || user.name || "",
+        customerEmail: booking.email || user.email || "",
+        source: "stripeWebhookFullDay",
+        fields: [
+          ["Customer full name", booking.name || user.name],
+          ["Email", booking.email || user.email],
+          ["Phone", booking.phone || user.phone],
+          [
+            "Service address",
+            formatAddressParts({
+              address: booking.address,
+              city: booking.city,
+              state: booking.state,
+              zip: booking.zip,
+              county: booking.county,
+            }),
+          ],
+          ["Day", booking.date ? mail.formatNYCTime(booking.date) : ""],
+          ["Hours", startTime && endTime ? `${startTime} to ${endTime}` : ""],
+          ["Assigned Fixter", booking.assignedFixterName || "Not yet assigned"],
+          ["Customer list", booking.note],
+          ["Booking ID", booking._id],
+          ["Booking #", booking.bookingNumber],
+          ["Booking status", booking.status],
+          ["Payment state", booking.paymentState],
+          [
+            "Amount paid",
+            formatAdminMoney(
+              session?.amount_total ?? entitlement?.priceCents,
+              session?.currency || entitlement?.currency || "usd"
+            ),
+          ],
+          ["Stripe checkout/session ID", session?.id],
+          ["Stripe payment intent ID", session?.payment_intent],
+          ["Entitlement ID", entitlement?._id],
+          ["Reservation issue", booking.reservationIssue?.message || ""],
+        ],
+      },
+      {
+        logContext: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+        },
+      }
+    );
+  } catch (error) {
+    console.error("admin Full Day payment email failed:", error.message);
+  }
+}
+
+/**
+ * Payment landed for a paid Full Day.
+ *
+ * Deliberately the same shape as the one-time handler, including the part where
+ * a failed reservation promotion does not fail the webhook: the customer has
+ * paid, so the booking becomes paid and the reservation problem becomes an
+ * admin's problem, flagged rather than swallowed.
+ */
+async function handleFullDayCheckoutCompleted(session) {
+  const metadata = session.metadata || {};
+  const bookingId = metadata.bookingId || session.client_reference_id || null;
+  const entitlementId = metadata.entitlementId || null;
+
+  if (!bookingId) {
+    logWebhook("error", "full_day_checkout_missing_booking_id", {
+      stripeSessionId: session.id,
+    });
+    return null;
+  }
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking) {
+    logWebhook("error", "full_day_checkout_booking_not_found", {
+      stripeSessionId: session.id,
+      bookingId,
+    });
+    return null;
+  }
+
+  const user = await User.findById(booking.user);
+  if (!user) {
+    logWebhook("error", "full_day_checkout_user_not_found", {
+      stripeSessionId: session.id,
+      bookingId,
+    });
+    return null;
+  }
+
+  if (session.customer && !user.stripeCustomerId) {
+    user.stripeCustomerId = String(session.customer);
+    await user.save();
+  }
+
+  const entitlement =
+    (entitlementId && (await VisitEntitlement.findById(entitlementId))) ||
+    (await VisitEntitlement.findOne({ bookingId: booking._id }).sort({
+      updatedAt: -1,
+    }));
+
+  let reservationIssue = null;
+  if (booking.slotReservationId) {
+    try {
+      await promoteHeldReservationForBooking({
+        bookingId: booking._id,
+        actorUser: user,
+        createdByType: "system",
+      });
+    } catch (error) {
+      let protection = { holdExpiresAt: null, reservationId: null };
+      try {
+        protection = await preserveHeldReservationAfterPromotionFailure({
+          booking,
+          error,
+          session,
+        });
+      } catch (preserveError) {
+        logWebhook("error", "full_day_reservation_preserve_failed", {
+          stripeSessionId: session.id,
+          bookingId: String(booking._id),
+          promotionMessage: error.message,
+          preserveMessage: preserveError.message,
+        });
+      }
+      reservationIssue = reservationIssueFromPromotionError(
+        error,
+        session,
+        protection.holdExpiresAt
+      );
+      logWebhook("warn", "full_day_reservation_promote_failed", {
+        stripeSessionId: session.id,
+        bookingId: String(booking._id),
+        reservationId: protection.reservationId,
+        message: error.message,
+        code: error.code || null,
+      });
+    }
+  }
+
+  applyOneTimePaymentSuccessToBooking(booking, { session, reservationIssue });
+  // The shared helper stamps the one-time product onto the booking, which is
+  // right for its own caller and wrong here. Put the Full Day back.
+  booking.bookingType = "full_day_visit";
+  booking.accessType = "one_time";
+  await booking.save();
+
+  if (entitlement) {
+    applyOneTimePaymentSuccessToEntitlement(entitlement, session, booking._id);
+    await entitlement.save();
+  }
+
+  try {
+    const contactId = await createOrUpdateContact({
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+    });
+    if (contactId) await addTag(contactId, "full_day_visit_paid");
+  } catch (error) {
+    console.error("Full Day GHL sync failed:", error.message);
+  }
+
+  await sendFullDayPaidEmails({ booking, user, entitlement, session });
+  return {
+    bookingId: String(booking._id),
+    entitlementId: entitlement ? String(entitlement._id) : null,
+  };
+}
+
+async function handleFullDayCheckoutExpired(session, status = "expired") {
+  const metadata = session.metadata || {};
+  const bookingId = metadata.bookingId || session.client_reference_id || null;
+  if (!bookingId) return null;
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking || booking.paymentState === "paid") return null;
+
+  try {
+    await releaseFullDayCapacity(booking);
+  } catch (error) {
+    console.warn("Unable to release Full Day hold:", error.message);
+  }
+
+  booking.status = "Canceled";
+  booking.paymentState = status;
+  booking.paymentStatus = status === "expired" ? "Expired" : "Failed";
+  await booking.save();
+
+  const entitlement =
+    (metadata.entitlementId &&
+      (await VisitEntitlement.findById(metadata.entitlementId))) ||
+    (await VisitEntitlement.findOne({ bookingId: booking._id }).sort({
+      updatedAt: -1,
+    }));
+  if (entitlement && entitlement.status === "pending_payment") {
+    entitlement.status = status === "expired" ? "expired" : "payment_failed";
+    entitlement.stripeCheckoutSessionId =
+      session.id || entitlement.stripeCheckoutSessionId;
+    await entitlement.save();
+  }
+
+  return { bookingId: String(booking._id), status };
+}
+
+/* ------------------------------------------------------------------ */
 /* Fixter tips                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1163,6 +1432,10 @@ async function handleCheckoutCompleted(session, eventId) {
 
   if (isOneTimeCheckoutSession(session)) {
     return handleOneTimeCheckoutCompleted(session);
+  }
+
+  if (isFullDayCheckoutSession(session)) {
+    return handleFullDayCheckoutCompleted(session);
   }
 
   let email = session.customer_email || session?.customer_details?.email || null;
@@ -1600,6 +1873,13 @@ function isOneTimeCheckoutSession(session) {
   );
 }
 
+function isFullDayCheckoutSession(session) {
+  return (
+    String(session?.mode || "").toLowerCase() === "payment" &&
+    session?.metadata?.productKind === FULL_DAY_PRODUCT_KIND
+  );
+}
+
 async function handleInvoicePaymentFailed(invoice) {
   if (!invoice?.subscription) return;
 
@@ -1818,21 +2098,25 @@ module.exports = async (req, res) => {
       case "checkout.session.expired":
         if (isOneTimeCheckoutSession(event.data.object)) {
           syncResult = await handleOneTimeCheckoutExpired(event.data.object, "expired");
+        } else if (isFullDayCheckoutSession(event.data.object)) {
+          syncResult = await handleFullDayCheckoutExpired(event.data.object, "expired");
         }
         break;
 
-      case "payment_intent.payment_failed":
-        if (event.data.object?.metadata?.productKind === ONE_TIME_PRODUCT_KIND) {
-          syncResult = await handleOneTimeCheckoutExpired(
-            {
-              id: event.data.object.metadata?.stripeCheckoutSessionId || null,
-              metadata: event.data.object.metadata,
-              client_reference_id: event.data.object.metadata?.bookingId || null,
-            },
-            "failed"
-          );
+      case "payment_intent.payment_failed": {
+        const failedKind = event.data.object?.metadata?.productKind;
+        const failedSession = {
+          id: event.data.object?.metadata?.stripeCheckoutSessionId || null,
+          metadata: event.data.object?.metadata,
+          client_reference_id: event.data.object?.metadata?.bookingId || null,
+        };
+        if (failedKind === ONE_TIME_PRODUCT_KIND) {
+          syncResult = await handleOneTimeCheckoutExpired(failedSession, "failed");
+        } else if (failedKind === FULL_DAY_PRODUCT_KIND) {
+          syncResult = await handleFullDayCheckoutExpired(failedSession, "failed");
         }
         break;
+      }
 
       case "customer.subscription.created":
         syncResult = await syncStripeSubscriptionRecord(event.data.object);

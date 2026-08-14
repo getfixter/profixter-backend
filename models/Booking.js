@@ -30,7 +30,10 @@ const BookingSchema = new mongoose.Schema({
   },
   bookingType: {
     type: String,
-    enum: ["membership_visit", "one_time_handyman_visit"],
+    // full_day_visit reserves a Fixter's whole configured workday rather than
+    // a single slot. Everything else about the record is unchanged, which is
+    // what lets it flow through history, reminders and Admin untouched.
+    enum: ["membership_visit", "one_time_handyman_visit", "full_day_visit"],
     default: "membership_visit",
     index: true,
   },

@@ -28,10 +28,32 @@ function createCustomerEmailTemplates({
    */
   const tipHref = (value) => safeTipUrl(value) || TIP_URL;
 
-  const isOneTimeVisit = (vars = {}) =>
-    vars.bookingType === "one_time_handyman_visit" ||
-    vars.accessType === "one_time" ||
-    /one-time|one time/i.test(String(vars.service || ""));
+  const isFullDayVisit = (vars = {}) =>
+    vars.bookingType === "full_day_visit" ||
+    /full day/i.test(String(vars.service || ""));
+
+  /*
+   * A paid Full Day is a purchase, so it carries accessType "one_time" and
+   * would otherwise answer yes here. It must not: this flag drives copy that
+   * says "$99 / 90 minutes" and "One-Time Visit", and every word of that is
+   * wrong for a day that cost $499. Full Day is checked first and wins.
+   */
+  const isOneTimeVisit = (vars = {}) => {
+    if (isFullDayVisit(vars)) return false;
+    return (
+      vars.bookingType === "one_time_handyman_visit" ||
+      vars.accessType === "one_time" ||
+      /one-time|one time/i.test(String(vars.service || ""))
+    );
+  };
+
+  /** What to call this appointment in a sentence. */
+  const visitNoun = (vars = {}) =>
+    isFullDayVisit(vars)
+      ? "Full Day Fixter"
+      : isOneTimeVisit(vars)
+        ? "One-Time Visit"
+        : "Profixter appointment";
 
   const button = (href, label) => `
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0 8px;">
@@ -227,38 +249,73 @@ function createCustomerEmailTemplates({
     booking_confirmed: (vars = {}) => {
       const { name = "there", bookingNumber, date, service, selectedTask, address } = vars;
       const oneTime = isOneTimeVisit(vars);
+      const fullDay = isFullDayVisit(vars);
       const rows = [
         { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
         { label: "Service", value: service || "" },
-        { label: "Visit", value: oneTime ? "$99 / 90 minutes" : "" },
+        {
+          label: "Visit",
+          value: fullDay
+            ? "One Fixter, approximately 8 hours"
+            : oneTime
+              ? "$99 / 90 minutes"
+              : "",
+        },
         { label: "Task", value: oneTime ? selectedTask || "" : "" },
         { label: "Date and time", value: date ? formatNYCTime(date) : "" },
         { label: "Address", value: address || "" },
       ];
+      const opening = fullDay
+        ? "Your Full Day Fixter is approved and on the schedule."
+        : oneTime
+          ? "Your paid One-Time Visit is approved and on the schedule."
+          : "Your appointment is on the schedule.";
+      // Both paid products change by phone. A Full Day carries $499 and no
+      // automatic refund, so it says so in the same breath as the number.
+      const changeLine = fullDay
+        ? `To change or cancel your Full Day, call ProFixter at ${ONE_TIME_PHONE}.`
+        : oneTime
+          ? `For cancellation or reschedule requests, call ${ONE_TIME_PHONE} so admin can review the change.`
+          : "Reply to this email if the scope or access details change.";
+      // Where the product stops. Both paid products need it and it belongs in
+      // the plain-text body as well, which is why it is built once as a
+      // sentence and wrapped for HTML rather than written out twice.
+      const scopeSentence = fullDay
+        ? "A Full Day covers a list of small jobs. Profixter does not offer appliance repair. Larger work should start with a Project Estimate"
+        : oneTime
+          ? "This visit is for small handyman work. Profixter does not offer appliance repair. If the work is larger than one visit, start a Project Estimate"
+          : "";
+      const scopeNote = scopeSentence
+        ? `<p class="email-muted" style="margin:16px 0 0;color:#64748b;font-size:14px;">${scopeSentence} at <a href="${PROJECTS_URL}" style="color:#1d4ed8;">${PROJECTS_URL}</a>.</p>`
+        : "";
+      const scopeText = scopeSentence ? `\n\n${scopeSentence}: ${PROJECTS_URL}` : "";
       return email({
         subject: `Your Profixter booking is confirmed${bookingNumber ? ` — #${bookingNumber}` : ""}`,
-        preheader: oneTime
-          ? "Your paid one-time handyman visit is confirmed."
-          : "Your Profixter appointment is confirmed.",
+        preheader: fullDay
+          ? "Your Full Day Fixter is confirmed."
+          : oneTime
+            ? "Your paid one-time handyman visit is confirmed."
+            : "Your Profixter appointment is confirmed.",
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your appointment is confirmed</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">${oneTime ? "Your paid One-Time Visit is approved and on the schedule." : "Your appointment is on the schedule."} We will send a reminder before the visit.</p>
+          <p style="margin:0 0 16px;">${opening} We will send a reminder before the visit.</p>
           ${detailCard(rows)}
           <p style="margin:0 0 10px;font-weight:700;">Before we arrive</p>
           <ul style="margin:0;padding-left:20px;">
-            <li style="margin-bottom:7px;">Clear the immediate work area when possible.</li>
+            <li style="margin-bottom:7px;">${fullDay ? "Have your list ready so the day starts moving straight away." : "Clear the immediate work area when possible."}</li>
             <li style="margin-bottom:7px;">Have fixtures or materials on site if the task requires them.</li>
-            <li>${oneTime ? `For cancellation or reschedule requests, call ${ONE_TIME_PHONE} so admin can review the change.` : "Reply to this email if the scope or access details change."}</li>
+            <li>${changeLine}</li>
           </ul>
-          ${oneTime ? `<p class="email-muted" style="margin:16px 0 0;color:#64748b;font-size:14px;">This visit is for small handyman work. Profixter does not offer appliance repair. If the work is larger than one visit, start a Project Estimate at <a href="${PROJECTS_URL}" style="color:#1d4ed8;">${PROJECTS_URL}</a>.</p>` : ""}`,
-        text: `${greeting(name)}\n\n${oneTime ? "Your paid One-Time Visit is approved and confirmed." : "Your Profixter appointment is confirmed."}\n\n${textDetails(rows)}\n\nPlease have the work area and any required materials ready.${oneTime ? `\n\nFor cancellation or reschedule requests, call ${ONE_TIME_PHONE}.\n\nThis visit is for small handyman work. Profixter does not offer appliance repair. If the work is larger than one visit, start a Project Estimate: ${PROJECTS_URL}` : ""}\n\n${SUPPORT_EMAIL}`,
+          ${scopeNote}`,
+        text: `${greeting(name)}\n\n${opening}\n\n${textDetails(rows)}\n\nPlease have the work area and any required materials ready.\n\n${changeLine}${scopeText}\n\n${SUPPORT_EMAIL}`,
       });
     },
 
     booking_completed: (vars = {}) => {
       const { name = "there", bookingNumber } = vars;
       const oneTime = isOneTimeVisit(vars);
+      const fullDay = isFullDayVisit(vars);
       const tipUrl = tipHref(vars.tipUrl);
       return email({
         subject: `Your Profixter appointment is complete${bookingNumber ? ` — #${bookingNumber}` : ""}`,
@@ -266,7 +323,7 @@ function createCustomerEmailTemplates({
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Appointment complete</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Thank you for inviting Profixter into your home. ${oneTime ? "Your One-Time Visit" : "Booking"} ${bookingNumber ? `<strong>#${safe(bookingNumber)}</strong>` : ""} has been marked complete.</p>
+          <p style="margin:0 0 16px;">Thank you for inviting Profixter into your home. ${fullDay ? "Your Full Day Fixter" : oneTime ? "Your One-Time Visit" : "Booking"} ${bookingNumber ? `<strong>#${safe(bookingNumber)}</strong>` : ""} has been marked complete.</p>
           <p style="margin:0 0 16px;">If notes or photos were added to your appointment, they may be available with your booking information.</p>
           <p style="margin:0;">${oneTime ? "Need more ongoing help? You can book another visit or compare membership when it makes sense." : "If you would like to thank your Fixter, leaving a tip is always optional."}</p>
           ${oneTime ? button(MEMBERSHIP_URL, "Compare membership") : button(tipUrl, "Leave an optional tip")}`,
@@ -277,16 +334,17 @@ function createCustomerEmailTemplates({
     booking_review_request: (vars = {}) => {
       const { name = "there", bookingNumber } = vars;
       const oneTime = isOneTimeVisit(vars);
+      const fullDay = isFullDayVisit(vars);
       return email({
         subject: "How did we do?",
         preheader: "We would appreciate your honest feedback.",
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">How did we do?</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Thank you again for choosing Profixter${oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking <strong>#${safe(bookingNumber)}</strong>` : ""}.</p>
+          <p style="margin:0 0 16px;">Thank you again for choosing Profixter${fullDay ? " for your Full Day" : oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking <strong>#${safe(bookingNumber)}</strong>` : ""}.</p>
           <p style="margin:0;">If you have a moment, we would appreciate an honest review. Your feedback helps us improve and helps local homeowners find dependable home service.</p>
           ${button(REVIEW_URL, "Share your feedback")}`,
-        text: `${greeting(name)}\n\nThank you again for choosing Profixter${oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking #${bookingNumber}` : ""}. We would appreciate your honest feedback.\n\nReviews help us improve and help local homeowners find dependable service.\n\nShare your feedback: ${REVIEW_URL}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nThank you again for choosing Profixter${fullDay ? " for your Full Day" : oneTime ? " for your One-Time Visit" : ""}${bookingNumber ? ` for booking #${bookingNumber}` : ""}. We would appreciate your honest feedback.\n\nReviews help us improve and help local homeowners find dependable service.\n\nShare your feedback: ${REVIEW_URL}\n\n${SUPPORT_EMAIL}`,
       });
     },
 
@@ -319,16 +377,16 @@ function createCustomerEmailTemplates({
         { label: "Address", value: address || "" },
       ];
       return email({
-        subject: `Reminder: your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is tomorrow`,
-        preheader: `A reminder about your upcoming ${oneTime ? "one-time handyman visit" : "Profixter appointment"}.`,
+        subject: `Reminder: your ${visitNoun(vars)} is tomorrow`,
+        preheader: `A reminder about your upcoming ${visitNoun(vars)}.`,
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Appointment reminder</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">This is a reminder that your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is coming up tomorrow.</p>
+          <p style="margin:0 0 16px;">This is a reminder that your ${visitNoun(vars)} is coming up tomorrow.</p>
           ${detailCard(rows)}
           <p style="margin:0;">Please have the work area accessible and any required materials ready.${oneTime ? ` Cancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}</p>
           ${button(urls.schedule, "Manage your appointment")}`,
-        text: `${greeting(name)}\n\nThis is a reminder that your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is tomorrow.\n\n${textDetails(rows)}\n\nPlease have the work area accessible and any required materials ready.${oneTime ? `\n\nCancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nThis is a reminder that your ${visitNoun(vars)} is tomorrow.\n\n${textDetails(rows)}\n\nPlease have the work area accessible and any required materials ready.${oneTime ? `\n\nCancellation or reschedule requests require admin approval by calling ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
       });
     },
 
@@ -336,12 +394,12 @@ function createCustomerEmailTemplates({
       const { name = "there", date } = vars;
       const oneTime = isOneTimeVisit(vars);
       return email({
-        subject: `Your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is coming up`,
-        preheader: `Your ${oneTime ? "one-time handyman visit" : "Profixter appointment"} begins soon.`,
+        subject: `Your ${visitNoun(vars)} is coming up`,
+        preheader: `Your ${visitNoun(vars)} begins soon.`,
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">We will see you soon</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Your ${oneTime ? "One-Time Visit" : "Profixter appointment"} is scheduled for <strong>${safe(date ? formatNYCTime(date) : "")}</strong>.</p>
+          <p style="margin:0 0 16px;">Your ${visitNoun(vars)} is scheduled for <strong>${safe(date ? formatNYCTime(date) : "")}</strong>.</p>
           <p style="margin:0 0 10px;font-weight:700;">A quick checklist</p>
           <ul style="margin:0 0 18px;padding-left:20px;">
             <li style="margin-bottom:7px;">Clear the immediate work area if possible.</li>
@@ -350,7 +408,7 @@ function createCustomerEmailTemplates({
           </ul>
           ${oneTime ? `<p class="email-muted" style="margin:0 0 16px;color:#64748b;font-size:14px;">If anything urgent changed, call ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.</p>` : ""}
           ${button(urls.schedule, "Manage your appointment")}`,
-        text: `${greeting(name)}\n\nYour ${oneTime ? "One-Time Visit" : "Profixter appointment"} is scheduled for ${date ? formatNYCTime(date) : "soon"}.\n\nPlease clear the work area, keep pets safe, and have any required materials ready.${oneTime ? `\n\nIf anything urgent changed, call ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nYour ${visitNoun(vars)} is scheduled for ${date ? formatNYCTime(date) : "soon"}.\n\nPlease clear the work area, keep pets safe, and have any required materials ready.${oneTime ? `\n\nIf anything urgent changed, call ${ONE_TIME_PHONE}. Profixter does not offer appliance repair; larger work should start with a Project Estimate.` : ""}\n\nManage your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
       });
     },
 

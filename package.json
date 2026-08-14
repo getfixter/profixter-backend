@@ -29,6 +29,8 @@
     "test:fixter-tips-integration": "node scripts/test_fixter_tips_integration.js",
     "test:invoice-payment-email": "node scripts/test_invoice_payment_notification.js",
     "test:one-time-visit-flow": "node scripts/test_one_time_visit_payment_flow.js",
+    "test:full-day": "node scripts/test_full_day_visit.js",
+    "test:full-day-integration": "node scripts/test_full_day_visit_integration.js",
     "test:one-time-booking-policy": "node scripts/test_one_time_booking_policy.js",
     "test:intro-visit-eligibility": "node scripts/test_intro_visit_eligibility.js",
     "test:booking-content-updates": "node scripts/test_booking_content_updates.js",

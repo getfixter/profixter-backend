@@ -28,6 +28,39 @@ const STRIPE_ID_INDEXES = [
   },
 ];
 
+const MEMBERSHIP_BENEFIT_INDEX_NAME = "one_membership_benefit_per_period";
+
+/*
+ * Additive only, and deliberately kept apart from the Stripe specs above.
+ *
+ * The Stripe list is allowed to drop and rebuild indexes because a wrong unique
+ * index on a payment identifier is worse than a brief window without one. This
+ * list is never allowed to drop anything. It is created on a live collection
+ * holding real entitlements, and its partial filter requires periodStart to be
+ * a date, so every document written before Full Day existed sits outside the
+ * index entirely. Nothing needs migrating and nothing can be orphaned by it.
+ */
+const ADDITIVE_INDEXES = [
+  {
+    keys: {
+      user: 1,
+      addressId: 1,
+      kind: 1,
+      source: 1,
+      periodStart: 1,
+    },
+    options: {
+      unique: true,
+      name: MEMBERSHIP_BENEFIT_INDEX_NAME,
+      partialFilterExpression: {
+        source: "membership_benefit",
+        periodStart: { $type: "date" },
+        status: { $in: ["pending_payment", "paid", "consumed"] },
+      },
+    },
+  },
+];
+
 let defaultEnsurePromise = null;
 
 function stable(value) {
@@ -137,6 +170,22 @@ async function ensureVisitEntitlementIndexes({
     }
   }
 
+  for (const spec of ADDITIVE_INDEXES) {
+    try {
+      await collection.createIndex(spec.keys, spec.options);
+      created.push(spec.options.name);
+    } catch (error) {
+      if (isDuplicateKeyIndexError(error)) {
+        error.message = [
+          error.message,
+          `VisitEntitlement could not create ${spec.options.name}.`,
+          "A customer already holds more than one membership-benefit entitlement for the same billing period; repair the duplicates before this index can exist.",
+        ].join(" ");
+      }
+      throw error;
+    }
+  }
+
   logger.log(
     `VisitEntitlement Stripe ID indexes ready (${collection.name})`
   );
@@ -159,7 +208,9 @@ function ensureVisitEntitlementIndexesOnce(options = {}) {
 }
 
 module.exports = {
+  ADDITIVE_INDEXES,
   CHECKOUT_SESSION_INDEX_NAME,
+  MEMBERSHIP_BENEFIT_INDEX_NAME,
   PAYMENT_INTENT_INDEX_NAME,
   STRIPE_ID_INDEXES,
   ensureVisitEntitlementIndexes,

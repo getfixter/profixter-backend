@@ -11,6 +11,7 @@ const {
   customerMonthAvailability,
   reservationEngineEnabled,
 } = require("../utils/customerCalendarService");
+const { hoursForDate } = require("../utils/legacyCalendarSlots");
 
 /* ---------------- helpers ---------------- */
 function disableLiveAvailabilityCache(res) {
@@ -89,30 +90,6 @@ async function getCfg() {
   let doc = await CalendarConfig.findOne();
   doc = await normalizeCfg(doc);
   return doc;
-}
-
-function hoursForDate(cfg, ymd) {
-  // holidays → closed
-  if ((cfg.holidays || []).includes(ymd)) return [];
-
-  // overrides → explicit list (empty = closed)
-  if (cfg.overrides instanceof Map && cfg.overrides.has(ymd)) {
-    const arr = cfg.overrides.get(ymd) || [];
-    return Array.isArray(arr) ? arr.slice().sort() : [];
-  }
-  if (!(cfg.overrides instanceof Map) && cfg.overrides && typeof cfg.overrides === "object") {
-    const arr = cfg.overrides[ymd] || [];
-    return Array.isArray(arr) ? arr.slice().sort() : [];
-  }
-
-  // weekly closures
-  const tz = cfg.timezone || "America/New_York";
-  const dLocal = new Date(`${ymd}T12:00:00`);
-  const dow = new Date(dLocal.toLocaleString("en-US", { timeZone: tz })).getDay();
-  if ((cfg.closedWeekdays || []).includes(dow)) return [];
-
-  // defaults
-  return Array.isArray(cfg.defaultHours) ? cfg.defaultHours.slice().sort() : [];
 }
 
 /* ---------------- public endpoints ---------------- */

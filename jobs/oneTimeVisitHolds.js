@@ -9,6 +9,7 @@ const {
 const {
   expiredOneTimeHoldBookingUpdate,
 } = require("../utils/oneTimeVisitPaymentFlow");
+const { releaseFullDayCapacity } = require("../utils/fullDayVisitService");
 
 const CLEANUP_INTERVAL_MS = Math.max(
   60_000,
@@ -42,9 +43,14 @@ async function expireOneTimeVisitHolds(now = new Date(), dependencies = {}) {
     dependencies.cancelBookingWithReservation || cancelBookingWithReservation;
   const releaseLegacy =
     dependencies.releaseLegacySlot || releaseLegacySlot;
+  const releaseFullDay =
+    dependencies.releaseFullDayCapacity || releaseFullDayCapacity;
 
+  // Full Day rides along here rather than getting its own timer. It is the same
+  // job: a checkout that was started and abandoned, holding time it never paid
+  // for. Only the shape of what has to be handed back differs.
   const bookings = await BookingModel.find({
-    bookingType: "one_time_handyman_visit",
+    bookingType: { $in: ["one_time_handyman_visit", "full_day_visit"] },
     paymentState: "pending",
     paymentHoldExpiresAt: { $lte: now },
   }).limit(100);
@@ -52,7 +58,18 @@ async function expireOneTimeVisitHolds(now = new Date(), dependencies = {}) {
   let expired = 0;
   for (const booking of bookings) {
     try {
-      if (shouldUseReservationEngine()) {
+      if (booking.bookingType === "full_day_visit") {
+        // Releases the whole workday under either engine. The single-slot
+        // release below would give back one hour of a day-long hold.
+        await releaseFullDay(booking);
+        if (shouldUseReservationEngine()) {
+          await cancelReservation({
+            bookingId: booking._id,
+            createdByType: "system",
+            reason: "Full Day payment hold expired",
+          });
+        }
+      } else if (shouldUseReservationEngine()) {
         await cancelReservation({
           bookingId: booking._id,
           createdByType: "system",

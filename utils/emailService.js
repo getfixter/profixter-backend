@@ -466,6 +466,116 @@ const TEMPLATES = {
       .join("\n"),
   }),
 
+  /*
+   * Full Day, both ways of getting one. Two templates rather than one with a
+   * branch inside it, because the two say genuinely different things: one
+   * confirms a benefit was used, the other confirms money was taken, and the
+   * sentence a customer needs to read first is not the same in each case.
+   */
+  full_day_visit_booked: ({
+    name = "there",
+    bookingNumber,
+    date,
+    address,
+    startTime,
+    endTime,
+    approximateHours,
+    included,
+    price,
+    periodEnd,
+  }) => ({
+    subject: `Full Day Fixter booked - #${bookingNumber || ""}`,
+    html: frame(`
+      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Thanks, ${name} - your Full Day Fixter is booked.</h2>
+
+      <p style="margin:0 0 12px">
+        ${
+          included
+            ? "This is the Full Day included with your Elite membership, so there is nothing to pay."
+            : `We received your ${price || "$499"} payment for a Full Day Fixter.`
+        }
+        One Fixter is yours for approximately ${approximateHours || 8} hours to work through your list.
+      </p>
+
+      <div style="margin:14px 0; padding:14px 16px; background:${BRAND.gray100}; border-radius:10px; border:1px solid ${BRAND.border};">
+        <table cellpadding="0" cellspacing="0" border="0" style="font-size:15px; line-height:2.0;">
+          <tr><td><strong>Booking #:</strong>&nbsp;${bookingNumber || "-"}</td></tr>
+          <tr><td><strong>Visit:</strong>&nbsp;Full Day Fixter</td></tr>
+          <tr><td><strong>Date:</strong>&nbsp;${date ? formatNYCTime(date) : "-"}</td></tr>
+          ${startTime && endTime ? `<tr><td><strong>Hours:</strong>&nbsp;${startTime} to ${endTime}</td></tr>` : ""}
+          ${address ? `<tr><td><strong>Address:</strong>&nbsp;${escapeHtml(address)}</td></tr>` : ""}
+        </table>
+      </div>
+
+      <p style="margin:0 0 12px">
+        Have your list and any materials ready so the day starts moving straight away.
+        Full Days are for multiple small jobs. Larger work should start with a Project Estimate.
+      </p>
+      ${
+        included && periodEnd
+          ? `<p style="margin:0 0 12px; font-size:14px; color:${BRAND.gray700};">Your next included Full Day becomes available on ${formatNYCTime(periodEnd)}.</p>`
+          : ""
+      }
+      <p style="margin:0 0 12px">
+        If anything needs to change, please call
+        <a href="${URLS.supportTel}" style="color:#0b5cab;text-decoration:none;font-weight:700;">631-599-1363</a>.
+      </p>
+    `, { preheader: "One Fixter, your whole list, one day." }),
+    text: [
+      `Thanks, ${name} - your Full Day Fixter is booked.`,
+      "",
+      included
+        ? "This is the Full Day included with your Elite membership, so there is nothing to pay."
+        : `We received your ${price || "$499"} payment for a Full Day Fixter.`,
+      `One Fixter is yours for approximately ${approximateHours || 8} hours.`,
+      "",
+      `Booking #: ${bookingNumber || "-"}`,
+      `Date: ${date ? formatNYCTime(date) : "-"}`,
+      startTime && endTime ? `Hours: ${startTime} to ${endTime}` : "",
+      address ? `Address: ${address}` : "",
+      "",
+      included && periodEnd
+        ? `Your next included Full Day becomes available on ${formatNYCTime(periodEnd)}.`
+        : "",
+      "If anything needs to change, call 631-599-1363.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  }),
+
+  admin_full_day_booked: ({
+    name,
+    phone,
+    address,
+    userId,
+    bookingNumber,
+    date,
+    startTime,
+    endTime,
+    fixter,
+    paymentSummary,
+    note,
+  }) => ({
+    subject: `FULL DAY - ${name || "Customer"} (#${bookingNumber || "-"})`,
+    html: frame(`
+    <h2 style="margin:0 0 10px">Full Day Fixter booked</h2>
+
+    <table cellpadding="0" cellspacing="0" border="0" style="font-size:16px; line-height:1.6;">
+      <tr><td style="padding:4px 0;"><strong>Name:</strong>&nbsp;${name || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Phone:</strong>&nbsp;${phone || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Address:</strong>&nbsp;${address || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Member ID:</strong>&nbsp;${userId || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Booking #:</strong>&nbsp;${bookingNumber || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Date:</strong>&nbsp;${date ? formatNYCTime(date) : "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Hours:</strong>&nbsp;${startTime || "-"} to ${endTime || "-"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Fixter:</strong>&nbsp;${fixter || "Not yet assigned"}</td></tr>
+      <tr><td style="padding:4px 0;"><strong>Payment:</strong>&nbsp;${paymentSummary || "-"}</td></tr>
+    </table>
+
+    ${note ? `<p style="margin:12px 0 0"><strong>Customer list:</strong><br>${escapeHtml(note)}</p>` : ""}
+  `),
+  }),
+
   booking_confirmed: ({ name = "there", bookingNumber, date, service, address }) => ({
     subject: `Booking confirmed — #${bookingNumber || ""}`,
     html: frame(`
