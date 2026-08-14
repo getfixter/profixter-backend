@@ -1,5 +1,6 @@
 // routes/bookings.js
 const adminSubjects = require("../utils/adminSubjects");
+const generalFixterNotify = require("../utils/generalFixterNotify");
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
@@ -392,6 +393,22 @@ router.get("/next", auth, async (req, res) => {
   }
 });
 
+/**
+ * How the crew should read the booking, in plain words.
+ *
+ * accessType alone is misleading for a Full Day: a paid one is stored as
+ * "one_time", so bookingType has to be checked first.
+ */
+function bookingTypeLabel(b) {
+  if (b?.bookingType === "full_day_visit") return "Full Day";
+  const access = String(b?.accessType || "").toLowerCase();
+  if (access === "membership") return "Membership visit";
+  if (access === "one_time") return "One-Time Visit";
+  if (access === "free_first_visit") return "Free first visit";
+  if (access === "admin") return "Booked by admin";
+  return "";
+}
+
 function buildAddressLineFromBooking(b) {
   return [b.address, b.city, b.state, b.zip].filter(Boolean).join(", ");
 }
@@ -660,6 +677,24 @@ async function cancelOrDelete(req, res) {
       );
     } catch (e) {
       console.log("Mail booking_canceled/admin_booking_canceled error:", e.message);
+    }
+
+    // Crew copy. Separate try block so a General Fixter delivery problem can
+    // never suppress the customer or Admin email above.
+    try {
+      await generalFixterNotify.bookingCanceled(mail, {
+        bookingId: booking._id,
+        bookingNumber: booking.bookingNumber,
+        customerName: booking.name || me?.name || "",
+        customerEmail: booking.email || me?.email || "",
+        date: booking.date,
+        service: booking.service,
+        bookingType: bookingTypeLabel(booking),
+        address: buildAddressLineFromBooking(booking),
+        source: "bookingCancel",
+      });
+    } catch (e) {
+      console.log("General Fixter booking_canceled notify error:", e.message);
     }
 
     return res.json({
@@ -1102,6 +1137,23 @@ async function sendFullDayConfirmationEmails({
         },
       }
     );
+    // A Full Day is a booking too, so the crew gets the same "New booking"
+    // notification they get for anything else. One notification type, fired
+    // wherever a booking is actually created.
+    await generalFixterNotify.bookingCreated(mail, {
+      bookingId: booking._id,
+      bookingNumber: booking.bookingNumber,
+      customerName: booking.name || user.name || "",
+      customerEmail: booking.email || user.email || "",
+      phone: booking.phone || user.phone || "",
+      date: booking.date,
+      service: booking.service,
+      bookingType: bookingTypeLabel(booking),
+      address: addressLine,
+      assignedTo: booking.assignedFixterName || "",
+      note: booking.note || "",
+      source: "fullDay",
+    });
   } catch (error) {
     console.error("admin_full_day_booked email failed:", error.message);
   }
@@ -2045,6 +2097,25 @@ router.post(
         });
       } catch (mailErr) {
         console.log("Mail booking_created error:", mailErr.message);
+      }
+
+      // Crew copy, kept separate so it cannot affect the customer or Admin mail.
+      try {
+        await generalFixterNotify.bookingCreated(mail, {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          customerName: me.name || booking.name || "",
+          customerEmail: me.email || booking.email || "",
+          phone: me.phone || booking.phone || "",
+          date: booking.date,
+          service: booking.service,
+          bookingType: bookingTypeLabel(booking),
+          address: addressLine,
+          note: booking.notes || booking.description || "",
+          source: "bookingCreate",
+        });
+      } catch (notifyErr) {
+        console.log("General Fixter booking_created notify error:", notifyErr.message);
       }
 
       const nycTime = bookingDate.toLocaleTimeString("en-US", {

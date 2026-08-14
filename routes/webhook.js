@@ -589,7 +589,96 @@ function promotionDetails({ session, stripeSubscription, invoice, lineItems, cur
     discountType: typeValue.type,
     discountValue: typeValue.value,
     amountDiscount: amountDiscount ?? null,
+    /*
+     * The coupon object itself, so the notification can read percent_off and
+     * duration without re-deriving them from the formatted strings above.
+     * Never rendered directly; only its human-readable parts are used.
+     */
+    couponObject: coupon || null,
   };
+}
+
+/**
+ * The human-readable name for whatever discount was applied.
+ *
+ * Preference order is what the customer would recognise: the promotion code
+ * they typed, then the coupon's display name, then nothing. A Stripe id is
+ * never shown, because "promo_1Twp..." tells the person reading the email
+ * less than "a discount was applied" does.
+ */
+function promotionDisplayName(promotion, coupon) {
+  const typed = String(promotion?.promotionCodeUsed || "").trim();
+  if (typed && typed !== ADMIN_NOT_AVAILABLE && typed !== NO_PROMOTION_USED) return typed;
+  const couponName = String(coupon?.name || "").trim();
+  if (couponName) return couponName;
+  return "Applied at checkout";
+}
+
+/**
+ * How long the discount lasts, when Stripe says it outlives this payment.
+ *
+ * Silence means once. Saying nothing about duration is safer than implying
+ * permanence, so this only speaks up when Stripe explicitly says repeating or
+ * forever.
+ */
+function promotionDurationNote(coupon) {
+  const duration = String(coupon?.duration || "").toLowerCase();
+  if (duration === "forever") return "Applies to every payment";
+  if (duration === "repeating") {
+    const months = Number(coupon?.duration_in_months);
+    return Number.isFinite(months) && months > 0
+      ? `Applies to the first ${months} months`
+      : "Applies to more than one payment";
+  }
+  return "";
+}
+
+/**
+ * Discount rows for the membership-started notification, or nothing at all.
+ *
+ * Returns an empty array when no promotion was used, so the ordinary email
+ * stays exactly as compact as it was. When one was used, the dollars come
+ * first: a 30% coupon on an annual Premium plan is only useful to somebody
+ * reconciling payments if they can see it was $447.
+ *
+ * Every figure comes from Stripe. The discount is Stripe's own computed
+ * total_details.amount_discount rather than a percentage multiplied out here,
+ * so proration, multiple discounts and rounding are Stripe's answer and not a
+ * guess of ours.
+ */
+function promotionAdminRows({ promotion, coupon, currency, amountPaid }) {
+  if (!promotion?.used) return [];
+
+  const rows = [["Promotion", promotionDisplayName(promotion, coupon)]];
+
+  const discountCents = Number(promotion.amountDiscount);
+  if (Number.isFinite(discountCents) && discountCents > 0) {
+    const percent =
+      coupon?.percent_off !== undefined && coupon?.percent_off !== null
+        ? ` (${coupon.percent_off}% off)`
+        : "";
+    rows.push(["Discount", `${formatAdminMoneyValue(discountCents, currency)}${percent}`]);
+  } else if (promotion.discountValue && promotion.discountValue !== ADMIN_NOT_AVAILABLE) {
+    // Stripe gave a coupon but no computed amount, which happens on a fully
+    // discounted first payment. Show what it does rather than a false zero.
+    rows.push(["Discount", String(promotion.discountValue)]);
+  }
+
+  /*
+   * Null and zero are different answers. Zero is a real, reportable amount on a
+   * fully discounted first payment; null means Stripe did not tell us and the
+   * row is left out rather than filled with a placeholder. Number(null) is 0,
+   * so the emptiness has to be checked before the number is.
+   */
+  const paidKnown = amountPaid !== null && amountPaid !== undefined && amountPaid !== "";
+  if (paidKnown && Number.isFinite(Number(amountPaid))) {
+    rows.push(["Paid", formatAdminMoneyValue(amountPaid, currency)]);
+  }
+
+  const duration = promotionDurationNote(coupon);
+  if (duration) rows.push(["Duration", duration]);
+
+  return rows;
 }
 
 async function buildNewMemberAdminSections({
@@ -1623,6 +1712,43 @@ async function handleCheckoutCompleted(session, eventId) {
   });
 
   /*
+   * Discount detail, only when there was one.
+   *
+   * The authoritative objects, in the order Stripe fills them in: the Checkout
+   * Session carries what the customer typed and the computed discount total,
+   * the expanded latest invoice carries what was actually charged, and the
+   * coupon carries the percentage and duration. Nothing is calculated here.
+   */
+  let promotionRows = [];
+  try {
+    const promoInvoice = expandedInvoice(stripeSubscription);
+    const promoCurrency = subscriptionCurrency(
+      stripeSubscription, session, subscription?.currency || "usd"
+    );
+    const promotion = promotionDetails({
+      session,
+      stripeSubscription,
+      invoice: promoInvoice,
+      lineItems: await retrieveCheckoutLineItemsForAdmin(session.id),
+      currency: promoCurrency,
+    });
+    promotionRows = promotionAdminRows({
+      promotion,
+      coupon: promotion.couponObject,
+      currency: promoCurrency,
+      amountPaid: firstNumber(
+        session.amount_total,
+        promoInvoice?.amount_paid,
+        promoInvoice?.amount_due
+      ),
+    });
+  } catch (promoError) {
+    // A discount lookup must never stop a membership from being recorded or
+    // the notification from going out.
+    console.warn("membership promotion lookup failed:", promoError?.message || promoError);
+  }
+
+  /*
    * Was seven sections of Stripe and Mongo identifiers. A new member is four
    * facts: who, which plan, how much, where. The identifiers still exist and
    * are still on the customer record in Admin, which is where someone
@@ -1644,6 +1770,8 @@ async function handleCheckoutCompleted(session, eventId) {
       ["Address", formatAddressParts(subscription?.addressSnapshot || {})],
       ["Billing", subscription?.billingCycle === "annual" ? "Annual" : "Monthly"],
       ["Member ID", user.userId],
+      // Empty when no promotion was used, so the ordinary email is unchanged.
+      ...promotionRows,
     ],
     action: { label: "View Customer", url: adminLink.customer(user._id) },
   }, {
@@ -2253,3 +2381,18 @@ module.exports = async (req, res) => {
  */
 module.exports.handleFixterTipCheckoutCompleted = handleFixterTipCheckoutCompleted;
 module.exports.handleTipChargeRefunded = handleTipChargeRefunded;
+
+/*
+ * The discount helpers, exposed for testing.
+ *
+ * They are pure: given Stripe objects they return rows. Testing them directly
+ * is worth more than driving the whole webhook, which would need a forged
+ * Stripe signature and would end up testing the fake rather than the rule that
+ * a percentage must be reported to Admin in dollars.
+ */
+module.exports.__testables = {
+  promotionAdminRows,
+  promotionDetails,
+  promotionDisplayName,
+  promotionDurationNote,
+};

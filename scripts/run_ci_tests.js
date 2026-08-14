@@ -44,6 +44,7 @@ const SUITES = [
   "test_marketing_system.js",
   "test_marketing_longterm.js",
   "test_unsubscribe_token.js",
+  "test_membership_coupon_details.js",
 ];
 
 /**
@@ -51,6 +52,7 @@ const SUITES = [
  *   test_intro_visit_flows_live.js   needs a live MongoDB
  *   test_booking_reminders_integration.js  boots an in-memory MongoDB binary
  *   test_marketing_engine_integration.js   boots an in-memory MongoDB binary
+ *   test_general_fixter_notifications.js   boots an in-memory MongoDB binary
  *   test_intro_visit_race_live.js    needs a live MongoDB + running backend
  *   test_intro_visit_photo_live.js   needs a live MongoDB + running backend + S3 stub
  *   test_native_signing_integration.js  boots an in-memory MongoDB binary
