@@ -177,10 +177,22 @@ const LINKS = {
  * The nearest available signal, Booking.reviewRequestSentAt, means we asked,
  * which is a different fact and a bad proxy for it.
  *
- * The plumbing is built and tested so that turning this on is one flag. Turning
- * it on before review completion is genuinely tracked would mean repeatedly
- * asking people who have already done it, which is the outcome this flag exists
- * to prevent.
+ * CLICK TRACKING IS NOT THE ANSWER EITHER, and this correction matters enough
+ * to write down. An earlier version of this note proposed an interstitial that
+ * recorded a click on /review before handing off to Google. That was wrong: a
+ * click means somebody opened a page. It does not mean they wrote anything,
+ * and treating it as "reviewed" would silence future asks for the many people
+ * who tapped the link and then closed the tab. A click-derived
+ * reviewCompleted flag would be a confident-looking lie, which is worse than
+ * the honest gap we have now.
+ *
+ * What would actually earn this flag is a trustworthy record that a review was
+ * LEFT — a verified signal from the review platform, or, perfectly
+ * acceptably, an Admin marking "this customer reviewed us" by hand. Until one
+ * of those exists, the completion message carries the tip link alone.
+ *
+ * The plumbing is built and tested so that turning this on is one flag, once
+ * that record is real.
  */
 function reviewLinkEnabled() {
   return readFlag("SMS_REVIEW_LINK_ENABLED", false);

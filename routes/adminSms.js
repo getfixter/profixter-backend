@@ -7,8 +7,10 @@ const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const SmsCampaign = require("../models/SmsCampaign");
 const SmsMessage = require("../models/SmsMessage");
 const SmsOptOut = require("../models/SmsOptOut");
+const SmsPhoneStatus = require("../models/SmsPhoneStatus");
 const { configSnapshot } = require("../utils/sms/smsConfig");
 const { toE164 } = require("../utils/sms/smsPhone");
+const { clearUndeliverable } = require("../utils/sms/smsPhoneStatus");
 const { SMS_TYPES } = require("../utils/sms/smsTypes");
 
 /**
@@ -49,11 +51,19 @@ function asDate(value, endOfDay = false) {
  */
 router.get("/config", auth, ...onlyAdmin, async (_req, res) => {
   try {
-    const [pendingRetries, optOuts] = await Promise.all([
+    const [pendingRetries, optOuts, undeliverable, validPhones] = await Promise.all([
       SmsMessage.countDocuments({ status: "retry_scheduled" }),
       SmsOptOut.countDocuments({}),
+      SmsPhoneStatus.countDocuments({ status: "undeliverable" }),
+      SmsPhoneStatus.countDocuments({ status: "valid" }),
     ]);
-    return res.json({ config: configSnapshot(), pendingRetries, optOuts, types: SMS_TYPES });
+    return res.json({
+      config: configSnapshot(),
+      pendingRetries,
+      optOuts,
+      phones: { undeliverable, valid: validPhones },
+      types: SMS_TYPES,
+    });
   } catch (error) {
     console.error("SMS config read failed:", error);
     return res.status(500).json({ message: "Failed to load SMS configuration" });
@@ -164,9 +174,40 @@ router.get("/customers/:userId/history", auth, ...onlyAdmin, async (req, res) =>
       .lean();
 
     const phones = [...new Set(messages.map((m) => m.toPhone).filter(Boolean))];
-    const optOuts = phones.length ? await SmsOptOut.find({ phone: { $in: phones } }).lean() : [];
+    const [optOuts, phoneStatuses] = await Promise.all([
+      phones.length ? SmsOptOut.find({ phone: { $in: phones } }).lean() : [],
+      phones.length ? SmsPhoneStatus.find({ phone: { $in: phones } }).lean() : [],
+    ]);
 
-    return res.json({ messages, optOuts });
+    /*
+     * Deliverability alongside consent, in one response.
+     *
+     * The two answer different halves of the same question an operator has
+     * when a customer says they never got a text: did we decide not to send
+     * (opt-out), or did we send and the number refused it (deliverability)?
+     * A number with no status row has simply never proven itself either way,
+     * which is reported as unknown rather than as missing data.
+     */
+    const deliverability = phones.map((phone) => {
+      const row = phoneStatuses.find((s) => s.phone === phone);
+      return row
+        ? {
+            phone,
+            status: row.status,
+            lastSuccessAt: row.lastSuccessAt,
+            lastFailureAt: row.lastFailureAt,
+            lastFailureCode: row.lastFailureCode,
+            lastFailureReason: row.lastFailureReason,
+            undeliverableAt: row.undeliverableAt,
+            undeliverableCode: row.undeliverableCode,
+            undeliverableReason: row.undeliverableReason,
+            successCount: row.successCount,
+            failureCount: row.failureCount,
+          }
+        : { phone, status: "unknown", lastSuccessAt: null, lastFailureAt: null };
+    });
+
+    return res.json({ messages, optOuts, deliverability });
   } catch (error) {
     console.error("SMS customer history failed:", error);
     return res.status(500).json({ message: "Failed to load SMS history" });
@@ -210,6 +251,75 @@ router.get("/failures", auth, ...onlyAdmin, async (req, res) => {
   } catch (error) {
     console.error("SMS failure list failed:", error);
     return res.status(500).json({ message: "Failed to load SMS failures" });
+  }
+});
+
+/**
+ * Numbers we have stopped texting, and why.
+ *
+ * Its own endpoint beside the opt-out list rather than mixed into it, because
+ * the two mean different things: an opt-out is a person's choice, an
+ * undeliverable number is a carrier's verdict. Filterable by status so an
+ * operator can also see which numbers are merely unproven.
+ */
+router.get("/phone-status", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const query = {};
+
+    if (req.query.status) query.status = String(req.query.status).trim();
+    if (req.query.phone) query.phone = toE164(req.query.phone) || String(req.query.phone).trim();
+
+    const [items, total, counts] = await Promise.all([
+      SmsPhoneStatus.find(query)
+        .sort({ undeliverableAt: -1, updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      SmsPhoneStatus.countDocuments(query),
+      SmsPhoneStatus.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+    ]);
+
+    return res.json({
+      items,
+      total,
+      page,
+      limit,
+      counts: counts.reduce((acc, row) => ({ ...acc, [row._id]: row.count }), {}),
+    });
+  } catch (error) {
+    console.error("SMS phone status list failed:", error);
+    return res.status(500).json({ message: "Failed to load SMS phone statuses" });
+  }
+});
+
+/**
+ * Put a number back into play by hand.
+ *
+ * The escape hatch for the case automation cannot see: a customer rings to say
+ * the text never arrived, somebody checks the number, and it is fine. Resets
+ * to unknown rather than valid, because an operator's judgement is not a
+ * carrier's confirmation; the next delivered message supplies that.
+ */
+router.post("/phone-status/:phone/clear", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const e164 = toE164(req.params.phone);
+    if (!e164) return res.status(400).json({ message: "Invalid phone number" });
+
+    await clearUndeliverable(e164);
+    const item = await SmsPhoneStatus.findOne({ phone: e164 }).lean();
+
+    console.log(
+      JSON.stringify({
+        event: "sms_phone_status_cleared_by_admin",
+        by: req.user?.id || "",
+      })
+    );
+    return res.json({ item });
+  } catch (error) {
+    console.error("SMS phone status clear failed:", error);
+    return res.status(500).json({ message: "Failed to clear phone status" });
   }
 });
 

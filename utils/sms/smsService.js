@@ -7,6 +7,7 @@ const { estimateSegments, maskPhone, toE164 } = require("./smsPhone");
 const { renderSms } = require("./smsTemplates");
 const { channelClassOf, getTypeSpec, isMarketing, isTransactional } = require("./smsTypes");
 const provider = require("./twilioProvider");
+const phoneStatus = require("./smsPhoneStatus");
 
 /**
  * The one way to send an SMS.
@@ -148,6 +149,21 @@ async function deliverClaimedMessage(record, { MessageModel = SmsMessage } = {})
     if (provider.isOptOutError(error)) {
       await recordProviderOptOut(record.toPhone);
     }
+
+    /*
+     * Teach the phone-status layer what just happened.
+     *
+     * Every failure is recorded, transient ones included, because a number
+     * failing repeatedly with timeouts is a pattern worth seeing. Only the
+     * provider codes that name the DESTINATION as the fault move it to
+     * undeliverable; that decision lives in smsPhoneStatus, from the error
+     * code, so it cannot be made differently here than in the webhook.
+     */
+    await phoneStatus.recordFailure(record.toPhone, {
+      code: error?.providerErrorCode,
+      reason: error?.reason,
+      notificationType: record.notificationType,
+    });
 
     await MessageModel.updateOne(
       { _id: record._id },

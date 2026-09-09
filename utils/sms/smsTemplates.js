@@ -149,8 +149,16 @@ function visitVocabulary(booking = {}) {
   if (isFullDay) {
     return {
       kind: "full_day",
-      noun: "Full Day Fixter visit",
-      shortNoun: "Full Day visit",
+      /*
+       * "Full Day Service" is the CUSTOMER-FACING name, and it lives only
+       * here. The database type stays full_day_visit, the internal kind stays
+       * full_day, and the service-string match above is untouched — renaming
+       * any of those would be a data migration wearing a copy change's
+       * clothes. What a customer reads and what a record is called are two
+       * different things, and this is the only place the first one is decided.
+       */
+      noun: "Full Day Service",
+      shortNoun: "Full Day Service",
       /* No start time is quoted: a Full Day is the workday, not a slot. */
       wholeDay: true,
       completionNote: "We hope the day made a real dent in your list.",
@@ -196,6 +204,47 @@ function visitVocabulary(booking = {}) {
 function whenPhrase(booking = {}) {
   const vocab = visitVocabulary(booking);
   return vocab.wholeDay ? formatDateOnly(booking.date) : formatDateTime(booking.date);
+}
+
+/**
+ * How far either side of the booked time a Fixter may arrive.
+ *
+ * The real policy is booked time plus or minus thirty minutes. It is stated
+ * once, here, so the number in the message and the number in the tests cannot
+ * drift apart.
+ */
+const ARRIVAL_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * The arrival window a customer should expect, as a readable range.
+ *
+ * PURELY DISPLAY. Nothing here touches booking.date, the schedule, the
+ * reservation or the reminder timing — it derives two labels from an instant
+ * and returns a string. The appointment is still the appointment.
+ *
+ * Both ends are formatted through Intl in New York, from absolute instants, so
+ * three things fall out for free rather than needing special cases:
+ *
+ *   - Midnight and noon come out as 12:00 AM and 12:00 PM, not 0:00 or 24:00.
+ *   - A window that crosses midnight (a 12:15 AM slot opens at 11:45 PM the
+ *     day before) still reads correctly, because subtracting from an instant
+ *     rolls the date properly and the formatter is told nothing about days.
+ *   - A window that straddles a DST change is computed on instants, so the
+ *     clock labels are whatever New York actually showed at those moments.
+ *
+ * The separator is an ASCII hyphen, deliberately, and it matters more than it
+ * looks: an en dash is outside GSM-7, and one of them anywhere in a message
+ * forces the whole thing to UCS-2, cutting a single segment from 160
+ * characters to 70. That would push this reminder to two segments and double
+ * what every reminder costs to send.
+ */
+function arrivalWindow(value) {
+  const date = toInstant(value);
+  if (!date) return "";
+  const start = formatTimeOnly(new Date(date.getTime() - ARRIVAL_WINDOW_MS));
+  const end = formatTimeOnly(new Date(date.getTime() + ARRIVAL_WINDOW_MS));
+  if (!start || !end) return "";
+  return `${start} - ${end}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,11 +304,11 @@ const TEMPLATES = {
 
   ONE_TIME_VISIT_CONFIRMED: ({ booking = {} }) =>
     `${BRAND}: your One-Time Visit is confirmed for ${whenPhrase(booking)}. ` +
-    `Your Fixter is booked for 90 minutes. Changes need a call to ${SUPPORT_PHONE}`,
+    `Your Fixter is booked for 90 minutes. Need to make a change? Call ${SUPPORT_PHONE}`,
 
   FULL_DAY_CONFIRMED: ({ booking = {} }) =>
-    `${BRAND}: your Full Day Fixter is confirmed for ${formatDateOnly(booking.date)}. ` +
-    `Your Fixter is booked for the full workday. We will text you a reminder beforehand.`,
+    `${BRAND}: your Full Day Service is confirmed for ${formatDateOnly(booking.date)}. ` +
+    `Your Fixter is booked for the full workday. We'll send you a reminder beforehand.`,
 
   /*
    * Both reminders name the date and time outright rather than saying
@@ -267,32 +316,48 @@ const TEMPLATES = {
    * as little as two hours before the visit after an outage, and a message
    * that says tomorrow about an appointment happening this afternoon is worse
    * than no message at all.
+   *
+   * Neither reminder carries a preparation instruction any more. Telling
+   * somebody to clear the work area was removed on review and deliberately
+   * not replaced: the reminder exists to say when, not to give homework.
    */
   BOOKING_REMINDER_24H: ({ booking = {} }) => {
     const vocab = visitVocabulary(booking);
     return (
       `${BRAND} reminder: your ${vocab.noun} is scheduled for ${whenPhrase(booking)}. ` +
-      `Please have the work area clear. Need to change it? Call ${SUPPORT_PHONE}`
+      `Need to make a change? Call ${SUPPORT_PHONE}`
     );
   },
 
+  /*
+   * The hour-before reminder states the real arrival policy.
+   *
+   * "Scheduled to arrive then" was not true and was not approved: a Fixter may
+   * arrive up to thirty minutes either side of the booked time, so the message
+   * now quotes both the booked time and the window it sits in. The customer
+   * gets the commitment we actually make rather than one we do not.
+   *
+   * A Full Day has no arrival window to quote, because it is the whole
+   * workday rather than a slot — so it keeps a plain "starts shortly".
+   */
   BOOKING_REMINDER_60M: ({ booking = {} }) => {
     const vocab = visitVocabulary(booking);
     if (vocab.wholeDay) {
       return (
-        `${BRAND}: your Full Day Fixter starts shortly. ` +
-        `Please have the work area clear and any materials ready.`
+        `${BRAND}: your Full Day Service starts shortly. ` +
+        `Your Fixter will be arriving soon.`
       );
     }
     return (
-      `${BRAND}: your ${vocab.noun} starts at ${formatTimeOnly(booking.date)}. ` +
-      `Your Fixter is scheduled to arrive then. Please allow up to 30 minutes for traffic.`
+      `${BRAND}: your ${vocab.noun} is coming up. ` +
+      `Your Fixter is scheduled for ${formatTimeOnly(booking.date)}, ` +
+      `with an arrival window of ${arrivalWindow(booking.date)}.`
     );
   },
 
   BOOKING_RESCHEDULED: ({ booking = {} }) =>
-    `${BRAND}: your ${visitVocabulary(booking).noun} has been moved to ${whenPhrase(booking)}. ` +
-    `Your earlier time has been released. Questions? Call ${SUPPORT_PHONE}`,
+    `${BRAND}: your ${visitVocabulary(booking).noun} has been rescheduled to ` +
+    `${whenPhrase(booking)}. Questions? Call ${SUPPORT_PHONE}`,
 
   BOOKING_CANCELLED: ({ booking = {} }) =>
     `${BRAND}: your ${visitVocabulary(booking).noun} on ${whenPhrase(booking)} has been cancelled. ` +
@@ -317,7 +382,7 @@ const TEMPLATES = {
     `Thanks for choosing ${BRAND}! Your One-Time Visit is complete. ${completionLinks()}`,
 
   FULL_DAY_COMPLETED: () =>
-    `Thanks for choosing ${BRAND}! Your Full Day Fixter is complete. ${completionLinks()}`,
+    `Thanks for choosing ${BRAND}! Your Full Day Service is complete. ${completionLinks()}`,
 
   /* --------------------------- Fixter updates -------------------------- */
   FIXTER_ASSIGNED: ({ booking = {}, fixterName }) =>
@@ -338,7 +403,7 @@ const TEMPLATES = {
   /* ------------------------------ Account ------------------------------ */
   ACCOUNT_CREATED: ({ name }) =>
     `Welcome to ${BRAND}, ${firstNameOf(name)}! Your account is ready. ` +
-    `Book a visit anytime at ${SITE}/book ${OPT_OUT_LINE}`,
+    `Book a visit anytime at ${SITE}/book. ${OPT_OUT_LINE}`,
 
   ACCOUNT_PASSWORD_CHANGED: () =>
     `${BRAND} security: your account password was just changed. ` +
@@ -387,13 +452,23 @@ const TEMPLATES = {
     `Please update your card to keep your visits active: ${SITE}/account`,
 
   /* ----------------------------- Marketing ----------------------------- */
+  /*
+   * Approved marketing copy, tightened on final review to fit ONE segment.
+   *
+   * The opt-out line is appended by the renderer, not written here, so the
+   * budget these have to fit inside is 160 GSM-7 characters MINUS the 23 that
+   * " Reply STOP to opt out." costs. That is the whole reason an earlier
+   * draft spilled into a second segment: the copy looked short enough on its
+   * own and the compliance line pushed it over. The tests assert the finished
+   * length, after the append, for exactly that reason.
+   */
   KITCHEN_BATH_MARKETING: () =>
-    `${BRAND}: planning a kitchen or bathroom refresh? We handle full remodels ` +
-    `start to finish. Free estimate: ${SITE}/projects`,
+    `${BRAND}: Thinking about a kitchen or bathroom remodel? ` +
+    `We handle complete renovations. Get a free estimate: ${SITE}/projects`,
 
   MEMBERSHIP_MARKETING: () =>
-    `${BRAND}: a membership covers regular handyman visits at your home, with ` +
-    `priority scheduling. See the plans: ${SITE}/membership`,
+    `${BRAND}: Handyman labor and trip costs are included with membership. ` +
+    `Get small home repairs done easily: ${SITE}/membership`,
 
   /* Copy comes from the campaign document; this is the safety net. */
   SEASONAL_MARKETING: ({ body }) =>
@@ -441,10 +516,12 @@ function hasTemplate(notificationType) {
 }
 
 module.exports = {
+  ARRIVAL_WINDOW_MS,
   BRAND,
   OPT_OUT_LINE,
   SUPPORT_PHONE,
   TEMPLATES,
+  arrivalWindow,
   clean,
   completionLinks,
   firstNameOf,

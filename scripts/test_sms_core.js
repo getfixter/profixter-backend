@@ -22,6 +22,8 @@ delete process.env.SMS_REVIEW_LINK_ENABLED;
 
 const assert = require("node:assert/strict");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const config = require("../utils/sms/smsConfig");
 const dedupe = require("../utils/sms/smsDedupe");
@@ -982,6 +984,471 @@ test("an ordinary reply is not mistaken for a keyword", () => {
   const { normalizeKeyword } = require("../routes/smsWebhook");
   assert.equal(normalizeKeyword("please stop by at 3"), "please stop by at");
   assert.equal(normalizeKeyword("thanks!"), "thanks");
+});
+
+/* ========================================================================== */
+section("Arrival window (booked time plus or minus 30 minutes)");
+/* ========================================================================== */
+
+test("the window is exactly 30 minutes either side", () => {
+  assert.equal(templates.ARRIVAL_WINDOW_MS, 30 * 60 * 1000);
+  // 2:00 PM New York.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T19:00:00Z")), "1:30 PM - 2:30 PM");
+});
+
+test("AM and PM are correct on both ends", () => {
+  // 8:00 AM New York: window stays in the morning.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T13:00:00Z")), "7:30 AM - 8:30 AM");
+  // 6:00 PM New York.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T23:00:00Z")), "5:30 PM - 6:30 PM");
+});
+
+test("a window that crosses midday reads 11:30 AM to 12:30 PM", () => {
+  // Noon New York. The classic 12-hour-clock trap: noon is 12 PM, not 0 PM.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T17:00:00Z")), "11:30 AM - 12:30 PM");
+});
+
+test("a window that crosses midnight reads 11:30 PM to 12:30 AM", () => {
+  // Midnight New York. Midnight is 12 AM, not 0 AM or 24:00.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T05:00:00Z")), "11:30 PM - 12:30 AM");
+});
+
+test("a window straddling midnight rolls the date correctly", () => {
+  // 12:15 AM New York: the window opens at 11:45 PM the PREVIOUS day.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-03T05:15:00Z")), "11:45 PM - 12:45 AM");
+});
+
+test("the window is correct on both sides of a DST change", () => {
+  // DST begins 2026-03-08. A 2pm appointment either side is still 1:30-2:30.
+  assert.equal(templates.arrivalWindow(new Date("2026-03-07T19:00:00Z")), "1:30 PM - 2:30 PM");
+  assert.equal(templates.arrivalWindow(new Date("2026-03-09T18:00:00Z")), "1:30 PM - 2:30 PM");
+});
+
+test("the separator stays inside GSM-7", () => {
+  /*
+   * An en dash would be outside GSM-7 and would force the whole reminder to
+   * UCS-2, cutting a single segment from 160 characters to 70 and doubling
+   * what every 60-minute reminder costs.
+   */
+  const window = templates.arrivalWindow(new Date("2026-03-03T19:00:00Z"));
+  assert.ok(!window.includes("–"), "must not use an en dash");
+  assert.ok(!window.includes("—"), "must not use an em dash");
+  assert.equal(phone.isUnicodeBody(window), false);
+});
+
+test("an invalid date yields no window rather than a wrong one", () => {
+  assert.equal(templates.arrivalWindow(null), "");
+  assert.equal(templates.arrivalWindow("not a date"), "");
+  assert.equal(templates.arrivalWindow(undefined), "");
+});
+
+test("the window is display only and never alters the booking", () => {
+  const booking = { ...BOOKINGS.membership };
+  const original = new Date(booking.date).getTime();
+  templates.renderSms("BOOKING_REMINDER_60M", { booking });
+  assert.equal(new Date(booking.date).getTime(), original, "booking.date must not move");
+});
+
+/* ========================================================================== */
+section("Approved copy, pinned exactly");
+/* ========================================================================== */
+
+/*
+ * These assert the FULL approved string, not a fragment.
+ *
+ * Every other wording test in this file checks that a message does or does not
+ * contain something. These pin the reviewed sentence exactly, so a later edit
+ * that changes approved copy fails loudly instead of quietly shipping wording
+ * nobody signed off. Reviewed and approved by Taras and ChatGPT.
+ */
+const APPROVED = {
+  "BOOKING_CONFIRMED / membership":
+    "ProFixter: your membership visit is confirmed for Tue, Mar 3 at 2:00 PM. We will text you a reminder beforehand. Questions? Call 631-599-1363",
+  "FREE_VISIT_CONFIRMED":
+    "ProFixter: your free first visit is confirmed for Tue, Mar 3 at 2:00 PM. There is no charge for this visit. We will text you a reminder beforehand.",
+  "ONE_TIME_VISIT_CONFIRMED":
+    "ProFixter: your One-Time Visit is confirmed for Tue, Mar 3 at 2:00 PM. Your Fixter is booked for 90 minutes. Need to make a change? Call 631-599-1363",
+  "FULL_DAY_CONFIRMED":
+    "ProFixter: your Full Day Service is confirmed for Tue, Mar 3. Your Fixter is booked for the full workday. We'll send you a reminder beforehand.",
+  "BOOKING_REMINDER_24H / membership":
+    "ProFixter reminder: your membership visit is scheduled for Tue, Mar 3 at 2:00 PM. Need to make a change? Call 631-599-1363",
+  "BOOKING_REMINDER_24H / full day":
+    "ProFixter reminder: your Full Day Service is scheduled for Tue, Mar 3. Need to make a change? Call 631-599-1363",
+  "BOOKING_REMINDER_60M / membership":
+    "ProFixter: your membership visit is coming up. Your Fixter is scheduled for 2:00 PM, with an arrival window of 1:30 PM - 2:30 PM.",
+  "BOOKING_REMINDER_60M / full day":
+    "ProFixter: your Full Day Service starts shortly. Your Fixter will be arriving soon.",
+  "BOOKING_RESCHEDULED / membership":
+    "ProFixter: your membership visit has been rescheduled to Tue, Mar 3 at 2:00 PM. Questions? Call 631-599-1363",
+  "BOOKING_CANCELLED / full day":
+    "ProFixter: your Full Day Service on Tue, Mar 3 has been cancelled. You can book again anytime at profixter.com/book",
+  "FULL_DAY_COMPLETED":
+    "Thanks for choosing ProFixter! Your Full Day Service is complete. If you would like to leave your Fixter a tip: https://www.profixter.com/tip",
+  "ACCOUNT_CREATED":
+    "Welcome to ProFixter, Sam! Your account is ready. Book a visit anytime at profixter.com/book. Reply STOP to opt out.",
+  "KITCHEN_BATH_MARKETING":
+    "ProFixter: Thinking about a kitchen or bathroom remodel? We handle complete renovations. Get a free estimate: profixter.com/projects Reply STOP to opt out.",
+  "MEMBERSHIP_MARKETING":
+    "ProFixter: Handyman labor and trip costs are included with membership. Get small home repairs done easily: profixter.com/membership Reply STOP to opt out.",
+};
+
+const APPROVED_RENDER = {
+  "BOOKING_CONFIRMED / membership": ["BOOKING_CONFIRMED", { booking: BOOKINGS.membership }],
+  "FREE_VISIT_CONFIRMED": ["FREE_VISIT_CONFIRMED", { booking: BOOKINGS.freeFirst }],
+  "ONE_TIME_VISIT_CONFIRMED": ["ONE_TIME_VISIT_CONFIRMED", { booking: BOOKINGS.oneTime }],
+  "FULL_DAY_CONFIRMED": ["FULL_DAY_CONFIRMED", { booking: BOOKINGS.fullDay }],
+  "BOOKING_REMINDER_24H / membership": ["BOOKING_REMINDER_24H", { booking: BOOKINGS.membership }],
+  "BOOKING_REMINDER_24H / full day": ["BOOKING_REMINDER_24H", { booking: BOOKINGS.fullDay }],
+  "BOOKING_REMINDER_60M / membership": ["BOOKING_REMINDER_60M", { booking: BOOKINGS.membership }],
+  "BOOKING_REMINDER_60M / full day": ["BOOKING_REMINDER_60M", { booking: BOOKINGS.fullDay }],
+  "BOOKING_RESCHEDULED / membership": ["BOOKING_RESCHEDULED", { booking: BOOKINGS.membership }],
+  "BOOKING_CANCELLED / full day": ["BOOKING_CANCELLED", { booking: BOOKINGS.fullDay }],
+  "FULL_DAY_COMPLETED": ["FULL_DAY_COMPLETED", { booking: BOOKINGS.fullDay }],
+  "ACCOUNT_CREATED": ["ACCOUNT_CREATED", { name: "Sam Carter" }],
+  "KITCHEN_BATH_MARKETING": ["KITCHEN_BATH_MARKETING", {}],
+  "MEMBERSHIP_MARKETING": ["MEMBERSHIP_MARKETING", {}],
+};
+
+for (const label of Object.keys(APPROVED)) {
+  test(`approved copy unchanged: ${label}`, () => {
+    const [type, vars] = APPROVED_RENDER[label];
+    assert.equal(templates.renderSms(type, vars), APPROVED[label]);
+  });
+}
+
+/* ========================================================================== */
+section("Copy removed on review stays removed");
+/* ========================================================================== */
+
+function everyRenderedBody() {
+  const bodies = [];
+  const kinds = [BOOKINGS.membership, BOOKINGS.freeFirst, BOOKINGS.oneTime, BOOKINGS.fullDay];
+  for (const type of types.allTypes()) {
+    for (const booking of kinds) {
+      bodies.push({
+        type,
+        body: templates.renderSms(type, {
+          booking,
+          name: "Sam Carter",
+          fixterName: "Alex Rivera",
+          planLabel: "Premium",
+          billingCycle: "monthly",
+          accessUntil: APPOINTMENT,
+          body: "Sample seasonal copy",
+        }),
+      });
+    }
+  }
+  return bodies;
+}
+
+test("no message tells the customer to prepare the work area", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(!/work area/i.test(body), `${type}: ${body}`);
+    assert.ok(!/materials ready/i.test(body), `${type}: ${body}`);
+  }
+});
+
+test("no message blames traffic", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(!/traffic/i.test(body), `${type}: ${body}`);
+  }
+});
+
+test("no message says the earlier time was released", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(!/earlier time/i.test(body), `${type}: ${body}`);
+    assert.ok(!/has been released/i.test(body), `${type}: ${body}`);
+  }
+});
+
+test("no message promises the Fixter arrives exactly on the hour", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(!/scheduled to arrive then/i.test(body), `${type}: ${body}`);
+  }
+});
+
+/* ========================================================================== */
+section("Full Day: customer-facing name changed, internals did not");
+/* ========================================================================== */
+
+test("customers only ever read 'Full Day Service'", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(!/Full Day Fixter/i.test(body), `${type} still says Full Day Fixter: ${body}`);
+    assert.ok(!/Full Day visit/i.test(body), `${type} still says Full Day visit: ${body}`);
+  }
+  const vocab = templates.visitVocabulary(BOOKINGS.fullDay);
+  assert.equal(vocab.noun, "Full Day Service");
+  assert.equal(vocab.shortNoun, "Full Day Service");
+});
+
+test("the internal identifiers were NOT renamed", () => {
+  /*
+   * The rename was customer-facing copy only. If any of these moved, a data
+   * migration happened by accident and existing bookings would stop being
+   * recognised as Full Days.
+   */
+  assert.equal(templates.visitVocabulary(BOOKINGS.fullDay).kind, "full_day");
+
+  const bookingModel = fs.readFileSync(path.join(__dirname, "..", "models", "Booking.js"), "utf8");
+  assert.match(bookingModel, /"full_day_visit"/, "Booking.bookingType enum must be untouched");
+
+  const entitlementModel = fs.readFileSync(
+    path.join(__dirname, "..", "models", "VisitEntitlement.js"),
+    "utf8"
+  );
+  assert.match(entitlementModel, /"full_day_visit"/, "VisitEntitlement.kind must be untouched");
+
+  const notifications = require("../utils/sms/smsNotifications");
+  assert.equal(notifications.CONFIRMATION_TYPE.full_day, "FULL_DAY_CONFIRMED");
+  assert.equal(notifications.COMPLETION_TYPE.full_day, "FULL_DAY_COMPLETED");
+});
+
+test("a Full Day is still classified from bookingType, not from copy", () => {
+  assert.equal(
+    templates.visitVocabulary({ bookingType: "full_day_visit", accessType: "one_time" }).kind,
+    "full_day"
+  );
+  // And still from a service string, for legacy rows with no bookingType.
+  assert.equal(templates.visitVocabulary({ service: "Full Day Fixter" }).kind, "full_day");
+});
+
+/* ========================================================================== */
+section("Encoding and segments");
+/* ========================================================================== */
+
+test("every message is GSM-7; none forces UCS-2", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.equal(phone.isUnicodeBody(body), false, `${type} forces UCS-2: ${body}`);
+  }
+});
+
+test("EVERY message is exactly one segment", () => {
+  /*
+   * The final requirement, and the one most easily lost by a small edit: no
+   * message anywhere may spill into a second segment. Marketing was tightened
+   * on final review to bring the last two inside the limit, so this now holds
+   * across all forty-three.
+   */
+  const multi = [];
+  for (const { type, body } of everyRenderedBody()) {
+    if (phone.estimateSegments(body) > 1) multi.push(`${type} (${body.length} chars)`);
+  }
+  assert.deepEqual(multi, [], "these messages are multi-segment");
+});
+
+test("no message exceeds the 160-character GSM-7 single-segment limit", () => {
+  for (const { type, body } of everyRenderedBody()) {
+    assert.ok(body.length <= 160, `${type} is ${body.length} chars: ${body}`);
+  }
+});
+
+test("the marketing copy keeps room for the opt-out line", () => {
+  /*
+   * The compliance line is appended by the renderer, so the copy's real budget
+   * is 160 minus its length. Both approved bodies sit within a handful of
+   * characters of the limit, which is exactly where a future word added in
+   * good faith would silently double the cost of the message. Asserting the
+   * finished length AFTER the append is what catches that.
+   */
+  const optOutCost = ` ${templates.OPT_OUT_LINE}`.length;
+  for (const type of types.typesOfClass("marketing")) {
+    const body = templates.renderSms(type, { body: "Sample seasonal copy" });
+    assert.match(body, /Reply STOP to opt out\.$/, `${type} must end with the opt-out line`);
+    assert.ok(
+      body.length <= 160,
+      `${type} is ${body.length} chars; the copy itself may use at most ${160 - optOutCost}`
+    );
+  }
+});
+
+
+/* ========================================================================== */
+section("Phone deliverability classification");
+/* ========================================================================== */
+
+const phoneStatus = require("../utils/sms/smsPhoneStatus");
+
+test("only destination-number failures condemn a number", () => {
+  for (const code of [21211, 21214, 21217, 21612, 21614, 30005, 30006]) {
+    assert.equal(phoneStatus.isUndeliverableCode(code), true, `code ${code} should condemn`);
+  }
+});
+
+test("a permanent failure that is NOT the number's fault never condemns it", () => {
+  /*
+   * Each of these stops the individual message, but none is evidence the
+   * handset is dead. Marking them would silence customers we can still reach:
+   * 21610 is a person's choice, 21408 is our own account configuration, 30007
+   * is our sending reputation, and 30003/30008 are ambiguous by definition.
+   */
+  for (const code of [21610, 21408, 30003, 30004, 30007, 30008]) {
+    assert.equal(phoneStatus.isUndeliverableCode(code), false, `code ${code} must not condemn`);
+    assert.ok(
+      phoneStatus.PERMANENT_BUT_NOT_NUMBER_FAULT[code],
+      `code ${code} should be documented as deliberately excluded`
+    );
+  }
+});
+
+test("no transient failure condemns a number", () => {
+  for (const code of [20429, 20500, 20503, 30001, 30022]) {
+    assert.equal(phoneStatus.isUndeliverableCode(code), false, `transient ${code} must not condemn`);
+  }
+});
+
+test("the two code sets never overlap", () => {
+  for (const code of Object.keys(phoneStatus.UNDELIVERABLE_CODES)) {
+    assert.ok(
+      !phoneStatus.PERMANENT_BUT_NOT_NUMBER_FAULT[code],
+      `code ${code} cannot be in both sets`
+    );
+  }
+});
+
+test("an unrecognised code never condemns a number", () => {
+  // The safe default: a failure we do not understand is not proof of anything.
+  for (const code of [99999, 0, "", null, undefined, "not-a-code"]) {
+    assert.equal(phoneStatus.isUndeliverableCode(code), false);
+  }
+});
+
+test("every condemning code is one the retry layer already calls permanent", () => {
+  /*
+   * A code that condemns a number but that the retry layer would retry would
+   * mean attempting sends to a number we had already given up on.
+   */
+  for (const code of Object.keys(phoneStatus.UNDELIVERABLE_CODES)) {
+    const verdict = provider.classifyTwilioError({ code: Number(code), status: 400 });
+    assert.equal(verdict.retryable, false, `code ${code} must not be retryable`);
+  }
+});
+
+/* ========================================================================== */
+section("The 43 approved messages, byte for byte");
+/* ========================================================================== */
+
+/*
+ * The full approved catalogue, frozen.
+ *
+ * Every other wording test checks a property. This one checks the exact bytes
+ * of all forty-three messages Taras and ChatGPT signed off, so ANY change to
+ * approved copy fails here and has to be re-approved deliberately rather than
+ * slipping through as a side effect of some other work.
+ *
+ * Regenerate only when copy has actually been re-approved.
+ */
+const APPROVED_SNAPSHOT = [
+  ["confirmation.membership", "ProFixter: your membership visit is confirmed for Tue, Mar 3 at 2:00 PM. We will text you a reminder beforehand. Questions? Call 631-599-1363"],
+  ["confirmation.free", "ProFixter: your free first visit is confirmed for Tue, Mar 3 at 2:00 PM. There is no charge for this visit. We will text you a reminder beforehand."],
+  ["confirmation.onetime", "ProFixter: your One-Time Visit is confirmed for Tue, Mar 3 at 2:00 PM. Your Fixter is booked for 90 minutes. Need to make a change? Call 631-599-1363"],
+  ["confirmation.fullday", "ProFixter: your Full Day Service is confirmed for Tue, Mar 3. Your Fixter is booked for the full workday. We'll send you a reminder beforehand."],
+  ["reminder24h.membership", "ProFixter reminder: your membership visit is scheduled for Tue, Mar 3 at 2:00 PM. Need to make a change? Call 631-599-1363"],
+  ["reminder24h.free", "ProFixter reminder: your free first visit is scheduled for Tue, Mar 3 at 2:00 PM. Need to make a change? Call 631-599-1363"],
+  ["reminder24h.onetime", "ProFixter reminder: your One-Time Visit is scheduled for Tue, Mar 3 at 2:00 PM. Need to make a change? Call 631-599-1363"],
+  ["reminder24h.fullday", "ProFixter reminder: your Full Day Service is scheduled for Tue, Mar 3. Need to make a change? Call 631-599-1363"],
+  ["reminder60m.membership", "ProFixter: your membership visit is coming up. Your Fixter is scheduled for 2:00 PM, with an arrival window of 1:30 PM - 2:30 PM."],
+  ["reminder60m.free", "ProFixter: your free first visit is coming up. Your Fixter is scheduled for 2:00 PM, with an arrival window of 1:30 PM - 2:30 PM."],
+  ["reminder60m.onetime", "ProFixter: your One-Time Visit is coming up. Your Fixter is scheduled for 2:00 PM, with an arrival window of 1:30 PM - 2:30 PM."],
+  ["reminder60m.fullday", "ProFixter: your Full Day Service starts shortly. Your Fixter will be arriving soon."],
+  ["rescheduled.membership", "ProFixter: your membership visit has been rescheduled to Thu, Mar 5 at 10:00 AM. Questions? Call 631-599-1363"],
+  ["rescheduled.free", "ProFixter: your free first visit has been rescheduled to Thu, Mar 5 at 10:00 AM. Questions? Call 631-599-1363"],
+  ["rescheduled.onetime", "ProFixter: your One-Time Visit has been rescheduled to Thu, Mar 5 at 10:00 AM. Questions? Call 631-599-1363"],
+  ["rescheduled.fullday", "ProFixter: your Full Day Service has been rescheduled to Thu, Mar 5. Questions? Call 631-599-1363"],
+  ["cancelled.membership", "ProFixter: your membership visit on Tue, Mar 3 at 2:00 PM has been cancelled. You can book again anytime at profixter.com/book"],
+  ["cancelled.free", "ProFixter: your free first visit on Tue, Mar 3 at 2:00 PM has been cancelled. You can book again anytime at profixter.com/book"],
+  ["cancelled.onetime", "ProFixter: your One-Time Visit on Tue, Mar 3 at 2:00 PM has been cancelled. You can book again anytime at profixter.com/book"],
+  ["cancelled.fullday", "ProFixter: your Full Day Service on Tue, Mar 3 has been cancelled. You can book again anytime at profixter.com/book"],
+  ["completed.membership", "Thanks for choosing ProFixter! Your visit is complete. If you would like to leave your Fixter a tip: https://www.profixter.com/tip"],
+  ["completed.free", "Thanks for trying ProFixter! Your free first visit is complete. If you would like to leave your Fixter a tip: https://www.profixter.com/tip"],
+  ["completed.onetime", "Thanks for choosing ProFixter! Your One-Time Visit is complete. If you would like to leave your Fixter a tip: https://www.profixter.com/tip"],
+  ["completed.fullday", "Thanks for choosing ProFixter! Your Full Day Service is complete. If you would like to leave your Fixter a tip: https://www.profixter.com/tip"],
+  ["fixterAssigned.membership", "ProFixter: Alex will be your Fixter for your visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterAssigned.free", "ProFixter: Alex will be your Fixter for your free first visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterAssigned.onetime", "ProFixter: Alex will be your Fixter for your One-Time Visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterAssigned.fullday", "ProFixter: Alex will be your Fixter for your Full Day Service on Tue, Mar 3."],
+  ["fixterChanged.membership", "ProFixter update: Jordan will now be your Fixter for your visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterChanged.free", "ProFixter update: Jordan will now be your Fixter for your free first visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterChanged.onetime", "ProFixter update: Jordan will now be your Fixter for your One-Time Visit on Tue, Mar 3 at 2:00 PM."],
+  ["fixterChanged.fullday", "ProFixter update: Jordan will now be your Fixter for your Full Day Service on Tue, Mar 3."],
+  ["FIXTER_ON_THE_WAY", "ProFixter: Alex is on the way to you now."],
+  ["ACCOUNT_CREATED", "Welcome to ProFixter, Sam! Your account is ready. Book a visit anytime at profixter.com/book. Reply STOP to opt out."],
+  ["ACCOUNT_PASSWORD_CHANGED", "ProFixter security: your account password was just changed. If this was not you, call 631-599-1363 right away."],
+  ["MEMBERSHIP_STARTED", "Welcome to ProFixter Premium, Sam! Your membership is active. Book your first visit at profixter.com/book"],
+  ["MEMBERSHIP_CHANGED", "ProFixter: your membership is now Elite, billed monthly. Details are in your account: profixter.com/account"],
+  ["MEMBERSHIP_CANCELLATION_SCHEDULED", "ProFixter: your membership cancellation is confirmed. You keep full access until Tue, Mar 31. Changed your mind? profixter.com/account"],
+  ["MEMBERSHIP_CANCELLED", "ProFixter: your membership has now ended. Thank you for being a member. You are welcome back anytime at profixter.com/membership"],
+  ["PAYMENT_FAILED", "ProFixter: we could not process your membership payment. Please update your card to keep your visits active: profixter.com/account"],
+  ["KITCHEN_BATH_MARKETING", "ProFixter: Thinking about a kitchen or bathroom remodel? We handle complete renovations. Get a free estimate: profixter.com/projects Reply STOP to opt out."],
+  ["MEMBERSHIP_MARKETING", "ProFixter: Handyman labor and trip costs are included with membership. Get small home repairs done easily: profixter.com/membership Reply STOP to opt out."],
+  ["SEASONAL_MARKETING", "Spring gutter and exterior checks are open for booking. Reply STOP to opt out."],
+];
+
+test("all 43 approved messages are unchanged", () => {
+  const notifications = require("../utils/sms/smsNotifications");
+  const MOVED = new Date("2026-03-05T15:00:00.000Z");
+  const KINDS = [
+    ["membership", BOOKINGS.membership],
+    ["free", BOOKINGS.freeFirst],
+    ["onetime", BOOKINGS.oneTime],
+    ["fullday", BOOKINGS.fullDay],
+  ];
+  const FAMILIES = [
+    ["confirmation", null, false],
+    ["reminder24h", "BOOKING_REMINDER_24H", false],
+    ["reminder60m", "BOOKING_REMINDER_60M", false],
+    ["rescheduled", "BOOKING_RESCHEDULED", true],
+    ["cancelled", "BOOKING_CANCELLED", false],
+    ["completed", null, false],
+    ["fixterAssigned", "FIXTER_ASSIGNED", false],
+    ["fixterChanged", "FIXTER_CHANGED", false],
+  ];
+
+  const actual = [];
+  for (const [famId, type, moved] of FAMILIES) {
+    for (const [kindId, base] of KINDS) {
+      const booking = { ...base, date: moved ? MOVED : APPOINTMENT, _id: "b1" };
+      let resolved = type;
+      if (famId === "confirmation") {
+        resolved = notifications.typeForBooking(notifications.CONFIRMATION_TYPE, booking);
+      }
+      if (famId === "completed") {
+        resolved = notifications.typeForBooking(notifications.COMPLETION_TYPE, booking);
+      }
+      actual.push([
+        `${famId}.${kindId}`,
+        templates.renderSms(resolved, {
+          booking,
+          fixterName: famId === "fixterChanged" ? "Jordan Ellis" : "Alex Rivera",
+        }),
+      ]);
+    }
+  }
+
+  const OTHERS = [
+    ["FIXTER_ON_THE_WAY", { fixterName: "Alex Rivera" }],
+    ["ACCOUNT_CREATED", { name: "Sam Carter" }],
+    ["ACCOUNT_PASSWORD_CHANGED", {}],
+    ["MEMBERSHIP_STARTED", { name: "Sam Carter", planLabel: "Premium" }],
+    ["MEMBERSHIP_CHANGED", { planLabel: "Elite", billingCycle: "monthly" }],
+    ["MEMBERSHIP_CANCELLATION_SCHEDULED", { accessUntil: new Date("2026-03-31T14:22:07.000Z") }],
+    ["MEMBERSHIP_CANCELLED", {}],
+    ["PAYMENT_FAILED", {}],
+    ["KITCHEN_BATH_MARKETING", {}],
+    ["MEMBERSHIP_MARKETING", {}],
+    ["SEASONAL_MARKETING", { body: "Spring gutter and exterior checks are open for booking." }],
+  ];
+  for (const [type, vars] of OTHERS) actual.push([type, templates.renderSms(type, vars)]);
+
+  assert.equal(actual.length, 43, "the catalogue must still be 43 messages");
+  for (let i = 0; i < APPROVED_SNAPSHOT.length; i += 1) {
+    assert.equal(actual[i][0], APPROVED_SNAPSHOT[i][0], "catalogue order changed");
+    assert.equal(
+      actual[i][1],
+      APPROVED_SNAPSHOT[i][1],
+      `approved copy changed for ${actual[i][0]}`
+    );
+  }
 });
 
 /* ========================================================================== */

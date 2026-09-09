@@ -63,6 +63,43 @@ function resolveBookingPhone(booking = {}, user = null) {
 }
 
 /**
+ * A Mongo filter matching every User account that holds this number.
+ *
+ * WHY AN EXACT MATCH ON `phone` IS NOT ENOUGH.
+ *
+ * Registration normalises to E.164, so accounts made through the website store
+ * "+16315991363". But a Google sign-up may carry no phone at all and gain one
+ * later, legacy rows predate the normalisation, and admin edits were unchecked
+ * until recently - so the same handset can legitimately be stored as
+ * "+16315991363", "16315991363", "6315991363" or "(631) 599-1363" across
+ * different accounts.
+ *
+ * That matters because several accounts may share one handset, and a STOP has
+ * to reach ALL of them. Matching only the E.164 spelling silently misses the
+ * others.
+ *
+ * `search.phone` is the reliable join: User already maintains it as the bare
+ * 10-digit national form, it is indexed, and the pre-validate hook keeps it in
+ * step with whatever `phone` holds. The literal spellings are kept in the
+ * filter as a fallback for any document written before that field existed.
+ *
+ * NOTE ON SCOPE: this finds accounts to MIRROR state onto, for display. It is
+ * never how a send decision is made - those read SmsOptOut and SmsPhoneStatus,
+ * which are keyed by the normalised number and cannot miss.
+ */
+function userPhoneQuery(phone) {
+  const e164 = toE164(phone);
+  if (!e164) return null;
+  const national = e164.slice(2); // strip the leading "+1"
+  return {
+    $or: [
+      { "search.phone": national },
+      { phone: { $in: [e164, `1${national}`, national] } },
+    ],
+  };
+}
+
+/**
  * How many segments a body will be billed as.
  *
  * An estimate, not an authority — Twilio decides for real, and the exact answer
@@ -97,4 +134,5 @@ module.exports = {
   maskPhone,
   resolveBookingPhone,
   toE164,
+  userPhoneQuery,
 };

@@ -59,12 +59,14 @@ stub("../utils/sms/twilioProvider", {
 
 const SmsMessage = require("../models/SmsMessage");
 const SmsOptOut = require("../models/SmsOptOut");
+const SmsPhoneStatus = require("../models/SmsPhoneStatus");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const Booking = require("../models/Booking");
 const smsService = require("../utils/sms/smsService");
 const smsNotify = require("../utils/sms/smsNotifications");
 const dedupe = require("../utils/sms/smsDedupe");
+const phoneStatus = require("../utils/sms/smsPhoneStatus");
 const { runCampaign } = require("../utils/sms/smsCampaignRunner");
 const { SmsProviderError } = realProvider;
 
@@ -80,6 +82,7 @@ async function test(name, fn) {
   await Promise.all([
     SmsMessage.deleteMany({}),
     SmsOptOut.deleteMany({}),
+    SmsPhoneStatus.deleteMany({}),
     User.deleteMany({}),
     Subscription.deleteMany({}),
     Booking.deleteMany({}),
@@ -973,6 +976,592 @@ async function run() {
     assert.ok(result, "must return rather than throw");
     assert.equal(result.ok, false);
   });
+
+  console.log("\nPhone deliverability");
+
+  await test("a well-formed number starts as unknown, not valid", async () => {
+    /*
+     * Correct formatting is not evidence that a number exists. A brand new
+     * number has no row at all, which reads as unknown.
+     */
+    const state = await phoneStatus.getPhoneStatus("+16315991363");
+    assert.equal(state.status, "unknown");
+    assert.equal(state.known, false);
+    assert.equal(await SmsPhoneStatus.countDocuments({}), 0, "no row is created just by asking");
+  });
+
+  await test("a malformed number has no deliverability state at all", async () => {
+    for (const junk of ["", "123", "abc", "0315991363", null]) {
+      const state = await phoneStatus.getPhoneStatus(junk);
+      assert.equal(state.status, "unknown", `for ${JSON.stringify(junk)}`);
+      assert.equal(state.phone, null);
+    }
+  });
+
+  await test("a delivered callback marks the number valid", async () => {
+    /*
+     * Only a carrier confirming delivery earns "valid". Provider acceptance
+     * means Twilio queued it, which is a different and weaker fact.
+     */
+    await phoneStatus.markValid("+16315991363", { notificationType: "BOOKING_REMINDER_24H" });
+    const state = await phoneStatus.getPhoneStatus("+16315991363");
+    assert.equal(state.status, "valid");
+    assert.ok(state.lastSuccessAt, "lastSuccessAt must be recorded");
+    assert.equal(state.successCount, 1);
+  });
+
+  await test("sending alone does NOT mark a number valid", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      const result = await smsNotify.notifyBookingConfirmed(booking, user);
+      assert.equal(result.status, "sent");
+      // The provider accepted it; no carrier has confirmed anything yet.
+      const state = await phoneStatus.getPhoneStatus("+16315991363");
+      assert.equal(state.status, "unknown", "acceptance is not delivery");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a permanent invalid-number failure marks the number undeliverable", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      nextSendBehaviour = new SmsProviderError("The To number is not valid", {
+        code: 21211,
+        status: 400,
+        retryable: false,
+        reason: "invalid_phone_number",
+      });
+
+      await smsNotify.notifyBookingReminder(booking, user, "24h");
+
+      const state = await phoneStatus.getPhoneStatus("+16315991363");
+      assert.equal(state.status, "undeliverable");
+      assert.equal(state.undeliverableCode, "21211");
+      assert.equal(state.undeliverableReason, "invalid_phone_number");
+      assert.ok(state.undeliverableAt, "undeliverableAt must be recorded");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a landline failure marks the number undeliverable", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      nextSendBehaviour = new SmsProviderError("Landline or unreachable carrier", {
+        code: 30006,
+        status: 400,
+        retryable: false,
+        reason: "landline_or_unreachable",
+      });
+      await smsNotify.notifyBookingReminder(booking, user, "24h");
+      assert.equal((await phoneStatus.getPhoneStatus("+16315991363")).status, "undeliverable");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a TRANSIENT failure never marks the number undeliverable", async () => {
+    /*
+     * The failure this whole module is designed to avoid: a Twilio outage
+     * silently condemning every customer we tried to reach during it.
+     */
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      nextSendBehaviour = new SmsProviderError("Service unavailable", {
+        code: 20503,
+        status: 503,
+        retryable: true,
+        reason: "provider_server_error",
+      });
+
+      await smsNotify.notifyBookingReminder(booking, user, "24h");
+
+      const state = await phoneStatus.getPhoneStatus("+16315991363");
+      assert.equal(state.status, "unknown", "a transient failure must not condemn the number");
+      assert.equal(state.undeliverableAt, null);
+      // The failure is still recorded, because a repeatedly failing number is
+      // a pattern worth seeing even when no single failure is fatal.
+      assert.ok(state.lastFailureAt, "the failure is still recorded");
+      assert.equal(state.lastFailureCode, "20503");
+      assert.equal(state.failureCount, 1);
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("carrier filtering and opt-out never mark a number undeliverable", async () => {
+    /*
+     * 30007 is about OUR content and reputation; 21610 is a person's choice.
+     * Neither is a defect in the handset, and marking either would silence
+     * customers we can still reach.
+     */
+    process.env.SMS_ENABLED = "true";
+    try {
+      for (const [code, reason] of [[30007, "carrier_filtered"], [21610, "recipient_opted_out"]]) {
+        await SmsPhoneStatus.deleteMany({});
+        const user = await makeUser();
+        const booking = await makeBooking(user);
+        nextSendBehaviour = new SmsProviderError("blocked", {
+          code,
+          status: 400,
+          retryable: false,
+          reason,
+        });
+        await smsNotify.notifyBookingReminder(booking, user, "24h");
+        const state = await phoneStatus.getPhoneStatus("+16315991363");
+        assert.notEqual(state.status, "undeliverable", `code ${code} must not condemn the number`);
+      }
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("an undeliverable number suppresses future sends BEFORE calling Twilio", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      await SmsPhoneStatus.create({
+        phone: "+16315991363",
+        status: "undeliverable",
+        undeliverableAt: new Date(),
+        undeliverableCode: "21614",
+        undeliverableReason: "not_a_mobile_number",
+      });
+
+      twilioCalls.length = 0;
+      const result = await smsNotify.notifyBookingReminder(booking, user, "24h");
+
+      assert.equal(result.status, "suppressed");
+      assert.equal(result.reason, "phone_undeliverable");
+      assert.equal(twilioCalls.length, 0, "Twilio must not be called at all");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a suppressed attempt is visible in the SMS audit log", async () => {
+    const user = await makeUser();
+    const booking = await makeBooking(user);
+    await SmsPhoneStatus.create({
+      phone: "+16315991363",
+      status: "undeliverable",
+      undeliverableAt: new Date(),
+      undeliverableCode: "21211",
+      undeliverableReason: "invalid_phone_number",
+    });
+
+    await smsNotify.notifyBookingReminder(booking, user, "24h");
+
+    const row = await SmsMessage.findOne({});
+    assert.ok(row, "the decision must be recorded, not silently dropped");
+    assert.equal(row.status, "suppressed");
+    assert.equal(row.suppressionReason, "phone_undeliverable");
+    assert.ok(row.body, "the message we would have sent is still stored");
+  });
+
+  await test("MARKETING also respects an undeliverable number", async () => {
+    process.env.SMS_MARKETING_ENABLED = "true";
+    try {
+      await makeUser({
+        createdAt: OLD_ACCOUNT,
+        smsPreferences: { marketingEnabled: true },
+      });
+      await SmsPhoneStatus.create({
+        phone: "+16315991363",
+        status: "undeliverable",
+        undeliverableAt: new Date(),
+        undeliverableCode: "30006",
+        undeliverableReason: "landline_or_unreachable",
+      });
+
+      twilioCalls.length = 0;
+      await runCampaign(campaign, { now: MARKETING_NOW });
+
+      const row = await SmsMessage.findOne({});
+      assert.equal(row.status, "suppressed");
+      assert.equal(row.suppressionReason, "phone_undeliverable");
+      assert.equal(twilioCalls.length, 0);
+    } finally {
+      delete process.env.SMS_MARKETING_ENABLED;
+    }
+  });
+
+  await test("a genuinely NEW number starts unknown, inheriting nothing", async () => {
+    /*
+     * No reset logic is involved and none is needed: the state is keyed by the
+     * number, so a different number is simply a key with no row.
+     */
+    await SmsPhoneStatus.create({
+      phone: "+16315991363",
+      status: "undeliverable",
+      undeliverableAt: new Date(),
+      undeliverableCode: "21211",
+    });
+
+    const moved = await phoneStatus.getPhoneStatus("+12125551212");
+    assert.equal(moved.status, "unknown");
+    assert.equal(moved.known, false);
+
+    // And the old number keeps its history for audit.
+    assert.equal((await phoneStatus.getPhoneStatus("+16315991363")).status, "undeliverable");
+  });
+
+  await test("a cosmetic reformat of the SAME number preserves its state", async () => {
+    await phoneStatus.markValid("+16315991363");
+
+    for (const written of ["6315991363", "(631) 599-1363", "631-599-1363", "+1 631 599 1363"]) {
+      const state = await phoneStatus.getPhoneStatus(written);
+      assert.equal(state.status, "valid", `${written} must resolve to the same record`);
+    }
+    assert.equal(await SmsPhoneStatus.countDocuments({}), 1, "one number, one row");
+  });
+
+  await test("STOP and deliverability are independent of each other", async () => {
+    const user = await makeUser();
+    const booking = await makeBooking(user);
+
+    // A valid, delivering number that has opted out is blocked by CONSENT.
+    await phoneStatus.markValid("+16315991363");
+    await SmsOptOut.create({
+      phone: "+16315991363",
+      scope: "all",
+      source: "carrier_keyword",
+      optedOutAt: new Date(),
+    });
+
+    const result = await smsNotify.notifyBookingReminder(booking, user, "24h");
+    assert.equal(result.reason, "opted_out_all", "consent takes precedence in the record");
+
+    // The phone is still valid; opting out says nothing about the handset.
+    assert.equal((await phoneStatus.getPhoneStatus("+16315991363")).status, "valid");
+  });
+
+  await test("transient failures still retry normally with the status layer in place", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const user = await makeUser();
+      const booking = await makeBooking(user);
+      nextSendBehaviour = new SmsProviderError("Twilio unavailable", {
+        code: 20503,
+        status: 503,
+        retryable: true,
+        reason: "provider_server_error",
+      });
+
+      const first = await smsNotify.notifyBookingReminder(booking, user, "24h");
+      assert.equal(first.status, "retry_scheduled");
+
+      const stats = await smsService.runSmsRetrySweep({
+        now: new Date(Date.now() + 10 * 60 * 1000),
+      });
+      assert.equal(stats.sent, 1, "the retry must still go through");
+      assert.equal(await SmsMessage.countDocuments({}), 1, "and must not duplicate");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a delivered message clears a stale undeliverable mark", async () => {
+    /*
+     * Numbers get recycled. A line that was dead and is now answering should
+     * come back into service on the evidence in front of us.
+     */
+    await SmsPhoneStatus.create({
+      phone: "+16315991363",
+      status: "undeliverable",
+      undeliverableAt: new Date(),
+      undeliverableCode: "30005",
+    });
+
+    await phoneStatus.markValid("+16315991363");
+
+    const state = await phoneStatus.getPhoneStatus("+16315991363");
+    assert.equal(state.status, "valid");
+    assert.equal(state.undeliverableAt, null);
+    assert.equal(state.undeliverableCode, "");
+  });
+
+  console.log("\nShared phone numbers");
+
+  /*
+   * One handset, several accounts.
+   *
+   * A household shares a mobile: two partners each hold their own ProFixter
+   * account, their own membership and their own bookings, on the same number.
+   * A parent books for an elderly relative. A landlord and a tenant. None of
+   * these is a duplicate to be merged, and all of them must work.
+   *
+   * Two properties have to hold at once, and they pull in opposite directions:
+   * anything about the HANDSET (a STOP, a dead number) is shared, while
+   * anything about an ACCOUNT or a BOOKING stays separate. The architecture
+   * gets this by keying deliverability and consent to the phone while keying
+   * deduplication to the entity the event belongs to.
+   */
+
+  /** Two accounts, same number, different people. */
+  async function makeSharedPhoneAccounts() {
+    const a = await makeUser({ name: "Sam Carter", email: "sam@example.com", phone: "6315991363" });
+    const b = await makeUser({ name: "Alex Carter", email: "alex@example.com", phone: "6315991363" });
+    return { a, b };
+  }
+
+  await test("User.phone carries no unique index", async () => {
+    /*
+     * The structural guarantee, read off the live collection rather than
+     * assumed from the schema file. A unique index here would make the second
+     * account in a household impossible to create at all.
+     */
+    const indexes = await User.collection.indexes();
+    const offending = indexes.filter(
+      (idx) => idx.unique && Object.keys(idx.key).some((k) => /phone/i.test(k))
+    );
+    assert.deepEqual(offending, [], "no unique index may cover phone");
+  });
+
+  await test("two accounts can hold the same normalized phone", async () => {
+    const { a, b } = await makeSharedPhoneAccounts();
+    assert.notEqual(String(a._id), String(b._id));
+    assert.notEqual(a.userId, b.userId);
+    assert.equal(a.phone, b.phone);
+    assert.equal(await User.countDocuments({ phone: "6315991363" }), 2);
+  });
+
+  await test("registration is not blocked by a phone another account already uses", async () => {
+    /*
+     * The registration route refuses a duplicate EMAIL and nothing else. This
+     * asserts the guard is email-scoped in the source, and that creating the
+     * second account genuinely succeeds.
+     */
+    const source = require("fs").readFileSync(
+      require("path").join(__dirname, "..", "routes", "auth.js"),
+      "utf8"
+    );
+    assert.match(
+      source,
+      /const existing = await User\.findOne\(\{ email: cleanEmail \}\);/,
+      "the duplicate check must be on email"
+    );
+    assert.ok(
+      !/findOne\(\{\s*phone\s*[:}]/.test(source),
+      "registration must not look up an existing account by phone"
+    );
+
+    await makeUser({ email: "first@example.com", phone: "6315991363" });
+    const second = await makeUser({ email: "second@example.com", phone: "6315991363" });
+    assert.ok(second._id, "the second account must be created");
+  });
+
+  await test("accounts sharing a phone keep their own bookings and memberships", async () => {
+    const { a, b } = await makeSharedPhoneAccounts();
+    const bookingA = await makeBooking(a);
+    const bookingB = await makeBooking(b);
+    await Subscription.create({
+      user: a._id,
+      userId: a.userId,
+      subscriptionType: "premium",
+      addressId: new mongoose.Types.ObjectId(),
+      startDate: new Date(),
+      latestPaymentDate: new Date(),
+      nextPaymentDate: new Date("2026-04-01"),
+      status: "active",
+    });
+
+    assert.equal(String(bookingA.user), String(a._id));
+    assert.equal(String(bookingB.user), String(b._id));
+    assert.equal(await Booking.countDocuments({ user: a._id }), 1);
+    assert.equal(await Booking.countDocuments({ user: b._id }), 1);
+    // The membership belongs to one account only; sharing a phone grants nothing.
+    assert.equal(await Subscription.countDocuments({ user: a._id }), 1);
+    assert.equal(await Subscription.countDocuments({ user: b._id }), 0);
+  });
+
+  await test("an undeliverable shared number suppresses BOTH accounts", async () => {
+    process.env.SMS_ENABLED = "true";
+    try {
+      const { a, b } = await makeSharedPhoneAccounts();
+      const bookingA = await makeBooking(a);
+      const bookingB = await makeBooking(b);
+
+      // The first account's send proves the number is dead.
+      nextSendBehaviour = new SmsProviderError("The To number is not valid", {
+        code: 21211,
+        status: 400,
+        retryable: false,
+        reason: "invalid_phone_number",
+      });
+      await smsNotify.notifyBookingReminder(bookingA, a, "24h");
+      assert.equal((await phoneStatus.getPhoneStatus("+16315991363")).status, "undeliverable");
+
+      // The second account inherits it, because the fact is about the handset.
+      twilioCalls.length = 0;
+      const second = await smsNotify.notifyBookingReminder(bookingB, b, "24h");
+      assert.equal(second.status, "suppressed");
+      assert.equal(second.reason, "phone_undeliverable");
+      assert.equal(twilioCalls.length, 0, "the second account must not call Twilio either");
+    } finally {
+      delete process.env.SMS_ENABLED;
+    }
+  });
+
+  await test("a STOP from the handset suppresses BOTH accounts", async () => {
+    /*
+     * The second account cannot be a way around a STOP. Consent belongs to
+     * whoever holds the phone, not to whichever account happens to be sending.
+     */
+    const { a, b } = await makeSharedPhoneAccounts();
+    const bookingA = await makeBooking(a);
+    const bookingB = await makeBooking(b);
+
+    await webhook.applyOptOut("+16315991363", "stop");
+
+    const first = await smsNotify.notifyBookingReminder(bookingA, a, "24h");
+    const second = await smsNotify.notifyBookingReminder(bookingB, b, "24h");
+
+    assert.equal(first.status, "suppressed");
+    assert.equal(first.reason, "opted_out_all");
+    assert.equal(second.status, "suppressed");
+    assert.equal(second.reason, "opted_out_all");
+    assert.equal(twilioCalls.length, 0);
+
+    // And the mirror reached both account records, not just one.
+    const reloaded = await User.find({ phone: "6315991363" }).lean();
+    assert.equal(reloaded.length, 2);
+    for (const u of reloaded) {
+      assert.ok(u.smsPreferences?.optedOutAt, `${u.email} should show the opt-out`);
+    }
+  });
+
+  await test("a later delivery brings a shared number back for both accounts", async () => {
+    const { a, b } = await makeSharedPhoneAccounts();
+    await SmsPhoneStatus.create({
+      phone: "+16315991363",
+      status: "undeliverable",
+      undeliverableAt: new Date(),
+      undeliverableCode: "30005",
+    });
+
+    // The carrier confirms delivery: the number is answering again.
+    await phoneStatus.markValid("+16315991363");
+
+    const bookingA = await makeBooking(a);
+    const bookingB = await makeBooking(b);
+    const first = await smsNotify.notifyBookingReminder(bookingA, a, "24h");
+    const second = await smsNotify.notifyBookingReminder(bookingB, b, "24h");
+
+    assert.equal(first.status, "simulated", "account A can send again");
+    assert.equal(second.status, "simulated", "account B can send again");
+  });
+
+  await test("the SAME event cannot duplicate to a shared destination", async () => {
+    /*
+     * Deduplication is keyed to the booking, not the phone, so re-processing
+     * one booking produces one message no matter how many accounts share the
+     * number it goes to.
+     */
+    const { a } = await makeSharedPhoneAccounts();
+    const booking = await makeBooking(a);
+
+    for (let i = 0; i < 4; i += 1) {
+      await smsNotify.notifyBookingConfirmed(booking, a);
+    }
+    assert.equal(await SmsMessage.countDocuments({}), 1);
+  });
+
+  await test("two DIFFERENT bookings on a shared number each send", async () => {
+    /*
+     * The other half of the rule, and the reason phone-wide deduplication
+     * would be wrong: two people in one household each booked a visit, and
+     * each is entitled to hear about their own.
+     */
+    const { a, b } = await makeSharedPhoneAccounts();
+    const bookingA = await makeBooking(a, { date: new Date("2026-03-03T19:00:00.000Z") });
+    const bookingB = await makeBooking(b, { date: new Date("2026-03-06T15:00:00.000Z") });
+
+    await smsNotify.notifyBookingConfirmed(bookingA, a);
+    await smsNotify.notifyBookingConfirmed(bookingB, b);
+
+    const rows = await SmsMessage.find({}).sort({ createdAt: 1 }).lean();
+    assert.equal(rows.length, 2, "each booking gets its own confirmation");
+    assert.notEqual(rows[0].dedupeKey, rows[1].dedupeKey);
+    assert.equal(rows[0].toPhone, rows[1].toPhone, "both went to the same handset");
+    assert.notEqual(String(rows[0].user), String(rows[1].user));
+  });
+
+  await test("two bookings at the SAME time on a shared number still both send", async () => {
+    // The sharpest case: identical appointment instant, same phone. They are
+    // still two bookings, so they are still two messages.
+    const { a, b } = await makeSharedPhoneAccounts();
+    const when = new Date("2026-03-03T19:00:00.000Z");
+    const bookingA = await makeBooking(a, { date: when });
+    const bookingB = await makeBooking(b, { date: when });
+
+    await smsNotify.notifyBookingReminder(bookingA, a, "24h");
+    await smsNotify.notifyBookingReminder(bookingB, b, "24h");
+
+    assert.equal(await SmsMessage.countDocuments({ notificationType: "BOOKING_REMINDER_24H" }), 2);
+  });
+
+  await test("each account still gets its own welcome text", async () => {
+    /*
+     * Two account creations are two events, so two welcomes. Deduplicating
+     * these by phone would silently deny the second person in a household any
+     * confirmation that their own account exists.
+     */
+    const { a, b } = await makeSharedPhoneAccounts();
+    await smsNotify.notifyAccountCreated(a);
+    await smsNotify.notifyAccountCreated(b);
+    await smsNotify.notifyAccountCreated(a); // replay: must not add a third
+
+    const rows = await SmsMessage.find({ notificationType: "ACCOUNT_CREATED" }).lean();
+    assert.equal(rows.length, 2);
+    assert.notEqual(rows[0].dedupeKey, rows[1].dedupeKey);
+  });
+
+  await test("no dedupe key is derived from the phone number", async () => {
+    /*
+     * The structural reason all of the above holds. A key built from the
+     * destination would collapse genuinely separate events together the
+     * moment two people shared a phone.
+     */
+    const { a, b } = await makeSharedPhoneAccounts();
+    const bookingA = await makeBooking(a);
+    const bookingB = await makeBooking(b);
+    await smsNotify.notifyBookingConfirmed(bookingA, a);
+    await smsNotify.notifyBookingConfirmed(bookingB, b);
+
+    for (const row of await SmsMessage.find({}).lean()) {
+      assert.ok(
+        !row.dedupeKey.includes("6315991363") && !row.dedupeKey.includes("+1"),
+        `dedupe key must not embed the destination: ${row.dedupeKey}`
+      );
+    }
+  });
+
+  await test("an admin can put a number back into play, as unknown", async () => {
+    await SmsPhoneStatus.create({
+      phone: "+16315991363",
+      status: "undeliverable",
+      undeliverableAt: new Date(),
+      undeliverableCode: "21211",
+    });
+
+    await phoneStatus.clearUndeliverable("+16315991363");
+
+    const state = await phoneStatus.getPhoneStatus("+16315991363");
+    // Unknown, not valid: an operator's judgement is not a carrier's proof.
+    assert.equal(state.status, "unknown");
+    assert.equal(state.undeliverableAt, null);
+  });
 }
 
 /* ========================================================================== */
@@ -980,7 +1569,7 @@ async function run() {
 (async () => {
   mongod = await MongoMemoryServer.create();
   await mongoose.connect(mongod.getUri(), { dbName: "sms_test" });
-  await Promise.all([SmsMessage.init(), SmsOptOut.init(), User.init()]);
+  await Promise.all([SmsMessage.init(), SmsOptOut.init(), SmsPhoneStatus.init(), User.init()]);
 
   try {
     await run();

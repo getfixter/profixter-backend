@@ -1,4 +1,5 @@
 const SmsOptOut = require("../../models/SmsOptOut");
+const SmsPhoneStatus = require("../../models/SmsPhoneStatus");
 const { QUIET_HOURS, TIMEZONE, smsMarketingEnabled } = require("./smsConfig");
 const { isMarketing, isTimeCritical, isKnownType } = require("./smsTypes");
 const { toE164 } = require("./smsPhone");
@@ -142,6 +143,7 @@ async function checkEligibility({
   now = new Date(),
   sendWindow = null,
   OptOutModel = SmsOptOut,
+  PhoneStatusModel = SmsPhoneStatus,
 }) {
   if (!isKnownType(notificationType)) {
     return no("unknown_notification_type", notificationType);
@@ -181,6 +183,29 @@ async function checkEligibility({
     if (optOut.scope === "marketing" && isMarketing(notificationType)) {
       return no("opted_out_marketing", optOut.source || "");
     }
+  }
+
+  /*
+   * A number a carrier has permanently refused.
+   *
+   * Checked here rather than at each trigger so that transactional and
+   * marketing inherit it identically and a future notification type cannot be
+   * added without it. Deliberately AFTER the opt-out check: a person who
+   * opted out and whose number later died should be recorded as opted out,
+   * because that is the fact that matters and the one somebody will ask about.
+   *
+   * The message still gets a row in the audit, marked suppressed with this
+   * reason, so "why did they not get the text" is answerable from the admin
+   * screen rather than from the absence of anything.
+   */
+  const phoneStatus = await PhoneStatusModel.findOne({ phone: e164 })
+    .select("status undeliverableCode undeliverableReason")
+    .lean();
+  if (phoneStatus && phoneStatus.status === "undeliverable") {
+    return no(
+      "phone_undeliverable",
+      phoneStatus.undeliverableReason || phoneStatus.undeliverableCode || ""
+    );
   }
 
   if (!withinSendWindow(notificationType, now, sendWindow)) {

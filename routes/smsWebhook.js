@@ -4,9 +4,10 @@ const router = express.Router();
 const SmsMessage = require("../models/SmsMessage");
 const SmsOptOut = require("../models/SmsOptOut");
 const User = require("../models/User");
-const { toE164, maskPhone } = require("../utils/sms/smsPhone");
+const { toE164, maskPhone, userPhoneQuery } = require("../utils/sms/smsPhone");
 const { statusCallbackUrl } = require("../utils/sms/smsConfig");
 const { validateTwilioSignature, webhookUrlFor } = require("../utils/sms/twilioProvider");
+const phoneStatus = require("../utils/sms/smsPhoneStatus");
 
 /**
  * Twilio's two inbound webhooks: delivery status, and replies.
@@ -145,6 +146,37 @@ router.post("/status", async (req, res) => {
 
     const result = await SmsMessage.updateOne(filter, { $set: update });
 
+    /*
+     * Teach the phone-status layer what the carrier just told us.
+     *
+     * THIS is where "valid" is earned. The provider accepting a message only
+     * means Twilio queued it; a delivered callback is a carrier confirming a
+     * handset received it, and that is the only evidence good enough to call a
+     * number valid.
+     *
+     * The message row is looked up for its destination rather than trusting
+     * the callback's own To field: the record is ours, and it already holds
+     * the number we normalised and dialled.
+     */
+    if (mapped === "delivered" || mapped === "undelivered" || mapped === "failed") {
+      const row = await SmsMessage.findOne({ providerMessageSid: sid })
+        .select("toPhone notificationType")
+        .lean();
+      if (row?.toPhone) {
+        if (mapped === "delivered") {
+          await phoneStatus.markValid(row.toPhone, {
+            notificationType: row.notificationType,
+          });
+        } else {
+          await phoneStatus.recordFailure(row.toPhone, {
+            code: errorCode,
+            reason: rawStatus,
+            notificationType: row.notificationType,
+          });
+        }
+      }
+    }
+
     console.log(
       JSON.stringify({
         event: "sms_status_callback",
@@ -271,8 +303,14 @@ async function applyOptOut(phone, keyword) {
     { upsert: true }
   );
 
-  await User.updateMany(
-    { phone },
+  /*
+   * Every account on this handset, not just the one whose phone happens to be
+   * spelled in E.164. Several people can legitimately share a number, and a
+   * STOP has to be visible on all of their accounts.
+   */
+  const accounts = userPhoneQuery(phone);
+  if (accounts) await User.updateMany(
+    accounts,
     {
       $set: {
         "smsPreferences.marketingEnabled": false,
@@ -310,8 +348,14 @@ async function applyOptIn(phone, keyword) {
     { upsert: true }
   );
 
-  await User.updateMany(
-    { phone },
+  /*
+   * Every account on this handset, not just the one whose phone happens to be
+   * spelled in E.164. Several people can legitimately share a number, and a
+   * STOP has to be visible on all of their accounts.
+   */
+  const accounts = userPhoneQuery(phone);
+  if (accounts) await User.updateMany(
+    accounts,
     { $set: { "smsPreferences.optedOutAt": null, "smsPreferences.optOutSource": "" } }
   );
 }

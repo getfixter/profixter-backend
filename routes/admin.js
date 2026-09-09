@@ -6,6 +6,7 @@ const router = express.Router();
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const smsNotify = require("../utils/sms/smsNotifications");
+const { normalizePhoneE164 } = require("../utils/identity");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Referral = require("../models/Referral");
@@ -1273,6 +1274,38 @@ router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
   allowedFields.forEach((field) => {
     if (req.body[field] !== undefined) updates[field] = req.body[field];
   });
+
+  /*
+   * Normalise a phone before it is stored, and refuse garbage.
+   *
+   * Registration already does this, so an account created through the website
+   * always holds a clean E.164 number. This path did not, which meant an admin
+   * edit was the one way a malformed number could get into the database and
+   * silently make every future text to that customer impossible.
+   *
+   * Clearing the phone stays allowed - an empty value is a deliberate removal,
+   * not a typo. Anything else that cannot be normalised is rejected rather
+   * than stored, because storing it only moves the failure to a place nobody
+   * is watching.
+   *
+   * This validates FORMAT, which is all it can do. A well-formed number is
+   * still only "unknown" until a carrier confirms delivery to it.
+   */
+  if (updates.phone !== undefined) {
+    const raw = String(updates.phone || "").trim();
+    if (!raw) {
+      updates.phone = "";
+    } else {
+      const e164 = normalizePhoneE164(raw);
+      if (!e164) {
+        return res.status(400).json({
+          message: "Phone must be a valid US number.",
+          code: "INVALID_PHONE",
+        });
+      }
+      updates.phone = e164;
+    }
+  }
 
   try {
     const existing = await User.findById(req.params.id).lean();
