@@ -52,6 +52,7 @@ const SUITES = [
   "test_billing_portal_configuration.js",
   "test_sms_core.js",
   "test_gift_membership.js",
+  "test_gift_membership_tax.js",
 ];
 
 /**

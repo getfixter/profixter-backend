@@ -130,6 +130,8 @@ async function recordPurchasedGift({
     stripeChargeId: payment?.chargeId || null,
     amountSubtotalCents: Number(payment?.amountSubtotalCents || 0),
     discountCents: Number(payment?.discountCents || 0),
+    taxCents: Number(payment?.taxCents || 0),
+    automaticTaxStatus: String(payment?.automaticTaxStatus || ""),
     amountPaidCents: Number(payment?.amountPaidCents || 0),
     currency: String(payment?.currency || "usd").toLowerCase(),
     promotionCodeId: String(payment?.promotionCodeId || ""),

@@ -82,8 +82,17 @@ function selfGiftingAllowed() {
 
 const TIMEZONE = "America/New_York";
 
-/** A snapshot for logs, health checks and the admin screen. */
+/**
+ * A snapshot for logs, health checks and the admin screen.
+ *
+ * Required lazily so this module stays dependency-free: giftProducts reads the
+ * plan catalogue, and config should not drag that in for everyone who only
+ * wants to know whether a flag is set.
+ */
 function configSnapshot() {
+  const { giftProductStatus, giftProductStatusReason } = require("./giftProducts");
+  const products = giftProductStatus();
+
   return {
     giftsEnabled: giftsEnabled(),
     selfGiftingAllowed: selfGiftingAllowed(),
@@ -92,6 +101,15 @@ function configSnapshot() {
     claimTokenTtlDays: CLAIM_TOKEN_TTL_DAYS,
     endingSoonDays: ENDING_SOON_DAYS,
     timezone: TIMEZONE,
+    /*
+     * Whether gifts could actually be SOLD, which is not the same question as
+     * whether the feature is on. Enabled with unconfigured Products means the
+     * purchase routes refuse; this is how that shows up somewhere visible
+     * instead of only in a 503.
+     */
+    productsConfigured: products.ok,
+    productsProblem: giftProductStatusReason(products),
+    sellable: giftsEnabled() && products.ok,
   };
 }
 

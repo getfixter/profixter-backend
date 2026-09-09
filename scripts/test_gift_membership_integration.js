@@ -74,7 +74,11 @@ function sessionFor(purchaser, overrides = {}) {
     amount_subtotal: 49800,
     amount_total: overrides.amountTotal ?? 49800,
     currency: "usd",
-    total_details: { amount_discount: overrides.discount || 0 },
+    total_details: {
+      amount_discount: overrides.discount || 0,
+      amount_tax: overrides.tax || 0,
+    },
+    automatic_tax: { enabled: true, status: overrides.taxStatus || "complete" },
     discounts: overrides.discounts || [],
     metadata: {
       productKind: "gift_membership",
@@ -652,6 +656,100 @@ async function run() {
     assert.equal(result.handled, false);
     const stored = await GiftMembership.findOne({});
     assert.equal(stored.refundStatus, "none");
+  });
+
+
+  console.log("\nAutomatic tax");
+
+  await test("the tax Stripe charged is stored, and the total stays tax-inclusive", async () => {
+    const buyer = await makeUser({ email: `tax-${Date.now()}@example.com` });
+    // $498.00 of gift, $43.58 of New York sales tax on top.
+    const session = sessionFor(buyer, { tax: 4358, amountTotal: 54158 });
+
+    const result = await giftWebhook.handleGiftCheckoutCompleted(session);
+    assert.equal(result.created, true);
+
+    const stored = await GiftMembership.findById(result.gift._id);
+    assert.equal(stored.amountSubtotalCents, 49800, "subtotal is the pre-tax amount we quoted");
+    assert.equal(stored.taxCents, 4358, "tax must be Stripe's figure, not one we computed");
+    assert.equal(stored.amountPaidCents, 54158, "the paid total includes tax");
+    assert.equal(stored.automaticTaxStatus, "complete");
+    assert.equal(
+      stored.amountSubtotalCents + stored.taxCents - stored.discountCents,
+      stored.amountPaidCents,
+      "the stored figures must reconcile"
+    );
+  });
+
+  await test("tax does not shorten or move the entitlement", async () => {
+    const untaxed = await makeUser({ email: `noTax-${Date.now()}@example.com` });
+    const taxed = await makeUser({ email: `withTax-${Date.now()}@example.com` });
+
+    const stamp = Date.now();
+    const a = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(untaxed, { tax: 0, recipientEmail: `plainRecipient-${stamp}@example.com` })
+    );
+    const b = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(taxed, {
+        tax: 4358,
+        amountTotal: 54158,
+        recipientEmail: `taxedRecipient-${stamp}@example.com`,
+      })
+    );
+
+    assert.equal(a.gift.durationMonths, b.gift.durationMonths, "same term, tax or no tax");
+
+    const claimant = await makeUser({ email: a.gift.recipientEmail });
+    const claimantB = await makeUser({ email: b.gift.recipientEmail });
+    const at = new Date("2026-04-01T12:00:00Z");
+
+    const claimedA = await giftService.claimGift({
+      gift: await GiftMembership.findById(a.gift._id),
+      user: claimant,
+      addressId: claimant.addresses[0]._id,
+      now: at,
+    });
+    const claimedB = await giftService.claimGift({
+      gift: await GiftMembership.findById(b.gift._id),
+      user: claimantB,
+      addressId: claimantB.addresses[0]._id,
+      now: at,
+    });
+
+    assert.equal(
+      claimedA.gift.startAt.toISOString(),
+      claimedB.gift.startAt.toISOString(),
+      "tax must not move startAt"
+    );
+    assert.equal(
+      claimedA.gift.endAt.toISOString(),
+      claimedB.gift.endAt.toISOString(),
+      "tax must not move endAt"
+    );
+  });
+
+  await test("a full refund is measured against the tax-inclusive total", async () => {
+    const buyer = await makeUser({ email: `taxRefund-${Date.now()}@example.com` });
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(buyer, { tax: 4358, amountTotal: 54158 })
+    );
+
+    // Refunding only the pre-tax amount is a PARTIAL refund, because the
+    // customer paid the tax too.
+    await giftService.syncRefund({
+      gift: await GiftMembership.findById(created.gift._id),
+      refund: { id: `re_${Date.now()}_a`, amount: 49800, currency: "usd" },
+    });
+    let stored = await GiftMembership.findById(created.gift._id);
+    assert.equal(stored.refundStatus, "partial", "the tax has not come back yet");
+
+    await giftService.syncRefund({
+      gift: stored,
+      refund: { id: `re_${Date.now()}_b`, amount: 4358, currency: "usd" },
+    });
+    stored = await GiftMembership.findById(created.gift._id);
+    assert.equal(stored.refundStatus, "full");
+    assert.equal(stored.amountRefundedCents, 54158);
   });
 
   console.log("\nPayment safety");

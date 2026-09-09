@@ -170,6 +170,23 @@ const GiftMembershipSchema = new mongoose.Schema(
 
     amountSubtotalCents: { type: Number, default: 0, min: 0 },
     discountCents: { type: Number, default: 0, min: 0 },
+
+    /*
+     * Tax as Stripe calculated it, never as we guessed it.
+     *
+     * Automatic tax is on for gifts exactly as it is for memberships, so the
+     * figure that matters is the one on the completed Checkout Session. It is
+     * recorded for the books and for support; nothing reads it back to decide
+     * what somebody is owed, and nothing recomputes it.
+     *
+     * amountPaidCents below stays the tax-INCLUSIVE total (Stripe's
+     * amount_total), which is what a refund is measured against — so refund
+     * classification keeps working unchanged now that tax is collected.
+     */
+    taxCents: { type: Number, default: 0, min: 0 },
+    /** Stripe's own word for whether it managed to calculate: complete, failed… */
+    automaticTaxStatus: { type: String, default: "" },
+
     amountPaidCents: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: "usd", lowercase: true },
 

@@ -20,6 +20,12 @@ const {
 } = require("../utils/gifts/giftService");
 const { PLAN_NAMES, formatTermDate, quoteGift, stripeLineItem } = require("../utils/gifts/giftPricing");
 const {
+  giftProductId,
+  giftProductStatus,
+  giftProductStatusReason,
+  giftTaxCode,
+} = require("../utils/gifts/giftProducts");
+const {
   stripe,
   hasStripeSecretKey,
   resolveUserStripeCustomerId,
@@ -41,6 +47,46 @@ const CLIENT_URL = process.env.CLIENT_URL || "https://www.profixter.com";
  *     the recipient's reach; see models/GiftMembership.
  */
 
+/**
+ * Refuse the purchase flow unless the four gift Products are configured.
+ *
+ * FAIL CLOSED, ON THE SELLING PATH ONLY.
+ *
+ * Selling against a missing, malformed or wrong Product is worse than not
+ * selling: a gift billed under the recurring membership product would fold
+ * into membership reporting and inherit every coupon restricted to it. So the
+ * two routes that lead to money — the options screen and checkout — stop here
+ * rather than quietly falling back to a throwaway product.
+ *
+ * Claiming, listing and reading a gift are deliberately NOT gated. They touch
+ * no Stripe Product, and a configuration mistake must never strand somebody
+ * who already holds a gift that was paid for.
+ *
+ * Returns true when it has answered the request.
+ */
+function refuseUnlessProductsConfigured(res, where) {
+  const status = giftProductStatus();
+  if (status.ok) return false;
+
+  console.error(
+    JSON.stringify({
+      event: "gift_products_not_configured",
+      where,
+      reason: giftProductStatusReason(status),
+      missing: status.missing,
+      invalid: status.invalid,
+      reused: status.reused,
+      duplicated: status.duplicated,
+    })
+  );
+
+  res.status(503).json({
+    message: "Gift memberships are temporarily unavailable.",
+    code: "GIFT_PRODUCTS_NOT_CONFIGURED",
+  });
+  return true;
+}
+
 function featureGate(req, res, next) {
   if (!giftsEnabled()) {
     return res.status(404).json({ message: "Not found" });
@@ -49,6 +95,23 @@ function featureGate(req, res, next) {
 }
 
 router.use(featureGate);
+
+/*
+ * The selling routes, refused before anything else happens.
+ *
+ * Mounted ahead of `auth` on purpose. A server that cannot sell correctly
+ * should say so without first opening a database connection to find out who is
+ * asking — and it makes the guarantee checkable on its own, rather than only
+ * for a request that already has a valid session behind it.
+ *
+ * Order matters: featureGate above answers first, so "switched off" reads as
+ * 404 and "switched on but misconfigured" reads as 503. Those are genuinely
+ * different states and operators need to tell them apart.
+ */
+router.use(["/options", "/checkout-session"], (req, res, next) => {
+  if (refuseUnlessProductsConfigured(res, req.path.replace(/^\//, "") || "selling")) return;
+  return next();
+});
 
 /** Why a purchase was refused, in words a purchase screen can show. */
 const PURCHASE_ERRORS = {
@@ -143,6 +206,8 @@ router.post("/checkout-session", auth, async (req, res) => {
     const lineItem = stripeLineItem({
       plan: validation.plan,
       durationMonths: Number(durationMonths),
+      productId: giftProductId(validation.plan),
+      taxCode: giftTaxCode(),
     });
     if (!lineItem) {
       return res.status(400).json({ message: PURCHASE_ERRORS.unknown_plan });
@@ -178,14 +243,37 @@ router.post("/checkout-session", auth, async (req, res) => {
       // Stripe validates eligibility, expiry, redemption limits and any
       // product restrictions itself. Nothing about codes is reimplemented here.
       allow_promotion_codes: true,
+      /*
+       * Every ProFixter service charges tax the same way, so a gift does too.
+       *
+       * Stripe computes it from the purchaser's billing address at checkout
+       * and reports the authoritative figures back on the completed session;
+       * we never calculate tax ourselves and never accept a total from the
+       * browser. Discount-before-tax ordering is Stripe's to decide, which is
+       * the correct place for it to be decided.
+       *
+       * This does NOT make the gift recurring. Automatic tax is orthogonal to
+       * mode: the charge is still a single payment against an inline amount
+       * with no `recurring` block anywhere in it.
+       */
+      automatic_tax: { enabled: true },
       metadata,
       payment_intent_data: { metadata },
       success_url: `${CLIENT_URL}/gift/confirmation?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${CLIENT_URL}/gift?canceled=true`,
     };
 
-    if (stripeCustomerId) sessionConfig.customer = stripeCustomerId;
-    else sessionConfig.customer_email = purchaser.email;
+    if (stripeCustomerId) {
+      sessionConfig.customer = stripeCustomerId;
+      /*
+       * Automatic tax needs an address on the customer. Without this, a
+       * purchaser whose Stripe customer has none is refused by Stripe at
+       * session creation rather than being asked for one at checkout.
+       */
+      sessionConfig.customer_update = { address: "auto" };
+    } else {
+      sessionConfig.customer_email = purchaser.email;
+    }
 
     const session = await stripe.checkout.sessions.create(sessionConfig);
     if (!session?.url) {

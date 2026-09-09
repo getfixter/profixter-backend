@@ -35,6 +35,7 @@ function isGiftSession(session) {
  */
 function paymentFromSession(session) {
   const discount = session?.total_details?.amount_discount;
+  const tax = session?.total_details?.amount_tax;
   const promo = session?.discounts?.[0];
 
   return {
@@ -45,6 +46,14 @@ function paymentFromSession(session) {
         : session?.payment_intent?.id || null,
     amountSubtotalCents: Number(session?.amount_subtotal || 0),
     discountCents: Number(discount || 0),
+    /*
+     * Stripe's calculation, taken as given. We do not compute tax, do not
+     * check it against a rate of our own, and never accept a figure the
+     * browser supplied — the session is the authority.
+     */
+    taxCents: Number(tax || 0),
+    automaticTaxStatus: String(session?.automatic_tax?.status || ""),
+    /* Tax-inclusive: Stripe's amount_total, which is what refunds compare to. */
     amountPaidCents: Number(session?.amount_total || 0),
     currency: String(session?.currency || "usd").toLowerCase(),
     promotionCodeId:

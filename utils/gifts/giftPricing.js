@@ -83,27 +83,52 @@ function quoteGift({ plan, durationMonths }) {
  * which is the one thing a gift must never be: it would put the purchaser on a
  * renewing charge and give the recipient something to resume. An inline
  * one-time amount produces a single payment that creates no billing
- * relationship at all, and it needs no new Stripe product or price to be
- * created in the dashboard.
+ * relationship at all.
+ *
+ * THE ONE INVARIANT THIS FUNCTION EXISTS TO HOLD
+ *
+ * The object it returns has no `recurring` key, at any depth, ever. That
+ * absence is what makes a gift structurally incapable of becoming a
+ * subscription — not a check somewhere else that could be forgotten. A test
+ * asserts it on the real returned object rather than on the source text.
+ *
+ * `product` vs `product_data`
+ *
+ * Given a stable gift Product id, the amount is attached to that Product, so
+ * coupons can be restricted to (or away from) gifts and the tax code lives in
+ * Stripe where it belongs. Without one, Stripe mints a throwaway product from
+ * `product_data`. In a running application that second shape is unreachable:
+ * the route refuses to open checkout until the four Products are configured.
+ * It exists so the pricing unit stays testable on its own.
+ *
+ * `tax_behavior` is required whenever automatic tax is on. ProFixter quotes
+ * US-style prices with tax added on top, so it is exclusive.
  */
-function stripeLineItem({ plan, durationMonths }) {
+function stripeLineItem({ plan, durationMonths, productId = "", taxCode = "" }) {
   const quote = quoteGift({ plan, durationMonths });
   if (!quote.ok) return null;
 
   const planLabel = plan.charAt(0).toUpperCase() + plan.slice(1);
-  return {
-    quantity: 1,
-    price_data: {
-      currency: quote.currency,
-      unit_amount: quote.totalCents,
-      product_data: {
-        name: `ProFixter ${planLabel} — ${quote.durationMonths}-month gift membership`,
-        description:
-          `${quote.durationMonths} months of ProFixter ${planLabel}, prepaid as a gift. ` +
-          `One-time payment. Does not renew.`,
-      },
-    },
+
+  const price_data = {
+    currency: quote.currency,
+    unit_amount: quote.totalCents,
+    tax_behavior: "exclusive",
   };
+
+  if (productId) {
+    price_data.product = String(productId);
+  } else {
+    price_data.product_data = {
+      name: `ProFixter ${planLabel} — ${quote.durationMonths}-month gift membership`,
+      description:
+        `${quote.durationMonths} months of ProFixter ${planLabel}, prepaid as a gift. ` +
+        `One-time payment. Does not renew.`,
+      ...(taxCode ? { tax_code: String(taxCode) } : {}),
+    };
+  }
+
+  return { quantity: 1, price_data };
 }
 
 /* -------------------------------------------------------------------------- */
