@@ -5,6 +5,7 @@ const router = express.Router();
 
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const smsNotify = require("../utils/sms/smsNotifications");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Referral = require("../models/Referral");
@@ -2527,6 +2528,30 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
       console.log("Mail status-change error:", e.message);
     }
 
+    /*
+     * The status-change texts.
+     *
+     * Gated on transitionedToCompleted for the same reason the completion
+     * email is: re-saving a booking that is already Completed is not a
+     * second completion, and a customer told twice that their visit is
+     * finished has been told something odd. The dedupe key would catch a
+     * repeat anyway, but relying on it for something the caller already
+     * knows would put a suppressed row in the audit for every save.
+     */
+    try {
+      const smsUser = await User.findOne({ userId: booking.userId }).lean();
+      const normalized = String(status || "").toLowerCase();
+      if (normalized === "confirmed") {
+        await smsNotify.notifyBookingConfirmed(booking, smsUser, "adminBookingStatus");
+      } else if (normalized === "completed" && transitionedToCompleted) {
+        await smsNotify.notifyBookingCompleted(booking, smsUser, "adminBookingStatus");
+      } else if (normalized === "canceled") {
+        await smsNotify.notifyBookingCancelled(booking, smsUser, "adminBookingStatus");
+      }
+    } catch (e) {
+      console.log("SMS status-change error:", e.message);
+    }
+
     if (prev.toLowerCase() !== "canceled" && status.toLowerCase() === "canceled") {
       await createAdminActivityLog(req, {
         action: "Booking Manually Canceled",
@@ -2659,6 +2684,42 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
       after: bookingSnapshot(booking),
       req,
     });
+
+    /*
+     * Reschedule and reassignment texts.
+     *
+     * Sent only for a booking that is actually Confirmed. Moving a Pending
+     * or Canceled booking around is administrative housekeeping, and a
+     * customer who was never told the original time has nothing to be told
+     * about the new one.
+     *
+     * booking now carries the NEW date, which is what the reschedule key is
+     * scoped to: the message is about this appointment, and a booking moved
+     * twice correctly produces two notices.
+     */
+    try {
+      if (/^confirmed$/i.test(String(booking.status || ""))) {
+        const smsUser = await User.findOne({ userId: booking.userId }).lean();
+        if (dateChanged) {
+          await smsNotify.notifyBookingRescheduled(booking, smsUser, "adminBookingUpdate");
+        }
+        if (assignmentChanged && booking.assignedFixterId) {
+          await smsNotify.notifyFixterAssignment(booking, {
+            user: smsUser,
+            fixterId: booking.assignedFixterId,
+            fixterName: booking.assignedFixterName,
+            // "Changed" only when somebody was already assigned. A first
+            // assignment is news, not a correction, and saying "will now be"
+            // to a customer who was never told a name reads as an apology
+            // for something that never happened.
+            isChange: Boolean(before?.assignedFixterId),
+            source: "adminBookingUpdate",
+          });
+        }
+      }
+    } catch (e) {
+      console.log("SMS booking-update error:", e.message);
+    }
 
     return res.json({ message: "Booking updated", booking });
   } catch (err) {

@@ -3,6 +3,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const mail = require("../utils/emailService");
+const smsNotify = require("../utils/sms/smsNotifications");
 const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
@@ -353,6 +354,27 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
       user,
       addressIdHint: String(address._id),
     });
+
+    /*
+     * The plan-change confirmation.
+     *
+     * Sent for an upgrade, which takes effect now. NOT sent for a
+     * downgrade, which Stripe schedules for the next billing cycle: telling
+     * somebody their plan "is now" the cheaper one while they still have
+     * weeks of the more expensive one paid for would be wrong, and they
+     * already saw the scheduled date in the response above.
+     *
+     * The key includes the resulting plan and cycle, so a customer who
+     * upgrades and later changes again hears about both, while a retried
+     * request for one change stays silent the second time.
+     */
+    if (changeType === "upgrade") {
+      await smsNotify.notifyMembershipChanged(
+        updatedSubscription,
+        user,
+        "subscriptionsRoute"
+      );
+    }
 
     return res.json({
       message:
@@ -760,6 +782,18 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
         });
       } catch (emailErr) {
         console.error("subscription_cancellation_scheduled email failed:", emailErr.message);
+      }
+
+      // Self-serve cancellation. Same distinction as the webhook path:
+      // access continues to the period end, and the text says so.
+      try {
+        await smsNotify.notifyMembershipCancellationScheduled(
+          subscription,
+          user,
+          "subscriptionsRoute"
+        );
+      } catch (smsErr) {
+        console.error("cancellation SMS failed:", smsErr.message);
       }
     }
 

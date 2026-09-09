@@ -1,6 +1,7 @@
 // routes/bookings.js
 const adminSubjects = require("../utils/adminSubjects");
 const generalFixterNotify = require("../utils/generalFixterNotify");
+const smsNotify = require("../utils/sms/smsNotifications");
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
@@ -679,6 +680,17 @@ async function cancelOrDelete(req, res) {
       console.log("Mail booking_canceled/admin_booking_canceled error:", e.message);
     }
 
+    /*
+     * The cancellation text.
+     *
+     * Nothing has to cancel pending reminders. The reminder sweep selects
+     * only bookings whose status is Confirmed, so this booking stops being
+     * selectable the moment its status changed above, and no reminder can
+     * be enqueued for it afterwards. There is no queue to drain and
+     * therefore no queue that can fall out of step with the booking.
+     */
+    await smsNotify.notifyBookingCancelled(booking, me, "bookingCancel");
+
     // Crew copy. Separate try block so a General Fixter delivery problem can
     // never suppress the customer or Admin email above.
     try {
@@ -1106,6 +1118,21 @@ async function sendFullDayConfirmationEmails({
   } catch (error) {
     console.error("full_day_visit_booked email failed:", error.message);
   }
+
+  /*
+   * The Full Day confirmation.
+   *
+   * Covers both routes into a Full Day: the $499 purchase and the one
+   * included with an Elite membership. The customer gets the same message
+   * either way, because the thing they booked is the same thing.
+   *
+   * The template quotes a date and no start time, and never the words "90
+   * minutes". A paid Full Day carries accessType "one_time" and would be
+   * described as a One-Time Visit by any check that looked at that field
+   * first; the vocabulary function tests bookingType for Full Day before
+   * anything else precisely to stop that.
+   */
+  await smsNotify.notifyBookingConfirmed(booking, user, included ? "fullDayIncluded" : "fullDayPaid");
 
   try {
     await mail.sendTx(
@@ -2098,6 +2125,18 @@ router.post(
       } catch (mailErr) {
         console.log("Mail booking_created error:", mailErr.message);
       }
+
+      /*
+       * The confirmation text.
+       *
+       * Outside the mail try block on purpose: the two channels are
+       * independent, and a mail failure that also swallowed the text would
+       * be the same coupling that let an unrelated SMS process suppress the
+       * 24-hour reminder email. smsNotify never throws, so no guard is
+       * needed here and none is added, which keeps the booking response
+       * unaffected by anything the SMS system does.
+       */
+      await smsNotify.notifyBookingConfirmed(booking, me, "bookingCreate");
 
       // Crew copy, kept separate so it cannot affect the customer or Admin mail.
       try {

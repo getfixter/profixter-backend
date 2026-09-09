@@ -7,6 +7,7 @@ const jwt = require("jsonwebtoken");
 const Otp = require("../models/Otp");
 const User = require("../models/User");
 const mail = require("../utils/emailService");
+const smsNotify = require("../utils/sms/smsNotifications");
 const { findCustomerByEmail } = require("../utils/userLookup");
 
 const RESET_SECRET = process.env.JWT_RESET_SECRET;
@@ -118,6 +119,21 @@ router.post("/set-password", async (req, res) => {
         emailType: "security",
         source: "passwordReset",
       },
+    });
+
+    /*
+     * The security text.
+     *
+     * Keyed with the moment it happened rather than with the account,
+     * because unlike registration this genuinely recurs: somebody who
+     * changes their password twice should be told twice, and somebody whose
+     * password is being changed WITHOUT their knowledge must be told every
+     * single time. Deduplicating this per account would silence exactly the
+     * case the message exists for.
+     */
+    await smsNotify.notifyPasswordChanged(user, {
+      changedAt: new Date(),
+      source: "passwordReset",
     });
 
     return res.status(200).json({ message: "Password updated" });

@@ -8,6 +8,7 @@ const { normalizeEmail, normalizePhone, normalizePhoneE164 } = require("../utils
 const { syncGhlConversion } = require("../utils/ghlSync");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
+const smsNotify = require("../utils/sms/smsNotifications");
 const {
   sendAdminLeadNotification,
 } = require("../utils/adminLeadNotification");
@@ -318,6 +319,10 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    // The welcome text. Carries the STOP disclosure, because for most
+    // customers this is the first message ProFixter ever sends them.
+    await smsNotify.notifyAccountCreated(user, "authRegister");
+
     try {
       const primaryAddress = user.addresses?.[0];
       await sendAdminLeadNotification({
@@ -578,6 +583,10 @@ router.post("/google", async (req, res) => {
       } catch (emailError) {
         console.log("Welcome email failed:", emailError.message);
       }
+
+      // Google sign-up often has no phone number on the account; the
+      // eligibility check records that as no_valid_phone and sends nothing.
+      await smsNotify.notifyAccountCreated(user, "googleAuth");
 
       try {
         await sendAdminLeadNotification({

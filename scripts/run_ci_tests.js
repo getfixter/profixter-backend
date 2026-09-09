@@ -50,6 +50,7 @@ const SUITES = [
   "test_membership_annual_pricing.js",
   "test_subscription_cancellation_admin_email.js",
   "test_billing_portal_configuration.js",
+  "test_sms_core.js",
 ];
 
 /**
@@ -65,6 +66,7 @@ const SUITES = [
  *   test_fixter_tips_integration.js     boots an in-memory MongoDB binary
  *   test_dual_account_users.js          boots an in-memory MongoDB binary
  *   test_membership_lead.js             boots an in-memory MongoDB binary
+ *   test_sms_integration.js             boots an in-memory MongoDB binary
  *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test

@@ -26,6 +26,7 @@ const {
 } = require("../utils/fixterTips");
 const { syncGhlConversion } = require("../utils/ghlSync");
 const mail = require("../utils/emailService");
+const smsNotify = require("../utils/sms/smsNotifications");
 const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const {
   cancelBookingWithReservation,
@@ -834,6 +835,20 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
   } catch (error) {
     console.error("one_time_visit_payment_received email failed:", error.message);
   }
+
+  /*
+   * The One-Time Visit confirmation.
+   *
+   * Sent here, from the payment webhook, rather than when the booking row
+   * was created: a one-time visit is not confirmed until it is paid for,
+   * and telling somebody their visit is booked while the hold could still
+   * expire would be a promise we might not keep.
+   *
+   * The template says 90 minutes and calls it a One-Time Visit, which is
+   * right for this product and wrong for the other three. The visit
+   * vocabulary in the templates picks the wording from the booking itself.
+   */
+  await smsNotify.notifyBookingConfirmed(booking, user, "stripeWebhookOneTime");
 
   try {
     /*
@@ -1679,6 +1694,10 @@ async function handleCheckoutCompleted(session, eventId) {
     });
   }
 
+  // The welcome text for a new membership. Placed before the email rather
+  // than after only so a mail failure cannot skip it; neither can throw.
+  await smsNotify.notifyMembershipStarted(subscription, user, "stripeWebhook");
+
   await mail.sendTx(
     "subscription_started",
     user.email,
@@ -1869,6 +1888,18 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
     } catch (emailErr) {
       console.error("subscription_cancellation_scheduled email failed:", emailErr.message);
     }
+
+    /*
+     * Scheduled, NOT ended. Stripe keeps the subscription active until the
+     * period closes, and the text says so. Telling somebody their
+     * membership has ended while they still have paid visits left would
+     * cost them those visits and cost us the relationship.
+     */
+    await smsNotify.notifyMembershipCancellationScheduled(
+      subscription,
+      user,
+      "stripeWebhook"
+    );
   }
 
   // Send subscription_canceled email only on the transition → canceled,
@@ -1896,6 +1927,9 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
     } catch (emailErr) {
       console.error("subscription_canceled email failed:", emailErr.message);
     }
+
+    // The real ending, on the genuine transition to canceled only.
+    await smsNotify.notifyMembershipCancelled(subscription, user, "stripeWebhook");
   }
 
   return subscription;
@@ -2089,6 +2123,23 @@ async function handleInvoicePaymentFailed(invoice) {
     } catch (emailErr) {
       console.error("payment_failed email failed:", emailErr.message);
     }
+
+    /*
+     * The only payment text there is.
+     *
+     * Keyed on the invoice, because Stripe retries a failed invoice several
+     * times across a dunning cycle and emits an event each time. The
+     * customer needs telling once that this invoice needs attention, not
+     * once per retry.
+     *
+     * There is deliberately no counterpart for a SUCCESSFUL renewal, an
+     * upcoming charge or a card about to be billed. See utils/sms/smsTypes.
+     */
+    await smsNotify.notifyPaymentFailed({
+      invoiceId: invoice.id,
+      user,
+      source: "stripeWebhook",
+    });
   }
 
   if (billingReason === "subscription_cycle") {

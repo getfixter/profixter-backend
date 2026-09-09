@@ -48,6 +48,8 @@ const REMINDERS = {
     label: "24h",
     templateKey: "booking_reminder_24h",
     ghlTag: "reminder_24h",
+    smsKind: "24h",
+    smsType: "BOOKING_REMINDER_24H",
     leadMs: REMINDER_24H_LEAD_MS,
     queuedField: "reminder24hQueuedAt",
     sentField: "reminder24hSentAt",
@@ -84,6 +86,8 @@ const REMINDERS = {
     label: "60m",
     templateKey: "booking_reminder_60m",
     ghlTag: "reminder_60m",
+    smsKind: "60m",
+    smsType: "BOOKING_REMINDER_60M",
     leadMs: REMINDER_60M_LEAD_MS,
     queuedField: "reminder60mQueuedAt",
     sentField: "reminder60mSentAt",
@@ -296,6 +300,78 @@ async function retryPendingTags(config, now, stats) {
   }
 }
 
+
+/**
+ * The native reminder text.
+ *
+ * A THIRD CHANNEL ALONGSIDE THE EMAIL AND THE CRM TAG, NOT A REPLACEMENT.
+ *
+ * The email still goes, the GHL tag still goes, and this is added beside them.
+ * Nothing existing was rewired, because the cutover from GHL-triggered SMS to
+ * native SMS is a decision to be taken deliberately once Twilio is approved,
+ * not a side effect of deploying this code. While SMS_ENABLED is false this
+ * records what it would have sent and sends nothing.
+ *
+ * Deliberately returns rather than throws, exactly as applyReminderTag does.
+ * The email has already been delivered by the time this runs, and an exception
+ * here would roll the caller into a retry that sent it a second time.
+ *
+ * Idempotency does not use a field on the booking. The dedupe key in
+ * SmsMessage already embeds the appointment instant, which means a rescheduled
+ * booking is a new occurrence that gets a new reminder, while a re-run on an
+ * unmoved booking collides and stops. A boolean on the booking could not
+ * express that difference.
+ */
+async function applyReminderSms(config, booking, stats) {
+  const user = await User.findOne({ userId: booking.userId }).lean();
+  const result = await notifyBookingReminder(booking, user, config.smsKind, "bookingReminders");
+
+  if (result?.status === "duplicate") return false;
+  if (result?.ok) {
+    stats.smsSent += 1;
+    return true;
+  }
+  stats.smsSkipped += 1;
+  return false;
+}
+
+/**
+ * Enqueue reminder texts for bookings whose email went out but whose SMS row
+ * never got written.
+ *
+ * The gap this closes is small and real: a crash between recording the email as
+ * sent and claiming the SMS key. The send sweep will not reconsider those
+ * bookings, because their sent field is already set, so without this pass the
+ * text would be lost silently.
+ *
+ * Two queries rather than one per booking: collect the candidates, ask once
+ * which of their keys already exist, and act on the difference.
+ */
+async function retryPendingSms(config, now, stats) {
+  const candidates = await Booking.find({
+    [config.sentField]: { $ne: null },
+    date: { $gt: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS) },
+    status: /^confirmed$/i,
+  })
+    .select(SELECT_FIELDS)
+    .limit(50)
+    .lean();
+
+  if (!candidates.length) return;
+
+  const keys = candidates.map((booking) => bookingKey(config.smsType, booking));
+  const existing = await SmsMessage.find({ dedupeKey: { $in: keys } })
+    .select("dedupeKey")
+    .lean();
+  const claimed = new Set(existing.map((row) => row.dedupeKey));
+
+  for (const booking of candidates) {
+    if (claimed.has(bookingKey(config.smsType, booking))) continue;
+    await applyReminderSms(config, booking, stats);
+    await sleep(80);
+  }
+}
+
 /** Give one booking's reminder a terminal reason, once. */
 async function abandonOne(config, booking, reason, stats) {
   const result = await Booking.updateOne(
@@ -486,6 +562,7 @@ async function processReminder(kind, now, stats) {
 
   await markAbandoned(config, now, stats);
   await retryPendingTags(config, now, stats);
+  await retryPendingSms(config, now, stats);
 }
 
 function emptyStats() {
@@ -499,6 +576,8 @@ function emptyStats() {
     abandoned: 0,
     tagged: 0,
     tagFailed: 0,
+    smsSent: 0,
+    smsSkipped: 0,
   };
 }
 
@@ -530,7 +609,13 @@ async function runBookingReminderCycle(now = new Date()) {
   const noteworthy =
     stats.sweepErrors.length ||
     ["24h", "60m"].some(
-      (k) => stats[k].sent || stats[k].failed || stats[k].abandoned || stats[k].tagged || stats[k].tagFailed
+      (k) =>
+        stats[k].sent ||
+        stats[k].failed ||
+        stats[k].abandoned ||
+        stats[k].tagged ||
+        stats[k].tagFailed ||
+        stats[k].smsSent
     );
   // A line a minute forever buries the lines that matter. Quiet cycles are
   // summarized on the heartbeat below instead.
@@ -645,6 +730,8 @@ function startBookingReminders() {
 
 module.exports = {
   REMINDERS,
+  applyReminderSms,
+  retryPendingSms,
   logReminderHeartbeat,
   processReminder,
   runBookingReminderCycle,

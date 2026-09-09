@@ -111,6 +111,43 @@ const UserSchema = new mongoose.Schema(
       createdAt: { type: Date, default: null },
     },
 
+    /**
+     * SMS communication preferences.
+     *
+     * DEFAULTS ARE ASYMMETRIC ON PURPOSE, AND THE ASYMMETRY IS THE POINT.
+     *
+     * Every field is optional and absent on every document written before this
+     * existed, so nothing has to be backfilled and no historical record is
+     * rewritten. The eligibility engine reads absence differently per channel:
+     *
+     *   transactional  absent means allowed. Somebody who gave us their number
+     *                  to book a visit expects to hear about that visit, and
+     *                  service messaging about a transaction they initiated is
+     *                  what the number was collected for.
+     *
+     *   marketing      absent means NOT allowed. Promotional texting needs
+     *                  express written consent that ProFixter has never asked
+     *                  for, so no existing customer may receive marketing SMS
+     *                  until they affirmatively opt in. This flag is the record
+     *                  that they did.
+     *
+     * Reading absence rather than backfilling a value also keeps the two
+     * distinguishable forever: false here means a person chose to switch it
+     * off, which is not the same fact as never having been asked.
+     *
+     * None of this overrides SmsOptOut. A STOP from the handset wins over every
+     * preference recorded here.
+     */
+    smsPreferences: {
+      transactionalEnabled: { type: Boolean, default: undefined },
+      marketingEnabled: { type: Boolean, default: undefined },
+      /** When and how they consented to marketing. Evidence, not decoration. */
+      marketingConsentAt: { type: Date, default: null },
+      marketingConsentSource: { type: String, default: "" },
+      optedOutAt: { type: Date, default: null },
+      optOutSource: { type: String, default: "" },
+    },
+
     // Non-subscriber nurture sequence tracking
     nurture: {
       email1SentAt: { type: Date, default: null },

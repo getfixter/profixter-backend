@@ -19,6 +19,7 @@ const {
 const {
   startOneTimeVisitHoldCleanup,
 } = require("./jobs/oneTimeVisitHolds");
+const { startSmsJobs } = require("./jobs/smsJobs");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
@@ -210,6 +211,8 @@ app.use("/api/admin/invoices", require("./routes/adminInvoices"));
 app.use("/api/admin/fixters", require("./routes/fixters"));
 app.use("/api/admin/tips", require("./routes/adminTips"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
+// Before the catch-all admin router, exactly as email-logs is.
+app.use("/api/admin/sms", require("./routes/adminSms"));
 app.use(
   "/api/admin/ai-commander/ghl",
   require("./src/aiCommanderGhl/aiCommanderGhl.routes")
@@ -244,6 +247,12 @@ app.use("/api/sign", require("./routes/publicSigning"));
 // came from; the Fixter, the customer and the amount are all resolved server
 // side, and a request without usable context still takes the money.
 app.use("/api/tips", require("./routes/tips"));
+// Public by necessity: Twilio calls these to report delivery and to
+// forward STOP/START/HELP. Every request is verified against
+// X-Twilio-Signature before any field of it is trusted, because an
+// unauthenticated forged STOP would silence a customer, and a forged
+// START would un-silence somebody who genuinely opted out.
+app.use("/api/sms/webhook", require("./routes/smsWebhook"));
 
 
 
@@ -571,6 +580,21 @@ if (process.env.BOOKING_REMINDERS_ENABLED !== "false") {
  * on stay two separate decisions.
  */
 startMarketingEmails();
+
+/*
+ * The SMS sweeps: provider retries, and marketing campaigns.
+ *
+ * Registered unconditionally and gated internally, on the same reasoning as
+ * marketing above: deploying the code and switching the channel on are two
+ * separate decisions. With SMS_ENABLED unset, both sweeps run, evaluate and
+ * record, and no message leaves the system.
+ *
+ * Note what is NOT here. Booking reminders are not started by this; they
+ * continue to come from startBookingReminders above, which now sends the
+ * text alongside the email it already sent. A second reminder scheduler is
+ * exactly how a customer would end up with two of everything.
+ */
+startSmsJobs();
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
