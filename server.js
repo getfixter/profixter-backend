@@ -20,6 +20,7 @@ const {
   startOneTimeVisitHoldCleanup,
 } = require("./jobs/oneTimeVisitHolds");
 const { startSmsJobs } = require("./jobs/smsJobs");
+const { startGiftLifecycle } = require("./jobs/giftLifecycle");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
@@ -213,6 +214,7 @@ app.use("/api/admin/tips", require("./routes/adminTips"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 // Before the catch-all admin router, exactly as email-logs is.
 app.use("/api/admin/sms", require("./routes/adminSms"));
+app.use("/api/admin/gifts", require("./routes/adminGifts"));
 app.use(
   "/api/admin/ai-commander/ghl",
   require("./src/aiCommanderGhl/aiCommanderGhl.routes")
@@ -247,6 +249,9 @@ app.use("/api/sign", require("./routes/publicSigning"));
 // came from; the Fixter, the customer and the amount are all resolved server
 // side, and a request without usable context still takes the money.
 app.use("/api/tips", require("./routes/tips"));
+// Every route inside answers 404 while GIFTS_ENABLED is not "true", so
+// mounting the feature and releasing it stay two separate decisions.
+app.use("/api/gifts", require("./routes/gifts"));
 // Public by necessity: Twilio calls these to report delivery and to
 // forward STOP/START/HELP. Every request is verified against
 // X-Twilio-Signature before any field of it is trusted, because an
@@ -595,6 +600,16 @@ startMarketingEmails();
  * exactly how a customer would end up with two of everything.
  */
 startSmsJobs();
+
+/*
+ * The gift lifecycle sweep: reminder emails and bookkeeping.
+ *
+ * It does NOT grant or revoke access. Whether a gift works is computed from
+ * its own dates every time it is asked, so a delayed or missed run cannot
+ * lock a customer out of a gift they hold. Registered unconditionally and
+ * gated internally on GIFTS_ENABLED.
+ */
+startGiftLifecycle();
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

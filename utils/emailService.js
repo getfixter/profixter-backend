@@ -1000,6 +1000,19 @@ Object.assign(
   })
 );
 
+/*
+ * Gift membership emails, merged the same way, so they inherit the same
+ * send path, logging, suppression and admin visibility as every other
+ * transactional email. Nothing about their delivery is special.
+ */
+Object.assign(
+  TEMPLATES,
+  require("./gifts/giftEmailTemplates").createGiftEmailTemplates({
+    escapeHtml,
+    urls: URLS,
+  })
+);
+
 /* ============= Send wrappers ============= */
 
 const BCC_ADMIN = new Set(["welcome", "subscription_started", "booking_created"]);

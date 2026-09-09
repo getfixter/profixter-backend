@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
+const { findActiveGift } = require("../utils/gifts/giftAccess");
 const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
@@ -85,6 +86,52 @@ async function getAccessibleOwnedSubscription(user, address, source) {
 
   const verification = await verifySubscriptionAccess(candidate, { source });
   return verification.grantsAccess ? verification.subscription : null;
+}
+
+/**
+ * Refuse a billing action that a gift member has no business performing.
+ *
+ * BELT AND BRACES, AND IT IS THE BRACES THAT MATTER.
+ *
+ * Every route below resolves its target through
+ * getAccessibleOwnedSubscription, which can only ever return a Subscription
+ * row owned by the caller. A gift is not one, so these routes already find
+ * nothing and fail. This exists so the customer is told something true and
+ * useful instead of "no subscription found", and so the refusal is visible
+ * in the code rather than being an emergent property of a lookup.
+ *
+ * It is NOT the safety guarantee. That is the absence of any Stripe
+ * customer id on a gift, which means there is nothing for the billing
+ * portal to find even if every check here were deleted.
+ */
+async function refuseIfGiftOnly(req, res, addressId, action) {
+  if (!addressId || !mongoose.isValidObjectId(addressId)) return false;
+
+  const paid = await Subscription.exists({
+    user: req.user.id,
+    addressId,
+    status: { $in: ["active", "trialing"] },
+  });
+  if (paid) return false;
+
+  const gift = await findActiveGift(req.user.id, addressId);
+  if (!gift) return false;
+
+  console.warn(
+    JSON.stringify({
+      event: "gift_billing_action_refused",
+      action,
+      giftNumber: gift.giftNumber,
+    })
+  );
+
+  res.status(403).json({
+    code: "GIFT_MEMBERSHIP",
+    message:
+      "This is a gift membership, so there is no billing to manage. " +
+      "You can start your own membership at any time.",
+  });
+  return true;
 }
 
 router.get("/my", auth, async (req, res) => {
@@ -189,6 +236,9 @@ router.get("/manage/address/:addressId", auth, async (req, res) => {
 
 router.patch("/manage/address/:addressId", auth, async (req, res) => {
   const { addressId } = req.params;
+  // Changing plan means changing a Stripe subscription. A gift has none, and
+  // the one it must never reach is the purchaser's.
+  if (await refuseIfGiftOnly(req, res, addressId, "change_plan")) return;
   const targetPlan = normalizePlanType(req.body?.plan);
   const requestedCycle = normalizeBillingCycle(req.body?.billingCycle, "monthly");
   let logContext = {
@@ -408,6 +458,7 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
 router.post("/manage/address/:addressId/retention-offer", auth, async (req, res) => {
   try {
     const { addressId } = req.params;
+    if (await refuseIfGiftOnly(req, res, addressId, "retention_offer")) return;
     if (!mongoose.isValidObjectId(addressId)) {
       return res.status(400).json({ message: "Invalid addressId" });
     }
@@ -515,6 +566,7 @@ router.post("/manage/address/:addressId/retention-offer", auth, async (req, res)
 router.post("/manage/address/:addressId/retention-offer/accept", auth, async (req, res) => {
   try {
     const { addressId } = req.params;
+    if (await refuseIfGiftOnly(req, res, addressId, "retention_offer_accept")) return;
     if (!mongoose.isValidObjectId(addressId)) {
       return res.status(400).json({ message: "Invalid addressId" });
     }
@@ -673,6 +725,7 @@ router.post("/manage/address/:addressId/retention-offer/accept", auth, async (re
 router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
   try {
     const { addressId } = req.params;
+    if (await refuseIfGiftOnly(req, res, addressId, "cancel")) return;
     const retentionOfferDeclined = req.body?.retentionOfferDeclined === true;
     if (!mongoose.isValidObjectId(addressId)) {
       return res.status(400).json({ message: "Invalid addressId" });
@@ -854,6 +907,7 @@ router.post("/manage/address/:addressId/cancel", auth, async (req, res) => {
 router.post("/manage/address/:addressId/reactivate", auth, async (req, res) => {
   try {
     const { addressId } = req.params;
+    if (await refuseIfGiftOnly(req, res, addressId, "reactivate")) return;
     if (!mongoose.isValidObjectId(addressId)) {
       return res.status(400).json({ message: "Invalid addressId" });
     }
@@ -914,6 +968,7 @@ router.post("/manage/address/:addressId/reactivate", auth, async (req, res) => {
 router.post("/create-billing-portal-session", auth, async (req, res) => {
   try {
     const { addressId } = req.body;
+    if (await refuseIfGiftOnly(req, res, addressId, "billing_portal")) return;
 
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });

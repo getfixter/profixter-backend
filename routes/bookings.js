@@ -2,6 +2,10 @@
 const adminSubjects = require("../utils/adminSubjects");
 const generalFixterNotify = require("../utils/generalFixterNotify");
 const smsNotify = require("../utils/sms/smsNotifications");
+const {
+  findActiveGift,
+  syntheticGiftSubscription,
+} = require("../utils/gifts/giftAccess");
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
@@ -245,7 +249,28 @@ async function resolveBookingSubscription(user, address, options = {}) {
     }
   }
 
+  /*
+   * No paid membership. Before giving up, check for a gift.
+   *
+   * Ordered second on purpose: a paying member must resolve to their own
+   * subscription exactly as before, so this branch is unreachable for
+   * anybody who has one and their behaviour cannot move.
+   *
+   * Whether the gift is live is computed from its dates here and now, not
+   * read from a flag a background job was supposed to set — so a late or
+   * missed lifecycle sweep can never stop somebody booking with a gift
+   * they hold.
+   */
   if (!candidate) {
+    const gift = await findActiveGift(user._id, address._id);
+    if (gift) {
+      return {
+        subscription: syntheticGiftSubscription(gift),
+        staleSubscription: false,
+        reason: "gift_access_valid",
+        isGift: true,
+      };
+    }
     return { subscription: null, staleSubscription: false, reason: "not_found" };
   }
 

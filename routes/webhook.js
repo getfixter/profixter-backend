@@ -12,6 +12,12 @@ const ReservationCapacityBucket = require("../models/ReservationCapacityBucket")
 const RepAttribution = require("../models/RepAttribution");
 const Tip = require("../models/Tip");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
+const {
+  handleGiftCheckoutCompleted,
+  handleGiftRefund,
+  isGiftSession,
+} = require("../utils/gifts/giftWebhook");
+const { sendGiftPurchaseEmails } = require("../utils/gifts/giftEmails");
 /*
  * Money is always the customer's. An email can now also carry a Fixter
  * account, and letting one answer a billing lookup would attach a real
@@ -1564,6 +1570,22 @@ async function handleCheckoutCompleted(session, eventId) {
     return handleFullDayCheckoutCompleted(session);
   }
 
+  /*
+   * A gift membership.
+   *
+   * Returns before the subscription path below, which is the point: a gift
+   * is a one-time payment and must never fall through to code that creates
+   * or updates a Subscription. The emails are sent only when the gift was
+   * newly created, so a replayed webhook does not invite anybody twice.
+   */
+  if (isGiftSession(session)) {
+    const result = await handleGiftCheckoutCompleted(session);
+    if (result.created && result.gift) {
+      await sendGiftPurchaseEmails(result.gift, result.invitation);
+    }
+    return result;
+  }
+
   let email = session.customer_email || session?.customer_details?.email || null;
 
   if (!email && session.customer) {
@@ -2309,6 +2331,12 @@ module.exports = async (req, res) => {
         // Tip-specific and nothing else: the handler returns immediately unless
         // the charge belongs to a Tip record we already hold.
         syncResult = await handleTipChargeRefunded(event.data.object);
+        /*
+         * Then gifts, which keep their refund totals in step with Stripe.
+         * This records money only and never revokes an entitlement somebody
+         * is using; see utils/gifts/giftWebhook for why that is deliberate.
+         */
+        await handleGiftRefund(event.data.object);
         break;
 
       case "checkout.session.expired":
