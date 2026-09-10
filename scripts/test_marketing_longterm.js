@@ -20,7 +20,7 @@ process.env.EMAIL_TOKEN_SECRET = process.env.EMAIL_TOKEN_SECRET || "test-secret-
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 
 const assert = require("assert");
-const { KIND, audiencesOf, ALL_TEMPLATES } = require("../utils/marketing/marketingLibrary");
+const { KIND, audiencesOf, ALL_TEMPLATES, BY_ID } = require("../utils/marketing/marketingLibrary");
 const { selectCampaign } = require("../utils/marketing/marketingScheduler");
 const { COOLDOWN_DAYS, HELP_TARGET, FREQUENCY } = require("../utils/marketing/marketingConfig");
 
@@ -128,6 +128,7 @@ function test(name, fn) {
   }
 }
 
+const GIFT_STATS = [];
 const inYear = (rows, n) => rows.filter((r) => r.day > (n - 1) * 365 && r.day <= n * 365).length;
 const helpRatio = (rows) => rows.filter((r) => r.kind === KIND.HELP).length / (rows.length || 1);
 const maxGap = (rows) =>
@@ -411,7 +412,34 @@ test("an old account with no history is introduced before anything is sold", () 
 
 /* ------------------------------------------------------------------ */
 
+test("gift emails are spaced out and stay a small share of the mail", () => {
+  /*
+   * The cadence question answered by simulation rather than by reasoning
+   * about the rules: how often would somebody actually meet a gift email,
+   * and does adding gifting quietly turn the programme into a gift channel?
+   */
+  for (const [label, rows] of [
+    ["non member", NON_MEMBER],
+    ["member", MEMBER],
+    ["former member", FORMER],
+  ]) {
+    const gifts = rows.filter((r) => BY_ID.get(r.id) && BY_ID.get(r.id).topic === "gift");
+    const perYear = (gifts.length / 900) * 365;
+    assert.ok(perYear <= 4, `${label} would see ${perYear.toFixed(1)} gift emails a year`);
+
+    for (let i = 1; i < gifts.length; i += 1) {
+      const gap = gifts[i].day - gifts[i - 1].day;
+      assert.ok(gap >= 90, `${label} got two gift emails ${gap} days apart`);
+    }
+
+    const share = gifts.length / (rows.length || 1);
+    assert.ok(share <= 0.15, `${label}: gift is ${(share * 100).toFixed(0)}% of all marketing`);
+    GIFT_STATS.push(`${label} ${gifts.length}/${rows.length} (${perYear.toFixed(1)}/yr)`);
+  }
+});
+
 console.log(`\nmarketing long term: ${passed} passed, ${failures.length} failed`);
+console.log(`gift cadence: ${GIFT_STATS.join(' | ')}`);
 if (failures.length) {
   for (const f of failures) console.error(`  FAIL  ${f.name}\n        ${f.message}`);
   process.exit(1);
