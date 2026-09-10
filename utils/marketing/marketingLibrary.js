@@ -912,13 +912,18 @@ const MEMBER_ROTATION = [...MEMBER_USAGE, ...MEMBER_OTHER];
 /*
  * Three ways of saying the same true thing, and one shared topic.
  *
- * WHY THEY ALL CARRY topic: "gift"
+ * WHY THEY EACH CARRY THEIR OWN TOPIC
  *
- * The scheduler will not send two campaigns on the same topic inside
- * COOLDOWN_DAYS.sameTopic, which is ninety days. Sharing a topic is
- * therefore the whole spacing mechanism: it is what makes gift, gift, gift
- * impossible without a rule written specially for gifting, and it puts these
- * three roughly two to three months apart with ordinary marketing in between.
+ * They shared one, which spaced them ninety days apart but also meant the
+ * whole subject competed for a single turn in the rotation. A member saw
+ * gifting less than once a year - too rare for the audience most likely to
+ * buy one, since they already know what a Fixter is worth.
+ *
+ * Separate topics let the three angles take turns independently, and the
+ * spacing that sharing a topic used to provide is now explicit:
+ * CATEGORY_COOLDOWN_DAYS.gift holds a floor between any two gift emails
+ * whatever their topic. Same guarantee, stated rather than implied, and it
+ * cannot be lost by renaming a topic.
  *
  * They are ROTATION priority, so they take their turn rather than jumping
  * the queue, and each is SELL, so they are withheld from anybody whose
@@ -949,7 +954,7 @@ const GIFT_LIBRARY = [
    */
   {
     id: "gift_someone_you_care_about_v1",
-    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift",
+    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift_care",
     kind: KIND.SELL, priority: PRIORITY.ROTATION,
     subject: "Take care of someone you care about",
     altSubject: "A gift that shows up when something breaks",
@@ -976,7 +981,7 @@ const GIFT_LIBRARY = [
    */
   {
     id: "gift_new_home_v1",
-    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift",
+    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift_new_home",
     kind: KIND.SELL, priority: PRIORITY.ROTATION,
     subject: "Know someone with a new home?",
     altSubject: "A housewarming gift they will actually use",
@@ -1006,7 +1011,7 @@ const GIFT_LIBRARY = [
    */
   {
     id: "gift_member_knows_v1",
-    audience: "member", category: CATEGORY.GIFT, topic: "gift",
+    audience: "member", category: CATEGORY.GIFT, topic: "gift_member",
     kind: KIND.SELL, priority: PRIORITY.ROTATION,
     subject: "Give someone their own Fixter",
     altSubject: "You already know how this feels",

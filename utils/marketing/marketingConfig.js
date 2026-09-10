@@ -124,6 +124,26 @@ const COOLDOWN_DAYS = {
 };
 
 /**
+ * Per category spacing, for the few subjects that have several angles.
+ *
+ * sameTopic already keeps one subject from repeating. This is the level
+ * above it: a category whose campaigns each carry their own topic - so that
+ * they take turns independently in the rotation - still needs a floor
+ * between them, or three angles on one subject could arrive in three
+ * consecutive slots.
+ *
+ * Gifting is the case that needs it. Sharing a single topic spaced the three
+ * angles ninety days apart but also meant the whole subject competed for one
+ * turn, and a member saw gifting less than once a year. Separate topics fix
+ * the frequency; this keeps the spacing that sharing a topic used to provide.
+ *
+ * Anything not listed here is governed by sameTopic alone, exactly as before.
+ */
+const CATEGORY_COOLDOWN_DAYS = {
+  gift: Number(process.env.MARKETING_GIFT_CATEGORY_DAYS || 75),
+};
+
+/**
  * The physical postal address, required in every marketing email by CAN-SPAM.
  *
  * A constant rather than a per-template string: a compliance requirement that
@@ -255,6 +275,7 @@ module.exports = {
   API_BASE_URL,
   BATCH,
   BUSINESS,
+  CATEGORY_COOLDOWN_DAYS,
   COOLDOWN_DAYS,
   FREQUENCY,
   HELP_TARGET,

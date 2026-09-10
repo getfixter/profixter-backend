@@ -6,6 +6,7 @@ const Subscription = require("../../models/Subscription");
 const VisitEntitlement = require("../../models/VisitEntitlement");
 const { subscriptionGrantsAccess } = require("../subscriptionManagement");
 const {
+  CATEGORY_COOLDOWN_DAYS,
   COOLDOWN_DAYS,
   FREQUENCY,
   HELP_WINDOW,
@@ -201,6 +202,7 @@ async function buildProfile(user, now = new Date(), options = {}) {
   const campaignLastSentAt = new Map();
   const campaignCycles = new Map();
   const topicSentAt = new Map();
+  const categorySentAt = new Map();
   const sent = history.filter((r) => r.status === "sent");
 
   for (const row of history) {
@@ -210,6 +212,11 @@ async function buildProfile(user, now = new Date(), options = {}) {
     if (!prev || new Date(stamp) > new Date(prev)) campaignLastSentAt.set(row.campaignId, stamp);
     const prevTopic = topicSentAt.get(row.topic);
     if (!prevTopic || new Date(stamp) > new Date(prevTopic)) topicSentAt.set(row.topic, stamp);
+    /* Same shape as the topic map, for the category level spacing below. */
+    const prevCategory = categorySentAt.get(row.category);
+    if (!prevCategory || new Date(stamp) > new Date(prevCategory)) {
+      categorySentAt.set(row.category, stamp);
+    }
   }
 
   /*
@@ -237,6 +244,7 @@ async function buildProfile(user, now = new Date(), options = {}) {
     campaignLastSentAt,
     campaignCycles,
     sentTopicAt: topicSentAt,
+    sentCategoryAt: categorySentAt,
     hasActiveBooking: activeBookings > 0,
     everBooked: bookingsEver > 0,
     hasMembershipBooking: membershipBookings > 0,
@@ -324,6 +332,22 @@ function templateEligible(template, profile, options = {}) {
   const topicSentAt = profile.sentTopicAt.get(template.topic);
   if (topicSentAt && daysSince(topicSentAt, now) < COOLDOWN_DAYS.sameTopic) {
     return no("topic_cooldown");
+  }
+
+  /*
+   * The level above topic, for categories that carry several angles on one
+   * subject. Only categories listed in CATEGORY_COOLDOWN_DAYS are affected;
+   * everything else behaves exactly as it did before this existed.
+   *
+   * Defensive about the map: profiles built by older code, and the fixtures
+   * in the test suites, may not carry one.
+   */
+  const categoryFloor = CATEGORY_COOLDOWN_DAYS[template.category];
+  if (categoryFloor) {
+    const categorySentAt = profile.sentCategoryAt && profile.sentCategoryAt.get(template.category);
+    if (categorySentAt && daysSince(categorySentAt, now) < categoryFloor) {
+      return no("category_cooldown");
+    }
   }
 
   /*

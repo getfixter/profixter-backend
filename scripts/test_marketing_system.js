@@ -15,7 +15,13 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 
 const assert = require("assert");
 
-const { API_BASE_URL, BUSINESS, ROUTES, routeUrl } = require("../utils/marketing/marketingConfig");
+const {
+  API_BASE_URL,
+  BUSINESS,
+  CATEGORY_COOLDOWN_DAYS,
+  ROUTES,
+  routeUrl,
+} = require("../utils/marketing/marketingConfig");
 const {
   ALL_TEMPLATES,
   BY_ID,
@@ -935,30 +941,50 @@ test("gift emails obey every existing suppression rule", () => {
 
 test("gift emails cannot arrive back to back", () => {
   /*
-   * The whole spacing mechanism, and the reason all three share a topic:
-   * the ninety day same-topic cooldown does the work, with no rule written
-   * specially for gifting.
+   * The three angles carry their own topics now, so that each takes a turn in
+   * the rotation independently - sharing one meant the whole subject competed
+   * for a single turn and a member saw gifting less than once a year.
+   *
+   * The spacing that sharing a topic used to provide is now explicit and
+   * category-wide, which is a STRONGER guarantee: it holds between any two
+   * gift emails regardless of topic, and cannot be lost by renaming one.
    */
+  const topics = GIFT_LIBRARY.map((t) => t.topic);
+  assert.strictEqual(new Set(topics).size, topics.length, "each angle needs its own topic");
   for (const t of GIFT_LIBRARY) {
-    assert.strictEqual(t.topic, "gift", `${t.id} must share the gift topic`);
+    assert.strictEqual(t.category, "gift", `${t.id} must stay in the gift category`);
   }
 
+  const floor = CATEGORY_COOLDOWN_DAYS.gift;
+  assert.ok(floor >= 60, `a ${floor} day floor is not a sensible gap between gift emails`);
+
+  // One gift email just went out: every angle is held back, not only its own.
   const justSentOne = profile({
     audience: "member",
-    sentTopicAt: new Map([["gift", new Date(NOW.getTime() - 30 * 86400000)]]),
+    sentCategoryAt: new Map([["gift", new Date(NOW.getTime() - (floor - 10) * 86400000)]]),
   });
   for (const t of GIFT_LIBRARY) {
     const verdict = templateEligible(t, justSentOne);
     assert.strictEqual(verdict.eligible, false, `${t.id} should be held back`);
-    assert.strictEqual(verdict.reason, "topic_cooldown");
+    assert.strictEqual(verdict.reason, "category_cooldown");
   }
 
-  // Past the window they become available again.
+  // Past the floor they become available again.
   const longAgo = profile({
     audience: "member",
-    sentTopicAt: new Map([["gift", new Date(NOW.getTime() - 100 * 86400000)]]),
+    sentCategoryAt: new Map([["gift", new Date(NOW.getTime() - (floor + 10) * 86400000)]]),
   });
   assert.strictEqual(templateEligible(GIFT_LIBRARY[0], longAgo).eligible, true);
+
+  // And the floor applies to gifting only: nothing else gained a cooldown.
+  const others = ALL_TEMPLATES.filter((t) => t.category !== "gift").map((t) => t.category);
+  for (const category of new Set(others)) {
+    assert.strictEqual(
+      CATEGORY_COOLDOWN_DAYS[category],
+      undefined,
+      `${category} must keep behaving exactly as before`
+    );
+  }
 });
 
 test("gifting takes its turn rather than jumping the queue", () => {

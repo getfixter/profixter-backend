@@ -22,7 +22,12 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 const assert = require("assert");
 const { KIND, audiencesOf, ALL_TEMPLATES, BY_ID } = require("../utils/marketing/marketingLibrary");
 const { selectCampaign } = require("../utils/marketing/marketingScheduler");
-const { COOLDOWN_DAYS, HELP_TARGET, FREQUENCY } = require("../utils/marketing/marketingConfig");
+const {
+  CATEGORY_COOLDOWN_DAYS,
+  COOLDOWN_DAYS,
+  HELP_TARGET,
+  FREQUENCY,
+} = require("../utils/marketing/marketingConfig");
 
 const DAY = 24 * 60 * 60 * 1000;
 /** Day 0 is Monday 2026-09-14. */
@@ -423,18 +428,39 @@ test("gift emails are spaced out and stay a small share of the mail", () => {
     ["member", MEMBER],
     ["former member", FORMER],
   ]) {
-    const gifts = rows.filter((r) => BY_ID.get(r.id) && BY_ID.get(r.id).topic === "gift");
+    // Category, not topic: the three angles carry their own topics now, and
+    // filtering on one of them would silently measure nothing.
+    const gifts = rows.filter((r) => BY_ID.get(r.id) && BY_ID.get(r.id).category === "gift");
     const perYear = (gifts.length / 900) * 365;
     assert.ok(perYear <= 4, `${label} would see ${perYear.toFixed(1)} gift emails a year`);
+    if (label === "member") {
+      // The reason the topics were split. Members are the audience most
+      // likely to buy a gift, and they were seeing one less than once a year.
+      assert.ok(perYear >= 1.8, `members see only ${perYear.toFixed(1)} gift emails a year`);
+    }
 
     for (let i = 1; i < gifts.length; i += 1) {
       const gap = gifts[i].day - gifts[i - 1].day;
-      assert.ok(gap >= 90, `${label} got two gift emails ${gap} days apart`);
+      assert.ok(
+        gap >= CATEGORY_COOLDOWN_DAYS.gift,
+        `${label} got two gift emails ${gap} days apart`
+      );
     }
 
     const share = gifts.length / (rows.length || 1);
-    assert.ok(share <= 0.15, `${label}: gift is ${(share * 100).toFixed(0)}% of all marketing`);
-    GIFT_STATS.push(`${label} ${gifts.length}/${rows.length} (${perYear.toFixed(1)}/yr)`);
+    GIFT_STATS.push(
+      `${label} ${gifts.length}/${rows.length} (${perYear.toFixed(1)}/yr, ${(share * 100).toFixed(0)}%)`
+    );
+    /*
+     * Eighteen per cent, and the extra three points over the original bound
+     * are for former members specifically. Theirs is the smallest library -
+     * eighteen campaigns against a member's thirty-six - so the same two gift
+     * angles are inherently a larger slice of it, and at two campaigns under a
+     * three hundred and sixty-five day reuse window they are already at the
+     * arithmetic maximum: three firings each across nine hundred days. There
+     * is no knob that lowers this without removing an angle from them.
+     */
+    assert.ok(share <= 0.18, `${label}: gift is ${(share * 100).toFixed(0)}% of all marketing`);
   }
 });
 
