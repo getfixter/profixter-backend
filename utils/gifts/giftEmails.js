@@ -1,5 +1,8 @@
 const mail = require("../emailService");
 const { formatTermDate } = require("./giftPricing");
+const { TIMEZONE } = require("./giftConfig");
+const { occasionCopy } = require("./giftOccasions");
+const { giftAccessState } = require("./giftAccess");
 
 /**
  * The gift emails.
@@ -256,6 +259,249 @@ async function sendGiftExpired(gift) {
   );
 }
 
+/* ------------------------- Admin lifecycle notices ------------------------ */
+
+/*
+ * EMAIL ONLY, all three of these. SMS is switched off until Twilio is
+ * approved and nothing in the gift feature may depend on it.
+ */
+
+function adminAddress() {
+  return String(process.env.MAIL_ADMIN || "getfixter@gmail.com").trim();
+}
+
+const money = (cents) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+
+function recipientNameOf(gift) {
+  return `${gift.recipientFirstName || ""} ${gift.recipientLastName || ""}`.trim() || "Unknown";
+}
+
+function addressLine(gift) {
+  const a = gift.addressSnapshot || {};
+  const parts = [a.line1, a.city, a.state, a.zip].filter((v) => String(v || "").trim());
+  return parts.length ? parts.join(", ") : "Unknown";
+}
+
+function stamp(date) {
+  if (!date) return "Unknown";
+  return new Date(date).toLocaleString("en-US", {
+    timeZone: TIMEZONE,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+/**
+ * Send an admin notice at most once per gift, ever.
+ *
+ * The stamp is CLAIMED BEFORE THE SEND, in one atomic update that only
+ * succeeds if the field is still empty. Two webhook retries arriving
+ * together, or a sweep overlapping itself, therefore cannot both get
+ * through — the loser sees modifiedCount 0 and does nothing.
+ *
+ * If the send then fails the stamp is released, so the next run tries again
+ * rather than the notice being lost to a transient SMTP error. The window
+ * where a crash between send and release could cost one notice is accepted:
+ * losing an internal notification is a far smaller harm than sending a
+ * customer-facing duplicate, and this is the ordering that guarantees the
+ * latter cannot happen.
+ *
+ * Never throws. A gift that has been paid for, or claimed, must not fail
+ * because an email did.
+ */
+async function sendAdminNoticeOnce(gift, field, send, { Model } = {}) {
+  const GiftModel = Model || require("../../models/GiftMembership");
+  const at = new Date();
+
+  let claimed;
+  try {
+    claimed = await GiftModel.updateOne(
+      { _id: gift._id, $or: [{ [field]: null }, { [field]: { $exists: false } }] },
+      { $set: { [field]: at } }
+    );
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "gift_admin_notice_stamp_failed",
+        field,
+        error: String(error?.message || "unknown").slice(0, 200),
+      })
+    );
+    return { sent: false, reason: "stamp_failed" };
+  }
+
+  if (!claimed?.modifiedCount) return { sent: false, reason: "already_sent" };
+
+  const result = await send();
+  if (result === null || result === undefined) {
+    try {
+      await GiftModel.updateOne({ _id: gift._id, [field]: at }, { $set: { [field]: null } });
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: "gift_admin_notice_release_failed",
+          field,
+          giftNumber: gift.giftNumber,
+        })
+      );
+    }
+    console.warn(
+      JSON.stringify({
+        event: "gift_admin_notice_deferred",
+        field,
+        giftNumber: gift.giftNumber,
+        note: "send failed; stamp released for retry",
+      })
+    );
+    return { sent: false, reason: "send_failed" };
+  }
+
+  return { sent: true, at };
+}
+
+/**
+ * Tell Admin a gift was bought, once the money has settled.
+ *
+ * Called from the webhook only for a session Stripe reports as paid or
+ * no_payment_required. A created-but-abandoned Checkout Session is not a
+ * sale and must never produce this email.
+ */
+async function sendGiftPurchasedAdminNotice(gift, { Model } = {}) {
+  const to = adminAddress();
+  if (!to) return { sent: false, reason: "no_admin_address" };
+
+  const paidCents = Number(gift.amountPaidCents || 0);
+  const discountCents = Number(gift.discountCents || 0);
+
+  return sendAdminNoticeOnce(
+    gift,
+    "adminPurchasedEmailSentAt",
+    () =>
+      attempt("gift_purchased_admin", () =>
+        mail.sendTx(
+          "gift_purchased_admin",
+          to,
+          {
+            giftNumber: gift.giftNumber,
+            purchaserName: gift.purchaserSnapshot?.name || "Unknown",
+            purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
+            recipientName: recipientNameOf(gift),
+            recipientEmail: gift.recipientEmail || "unknown",
+            plan: planLabel(gift.plan),
+            durationMonths: gift.durationMonths,
+            subtotal: money(gift.amountSubtotalCents),
+            discount: discountCents ? `-${money(discountCents)}` : "None",
+            tax: money(gift.taxCents),
+            amountPaid: money(paidCents),
+            purchasedAt: stamp(gift.purchasedAt || gift.createdAt),
+            occasion: occasionCopy(gift.occasion).label,
+            personalMessage: gift.personalMessage || "",
+            /*
+             * A gift can legitimately cost nothing: a 100% promotion code
+             * produces a settled session with no payment at all. Worth
+             * flagging so a $0.00 line is never mistaken for a fault.
+             */
+            wasFullyDiscounted: paidCents === 0,
+            claimStatus: gift.status === "claimed" ? "Claimed" : "Not claimed yet",
+          },
+          { bccAdmin: false, logContext: logContextFor(gift, to, "transactional") }
+        )
+      ),
+    { Model }
+  );
+}
+
+/** Tell Admin the recipient claimed it, and where it landed. */
+async function sendGiftClaimedAdminNotice(gift, { queued = false, Model } = {}) {
+  const to = adminAddress();
+  if (!to) return { sent: false, reason: "no_admin_address" };
+
+  const isQueued = Boolean(queued) || new Date(gift.startAt).getTime() > Date.now();
+
+  return sendAdminNoticeOnce(
+    gift,
+    "adminClaimedEmailSentAt",
+    () =>
+      attempt("gift_claimed_admin", () =>
+        mail.sendTx(
+          "gift_claimed_admin",
+          to,
+          {
+            giftNumber: gift.giftNumber,
+            purchaserName: gift.purchaserSnapshot?.name || "Unknown",
+            purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
+            recipientName: recipientNameOf(gift),
+            recipientEmail: gift.recipientEmail || "unknown",
+            plan: planLabel(gift.plan),
+            durationMonths: gift.durationMonths,
+            claimedAt: stamp(gift.claimedAt),
+            propertyAddress: addressLine(gift),
+            startsOn: gift.startAt ? formatTermDate(gift.startAt) : "When current coverage ends",
+            endsOn: gift.endAt ? formatTermDate(gift.endAt) : "Not set until it starts",
+            giftState: giftAccessState(gift).state,
+            queued: isQueued,
+            activationNote: isQueued
+              ? gift.startAt
+                ? `It begins on ${formatTermDate(gift.startAt)}, when the paid membership at that property ends.`
+                : "It begins when the paid membership at that property ends. The exact date is not known yet because that membership is still renewing."
+              : "",
+          },
+          { bccAdmin: false, logContext: logContextFor(gift, to, "transactional") }
+        )
+      ),
+    { Model }
+  );
+}
+
+/**
+ * Two weeks on and still unclaimed.
+ *
+ * The raw claim token is deliberately absent: it is a credential that grants
+ * the membership to whoever holds it, and it belongs in the recipient's inbox
+ * and nowhere else. Admin gets the gift reference, which is what the admin
+ * screen searches on.
+ */
+async function sendGiftUnclaimedAdminNotice(gift, { daysUnclaimed, now = new Date(), Model } = {}) {
+  const to = adminAddress();
+  if (!to) return { sent: false, reason: "no_admin_address" };
+
+  const purchased = gift.purchasedAt || gift.createdAt;
+  const days =
+    Number.isFinite(daysUnclaimed) && daysUnclaimed >= 0
+      ? Math.floor(daysUnclaimed)
+      : Math.floor((now.getTime() - new Date(purchased).getTime()) / (24 * 60 * 60 * 1000));
+
+  return sendAdminNoticeOnce(
+    gift,
+    "adminUnclaimed14dEmailSentAt",
+    () =>
+      attempt("gift_unclaimed_admin", () =>
+        mail.sendTx(
+          "gift_unclaimed_admin",
+          to,
+          {
+            giftNumber: gift.giftNumber,
+            purchaserName: gift.purchaserSnapshot?.name || "Unknown",
+            purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
+            recipientName: recipientNameOf(gift),
+            recipientEmail: gift.recipientEmail || "unknown",
+            plan: planLabel(gift.plan),
+            durationMonths: gift.durationMonths,
+            purchasedAt: stamp(purchased),
+            daysUnclaimed: days,
+            giftStatus: gift.status || "unknown",
+            adminUrl: `${CLIENT_URL}/admin?tab=gifts`,
+            invitationExpired: gift.claimTokenExpiresAt
+              ? new Date(gift.claimTokenExpiresAt).getTime() <= now.getTime()
+              : false,
+          },
+          { bccAdmin: false, logContext: logContextFor(gift, to, "transactional") }
+        )
+      ),
+    { Model }
+  );
+}
+
 /**
  * Tell Admin a gift was refunded.
  *
@@ -270,8 +516,6 @@ async function sendGiftExpired(gift) {
 async function sendGiftRefundAdminNotice(gift, { refund, refundStatus, giftState }) {
   const adminAddress = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").trim();
   if (!adminAddress) return null;
-
-  const money = (cents) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
 
   return attempt("gift_refunded_admin", () =>
     mail.sendTx(
@@ -310,4 +554,7 @@ module.exports = {
   sendGiftInvitation,
   sendGiftPurchaseEmails,
   sendGiftRefundAdminNotice,
+  sendGiftPurchasedAdminNotice,
+  sendGiftClaimedAdminNotice,
+  sendGiftUnclaimedAdminNotice,
 };

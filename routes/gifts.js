@@ -19,6 +19,7 @@ const {
   sanitizePersonalMessage,
 } = require("../utils/gifts/giftOccasions");
 const { readClaimToken, verifyClaimToken } = require("../utils/gifts/giftClaimToken");
+const { sendGiftClaimedAdminNotice } = require("../utils/gifts/giftEmails");
 const {
   claimGift,
   claimantMatches,
@@ -678,6 +679,17 @@ router.post("/claim/:token", auth, async (req, res) => {
         endAt: result.gift.endAt,
       })
     );
+
+    /*
+     * Tell Admin, after the claim has actually succeeded.
+     *
+     * Awaited but never allowed to matter: the sender swallows its own
+     * failures and stamps once per gift, so a mail outage cannot turn a
+     * completed claim into an error response, and a retried request cannot
+     * send a second notice. The customer's entitlement is already written
+     * either way.
+     */
+    await sendGiftClaimedAdminNotice(result.gift, { queued: result.queued });
 
     return res.json({
       message: result.queued

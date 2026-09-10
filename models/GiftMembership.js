@@ -288,6 +288,18 @@ const GiftMembershipSchema = new mongoose.Schema(
     lifecycleNotes: { type: String, default: "" },
     endingSoonEmailAt: { type: Date, default: null },
     expiredEmailAt: { type: Date, default: null },
+
+    /*
+     * Admin notification stamps.
+     *
+     * Each is claimed atomically before its email is sent, so a replayed
+     * webhook or an overlapping sweep cannot send the same notice twice, and
+     * released again if the send fails so a later run can retry. They record
+     * only that we told somebody; nothing reads them to decide access.
+     */
+    adminPurchasedEmailSentAt: { type: Date, default: null },
+    adminClaimedEmailSentAt: { type: Date, default: null },
+    adminUnclaimed14dEmailSentAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );

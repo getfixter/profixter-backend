@@ -1737,6 +1737,561 @@ async function run() {
     assert.equal(covered.coverageSource, null);
   });
 
+  console.log("\nAdmin lifecycle notifications");
+
+  /*
+   * These capture what would be SENT, by replacing the transport rather than
+   * the gift code. sendTx is the single door every transactional email goes
+   * through, so a notice that does not appear here does not exist, and one
+   * that appears twice really would arrive twice.
+   */
+  const mail = require("../utils/emailService");
+  const giftEmails = require("../utils/gifts/giftEmails");
+  const giftLifecycle = require("../jobs/giftLifecycle");
+
+  function captureEmails() {
+    const sent = [];
+    const original = mail.sendTx;
+    mail.sendTx = async (key, to, vars, opts) => {
+      sent.push({ key, to, vars: vars || {}, opts: opts || {} });
+      return { ok: true, messageId: "test-" + sent.length };
+    };
+    return {
+      sent,
+      of: (key) => sent.filter((m) => m.key === key),
+      restore: () => {
+        mail.sendTx = original;
+      },
+    };
+  }
+
+  /** A transport that always fails, to prove the retry path. */
+  function failingEmails() {
+    const attempts = [];
+    const original = mail.sendTx;
+    mail.sendTx = async (key) => {
+      attempts.push(key);
+      throw new Error("SMTP unavailable");
+    };
+    return {
+      attempts,
+      restore: () => {
+        mail.sendTx = original;
+      },
+    };
+  }
+
+
+  /* Render a gift template by key, so subjects and bodies can be asserted. */
+  const { createGiftEmailTemplates } = require("../utils/gifts/giftEmailTemplates");
+  const giftTemplates = createGiftEmailTemplates({
+    escapeHtml: (v) =>
+      String(v == null ? "" : v)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;"),
+    urls: {},
+  });
+  const renderTemplate = (key, vars) => {
+    const build = giftTemplates[key];
+    assert.ok(build, `template ${key} must exist`);
+    return build(vars || {});
+  };
+
+  const ADMIN = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").trim();
+
+  await test("a paid gift sends the admin purchase email exactly once", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ name: "Sarah Chen", email: "sarah-admin@example.com" });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "gets@example.com", plan: "plus", durationMonths: 2 })
+      );
+      assert.equal(created.created, true);
+
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+      await giftEmails.sendGiftPurchasedAdminNotice(
+        await GiftMembership.findById(created.gift._id).lean()
+      );
+
+      const admin = cap.of("gift_purchased_admin");
+      assert.equal(admin.length, 1, `expected exactly one, got ${admin.length}`);
+      assert.equal(admin[0].to, ADMIN, "it goes to the admin address");
+
+      const v = admin[0].vars;
+      assert.equal(v.giftNumber, created.gift.giftNumber);
+      assert.equal(v.purchaserName, "Sarah Chen");
+      assert.equal(v.purchaserEmail, "sarah-admin@example.com");
+      assert.equal(v.recipientEmail, "gets@example.com");
+      assert.equal(v.plan, "Plus");
+      assert.equal(v.durationMonths, 2);
+      assert.equal(v.amountPaid, "$498.00");
+      assert.equal(v.wasFullyDiscounted, false);
+      assert.equal(v.claimStatus, "Not claimed yet");
+      assert.ok(v.subtotal && v.tax && v.purchasedAt, "money and timing are reported");
+
+      const stamped = await GiftMembership.findById(created.gift._id).lean();
+      assert.ok(stamped.adminPurchasedEmailSentAt, "the send is recorded on the gift");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a 100%-off gift settles and still sends it exactly once", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "freegiver@example.com" });
+      /* What Stripe reports when a promotion code covers the whole amount. */
+      const session = sessionFor(purchaser, {
+        recipientEmail: "freegets@example.com",
+        amountTotal: 0,
+        discount: 49800,
+      });
+      session.payment_status = "no_payment_required";
+      session.payment_intent = null;
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+      assert.equal(created.created, true, "a zero-total gift is still a real gift");
+
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+
+      const admin = cap.of("gift_purchased_admin");
+      assert.equal(admin.length, 1);
+      assert.equal(admin[0].vars.amountPaid, "$0.00");
+      assert.equal(
+        admin[0].vars.wasFullyDiscounted,
+        true,
+        "a $0 gift must be flagged as promotion-covered, not look like a fault"
+      );
+      assert.notEqual(admin[0].vars.discount, "None", "the discount is reported");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("an unpaid or abandoned checkout sends nothing at all", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "abandoner@example.com" });
+      const session = sessionFor(purchaser, { recipientEmail: "never@example.com" });
+      session.payment_status = "unpaid";
+
+      const result = await giftWebhook.handleGiftCheckoutCompleted(session);
+      assert.notEqual(result.created, true, "an unpaid session must not create a gift");
+      assert.equal(await GiftMembership.countDocuments({}), 0);
+      assert.equal(
+        cap.sent.length,
+        0,
+        `an abandoned checkout must send no email, got ${cap.sent.map((m) => m.key).join(", ")}`
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a claim sends the admin claimed email exactly once", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ name: "Ada Gifter", email: "ada@example.com" });
+      const recipientEmail = "claimer-" + Date.now() + "@example.com";
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail, plan: "premium", durationMonths: 3 })
+      );
+      const recipient = await makeUser({ email: recipientEmail, name: "Cleo Claimer" });
+      const claim = await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId: recipient.addresses[0]._id,
+      });
+      assert.equal(claim.ok, true);
+
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      await giftEmails.sendGiftClaimedAdminNotice(gift, { queued: claim.queued });
+      await giftEmails.sendGiftClaimedAdminNotice(gift, { queued: claim.queued });
+
+      const admin = cap.of("gift_claimed_admin");
+      assert.equal(admin.length, 1, `expected exactly one, got ${admin.length}`);
+      assert.equal(admin[0].to, ADMIN);
+
+      const v = admin[0].vars;
+      assert.equal(v.giftNumber, gift.giftNumber);
+      assert.equal(v.plan, "Premium");
+      assert.equal(v.durationMonths, 3);
+      assert.equal(v.recipientEmail, recipientEmail);
+      assert.equal(v.purchaserEmail, "ada@example.com");
+      assert.equal(v.queued, false, "this one started immediately");
+      assert.ok(v.claimedAt && v.startsOn && v.endsOn, "dates are reported");
+      assert.ok(/1 Main St/.test(v.propertyAddress), "the chosen property is named");
+      assert.equal(v.giftState, "active");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a gift queued behind paid coverage says so in the admin email", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "queuegiver@example.com" });
+      const recipientEmail = "queued-" + Date.now() + "@example.com";
+      const recipient = await makeUser({ email: recipientEmail });
+      const addressId = recipient.addresses[0]._id;
+
+      const periodEnd = new Date(Date.now() + 40 * DAY);
+      await Subscription.create({
+        user: recipient._id,
+        userId: recipient.userId,
+        addressId,
+        subscriptionType: "plus",
+        startDate: new Date(Date.now() - 20 * DAY),
+        latestPaymentDate: new Date(Date.now() - 20 * DAY),
+        nextPaymentDate: periodEnd,
+        currentPeriodEnd: periodEnd,
+        status: "active",
+        accessStatus: "active",
+        cancelAtPeriodEnd: true,
+        stripeSubscriptionId: "sub_queue_admin",
+        stripeCustomerId: "cus_queue_admin",
+      });
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail, plan: "basic", durationMonths: 1 })
+      );
+      const claim = await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId,
+      });
+      assert.equal(claim.ok, true);
+      assert.equal(claim.queued, true, "it must be queued behind the paid membership");
+
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      await giftEmails.sendGiftClaimedAdminNotice(gift, { queued: claim.queued });
+
+      const admin = cap.of("gift_claimed_admin");
+      assert.equal(admin.length, 1);
+      assert.equal(admin[0].vars.queued, true);
+      assert.ok(
+        String(admin[0].vars.activationNote || "").length > 0,
+        "the expected activation behaviour must be spelled out"
+      );
+
+      /* And the rendered subject and body must carry the required wording. */
+      const rendered = renderTemplate("gift_claimed_admin", admin[0].vars);
+      assert.equal(rendered.subject, "Gift Membership Claimed - Profixter");
+      assert.ok(
+        /Gift claimed - activation pending existing paid coverage/.test(rendered.html),
+        "the required queued wording must appear in the email body"
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("14 days unclaimed sends one admin reminder", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "slowgiver@example.com" });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "slow@example.com" })
+      );
+      await GiftMembership.updateOne(
+        { _id: created.gift._id },
+        { $set: { purchasedAt: new Date(Date.now() - 15 * DAY) } }
+      );
+
+      const stats = { unclaimedAdminNotices: 0 };
+      await giftLifecycle.sendUnclaimedAdminNotices(new Date(), stats, GiftMembership);
+
+      const admin = cap.of("gift_unclaimed_admin");
+      assert.equal(admin.length, 1, `expected one reminder, got ${admin.length}`);
+      assert.equal(stats.unclaimedAdminNotices, 1);
+      assert.equal(admin[0].to, ADMIN);
+      assert.equal(admin[0].vars.daysUnclaimed, 15);
+      assert.equal(admin[0].vars.giftStatus, "invited");
+      assert.equal(admin[0].vars.recipientEmail, "slow@example.com");
+
+      const stamped = await GiftMembership.findById(created.gift._id).lean();
+      assert.ok(stamped.adminUnclaimed14dEmailSentAt, "the reminder is recorded persistently");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("13 days unclaimed sends nothing yet", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "notyet@example.com" });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "notyet-r@example.com" })
+      );
+      await GiftMembership.updateOne(
+        { _id: created.gift._id },
+        { $set: { purchasedAt: new Date(Date.now() - 13 * DAY) } }
+      );
+
+      await giftLifecycle.sendUnclaimedAdminNotices(new Date(), { unclaimedAdminNotices: 0 }, GiftMembership);
+      assert.equal(cap.of("gift_unclaimed_admin").length, 0, "13 days is too early");
+
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      assert.equal(gift.adminUnclaimed14dEmailSentAt, null, "and nothing is stamped");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a gift claimed before day 14 never gets the reminder", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "claimedearly@example.com" });
+      const recipientEmail = "early-" + Date.now() + "@example.com";
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail })
+      );
+      const recipient = await makeUser({ email: recipientEmail });
+      await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId: recipient.addresses[0]._id,
+      });
+
+      /* Now let a month pass. It is claimed, so it is not a candidate. */
+      await GiftMembership.updateOne(
+        { _id: created.gift._id },
+        { $set: { purchasedAt: new Date(Date.now() - 30 * DAY) } }
+      );
+
+      await giftLifecycle.sendUnclaimedAdminNotices(new Date(), { unclaimedAdminNotices: 0 }, GiftMembership);
+      assert.equal(cap.of("gift_unclaimed_admin").length, 0, "a claimed gift is not unclaimed");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a cancelled or fully refunded gift never gets the reminder", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "voided@example.com" });
+
+      const cancelled = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "cancelled-r@example.com" })
+      );
+      await GiftMembership.updateOne(
+        { _id: cancelled.gift._id },
+        {
+          $set: {
+            purchasedAt: new Date(Date.now() - 30 * DAY),
+            status: "cancelled",
+            cancelledAt: new Date(),
+          },
+        }
+      );
+
+      const refunded = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "refunded-r@example.com" })
+      );
+      await GiftMembership.updateOne(
+        { _id: refunded.gift._id },
+        {
+          $set: {
+            purchasedAt: new Date(Date.now() - 30 * DAY),
+            refundStatus: "full",
+            amountRefundedCents: 49800,
+          },
+        }
+      );
+
+      await giftLifecycle.sendUnclaimedAdminNotices(new Date(), { unclaimedAdminNotices: 0 }, GiftMembership);
+      assert.equal(
+        cap.of("gift_unclaimed_admin").length,
+        0,
+        "neither a cancelled nor a fully refunded gift should be chased"
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("repeated worker and webhook runs never duplicate an admin email", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "repeat@example.com" });
+      const session = sessionFor(purchaser, { recipientEmail: "repeat-r@example.com" });
+
+      /* The webhook fires three times, as Stripe is entitled to do. */
+      for (let i = 0; i < 3; i += 1) {
+        const r = await giftWebhook.handleGiftCheckoutCompleted(session);
+        if (r.created && r.gift) await giftEmails.sendGiftPurchasedAdminNotice(r.gift);
+      }
+      assert.equal(cap.of("gift_purchased_admin").length, 1, "one sale, one email");
+
+      const gift = await GiftMembership.findOne({ recipientEmail: "repeat-r@example.com" }).lean();
+      await GiftMembership.updateOne(
+        { _id: gift._id },
+        { $set: { purchasedAt: new Date(Date.now() - 20 * DAY) } }
+      );
+
+      /* And the sweep runs every hour, forever. */
+      for (let i = 0; i < 5; i += 1) {
+        await giftLifecycle.sendUnclaimedAdminNotices(new Date(), { unclaimedAdminNotices: 0 }, GiftMembership);
+      }
+      assert.equal(cap.of("gift_unclaimed_admin").length, 1, "one gift, one reminder, ever");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("a failed send is retried rather than lost", async () => {
+    const purchaser = await makeUser({ email: "retry@example.com" });
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail: "retry-r@example.com" })
+    );
+
+    /* First attempt: the mail server is down. */
+    const broken = failingEmails();
+    let outcome;
+    try {
+      outcome = await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+    } finally {
+      broken.restore();
+    }
+    assert.equal(outcome.sent, false);
+    assert.equal(outcome.reason, "send_failed");
+
+    const afterFailure = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(
+      afterFailure.adminPurchasedEmailSentAt,
+      null,
+      "a failed send must release the stamp so it can be retried"
+    );
+
+    /* Second attempt: the mail server is back. */
+    const cap = captureEmails();
+    try {
+      const retry = await giftEmails.sendGiftPurchasedAdminNotice(afterFailure);
+      assert.equal(retry.sent, true, "the retry must go through");
+      assert.equal(cap.of("gift_purchased_admin").length, 1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("an email failure never undoes a purchase or blocks a claim", async () => {
+    const broken = failingEmails();
+    try {
+      const purchaser = await makeUser({ email: "resilient@example.com" });
+      const recipientEmail = "resilient-r-" + Date.now() + "@example.com";
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail })
+      );
+      assert.equal(created.created, true, "the purchase stands even with mail down");
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+
+      const recipient = await makeUser({ email: recipientEmail });
+      const claim = await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId: recipient.addresses[0]._id,
+      });
+      assert.equal(claim.ok, true, "the claim succeeds even with mail down");
+
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      await giftEmails.sendGiftClaimedAdminNotice(gift, { queued: claim.queued });
+
+      /* Entitlement is untouched by any of it. */
+      assert.equal(giftAccess.giftAccessState(gift, new Date()).active, true);
+    } finally {
+      broken.restore();
+    }
+  });
+
+  await test("no admin email ever carries a raw claim token", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "tokencheck@example.com" });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "tokencheck-r@example.com" })
+      );
+      const token = created.invitation?.token;
+      assert.ok(token && token.length > 10, "the fixture must have a real token to look for");
+
+      await giftEmails.sendGiftPurchasedAdminNotice(created.gift);
+      await GiftMembership.updateOne(
+        { _id: created.gift._id },
+        { $set: { purchasedAt: new Date(Date.now() - 20 * DAY) } }
+      );
+      await giftLifecycle.sendUnclaimedAdminNotices(new Date(), { unclaimedAdminNotices: 0 }, GiftMembership);
+
+      const adminMails = cap.sent.filter((m) => String(m.key).endsWith("_admin"));
+      assert.ok(adminMails.length >= 2, "both admin emails should have been captured");
+
+      for (const message of adminMails) {
+        const rendered = renderTemplate(message.key, message.vars);
+        const haystack = JSON.stringify(message.vars) + rendered.subject + rendered.html + rendered.text;
+        assert.ok(
+          !haystack.includes(token),
+          `${message.key} must never contain the raw claim token`
+        );
+        assert.ok(
+          !/\/gift\/claim\//.test(haystack),
+          `${message.key} must not contain a claim URL`
+        );
+      }
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("the admin emails carry the required subjects", async () => {
+    const subjects = {
+      gift_purchased_admin: "New Gift Membership Purchased - Profixter",
+      gift_claimed_admin: "Gift Membership Claimed - Profixter",
+      gift_unclaimed_admin: "Gift Membership Still Unclaimed After 14 Days",
+    };
+    for (const [key, expected] of Object.entries(subjects)) {
+      const rendered = renderTemplate(key, {
+        giftNumber: "GTEST123",
+        purchaserName: "A",
+        purchaserEmail: "a@example.com",
+        recipientName: "B",
+        recipientEmail: "b@example.com",
+        plan: "Plus",
+        durationMonths: 2,
+        daysUnclaimed: 14,
+      });
+      assert.equal(rendered.subject, expected, `${key} subject`);
+    }
+  });
+
+  await test("nothing in the admin notification path touches SMS", async () => {
+    /* The gift feature must work with Twilio switched off, so nothing here
+     * may so much as load the SMS modules, let alone call them. */
+    const fs = require("fs");
+    const path = require("path");
+    const files = [
+      "../utils/gifts/giftEmails.js",
+      "../utils/gifts/giftEmailTemplates.js",
+      "../jobs/giftLifecycle.js",
+    ];
+    for (const rel of files) {
+      const source = fs.readFileSync(path.join(__dirname, rel), "utf8");
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n");
+      for (const forbidden of ["twilio", "sendSms", "smsNotifications", "sms/"]) {
+        assert.ok(
+          !code.toLowerCase().includes(forbidden.toLowerCase()),
+          `${rel} must not reference ${forbidden}`
+        );
+      }
+    }
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {

@@ -8,6 +8,7 @@ const {
   sendGiftClaimReminder,
   sendGiftEndingSoon,
   sendGiftExpired,
+  sendGiftUnclaimedAdminNotice,
 } = require("../utils/gifts/giftEmails");
 
 /**
@@ -34,6 +35,9 @@ const {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BATCH_LIMIT = 100;
+
+/* How long a gift may sit unclaimed before Admin is told. Once, per gift. */
+const UNCLAIMED_ADMIN_DAYS = 14;
 
 function errorDetails(error) {
   return { message: String(error?.message || "Unknown error").slice(0, 300), name: error?.name || "" };
@@ -113,6 +117,65 @@ async function sendExpiries(now, stats, Model = GiftMembership) {
     await sendGiftExpired(gift);
     await Model.updateOne({ _id: gift._id }, { $set: { expiredEmailAt: now } });
     stats.expired += 1;
+  }
+}
+
+/**
+ * Tell Admin about a gift nobody has claimed after two weeks.
+ *
+ * ONE EMAIL PER GIFT, EVER. The stamp is claimed atomically inside the
+ * sender before it sends, so overlapping sweeps, a restart mid-run, or the
+ * job being triggered twice cannot produce a second notice.
+ *
+ * Counted from SETTLEMENT, not from when the Checkout Session was created:
+ * purchasedAt is written by the webhook when Stripe confirmed the money, so
+ * a session created on the 1st and completed on the 5th is measured from
+ * the 5th. createdAt is the fallback for the handful of records that
+ * predate the field, and it is written in the same handler, so it never
+ * moves the answer by more than the webhook's own latency.
+ *
+ * Skipped for anything no longer awaiting a claim: status filters out
+ * claimed, cancelled and expired gifts, and a refund that voided the gift
+ * will have moved it out of "invited" too. A fully refunded gift still
+ * sitting in "invited" is excluded explicitly, because chasing somebody
+ * about a present that has been paid back is the wrong conversation.
+ *
+ * This is bookkeeping, like every other step here. It grants nothing,
+ * revokes nothing, and if it never ran no customer would be affected.
+ */
+async function sendUnclaimedAdminNotices(now, stats, Model = GiftMembership) {
+  const cutoff = new Date(now.getTime() - UNCLAIMED_ADMIN_DAYS * DAY_MS);
+
+  const candidates = await Model.find({
+    status: "invited",
+    recipient: null,
+    claimedAt: null,
+    cancelledAt: null,
+    adminUnclaimed14dEmailSentAt: { $in: [null, undefined] },
+    $or: [
+      { purchasedAt: { $ne: null, $lte: cutoff } },
+      { purchasedAt: null, createdAt: { $lte: cutoff } },
+    ],
+  })
+    .limit(BATCH_LIMIT)
+    .lean();
+
+  for (const gift of candidates) {
+    // Refunded in full: the money went back, so there is nothing to chase.
+    if (
+      gift.refundStatus === "full" ||
+      (Number(gift.amountRefundedCents || 0) > 0 &&
+        Number(gift.amountRefundedCents || 0) >= Number(gift.amountPaidCents || 0) &&
+        Number(gift.amountPaidCents || 0) > 0)
+    ) {
+      continue;
+    }
+
+    const purchased = gift.purchasedAt || gift.createdAt;
+    const daysUnclaimed = Math.floor((now.getTime() - new Date(purchased).getTime()) / DAY_MS);
+
+    const outcome = await sendGiftUnclaimedAdminNotice(gift, { daysUnclaimed, now, Model });
+    if (outcome?.sent) stats.unclaimedAdminNotices += 1;
   }
 }
 
@@ -200,7 +263,14 @@ async function reconcileQueuedGifts(now, stats, Model = GiftMembership) {
 }
 
 async function runGiftLifecycleCycle(now = new Date(), { Model = GiftMembership } = {}) {
-  const stats = { claimReminders: 0, endingSoon: 0, expired: 0, pulledForward: 0, errors: [] };
+  const stats = {
+    claimReminders: 0,
+    endingSoon: 0,
+    expired: 0,
+    pulledForward: 0,
+    unclaimedAdminNotices: 0,
+    errors: [],
+  };
 
   // Registered either way, gated here, so enabling the feature is a config
   // change rather than a deploy — the same pattern the marketing and SMS
@@ -211,6 +281,7 @@ async function runGiftLifecycleCycle(now = new Date(), { Model = GiftMembership 
     ["claimReminders", sendClaimReminders],
     ["endingSoon", sendEndingSoon],
     ["expiries", sendExpiries],
+    ["unclaimedAdmin", sendUnclaimedAdminNotices],
     ["reconcile", reconcileQueuedGifts],
   ]) {
     try {
@@ -223,7 +294,14 @@ async function runGiftLifecycleCycle(now = new Date(), { Model = GiftMembership 
     }
   }
 
-  if (stats.claimReminders || stats.endingSoon || stats.expired || stats.pulledForward || stats.errors.length) {
+  if (
+    stats.claimReminders ||
+    stats.endingSoon ||
+    stats.expired ||
+    stats.pulledForward ||
+    stats.unclaimedAdminNotices ||
+    stats.errors.length
+  ) {
     console.log(JSON.stringify({ event: "gift_lifecycle_cycle", at: now.toISOString(), ...stats }));
   }
   return { ran: true, ...stats };
@@ -265,5 +343,7 @@ module.exports = {
   sendClaimReminders,
   sendEndingSoon,
   sendExpiries,
+  sendUnclaimedAdminNotices,
   startGiftLifecycle,
+  UNCLAIMED_ADMIN_DAYS,
 };

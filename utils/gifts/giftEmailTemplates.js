@@ -184,6 +184,261 @@ function createGiftEmailTemplates({ escapeHtml, urls }) {
 
     /* -------------------------------- Admin ------------------------------ */
     /*
+     * A gift was bought and the money has settled.
+     *
+     * Sent from the webhook once Stripe reports the session paid, or
+     * no_payment_required for a legitimate 100% promotion code. Never on
+     * session creation: an abandoned checkout is not a sale and must not
+     * look like one in the inbox.
+     *
+     * EMAIL ONLY. SMS stays switched off until Twilio is approved.
+     *
+     * Carries no card details, no payment method, no Stripe ids beyond the
+     * gift's own reference. The money is described by what it was, not by
+     * how it was taken.
+     */
+    gift_purchased_admin: ({
+      giftNumber,
+      purchaserName,
+      purchaserEmail,
+      recipientName,
+      recipientEmail,
+      plan,
+      durationMonths,
+      subtotal,
+      discount,
+      tax,
+      amountPaid,
+      purchasedAt,
+      occasion,
+      personalMessage,
+      wasFullyDiscounted,
+      claimStatus,
+    }) => ({
+      subject: "New Gift Membership Purchased - Profixter",
+      html: shell(`
+        <p style="margin:0 0 14px; font-size:17px;">
+          <strong>${safe(purchaserName)}</strong> bought a ProFixter
+          ${safe(plan)} gift membership for <strong>${safe(recipientName)}</strong>.
+        </p>
+        ${
+          wasFullyDiscounted
+            ? `<p style="margin:0 0 16px; padding:10px 14px; background:#FFF7E6; border-left:3px solid #D4A574; font-size:14px;">
+                 <strong>Paid nothing.</strong> A promotion code covered the whole amount, so no
+                 money was taken. The gift is valid and the recipient has been invited.
+               </p>`
+            : ""
+        }
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse:collapse; margin:0 0 16px;">
+          ${[
+            ["Gift reference", safe(giftNumber)],
+            ["Plan", `${safe(plan)} &middot; ${months(durationMonths)}`],
+            ["Purchaser", `${safe(purchaserName)} (${safe(purchaserEmail)})`],
+            ["Recipient", `${safe(recipientName)} (${safe(recipientEmail)})`],
+            ["Purchased", safe(purchasedAt)],
+            ["Occasion", safe(occasion, "None")],
+            ["Subtotal", safe(subtotal)],
+            ["Discount", safe(discount)],
+            ["Tax", safe(tax)],
+            ["Paid", `<span style="font-size:16px;">${safe(amountPaid)}</span>`],
+            ["Claim status", safe(claimStatus)],
+          ]
+            .map(
+              ([k, v]) =>
+                `<tr><td style="padding:6px 12px 6px 0; color:#6b7280; font-size:14px; white-space:nowrap;">${k}</td><td style="padding:6px 0; font-size:14px; color:#1f2937;"><strong>${v}</strong></td></tr>`
+            )
+            .join("")}
+        </table>
+        ${
+          personalMessage
+            ? `<p style="margin:0 0 6px; color:#6b7280; font-size:13px;">Message from the purchaser</p>
+               <p style="margin:0 0 16px; padding:10px 14px; background:#F6F7F9; font-size:14px; font-style:italic;">
+                 ${safe(personalMessage)}
+               </p>`
+            : ""
+        }
+        <p style="margin:0; color:#6b7280; font-size:14px;">
+          The recipient has been sent their invitation. Nothing is needed from you.
+        </p>
+      `),
+      text:
+        `${purchaserName} bought a ProFixter ${plan} gift membership for ${recipientName}.\n\n` +
+        `Gift reference: ${giftNumber}\n` +
+        `Plan: ${plan} (${months(durationMonths)})\n` +
+        `Purchaser: ${purchaserName} (${purchaserEmail})\n` +
+        `Recipient: ${recipientName} (${recipientEmail})\n` +
+        `Purchased: ${purchasedAt}\n` +
+        `Occasion: ${occasion || "None"}\n` +
+        `Subtotal: ${subtotal}\n` +
+        `Discount: ${discount}\n` +
+        `Tax: ${tax}\n` +
+        `Paid: ${amountPaid}${wasFullyDiscounted ? " (fully covered by a promotion code)" : ""}\n` +
+        `Claim status: ${claimStatus}\n` +
+        (personalMessage ? `\nMessage: ${personalMessage}\n` : "") +
+        `\nThe recipient has been sent their invitation.\n\n${SUPPORT_EMAIL}`,
+    }),
+
+    /*
+     * The recipient claimed a gift and chose the property.
+     *
+     * Two shapes, because there are two genuinely different outcomes. Usually
+     * the membership starts there and then. But if that address already has a
+     * paid membership running, the gift waits behind it rather than being
+     * spent on time the customer has already bought — and an admin reading
+     * "claimed" would otherwise expect cover that has not begun.
+     */
+    gift_claimed_admin: ({
+      giftNumber,
+      purchaserName,
+      purchaserEmail,
+      recipientName,
+      recipientEmail,
+      plan,
+      durationMonths,
+      claimedAt,
+      propertyAddress,
+      startsOn,
+      endsOn,
+      giftState,
+      queued,
+      activationNote,
+    }) => ({
+      subject: "Gift Membership Claimed - Profixter",
+      html: shell(`
+        <p style="margin:0 0 14px; font-size:17px;">
+          <strong>${safe(recipientName)}</strong> claimed the ProFixter ${safe(plan)} gift
+          membership from <strong>${safe(purchaserName)}</strong>.
+        </p>
+        ${
+          queued
+            ? `<p style="margin:0 0 16px; padding:10px 14px; background:#FFF7E6; border-left:3px solid #D4A574; font-size:14px;">
+                 <strong>Gift claimed - activation pending existing paid coverage.</strong><br />
+                 ${safe(activationNote)}
+               </p>`
+            : ""
+        }
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse:collapse; margin:0 0 16px;">
+          ${[
+            ["Gift reference", safe(giftNumber)],
+            ["Plan", `${safe(plan)} &middot; ${months(durationMonths)}`],
+            ["Purchaser", `${safe(purchaserName)} (${safe(purchaserEmail)})`],
+            ["Recipient", `${safe(recipientName)} (${safe(recipientEmail)})`],
+            ["Claimed", safe(claimedAt)],
+            ["Property", safe(propertyAddress)],
+            [queued ? "Begins" : "Started", safe(startsOn)],
+            ["Ends", safe(endsOn)],
+            ["State right now", safe(giftState)],
+          ]
+            .map(
+              ([k, v]) =>
+                `<tr><td style="padding:6px 12px 6px 0; color:#6b7280; font-size:14px; white-space:nowrap;">${k}</td><td style="padding:6px 0; font-size:14px; color:#1f2937;"><strong>${v}</strong></td></tr>`
+            )
+            .join("")}
+        </table>
+        <p style="margin:0; color:#6b7280; font-size:14px;">
+          ${
+            queued
+              ? "No action needed. The gift starts on its own when the paid membership ends."
+              : "The membership is live at that property now. Nothing is needed from you."
+          }
+        </p>
+      `),
+      text:
+        `${recipientName} claimed the ProFixter ${plan} gift membership from ${purchaserName}.\n\n` +
+        (queued
+          ? `Gift claimed - activation pending existing paid coverage.\n${activationNote}\n\n`
+          : "") +
+        `Gift reference: ${giftNumber}\n` +
+        `Plan: ${plan} (${months(durationMonths)})\n` +
+        `Purchaser: ${purchaserName} (${purchaserEmail})\n` +
+        `Recipient: ${recipientName} (${recipientEmail})\n` +
+        `Claimed: ${claimedAt}\n` +
+        `Property: ${propertyAddress}\n` +
+        `${queued ? "Begins" : "Started"}: ${startsOn}\n` +
+        `Ends: ${endsOn}\n` +
+        `State right now: ${giftState}\n\n${SUPPORT_EMAIL}`,
+    }),
+
+    /*
+     * Two weeks on and nobody has claimed it.
+     *
+     * Sent once per gift, ever. Counted from settlement rather than from
+     * checkout creation, so an abandoned session that was later completed is
+     * measured from the day the money actually moved.
+     *
+     * NO CLAIM TOKEN. The link is a credential that grants a stranger the
+     * membership, and it belongs in exactly one inbox: the recipient's. The
+     * admin gets the gift reference instead, which is what Admin searches on.
+     */
+    gift_unclaimed_admin: ({
+      giftNumber,
+      purchaserName,
+      purchaserEmail,
+      recipientName,
+      recipientEmail,
+      plan,
+      durationMonths,
+      purchasedAt,
+      daysUnclaimed,
+      giftStatus,
+      adminUrl,
+      invitationExpired,
+    }) => ({
+      subject: "Gift Membership Still Unclaimed After 14 Days",
+      html: shell(`
+        <p style="margin:0 0 14px; font-size:17px;">
+          A gift membership bought <strong>${safe(daysUnclaimed)} days ago</strong> has still not
+          been claimed.
+        </p>
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse:collapse; margin:0 0 16px;">
+          ${[
+            ["Gift reference", safe(giftNumber)],
+            ["Plan", `${safe(plan)} &middot; ${months(durationMonths)}`],
+            ["Purchaser", `${safe(purchaserName)} (${safe(purchaserEmail)})`],
+            ["Recipient", `${safe(recipientName)} (${safe(recipientEmail)})`],
+            ["Invitation sent to", safe(recipientEmail)],
+            ["Purchased", safe(purchasedAt)],
+            ["Days unclaimed", safe(daysUnclaimed)],
+            ["Status", safe(giftStatus)],
+          ]
+            .map(
+              ([k, v]) =>
+                `<tr><td style="padding:6px 12px 6px 0; color:#6b7280; font-size:14px; white-space:nowrap;">${k}</td><td style="padding:6px 0; font-size:14px; color:#1f2937;"><strong>${v}</strong></td></tr>`
+            )
+            .join("")}
+        </table>
+        ${
+          invitationExpired
+            ? `<p style="margin:0 0 14px; padding:10px 14px; background:#FDECEC; border-left:3px solid #D26A6A; font-size:14px;">
+                 The invitation link has expired. Re-issue it from Admin to give them a working one.
+               </p>`
+            : `<p style="margin:0 0 14px; font-size:14px;">
+                 The invitation link still works. The recipient may simply have missed the email.
+               </p>`
+        }
+        ${adminUrl ? button(adminUrl, "Open in Admin") : ""}
+        <p style="margin:14px 0 0; color:#6b7280; font-size:14px;">
+          The gift is paid for and stays valid. This is a nudge to follow up, not a problem with
+          the purchase. Search Admin for <strong>${safe(giftNumber)}</strong>.
+        </p>
+      `),
+      text:
+        `A gift membership bought ${daysUnclaimed} days ago has still not been claimed.\n\n` +
+        `Gift reference: ${giftNumber}\n` +
+        `Plan: ${plan} (${months(durationMonths)})\n` +
+        `Purchaser: ${purchaserName} (${purchaserEmail})\n` +
+        `Recipient: ${recipientName} (${recipientEmail})\n` +
+        `Invitation sent to: ${recipientEmail}\n` +
+        `Purchased: ${purchasedAt}\n` +
+        `Days unclaimed: ${daysUnclaimed}\n` +
+        `Status: ${giftStatus}\n\n` +
+        (invitationExpired
+          ? "The invitation link has expired. Re-issue it from Admin.\n\n"
+          : "The invitation link still works; the recipient may have missed the email.\n\n") +
+        `The gift is paid for and stays valid. Search Admin for ${giftNumber}.\n\n${SUPPORT_EMAIL}`,
+    }),
+
+    /*
      * A refund landed on a gift. EMAIL ONLY — SMS stays switched off until
      * Twilio is approved, and nothing about gifts may depend on it.
      *

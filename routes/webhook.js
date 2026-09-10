@@ -17,7 +17,10 @@ const {
   handleGiftRefund,
   isGiftSession,
 } = require("../utils/gifts/giftWebhook");
-const { sendGiftPurchaseEmails } = require("../utils/gifts/giftEmails");
+const {
+  sendGiftPurchaseEmails,
+  sendGiftPurchasedAdminNotice,
+} = require("../utils/gifts/giftEmails");
 /*
  * Money is always the customer's. An email can now also carry a Fixter
  * account, and letting one answer a billing lookup would attach a real
@@ -1582,6 +1585,17 @@ async function handleCheckoutCompleted(session, eventId) {
     const result = await handleGiftCheckoutCompleted(session);
     if (result.created && result.gift) {
       await sendGiftPurchaseEmails(result.gift, result.invitation);
+      /*
+       * And tell Admin a sale happened.
+       *
+       * Reached only from checkout.session.completed for a session the gift
+       * handler accepted as settled — paid, or no_payment_required when a
+       * 100% promotion code covered it. A session that was merely created,
+       * or abandoned, never gets here.
+       *
+       * Stamped once per gift, so a replayed webhook cannot email twice.
+       */
+      await sendGiftPurchasedAdminNotice(result.gift);
     }
     return result;
   }
