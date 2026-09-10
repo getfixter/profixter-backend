@@ -300,9 +300,28 @@ router.post("/checkout-session", auth, async (req, res) => {
       mode: "payment",
       payment_method_types: ["card"],
       line_items: [lineItem],
-      // Stripe validates eligibility, expiry, redemption limits and any
-      // product restrictions itself. Nothing about codes is reimplemented here.
-      allow_promotion_codes: true,
+      /*
+       * NO PROMOTION CODES ON GIFTS AT LAUNCH.
+       *
+       * A live audit found all 16 active promotion codes unrestricted, so
+       * every one of them applied to gifts: BARTER is 100% off forever,
+       * JULY4 is 100% off, KATEGIFT is $300 off — more than an entire Basic
+       * gift. Enabling gift sales with codes open would have handed anyone
+       * who knows one of those a free membership to give away.
+       *
+       * Restricting the coupons themselves is not available: applies_to is
+       * immutable on a Stripe coupon, so narrowing them would mean deleting
+       * and recreating live membership promotions and changing discounts
+       * customers already hold. Refusing codes here is the narrow,
+       * reversible, non-destructive half of that trade — existing membership
+       * promos keep working exactly as they do today and nothing about them
+       * is touched.
+       *
+       * To offer a gift discount later: create a coupon whose applies_to
+       * lists the four gift Products, then set this back to true. The stable
+       * Products exist precisely so that is possible.
+       */
+      allow_promotion_codes: false,
       /*
        * Every ProFixter service charges tax the same way, so a gift does too.
        *

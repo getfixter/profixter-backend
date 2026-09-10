@@ -470,6 +470,41 @@ test("nothing in the gift feature reaches for SMS", () => {
   }
 });
 
+console.log("\nPromotion codes and the trial floor\n");
+
+test("gift checkout refuses promotion codes", () => {
+  /*
+   * Every active promotion code in the live account is unrestricted, so all
+   * of them applied to gifts - several at 100% off, and one worth more than
+   * an entire Basic gift. Stripe cannot whitelist codes and a coupon's
+   * applies_to is immutable, so the only change that does not damage
+   * existing membership promotions is to refuse codes here.
+   *
+   * To offer a gift discount later: create a coupon restricted to the four
+   * gift Products, then set this back to true.
+   */
+  const giftRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "gifts.js"), "utf8");
+  assert.match(
+    giftRoute,
+    /allow_promotion_codes:\s*false/,
+    "gift checkout must not accept promotion codes at launch"
+  );
+
+  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8");
+  assert.match(
+    stripeRoute,
+    /allow_promotion_codes:\s*true/,
+    "membership promotions must keep working exactly as before"
+  );
+});
+
+test("the trial floor matches Stripe's measured minimum", () => {
+  // Measured against live Stripe: 48h accepted, 47h rejected, with the error
+  // "The `trial_end` date has to be at least 2 days in the future."
+  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8");
+  assert.match(stripeRoute, /MIN_TRIAL_SECONDS = 48 \* 60 \* 60/);
+});
+
 console.log("\nThe launch duration gate\n");
 
 /*
