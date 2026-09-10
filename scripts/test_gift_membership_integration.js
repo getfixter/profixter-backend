@@ -2680,6 +2680,308 @@ async function run() {
     });
   });
 
+  console.log("\nThe purchaser's own claim link");
+
+  /* Call the REAL route over HTTP, as the purchaser, with a real token. */
+  async function claimLinkRequest(user, giftNumber) {
+    const express = require("express");
+    const http = require("http");
+    const jwt = require("jsonwebtoken");
+
+    /*
+     * Every gift route answers 404 while the feature flag is down, and this
+     * suite deliberately runs with it deleted. Turn it on for the request
+     * and put it back afterwards, so the flag's own behaviour is unchanged
+     * for every other test in the file.
+     */
+    const savedFlag = process.env.GIFTS_ENABLED;
+    process.env.GIFTS_ENABLED = "true";
+
+    const routerPath = require.resolve("../routes/gifts");
+    delete require.cache[routerPath];
+    const giftRouter = require("../routes/gifts");
+    delete require.cache[routerPath];
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api/gifts", giftRouter);
+
+    const token = user ? jwt.sign({ id: String(user._id) }, process.env.JWT_SECRET) : null;
+
+    return new Promise((resolve, reject) => {
+      const server = app.listen(0, () => {
+        const req = http.request(
+          {
+            host: "127.0.0.1",
+            port: server.address().port,
+            path: `/api/gifts/purchased/${encodeURIComponent(giftNumber)}/claim-link`,
+            method: "POST",
+            headers: token ? { Authorization: "Bearer " + token } : {},
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c) => (raw += c));
+            res.on("end", () => {
+              server.close();
+              if (savedFlag === undefined) delete process.env.GIFTS_ENABLED;
+              else process.env.GIFTS_ENABLED = savedFlag;
+              let body;
+              try {
+                body = JSON.parse(raw);
+              } catch (e) {
+                body = { raw };
+              }
+              resolve({ status: res.statusCode, body });
+            });
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    });
+  }
+
+  const tokenFromUrl = (url) => String(url || "").split("/gift/claim/")[1] || "";
+
+  async function boughtGift(overrides = {}) {
+    const purchaser = await makeUser({ email: `buyer-${Date.now()}-${Math.random()}@example.com` });
+    const recipientEmail = `rec-${Date.now()}-${Math.random()}@example.com`;
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail, ...overrides })
+    );
+    return { purchaser, recipientEmail, created };
+  }
+
+  await test("the purchaser gets a working claim link for their own gift", async () => {
+    const { purchaser, created } = await boughtGift();
+
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(res.body.claimUrl, "a link must come back");
+    assert.ok(
+      res.body.claimUrl.includes("/gift/claim/"),
+      `not a claim URL: ${res.body.claimUrl}`
+    );
+    assert.equal(res.body.supersededPreviousLink, true, "the caller must be told");
+
+    /* It is a real, verifying token for THIS gift and no other. */
+    const stored = await GiftMembership.findById(created.gift._id).lean();
+    const verdict = giftToken.verifyClaimToken(tokenFromUrl(res.body.claimUrl), stored);
+    assert.equal(verdict.ok, true, `token did not verify: ${verdict.reason}`);
+    assert.equal(String(verdict.giftId), String(created.gift._id), "wrong gift");
+  });
+
+  await test("the link exposes no internal identifier", async () => {
+    const { purchaser, created } = await boughtGift();
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    const url = res.body.claimUrl;
+
+    assert.ok(!url.includes(String(created.gift._id)), "the Mongo id is in the URL");
+    assert.ok(!url.includes(String(purchaser._id)), "the purchaser id is in the URL");
+    assert.ok(!url.includes(created.gift.recipientEmail), "the recipient email is in the URL");
+    // The response carries the link and the dates, and nothing else.
+    assert.deepStrictEqual(
+      Object.keys(res.body).sort(),
+      ["claimUrl", "expiresAt", "supersededPreviousLink"],
+      "the response should carry nothing beyond the link"
+    );
+  });
+
+  await test("nobody else can get a link for somebody else's gift", async () => {
+    const { created } = await boughtGift();
+    const stranger = await makeUser({ email: `stranger-${Date.now()}@example.com` });
+
+    const res = await claimLinkRequest(stranger, created.gift.giftNumber);
+    assert.equal(res.status, 404, "a stranger must not be told it exists");
+    assert.ok(!res.body.claimUrl, "and certainly must not get a link");
+
+    const anonymous = await claimLinkRequest(null, created.gift.giftNumber);
+    assert.equal(anonymous.status, 401, "signed out must be refused");
+  });
+
+  await test("a claimed gift never hands out another claim link", async () => {
+    const { created, recipientEmail } = await boughtGift();
+    const recipient = await makeUser({ email: recipientEmail });
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId: recipient.addresses[0]._id,
+    });
+    assert.equal(claim.ok, true);
+
+    const purchaser = await User.findById(created.gift.purchaser);
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, "ALREADY_CLAIMED");
+    assert.ok(!res.body.claimUrl, "a claimed gift must expose no link");
+  });
+
+  await test("a cancelled or fully refunded gift hands out nothing", async () => {
+    for (const [label, patch, code] of [
+      ["cancelled", { status: "cancelled", cancelledAt: new Date() }, "CANCELLED"],
+      ["refunded", { refundStatus: "full", amountRefundedCents: 49800 }, "REFUNDED"],
+    ]) {
+      const { purchaser, created } = await boughtGift();
+      await GiftMembership.updateOne({ _id: created.gift._id }, { $set: patch });
+
+      const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+      assert.equal(res.status, 409, `${label} should be refused`);
+      assert.equal(res.body.code, code);
+      assert.ok(!res.body.claimUrl, `${label} must expose no link`);
+    }
+  });
+
+  await test("an expired invitation is replaced by a working one", async () => {
+    const { purchaser, created } = await boughtGift();
+
+    /*
+     * A genuinely expired invitation. The expiry is sealed INSIDE the token,
+     * so moving the database column alone would not expire anything - the
+     * token has to be minted with a life already behind it.
+     */
+    const dead = giftToken.createClaimToken({
+      giftId: created.gift._id,
+      version: 99,
+      ttlDays: -1,
+    });
+    await GiftMembership.updateOne({ _id: created.gift._id }, { $set: dead.fields });
+
+    const expired = await GiftMembership.findById(created.gift._id).lean();
+    const verdict = giftToken.verifyClaimToken(dead.token, expired);
+    assert.equal(verdict.ok, false, "the old link should be dead");
+    assert.equal(verdict.reason, "expired", `expected expired, got ${verdict.reason}`);
+    /* And the gift itself is untouched by its invitation lapsing. */
+    assert.notEqual(expired.status, "cancelled");
+    assert.equal(expired.recipient, null);
+
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    assert.equal(res.status, 200, "the gift is still valid, so a fresh link must be issued");
+
+    const after = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(
+      giftToken.verifyClaimToken(tokenFromUrl(res.body.claimUrl), after).ok,
+      true,
+      "the replacement must work"
+    );
+    assert.ok(new Date(after.claimTokenExpiresAt) > new Date(), "and must not still be expired");
+  });
+
+  await test("issuing a link supersedes the emailed one, and says so", async () => {
+    /*
+     * The consequence the purchaser is warned about. Only the hash is stored
+     * and the token carries a random IV, so a link to show has to be a new
+     * one - and a new one replaces the old by design.
+     */
+    const { purchaser, created } = await boughtGift();
+    const emailed = created.invitation.token;
+
+    const before = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(giftToken.verifyClaimToken(emailed, before).ok, true, "emailed link works first");
+
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    const after = await GiftMembership.findById(created.gift._id).lean();
+
+    const old = giftToken.verifyClaimToken(emailed, after);
+    assert.equal(old.ok, false, "the emailed link must stop working");
+    assert.equal(old.reason, "superseded");
+    assert.equal(
+      giftToken.verifyClaimToken(tokenFromUrl(res.body.claimUrl), after).ok,
+      true,
+      "and the new one must work"
+    );
+    assert.equal(after.claimTokenReissuedCount, 1, "the reissue is counted");
+  });
+
+  await test("handing the purchaser a link does not weaken the claim check", async () => {
+    /*
+     * The whole safety argument. Holding the link has never been what proves
+     * somebody is the recipient, and that is still true.
+     */
+    const { purchaser, created, recipientEmail } = await boughtGift();
+    const res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    const token = tokenFromUrl(res.body.claimUrl);
+
+    const gift = await GiftMembership.findById(created.gift._id);
+    assert.equal(giftToken.verifyClaimToken(token, gift.toObject()).ok, true, "the token is valid");
+
+    /* The purchaser holds a valid token and still cannot claim it. */
+    assert.equal(
+      giftService.claimantMatches(gift.toObject(), purchaser),
+      false,
+      "the purchaser must not be able to claim their own gift"
+    );
+    const bySelf = await giftService.claimGift({
+      gift,
+      user: purchaser,
+      addressId: purchaser.addresses[0]._id,
+    });
+    assert.equal(bySelf.ok, false);
+    assert.equal(bySelf.reason, "recipient_mismatch");
+
+    /* A stranger holding the same link cannot claim it either. */
+    const stranger = await makeUser({ email: `outsider-${Date.now()}@example.com` });
+    const byStranger = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: stranger,
+      addressId: stranger.addresses[0]._id,
+    });
+    assert.equal(byStranger.ok, false);
+    assert.equal(byStranger.reason, "recipient_mismatch");
+
+    /* The intended recipient still can. */
+    const recipient = await makeUser({ email: recipientEmail });
+    const proper = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId: recipient.addresses[0]._id,
+    });
+    assert.equal(proper.ok, true, `the recipient must still be able to claim: ${proper.reason}`);
+  });
+
+  await test("the purchased list reports invitation age without leaking a token", async () => {
+    const { created } = await boughtGift();
+    const gift = await GiftMembership.findById(created.gift._id).lean();
+
+    /* Whatever /purchased returns, it must never carry the credential. */
+    const { claimTokenHash } = gift;
+    assert.ok(claimTokenHash, "the fixture should have a hash stored");
+
+    const route = require("fs").readFileSync(
+      require("path").join(__dirname, "../routes/gifts.js"),
+      "utf8"
+    );
+    const purchasedBlock = route.slice(
+      route.indexOf('router.get("/purchased"'),
+      route.indexOf('router.post("/purchased/')
+    );
+    assert.ok(purchasedBlock.length > 100, "found the purchased handler");
+    for (const leak of ["claimTokenHash", "claimToken:", "invitation.token", "claimUrl("]) {
+      assert.ok(!purchasedBlock.includes(leak), `/purchased must not expose ${leak}`);
+    }
+    assert.ok(purchasedBlock.includes("invitationExpired"), "but it should report expiry");
+  });
+
+  await test("the raw token is never written to a log", async () => {
+    const { purchaser, created } = await boughtGift();
+    const lines = [];
+    const realLog = console.log;
+    console.log = (...args) => lines.push(args.join(" "));
+    let res;
+    try {
+      res = await claimLinkRequest(purchaser, created.gift.giftNumber);
+    } finally {
+      console.log = realLog;
+    }
+
+    const token = tokenFromUrl(res.body.claimUrl);
+    assert.ok(token.length > 20, "the fixture needs a real token");
+    const logged = lines.join("\n");
+    assert.ok(!logged.includes(token), "the token reached a log line");
+    assert.ok(!logged.includes(res.body.claimUrl), "the URL reached a log line");
+    assert.ok(logged.includes("gift_claim_link_issued_to_purchaser"), "but the event is recorded");
+    assert.ok(logged.includes(created.gift.giftNumber), "with the gift reference");
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {

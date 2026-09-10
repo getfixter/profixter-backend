@@ -19,10 +19,11 @@ const {
   sanitizePersonalMessage,
 } = require("../utils/gifts/giftOccasions");
 const { readClaimToken, verifyClaimToken } = require("../utils/gifts/giftClaimToken");
-const { sendGiftClaimedAdminNotice } = require("../utils/gifts/giftEmails");
+const { claimUrl, sendGiftClaimedAdminNotice } = require("../utils/gifts/giftEmails");
 const {
   claimGift,
   claimantMatches,
+  issueInvitation,
   validateGiftPurchase,
 } = require("../utils/gifts/giftService");
 const { PLAN_NAMES, formatTermDate, quoteGift, stripeLineItem } = require("../utils/gifts/giftPricing");
@@ -441,6 +442,15 @@ router.get("/purchased", auth, async (req, res) => {
         currency: gift.currency,
         automaticTaxStatus: gift.automaticTaxStatus,
         refundStatus: gift.refundStatus,
+        /*
+         * Whether the link we emailed still works, so the purchaser can be
+         * told "that link has expired" instead of being left to wonder. The
+         * DATE only - still nothing about the token itself, ever.
+         */
+        invitationExpiresAt: gift.claimTokenExpiresAt,
+        invitationExpired: Boolean(
+          gift.claimTokenExpiresAt && new Date(gift.claimTokenExpiresAt) <= new Date()
+        ),
         purchasedAt: gift.purchasedAt,
         claimedAt: gift.claimedAt,
         startAt: gift.startAt,
@@ -450,6 +460,101 @@ router.get("/purchased", auth, async (req, res) => {
   } catch (error) {
     console.error("GET /gifts/purchased failed:", error);
     return res.status(500).json({ message: "Unable to load your gifts" });
+  }
+});
+
+/**
+ * A claim link the purchaser can send themselves.
+ *
+ * WHY THIS MINTS A NEW LINK RATHER THAN SHOWING THE OLD ONE
+ *
+ * It cannot show the old one. Only the token's hash is stored, and the token
+ * embeds a random IV, so the same gift and version produce a different string
+ * every time - the emailed token is unrecoverable by design and that design
+ * is worth keeping. So this issues a fresh invitation through the same
+ * mechanism Admin uses, which supersedes the previous link.
+ *
+ * That consequence is real and the purchaser is told about it before they
+ * press the button: whatever we emailed stops working, and the link they now
+ * hold is the only one. It is a deliberate act, never a side effect of
+ * loading a page.
+ *
+ * WHY HANDING A CLAIM LINK TO THE PURCHASER IS SAFE
+ *
+ * Holding the link has never been what proves somebody is the recipient.
+ * claimantMatches still requires the claimant to be signed into an account
+ * whose email is the recipient's, exactly as before - see the note there
+ * about links being forwarded, screenshotted and sitting in shared inboxes.
+ * The purchaser gets a way to deliver the invitation, not a way past the
+ * check at the end of it.
+ *
+ * The token is returned in the response body and nowhere else. It is not
+ * logged, not stored, and the log line below records the version instead.
+ */
+router.post("/purchased/:giftNumber/claim-link", auth, async (req, res) => {
+  try {
+    const giftNumber = String(req.params.giftNumber || "").trim().toUpperCase();
+    if (!/^G[0-9A-F]{8}$/.test(giftNumber)) {
+      return res.status(400).json({ code: "INVALID_REFERENCE", message: "Unknown gift." });
+    }
+
+    /*
+     * Scoped to the caller in the query itself, so a gift belonging to
+     * somebody else is not found rather than being found and then refused.
+     */
+    const gift = await GiftMembership.findOne({ giftNumber, purchaser: req.user.id });
+    if (!gift) {
+      return res.status(404).json({ code: "NOT_FOUND", message: "We could not find that gift." });
+    }
+
+    /* Already claimed: there is nothing left to invite anybody to. */
+    if (gift.recipient || gift.status === "claimed") {
+      return res.status(409).json({
+        code: "ALREADY_CLAIMED",
+        message: `${gift.recipientFirstName || "They"} have already claimed this gift.`,
+      });
+    }
+    if (gift.status === "cancelled") {
+      return res.status(409).json({
+        code: "CANCELLED",
+        message: "This gift has been cancelled.",
+      });
+    }
+    /*
+     * Refunded in full: the money went back, so handing out a working claim
+     * link would be giving away a membership nobody paid for.
+     */
+    if (gift.refundStatus === "full") {
+      return res.status(409).json({
+        code: "REFUNDED",
+        message: "This gift was refunded, so it can no longer be claimed.",
+      });
+    }
+
+    const invitation = await issueInvitation(gift, { reissue: true });
+
+    console.log(
+      JSON.stringify({
+        event: "gift_claim_link_issued_to_purchaser",
+        giftNumber: gift.giftNumber,
+        /* The version, never the token. */
+        version: invitation.version,
+        purchaser: String(req.user.id),
+      })
+    );
+
+    return res.json({
+      claimUrl: claimUrl(invitation.token),
+      expiresAt: invitation.expiresAt,
+      /*
+       * Said plainly so the client can tell the purchaser what just happened
+       * rather than leaving them to discover it when the recipient calls.
+       */
+      supersededPreviousLink: true,
+    });
+  } catch (error) {
+    console.error("POST /gifts/purchased/:giftNumber/claim-link failed:", error);
+    return res.status(500).json({ message: "Unable to prepare a gift link" });
   }
 });
 
