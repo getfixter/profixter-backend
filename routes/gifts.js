@@ -511,7 +511,10 @@ router.post("/purchased/:giftNumber/claim-link", auth, async (req, res) => {
     if (gift.recipient || gift.status === "claimed") {
       return res.status(409).json({
         code: "ALREADY_CLAIMED",
-        message: `${gift.recipientFirstName || "They"} have already claimed this gift.`,
+        /* "Maria has", but "They have". */
+        message: gift.recipientFirstName
+          ? `${gift.recipientFirstName} has already claimed this gift.`
+          : "They have already claimed this gift.",
       });
     }
     if (gift.status === "cancelled") {
