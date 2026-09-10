@@ -281,6 +281,46 @@ async function findActiveGift(
 }
 
 /**
+ * Every address this person currently has gift cover at, keyed by address id.
+ *
+ * The whole customer UI decides what somebody is entitled to from one map
+ * built at sign-in, and until this existed that map was built from paid
+ * subscriptions alone. A gift recipient was therefore told they had no
+ * membership on every screen while the booking API — which does ask about
+ * gifts — would happily have let them book. This is what closes that gap:
+ * one answer, from the same authority both sides already use.
+ *
+ * Goes through findActiveGift per address rather than reading dates here, so
+ * a pending gift still gets activated on the way past and there is exactly
+ * one definition of "active" in the codebase.
+ */
+async function activeGiftsByAddress(
+  userId,
+  { now = new Date(), Model = GiftMembership } = {}
+) {
+  const byAddress = new Map();
+  if (!userId) return byAddress;
+
+  /*
+   * Almost always one address, often none. The distinct runs against the
+   * indexed recipient field, so the common case — a customer who has never
+   * been given a gift — costs one empty lookup on the sign-in path.
+   */
+  const addressIds = await Model.distinct("addressId", {
+    recipient: userId,
+    status: "claimed",
+  });
+
+  for (const addressId of addressIds) {
+    if (!addressId) continue;
+    const gift = await findActiveGift(userId, addressId, { now, Model });
+    if (gift) byAddress.set(String(addressId), gift);
+  }
+
+  return byAddress;
+}
+
+/**
  * Everything this person holds at this address, in order.
  *
  * Drives the account screen: what is running now, what follows it, and what has
@@ -390,6 +430,7 @@ function syntheticGiftSubscription(gift) {
 module.exports = {
   CLAIMABLE_STATUSES,
   activateDueGifts,
+  activeGiftsByAddress,
   coverageEndsAt,
   paidCoverageEnd,
   projectedGiftCoverageEnd,

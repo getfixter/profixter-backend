@@ -13,6 +13,7 @@ const {
   sendAdminLeadNotification,
 } = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
+const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const {
   findCustomerByEmail,
@@ -90,7 +91,22 @@ async function ensurePrimaryFromLegacy(user) {
 }
 
 // ── Coverage helpers
-// Build per-address map: {addressId: {active, plan}}
+/*
+ * Build per-address map: {addressId: {active, plan, source}}
+ *
+ * This is the answer the entire customer UI is built on. hasActiveMembership()
+ * on the frontend is just "does any address in this map say active", and from
+ * that one boolean hang the member navigation, the membership booking flow,
+ * the mobile nav and every members-only affordance on the site.
+ *
+ * It must therefore describe MEMBERSHIP, not billing. For most people those
+ * are the same thing and a Subscription row is the whole story. For somebody
+ * holding a gift they are not: a gift is deliberately not a Subscription and
+ * carries no Stripe customer, so a map built from Subscription rows alone
+ * reported a claimed, paid-for, currently-running gift as no membership at
+ * all. The booking API knew better and would have let them book; the UI
+ * never offered them the door.
+ */
 async function buildPerAddressCoverage(user) {
   const map = {};
   const subs = await Subscription.find({ user: user._id }).sort({ startDate: -1, createdAt: -1 });
@@ -101,14 +117,41 @@ async function buildPerAddressCoverage(user) {
     if (!s.addressId) continue;
 
     const key = String(s.addressId);
-    if (!map[key]) map[key] = { active: true, plan };
+    if (!map[key]) map[key] = { active: true, plan, source: "subscription" };
   }
 
   const addrless = subs.find((s) => subscriptionGrantsAccess(s) && !s.addressId);
   if (addrless && user.defaultAddressId) {
     const plan = String(addrless.subscriptionType || "").toLowerCase();
     const key = String(user.defaultAddressId);
-    if (!map[key]) map[key] = { active: true, plan };
+    if (!map[key]) map[key] = { active: true, plan, source: "subscription" };
+  }
+
+  /*
+   * Gifts fill only the addresses paid cover has not already claimed.
+   *
+   * Ordered second so a paying member resolves exactly as before and their
+   * behaviour cannot move — the same ordering the booking API uses. Whether
+   * a gift is live is computed from its dates by the shared authority rather
+   * than read from a flag, so a late lifecycle sweep can never cost somebody
+   * the membership they are holding.
+   *
+   * A failure here must not cost anybody their sign-in. Coverage is rebuilt
+   * on every /me, so degrading to paid-only for one request is recoverable;
+   * refusing to authenticate is not.
+   */
+  try {
+    const giftsByAddress = await activeGiftsByAddress(user._id);
+    for (const [key, gift] of giftsByAddress) {
+      if (map[key]) continue;
+      map[key] = {
+        active: true,
+        plan: String(gift.plan || "").toLowerCase(),
+        source: "gift",
+      };
+    }
+  } catch (err) {
+    console.error("buildPerAddressCoverage: gift lookup failed:", err);
   }
 
   return map;
@@ -126,6 +169,12 @@ function toAddressDTOWithCoverage(a, coverageMap) {
     county: a.county || "",
     hasActiveSubscription: !!c.active,
     plan: c.plan || null,
+    /*
+     * How the cover was obtained. The UI gates on hasActiveSubscription and
+     * does not need this, but a gift has no billing behind it, so anything
+     * offering to manage a payment should ask first.
+     */
+    coverageSource: c.active ? c.source || "subscription" : null,
   };
 }
 

@@ -1495,6 +1495,248 @@ async function run() {
     assert.equal(monthsBetween(stored[0].startAt, projected), 16, "1 + 3 + 12 months of cover");
   });
 
+  console.log("\nA claimed gift grants membership access (production regression)");
+
+  /*
+   * Call the REAL GET /api/auth/me over HTTP with a real token.
+   *
+   * The bug this guards against was invisible to every unit-level check: the
+   * gift record was perfect, giftAccessState said active, and the booking API
+   * granted access. What was wrong was the ONE payload the whole customer UI
+   * reads to decide whether somebody is a member. So the test has to be the
+   * route, not a helper.
+   */
+  async function authMe(user) {
+    const express = require("express");
+    const http = require("http");
+    const jwt = require("jsonwebtoken");
+
+    const routerPath = require.resolve("../routes/auth");
+    delete require.cache[routerPath];
+    const authRouter = require("../routes/auth");
+    delete require.cache[routerPath];
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api/auth", authRouter);
+
+    const token = jwt.sign({ id: String(user._id) }, process.env.JWT_SECRET);
+
+    return new Promise((resolve, reject) => {
+      const server = app.listen(0, () => {
+        const req = http.request(
+          {
+            host: "127.0.0.1",
+            port: server.address().port,
+            path: "/api/auth/me",
+            method: "GET",
+            headers: { Authorization: "Bearer " + token },
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c) => (raw += c));
+            res.on("end", () => {
+              server.close();
+              try {
+                resolve({ status: res.statusCode, body: JSON.parse(raw) });
+              } catch (e) {
+                resolve({ status: res.statusCode, body: { raw } });
+              }
+            });
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    });
+  }
+
+  /** What the frontend's hasActiveMembership() computes from that payload. */
+  const frontendSeesMembership = (body) =>
+    Boolean(
+      (body?.user?.addresses || body?.addresses || []).some(
+        (a) => a.hasActiveSubscription === true
+      )
+    );
+
+  const addressFrom = (body, addressId) =>
+    (body?.user?.addresses || body?.addresses || []).find(
+      (a) => String(a._id) === String(addressId)
+    );
+
+  await test("a brand new recipient has membership access the moment they claim", async () => {
+    /* 1. Somebody buys the gift. The recipient has no account at all yet. */
+    const purchaser = await makeUser({ email: "giver-" + Date.now() + "@example.com" });
+    const recipientEmail = "newrecipient-" + Date.now() + "@example.com";
+    assert.equal(
+      await User.countDocuments({ email: recipientEmail }),
+      0,
+      "the recipient must not exist before the claim"
+    );
+
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail, plan: "basic", durationMonths: 2 })
+    );
+    assert.equal(created.created, true);
+
+    /* 2. They create a NEW account, exactly as the claim flow has them do. */
+    const recipient = await makeUser({ email: recipientEmail, name: "New Recipient" });
+    const addressId = recipient.addresses[0]._id;
+
+    /* Before claiming they are not a member. */
+    const before = await authMe(recipient);
+    assert.equal(before.status, 200);
+    assert.equal(
+      frontendSeesMembership(before.body),
+      false,
+      "an unclaimed gift must not grant anything"
+    );
+
+    /* 3. They claim it and pick the property. */
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId,
+    });
+    assert.equal(claim.ok, true, "claim failed: " + claim.reason);
+
+    const gift = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(gift.status, "claimed");
+    assert.equal(String(gift.recipient), String(recipient._id), "the account is attached");
+    assert.equal(String(gift.addressId), String(addressId), "the chosen address is persisted");
+    assert.ok(gift.startAt, "the gift has started");
+    assert.ok(gift.endAt > gift.startAt, "and has an end");
+    assert.equal(giftAccess.giftAccessState(gift, new Date()).state, "active");
+
+    /* 4. IMMEDIATELY -- no background job, no second sign-in -- they are a member. */
+    const after = await authMe(recipient);
+    assert.equal(after.status, 200);
+    const covered = addressFrom(after.body, addressId);
+
+    assert.ok(covered, "the chosen address must come back in the payload");
+    assert.equal(
+      covered.hasActiveSubscription,
+      true,
+      "THE BUG: a claimed, active gift must read as membership cover"
+    );
+    assert.equal(covered.plan, "basic", "and must report the gifted plan");
+    assert.equal(covered.coverageSource, "gift", "declared as a gift, since there is no billing");
+    assert.equal(
+      frontendSeesMembership(after.body),
+      true,
+      "hasActiveMembership() on the frontend must now be true"
+    );
+  });
+
+  await test("that same recipient can book as a member", async () => {
+    const purchaser = await makeUser({ email: "giver2-" + Date.now() + "@example.com" });
+    const recipientEmail = "booker-" + Date.now() + "@example.com";
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail, plan: "premium", durationMonths: 1 })
+    );
+    const recipient = await makeUser({ email: recipientEmail });
+    const addressId = recipient.addresses[0]._id;
+
+    await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId,
+    });
+
+    /* Booking authorisation resolves the gift into a usable membership. */
+    const found = await giftAccess.findActiveGift(recipient._id, addressId, { now: new Date() });
+    assert.ok(found, "booking authorisation must find the gift");
+    const synthetic = giftAccess.syntheticGiftSubscription(found);
+    assert.equal(synthetic.subscriptionType, "premium", "booked on the gifted plan");
+    assert.ok(
+      ["active", "trialing"].includes(String(synthetic.status)),
+      "a gift must present as usable cover, got " + synthetic.status
+    );
+
+    /* The UI and the booking API must agree, which is what failed in production. */
+    const me = await authMe(recipient);
+    const covered = addressFrom(me.body, addressId);
+    assert.equal(
+      covered.hasActiveSubscription,
+      true,
+      "the UI must not deny what the booking API grants"
+    );
+    assert.equal(covered.plan, synthetic.subscriptionType, "and must agree on the plan");
+  });
+
+  await test("a gift never overrides or invents paid billing", async () => {
+    const purchaser = await makeUser({ email: "giver3-" + Date.now() + "@example.com" });
+    const recipientEmail = "payer-" + Date.now() + "@example.com";
+    const recipient = await makeUser({ email: recipientEmail });
+    const addressId = recipient.addresses[0]._id;
+
+    /* This person already pays for this address. */
+    await Subscription.create({
+      user: recipient._id,
+      userId: recipient.userId,
+      addressId,
+      subscriptionType: "elite",
+      startDate: new Date(Date.now() - 30 * DAY),
+      latestPaymentDate: new Date(Date.now() - 30 * DAY),
+      nextPaymentDate: new Date(Date.now() + 30 * DAY),
+      currentPeriodEnd: new Date(Date.now() + 30 * DAY),
+      status: "active",
+      accessStatus: "active",
+      stripeSubscriptionId: "sub_paid_regression",
+      stripeCustomerId: "cus_paid_regression",
+    });
+
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail, plan: "basic", durationMonths: 1 })
+    );
+    await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId,
+    });
+
+    const me = await authMe(recipient);
+    const covered = addressFrom(me.body, addressId);
+    assert.equal(covered.hasActiveSubscription, true);
+    assert.equal(covered.plan, "elite", "the paid plan wins, not the gifted one");
+    assert.equal(
+      covered.coverageSource,
+      "subscription",
+      "a paying member must be reported exactly as before"
+    );
+  });
+
+  await test("an expired gift stops granting access", async () => {
+    const purchaser = await makeUser({ email: "giver4-" + Date.now() + "@example.com" });
+    const recipientEmail = "expired-" + Date.now() + "@example.com";
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail, plan: "plus", durationMonths: 1 })
+    );
+    const recipient = await makeUser({ email: recipientEmail });
+    const addressId = recipient.addresses[0]._id;
+    await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId,
+    });
+
+    /* Wind the window into the past; nothing else about the record changes. */
+    const ended = new Date(Date.now() - DAY);
+    await GiftMembership.updateOne(
+      { _id: created.gift._id },
+      { $set: { startAt: new Date(ended.getTime() - 30 * DAY), endAt: ended } }
+    );
+
+    const me = await authMe(recipient);
+    const covered = addressFrom(me.body, addressId);
+    assert.equal(
+      covered.hasActiveSubscription,
+      false,
+      "cover must end with the gift, not outlive it"
+    );
+    assert.equal(covered.coverageSource, null);
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {
