@@ -80,6 +80,28 @@ function section(title) {
 
 /** A booking of each kind, with one fixed appointment instant: 2pm New York. */
 const APPOINTMENT = new Date("2026-03-03T19:00:00.000Z");
+
+/*
+ * The one message allowed to be UCS-2, and the reason.
+ *
+ * Every other template is held to GSM-7 and a single segment, because the
+ * automations send at volume, on a schedule, to the same people repeatedly:
+ * one curly quote there halves the segment size for thousands of messages
+ * and the cost is paid forever.
+ *
+ * The gift invitation is a different animal. It is sent ONCE, to one person,
+ * at the moment somebody buys them a present, and the 🎁 is a deliberate
+ * product decision about how that arrival feels rather than an accident of
+ * punctuation. Even without it the message could not be one segment: a
+ * secure claim URL is most of the budget on its own.
+ *
+ * So it is exempt, deliberately, in a named list of one — and the test
+ * below replaces the guarantee rather than dropping it, capping the gift
+ * message so it cannot quietly grow.
+ */
+const UNICODE_BY_DESIGN = new Set(["GIFT_INVITATION"]);
+const SITE_URL = "https://www.profixter.com";
+
 const BOOKINGS = {
   membership: {
     _id: "b_membership",
@@ -557,6 +579,7 @@ test("every message fits inside two segments", () => {
 test("no template smuggles in a non-GSM7 character", () => {
   // One curly quote or emoji halves the segment size for the whole message.
   for (const type of types.allTypes()) {
+    if (UNICODE_BY_DESIGN.has(type)) continue;
     const body = templates.renderSms(type, {
       booking: BOOKINGS.membership,
       name: "Sam",
@@ -1135,6 +1158,10 @@ function everyRenderedBody() {
           billingCycle: "monthly",
           accessUntil: APPOINTMENT,
           body: "Sample seasonal copy",
+          /* A realistic gift claim link, or the gift body renders "undefined"
+           * and every length assertion below becomes meaningless for it. */
+          fromName: "Taras Bandura",
+          claimUrl: `${SITE_URL}/gift/claim/${"t".repeat(43)}`,
         }),
       });
     }
@@ -1219,6 +1246,7 @@ section("Encoding and segments");
 
 test("every message is GSM-7; none forces UCS-2", () => {
   for (const { type, body } of everyRenderedBody()) {
+    if (UNICODE_BY_DESIGN.has(type)) continue;
     assert.equal(phone.isUnicodeBody(body), false, `${type} forces UCS-2: ${body}`);
   }
 });
@@ -1232,13 +1260,33 @@ test("EVERY message is exactly one segment", () => {
    */
   const multi = [];
   for (const { type, body } of everyRenderedBody()) {
+    if (UNICODE_BY_DESIGN.has(type)) continue;
     if (phone.estimateSegments(body) > 1) multi.push(`${type} (${body.length} chars)`);
   }
   assert.deepEqual(multi, [], "these messages are multi-segment");
 });
 
+test("the gift invitation stays inside its own budget", () => {
+  /*
+   * The guarantee that replaces GSM-7 and one-segment for this type. Exempt
+   * is not unbounded: the message may use the emoji and may run to a few
+   * segments because the claim URL demands it, but it must not creep.
+   */
+  const url = `${SITE_URL}/gift/claim/${"t".repeat(43)}`;
+  for (const fromName of ["Taras Bandura", "", "Bartholomew Fitzwilliam-Smythe"]) {
+    const body = templates.renderSms("GIFT_INVITATION", { fromName, claimUrl: url });
+    assert.ok(body.length <= 200, `gift SMS is ${body.length} chars: ${body}`);
+    assert.ok(
+      phone.estimateSegments(body) <= 3,
+      `gift SMS is ${phone.estimateSegments(body)} segments: ${body}`
+    );
+    assert.ok(body.includes(url), "and it must always carry the claim link");
+  }
+});
+
 test("no message exceeds the 160-character GSM-7 single-segment limit", () => {
   for (const { type, body } of everyRenderedBody()) {
+    if (UNICODE_BY_DESIGN.has(type)) continue;
     assert.ok(body.length <= 160, `${type} is ${body.length} chars: ${body}`);
   }
 });

@@ -110,6 +110,24 @@ async function sendGiftPurchaseEmails(gift, invitation) {
         }
       )
     );
+
+    /*
+     * And by text, if the purchaser also gave us a number.
+     *
+     * The SAME claim link, deliberately: one credential to expire, one to
+     * revoke, and a recipient who opens whichever message reached them first
+     * lands in the same place. Never instead of the email — email is what
+     * claim identity binds on, so it always goes.
+     *
+     * Required lazily to keep the SMS system out of this module's import
+     * graph for every gift that has no phone number, which is most of them.
+     */
+    if (gift.recipientPhone) {
+      const { sendGiftInvitationSms } = require("./giftSms");
+      await attempt("gift_invitation_sms", () =>
+        sendGiftInvitationSms(gift, invitation, { claimUrl: claimUrl(invitation.token) })
+      );
+    }
   }
 }
 
@@ -276,6 +294,21 @@ function recipientNameOf(gift) {
   return `${gift.recipientFirstName || ""} ${gift.recipientLastName || ""}`.trim() || "Unknown";
 }
 
+/**
+ * How the recipient can be reached, as Admin needs to see it.
+ *
+ * A gift always has an email — that is what claim identity binds on — and
+ * may additionally have a phone number the purchaser supplied. Both are shown
+ * when both exist, so an admin chasing an unclaimed gift knows every channel
+ * that was actually used.
+ */
+function recipientContact(gift) {
+  const parts = [];
+  if (gift.recipientEmail) parts.push(gift.recipientEmail);
+  if (gift.recipientPhone) parts.push(gift.recipientPhone);
+  return parts.length ? parts.join(" / ") : "unknown";
+}
+
 function addressLine(gift) {
   const a = gift.addressSnapshot || {};
   const parts = [a.line1, a.city, a.state, a.zip].filter((v) => String(v || "").trim());
@@ -387,6 +420,8 @@ async function sendGiftPurchasedAdminNotice(gift, { Model } = {}) {
             purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
             recipientName: recipientNameOf(gift),
             recipientEmail: gift.recipientEmail || "unknown",
+            recipientPhone: gift.recipientPhone || "",
+            recipientContact: recipientContact(gift),
             plan: planLabel(gift.plan),
             durationMonths: gift.durationMonths,
             subtotal: money(gift.amountSubtotalCents),
@@ -432,6 +467,8 @@ async function sendGiftClaimedAdminNotice(gift, { queued = false, Model } = {}) 
             purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
             recipientName: recipientNameOf(gift),
             recipientEmail: gift.recipientEmail || "unknown",
+            recipientPhone: gift.recipientPhone || "",
+            recipientContact: recipientContact(gift),
             plan: planLabel(gift.plan),
             durationMonths: gift.durationMonths,
             claimedAt: stamp(gift.claimedAt),
@@ -485,6 +522,8 @@ async function sendGiftUnclaimedAdminNotice(gift, { daysUnclaimed, now = new Dat
             purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
             recipientName: recipientNameOf(gift),
             recipientEmail: gift.recipientEmail || "unknown",
+            recipientPhone: gift.recipientPhone || "",
+            recipientContact: recipientContact(gift),
             plan: planLabel(gift.plan),
             durationMonths: gift.durationMonths,
             purchasedAt: stamp(purchased),

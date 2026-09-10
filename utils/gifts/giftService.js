@@ -3,6 +3,9 @@ const crypto = require("crypto");
 const GiftMembership = require("../../models/GiftMembership");
 const Subscription = require("../../models/Subscription");
 const { normalizeEmail } = require("../identity");
+/* The same normaliser the SMS system dials with, so a stored number is
+ * never one shape here and another there. */
+const { toE164 } = require("../sms/smsPhone");
 const { findCustomerByEmail } = require("../userLookup");
 const { coverageEndsAt, giftAccessState, paidCoverageEnd } = require("./giftAccess");
 const { createClaimToken } = require("./giftClaimToken");
@@ -48,6 +51,7 @@ async function validateGiftPurchase({
   plan,
   durationMonths,
   recipientEmail,
+  recipientPhone,
   UserLookup = { findCustomerByEmail },
 }) {
   const normalizedPlan = normalizePlan(plan);
@@ -57,6 +61,29 @@ async function validateGiftPurchase({
   const email = normalizeEmail(recipientEmail);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { ok: false, reason: "invalid_recipient_email" };
+  }
+
+  /*
+   * A phone number is OPTIONAL and is an extra delivery channel, nothing more.
+   *
+   * Email stays required because it is what claim identity binds on: a
+   * claimant proves they are the intended recipient by signing in with the
+   * address the invitation was sent to. There is no equivalent check for a
+   * phone number — nothing in the account system verifies one — so a
+   * phone-only gift would be a gift anybody holding the link could claim.
+   * Until a verified-phone mechanism exists, the phone is how we also text
+   * them, never how we decide who they are.
+   *
+   * Normalised to E.164 here so the stored value is dialable. A number we
+   * cannot parse into a real North American line is REFUSED rather than
+   * quietly dropped: somebody who typed a number meant it to be used, and
+   * silently ignoring it would have them believe a text went out.
+   */
+  let phone = "";
+  const typedPhone = String(recipientPhone || "").trim();
+  if (typedPhone) {
+    phone = toE164(typedPhone) || "";
+    if (!phone) return { ok: false, reason: "invalid_recipient_phone" };
   }
 
   /*
@@ -82,7 +109,7 @@ async function validateGiftPurchase({
     }
   }
 
-  return { ok: true, plan: normalizedPlan, quote, recipientEmail: email };
+  return { ok: true, plan: normalizedPlan, quote, recipientEmail: email, recipientPhone: phone };
 }
 
 /**
@@ -116,6 +143,13 @@ async function recordPurchasedGift({
       email: normalizeEmail(purchaser?.email) || "",
     },
     recipientEmail: email,
+    /*
+     * Already E.164 by the time it gets here (validateGiftPurchase normalised
+     * it before checkout), but re-normalised anyway because this function is
+     * also reachable from the webhook, where the value has made a round trip
+     * through Stripe metadata as a plain string.
+     */
+    recipientPhone: toE164(recipient?.phone) || "",
     recipientFirstName: String(recipient?.firstName || "").slice(0, 80),
     recipientLastName: String(recipient?.lastName || "").slice(0, 80),
     /* Presentation only. Sanitised again here: this function is reachable

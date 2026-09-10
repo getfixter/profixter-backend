@@ -3,6 +3,7 @@ const fetch = require("node-fetch");
 
 const {
   smsEnabled,
+  sendingAllowedFor,
   statusCallbackUrl,
   twilioConfigured,
   twilioCredentials,
@@ -133,9 +134,23 @@ function basicAuthHeader(user, pass) {
  * can happen. A guard that is only in the caller is a guard that a future
  * caller can forget.
  */
-async function sendMessage({ to, body, statusCallback = statusCallbackUrl() }) {
-  if (!smsEnabled()) {
-    throw new SmsProviderError("SMS sending is disabled (SMS_ENABLED is not true)", {
+async function sendMessage({
+  to,
+  body,
+  notificationType = "",
+  statusCallback = statusCallbackUrl(),
+}) {
+  /*
+   * Asked per type, and asked again here on purpose. The service layer has
+   * already decided; this is the second line of defence, and it has to apply
+   * the SAME rule or the two guards disagree about the one case that matters.
+   *
+   * A caller that forgets to pass notificationType gets the strictest answer,
+   * because an unknown type is not on the gift allowlist and therefore falls
+   * back to SMS_ENABLED.
+   */
+  if (!sendingAllowedFor(notificationType)) {
+    throw new SmsProviderError("SMS sending is disabled for this notification type", {
       reason: "sms_disabled",
       retryable: false,
     });

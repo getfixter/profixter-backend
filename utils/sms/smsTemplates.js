@@ -400,6 +400,47 @@ const TEMPLATES = {
   FIXTER_ON_THE_WAY: ({ fixterName }) =>
     `${BRAND}: ${firstNameOf(fixterName, "Your Fixter")} is on the way to you now.`,
 
+  /* -------------------------------- Gift -------------------------------- */
+  /*
+   * WHAT THIS MESSAGE MAY NOT CONTAIN
+   *
+   * No price, no payment detail, no property address, and no raw internal
+   * identifier. It goes to a phone number typed by a third party who may have
+   * mistyped it, so it has to be harmless when it reaches the wrong handset:
+   * a stranger learns only that somebody sent a gift.
+   *
+   * The claim URL is the exception and is unavoidable - it IS the message. It
+   * carries an expiring single-use token and is the same secure link the
+   * email uses, so there is one thing to revoke rather than two.
+   *
+   * No opt-out line. This is a one-off message to somebody who is not on a
+   * list and will not be messaged again; there is nothing to unsubscribe from.
+   */
+  GIFT_INVITATION: ({ fromName, claimUrl }) => {
+    /*
+     * The first name only, and capped, because this message is already long:
+     * the claim URL alone is most of a segment and the emoji puts the whole
+     * body into UCS-2. A name longer than this is dropped in favour of the
+     * anonymous opener rather than truncated, since "You received a gift
+     * from Bartholom" reads as a bug.
+     */
+    const first = firstNameOf(clean(fromName, 24), "");
+    const from = first.length <= 20 ? first : "";
+    /*
+     * The name is NOT repeated in the second sentence. It reads as two
+     * paragraphs in the copy this was written from, but renderSms collapses
+     * whitespace, so a repeat lands as "from Taras. Taras sent you..." on one
+     * line - redundant, and two segments longer for no benefit.
+     */
+    const opener = from
+      ? `You received a gift from ${from} \u{1F381}`
+      : `Someone sent you a ${BRAND} Gift Membership \u{1F381}`;
+    const line = from
+      ? `They sent you a ${BRAND} Gift Membership for your home.`
+      : "It covers handyman help for your home.";
+    return `${opener} ${line} Open your gift here: ${claimUrl}`;
+  },
+
   /* ------------------------------ Account ------------------------------ */
   ACCOUNT_CREATED: ({ name }) =>
     `Welcome to ${BRAND}, ${firstNameOf(name)}! Your account is ready. ` +

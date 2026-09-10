@@ -85,6 +85,22 @@ const GiftMembershipSchema = new mongoose.Schema(
     recipientFirstName: { type: String, default: "", trim: true },
     recipientLastName: { type: String, default: "", trim: true },
 
+    /*
+     * A second way to reach them. OPTIONAL, and never an identity.
+     *
+     * Stored in E.164 so the value in the database is the value we would dial,
+     * with the normalising done once at write time rather than at each read.
+     * Empty string, not null, so every existing gift is already valid under
+     * this schema and no migration is needed.
+     *
+     * DELIBERATELY NOT PART OF CLAIM IDENTITY. A phone number here was typed
+     * by the purchaser and verified by nobody, and the account system has no
+     * mechanism that could prove a claimant controls it. claimantMatches
+     * therefore still binds on email alone; this field decides only whether a
+     * text goes out alongside the invitation email.
+     */
+    recipientPhone: { type: String, default: "", trim: true },
+
     /* ---------------------------- Presentation ---------------------------- */
     /*
      * How the gift is PRESENTED, and nothing more.

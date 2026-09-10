@@ -144,6 +144,8 @@ const PURCHASE_ERRORS = {
   unsupported_duration: "That gift length is not available.",
   plan_has_no_price: "That plan is not available for gifting right now.",
   invalid_recipient_email: "Enter a valid email address for the recipient.",
+  invalid_recipient_phone:
+    "That phone number does not look like a US number. Check it, or leave it blank.",
   self_gift_not_allowed:
     "A gift has to be for someone else. To start your own membership, choose a plan from your account.",
 };
@@ -271,6 +273,7 @@ router.post("/checkout-session", auth, async (req, res) => {
       plan,
       durationMonths,
       recipientEmail: recipient.email,
+      recipientPhone: recipient.phone,
     });
     if (!validation.ok) {
       return res.status(400).json({
@@ -304,6 +307,11 @@ router.post("/checkout-session", auth, async (req, res) => {
       purchaserMongoId: String(purchaser._id),
       purchaserUserId: String(purchaser.userId || purchaser._id),
       recipientEmail: validation.recipientEmail,
+      /*
+       * Empty string when not given. Stripe metadata cannot hold null, and an
+       * absent key would be indistinguishable from a key we forgot to send.
+       */
+      recipientPhone: validation.recipientPhone || "",
       recipientFirstName: String(recipient.firstName || "").slice(0, 80),
       recipientLastName: String(recipient.lastName || "").slice(0, 80),
       occasion: giftOccasion,

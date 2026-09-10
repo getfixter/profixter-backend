@@ -42,6 +42,56 @@ function smsEnabled() {
 }
 
 /**
+ * Whether the gift recipient's invitation SMS may be sent.
+ *
+ * A THIRD DIAL, AND THE ONLY ONE THAT CAN SEND WITHOUT THE MASTER SWITCH.
+ *
+ * Every other notification in this system waits on SMS_ENABLED, which is off
+ * and stays off until Twilio is approved. Turning it on would wake all
+ * twenty-five types at once: booking confirmations, day-before reminders,
+ * membership changes, payment-failed notices, three marketing campaigns.
+ * That is a business decision nobody has made.
+ *
+ * A gift is the one message with no alternative channel. It is addressed to
+ * somebody who does not have an account, may not have given us an email, and
+ * cannot be reached any other way. So it gets its own switch, and the
+ * allowlist below is deliberately a list of ONE: setting GIFT_SMS_ENABLED
+ * permits exactly the gift invitation and nothing else, while SMS_ENABLED
+ * continues to hold every other type shut.
+ *
+ * Fails closed like its siblings: only the literal word "true" counts.
+ */
+function giftSmsEnabled() {
+  return readFlag("GIFT_SMS_ENABLED", false);
+}
+
+/*
+ * The types GIFT_SMS_ENABLED may release, and no others.
+ *
+ * A set rather than a comparison so that adding a second gift message later
+ * is one line here, in the file that answers "could this text a customer?",
+ * rather than a condition growing somewhere further down the call stack.
+ */
+const GIFT_SMS_TYPES = new Set(["GIFT_INVITATION"]);
+
+/**
+ * May this specific notification type be sent right now?
+ *
+ * THE SINGLE ANSWER. Both the service layer and the provider ask this, so the
+ * two cannot drift into disagreeing about whether a message may leave.
+ *
+ * Anything not on the gift allowlist gets the old rule unchanged: SMS_ENABLED
+ * and nothing else. That is what guarantees this change cannot make a booking
+ * reminder or a marketing campaign sendable.
+ */
+function sendingAllowedFor(notificationType) {
+  if (GIFT_SMS_TYPES.has(String(notificationType || ""))) {
+    return giftSmsEnabled();
+  }
+  return smsEnabled();
+}
+
+/**
  * Whether marketing SMS may be sent at all, independent of SMS_ENABLED.
  *
  * A second dial, so transactional messaging can go live on its own. Turning on
@@ -204,6 +254,7 @@ function configSnapshot() {
   return {
     smsEnabled: smsEnabled(),
     smsMarketingEnabled: smsMarketingEnabled(),
+    giftSmsEnabled: giftSmsEnabled(),
     twilioConfigured: twilioConfigured(),
     reviewLinkEnabled: reviewLinkEnabled(),
     timezone: TIMEZONE,
@@ -225,8 +276,11 @@ module.exports = {
   QUIET_HOURS,
   RETRY,
   TIMEZONE,
+  GIFT_SMS_TYPES,
   configSnapshot,
+  giftSmsEnabled,
   readFlag,
+  sendingAllowedFor,
   reviewLinkEnabled,
   smsEnabled,
   smsMarketingEnabled,

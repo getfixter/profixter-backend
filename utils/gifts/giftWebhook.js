@@ -123,6 +123,7 @@ async function handleGiftCheckoutCompleted(session, { Model = GiftMembership } =
     durationMonths: Number(meta.durationMonths),
     recipient: {
       email: normalizeEmail(meta.recipientEmail),
+      phone: meta.recipientPhone,
       firstName: meta.recipientFirstName,
       lastName: meta.recipientLastName,
     },

@@ -2292,6 +2292,394 @@ async function run() {
     }
   });
 
+  console.log("\nOptional address, optional phone, and delivery");
+
+  const smsConfig = require("../utils/sms/smsConfig");
+  const SmsMessage = require("../models/SmsMessage");
+
+  /* Run a block with specific SMS switches, always restoring them after. */
+  async function withSmsFlags({ sms, gift }, fn) {
+    const before = {
+      SMS_ENABLED: process.env.SMS_ENABLED,
+      GIFT_SMS_ENABLED: process.env.GIFT_SMS_ENABLED,
+    };
+    const set = (name, value) => {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    };
+    set("SMS_ENABLED", sms);
+    set("GIFT_SMS_ENABLED", gift);
+    try {
+      return await fn();
+    } finally {
+      set("SMS_ENABLED", before.SMS_ENABLED);
+      set("GIFT_SMS_ENABLED", before.GIFT_SMS_ENABLED);
+    }
+  }
+
+  await test("a gift can be bought with no recipient address at all", async () => {
+    const purchaser = await makeUser({ email: "noaddr-" + Date.now() + "@example.com" });
+    const session = sessionFor(purchaser, { recipientEmail: "noaddr-r@example.com" });
+    /* Exactly what the purchase screen sends when the section is left closed. */
+    session.metadata.addressLine1 = "";
+    session.metadata.addressCity = "";
+    session.metadata.addressState = "";
+    session.metadata.addressZip = "";
+
+    const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+    assert.equal(created.created, true, "no address must not stop a purchase");
+
+    const gift = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(gift.addressSnapshot.line1, "");
+    assert.equal(gift.addressId, null, "and no address is claimed yet");
+    assert.ok(gift.claimTokenHash, "the invitation still exists");
+  });
+
+  await test("the address the recipient picks beats anything the purchaser typed", async () => {
+    const purchaser = await makeUser({ email: "snapshot-" + Date.now() + "@example.com" });
+    const recipientEmail = "snapshot-r-" + Date.now() + "@example.com";
+    const session = sessionFor(purchaser, { recipientEmail });
+    /* The purchaser guessed, and guessed wrong. */
+    session.metadata.addressLine1 = "999 Wrong Street";
+    session.metadata.addressCity = "Nowhere";
+    session.metadata.addressZip = "00000";
+
+    const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+    const recipient = await makeUser({ email: recipientEmail });
+    const realAddressId = recipient.addresses[0]._id;
+
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId: realAddressId,
+    });
+    assert.equal(claim.ok, true);
+
+    const gift = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(
+      String(gift.addressId),
+      String(realAddressId),
+      "entitlement must point at the property the RECIPIENT chose"
+    );
+    assert.equal(
+      gift.addressSnapshot.line1,
+      "999 Wrong Street",
+      "the purchaser's guess is kept as a reference and nothing more"
+    );
+    /* And access is granted at the real address, not the typed one. */
+    const found = await giftAccess.findActiveGift(recipient._id, realAddressId, { now: new Date() });
+    assert.ok(found, "the gift must be active at the recipient's own property");
+  });
+
+  await test("email is required and phone alone is refused", async () => {
+    const purchaser = await makeUser({ email: "contact-" + Date.now() + "@example.com" });
+    const lookup = { findCustomerByEmail: async () => null };
+
+    const phoneOnly = await giftService.validateGiftPurchase({
+      purchaser,
+      plan: "plus",
+      durationMonths: 2,
+      recipientEmail: "",
+      recipientPhone: "6315551234",
+      UserLookup: lookup,
+    });
+    assert.equal(phoneOnly.ok, false, "phone-only is not purchasable");
+    assert.equal(
+      phoneOnly.reason,
+      "invalid_recipient_email",
+      "because claim identity binds on the email address"
+    );
+
+    const neither = await giftService.validateGiftPurchase({
+      purchaser,
+      plan: "plus",
+      durationMonths: 2,
+      recipientEmail: "",
+      recipientPhone: "",
+      UserLookup: lookup,
+    });
+    assert.equal(neither.ok, false, "no contact at all is refused");
+  });
+
+  await test("a phone number is optional, normalised, and validated", async () => {
+    const purchaser = await makeUser({ email: "norm-" + Date.now() + "@example.com" });
+    const lookup = { findCustomerByEmail: async () => null };
+    const check = (recipientPhone) =>
+      giftService.validateGiftPurchase({
+        purchaser,
+        plan: "plus",
+        durationMonths: 2,
+        recipientEmail: "norm-r@example.com",
+        recipientPhone,
+        UserLookup: lookup,
+      });
+
+    assert.equal((await check(undefined)).recipientPhone, "", "absent is fine");
+    assert.equal((await check("   ")).recipientPhone, "", "blank is fine");
+    assert.equal((await check("631-555-1234")).recipientPhone, "+16315551234", "normalised to E.164");
+    assert.equal((await check("(631) 555 1234")).recipientPhone, "+16315551234", "however it is typed");
+    assert.equal((await check("+16315551234")).recipientPhone, "+16315551234", "already E.164");
+
+    /* A number we cannot dial is refused rather than silently dropped. */
+    for (const bad of ["12", "abc", "555"]) {
+      const result = await check(bad);
+      assert.equal(result.ok, false, `${bad} should be refused`);
+      assert.equal(result.reason, "invalid_recipient_phone");
+    }
+  });
+
+  await test("email only sends the email and no text", async () => {
+    await withSmsFlags({ sms: undefined, gift: "true" }, async () => {
+      await SmsMessage.deleteMany({});
+      const purchaser = await makeUser({ email: "emailonly-" + Date.now() + "@example.com" });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "emailonly-r@example.com" })
+      );
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      assert.equal(gift.recipientPhone, "", "no phone was given");
+
+      await giftEmails.sendGiftPurchaseEmails(gift, created.invitation);
+      assert.equal(
+        await SmsMessage.countDocuments({}),
+        0,
+        "a gift with no phone number must not queue a text"
+      );
+    });
+  });
+
+  await test("email plus phone sends both, using the same claim link", async () => {
+    await withSmsFlags({ sms: undefined, gift: "true" }, async () => {
+      await SmsMessage.deleteMany({});
+      const purchaser = await makeUser({
+        name: "Taras Bandura",
+        email: "both-" + Date.now() + "@example.com",
+      });
+      const session = sessionFor(purchaser, { recipientEmail: "both-r@example.com" });
+      session.metadata.recipientPhone = "+16315551234";
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      assert.equal(gift.recipientPhone, "+16315551234", "the phone is stored in E.164");
+
+      await giftEmails.sendGiftPurchaseEmails(gift, created.invitation);
+
+      const texts = await SmsMessage.find({}).lean();
+      assert.equal(texts.length, 1, `expected one text, got ${texts.length}`);
+      assert.equal(texts[0].notificationType, "GIFT_INVITATION");
+      assert.equal(texts[0].toPhone, "+16315551234");
+
+      /* The SAME secure link the email carries. */
+      const expectedUrl = giftEmails.claimUrl(created.invitation.token);
+      assert.ok(
+        texts[0].body.includes(expectedUrl),
+        "the text must carry the same secure claim URL as the email"
+      );
+      assert.ok(texts[0].body.includes("Taras"), "and name the purchaser");
+    });
+  });
+
+  await test("the gift text says the right thing, with or without a name", async () => {
+    const { renderSms } = require("../utils/sms/smsTemplates");
+    const url = "https://www.profixter.com/gift/claim/tok123";
+
+    const named = renderSms("GIFT_INVITATION", { fromName: "Taras Bandura", claimUrl: url });
+    assert.ok(named.startsWith("You received a gift from Taras"), named);
+    assert.ok(named.includes("Gift Membership for your home"), named);
+    assert.ok(named.includes(url), "the claim link is the message");
+
+    const anonymous = renderSms("GIFT_INVITATION", { fromName: "", claimUrl: url });
+    assert.ok(
+      anonymous.startsWith("Someone sent you a ProFixter Gift Membership"),
+      anonymous
+    );
+    assert.ok(anonymous.includes(url));
+  });
+
+  await test("the gift text carries nothing sensitive", async () => {
+    const { renderSms } = require("../utils/sms/smsTemplates");
+    const body = renderSms("GIFT_INVITATION", {
+      fromName: "Taras Bandura",
+      claimUrl: "https://www.profixter.com/gift/claim/tok123",
+    });
+
+    /* No money, no plan pricing, no payment detail. */
+    for (const forbidden of ["$", "149", "249", "349", "499", "card", "payment", "invoice"]) {
+      assert.ok(
+        !body.toLowerCase().includes(forbidden.toLowerCase()),
+        `the text must not mention ${forbidden}: ${body}`
+      );
+    }
+    /* No property address. */
+    for (const forbidden of ["Main St", "Lindenhurst", "11757", "ZIP"]) {
+      assert.ok(!body.includes(forbidden), `the text must not mention ${forbidden}`);
+    }
+    /* No internal identifier. */
+    assert.ok(!/[0-9a-f]{24}/i.test(body), "no Mongo id may appear in the text");
+    assert.ok(!/\bG[0-9A-F]{8}\b/.test(body), "not even the gift number");
+  });
+
+  await test("GIFT_SMS_ENABLED releases the gift text and NOTHING else", async () => {
+    /* The whole point of the isolation, asserted directly. */
+    await withSmsFlags({ sms: undefined, gift: "true" }, async () => {
+      assert.equal(smsConfig.sendingAllowedFor("GIFT_INVITATION"), true);
+      const { SMS_TYPES } = require("../utils/sms/smsTypes");
+      const others = Object.keys(SMS_TYPES).filter((k) => k !== "GIFT_INVITATION");
+      assert.ok(others.length >= 20, "there should be a lot of other types");
+      for (const type of others) {
+        assert.equal(
+          smsConfig.sendingAllowedFor(type),
+          false,
+          `${type} must stay switched off while only GIFT_SMS_ENABLED is set`
+        );
+      }
+    });
+  });
+
+  await test("with GIFT_SMS_ENABLED unset the gift text is only simulated", async () => {
+    await withSmsFlags({ sms: undefined, gift: undefined }, async () => {
+      await SmsMessage.deleteMany({});
+      const purchaser = await makeUser({ email: "sim-" + Date.now() + "@example.com" });
+      const session = sessionFor(purchaser, { recipientEmail: "sim-r@example.com" });
+      session.metadata.recipientPhone = "+16315551234";
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+      const gift = await GiftMembership.findById(created.gift._id).lean();
+      await giftEmails.sendGiftPurchaseEmails(gift, created.invitation);
+
+      const texts = await SmsMessage.find({}).lean();
+      assert.equal(texts.length, 1, "the message is still recorded");
+      assert.equal(texts[0].status, "simulated", "but deliberately not sent");
+      assert.equal(texts[0].suppressionReason, "sms_disabled");
+    });
+  });
+
+  await test("claim identity is unchanged and still binds on email", async () => {
+    const purchaser = await makeUser({ email: "sec-" + Date.now() + "@example.com" });
+    const recipientEmail = "sec-r-" + Date.now() + "@example.com";
+    const session = sessionFor(purchaser, { recipientEmail });
+    session.metadata.recipientPhone = "+16315551234";
+    const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+    const gift = await GiftMembership.findById(created.gift._id).lean();
+
+    /* Somebody who knows the phone number but is not the addressee. */
+    const impostor = await makeUser({
+      email: "impostor-" + Date.now() + "@example.com",
+      phone: "6315551234",
+    });
+    assert.equal(
+      giftService.claimantMatches(gift, impostor),
+      false,
+      "a matching phone number must NOT be accepted as identity"
+    );
+
+    const rightPerson = await makeUser({ email: recipientEmail });
+    assert.equal(
+      giftService.claimantMatches(gift, rightPerson),
+      true,
+      "the addressee still matches, exactly as before"
+    );
+
+    /* And the claim itself refuses the impostor. */
+    const refused = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: impostor,
+      addressId: impostor.addresses[0]._id,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "recipient_mismatch");
+  });
+
+  await test("gifts bought before any of this remain valid and claimable", async () => {
+    /* A record exactly as it was written before recipientPhone existed. */
+    const purchaser = await makeUser({ email: "legacy-" + Date.now() + "@example.com" });
+    const recipientEmail = "legacy-r-" + Date.now() + "@example.com";
+    const created = await giftWebhook.handleGiftCheckoutCompleted(
+      sessionFor(purchaser, { recipientEmail })
+    );
+    await GiftMembership.collection.updateOne(
+      { _id: created.gift._id },
+      { $unset: { recipientPhone: "", adminPurchasedEmailSentAt: "" } }
+    );
+
+    const legacy = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(legacy.recipientPhone, undefined, "the field is genuinely absent");
+
+    const recipient = await makeUser({ email: recipientEmail });
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId: recipient.addresses[0]._id,
+    });
+    assert.equal(claim.ok, true, "an old gift must still claim cleanly");
+
+    const after = await GiftMembership.findById(created.gift._id).lean();
+    assert.equal(giftAccess.giftAccessState(after, new Date()).active, true);
+  });
+
+  await test("admin emails show whichever contact methods exist", async () => {
+    const cap = captureEmails();
+    try {
+      const purchaser = await makeUser({ email: "adminc-" + Date.now() + "@example.com" });
+
+      const withPhone = sessionFor(purchaser, { recipientEmail: "withphone-r@example.com" });
+      withPhone.metadata.recipientPhone = "+16315551234";
+      const a = await giftWebhook.handleGiftCheckoutCompleted(withPhone);
+      await giftEmails.sendGiftPurchasedAdminNotice(
+        await GiftMembership.findById(a.gift._id).lean()
+      );
+
+      const b = await giftWebhook.handleGiftCheckoutCompleted(
+        sessionFor(purchaser, { recipientEmail: "nophone-r@example.com" })
+      );
+      await giftEmails.sendGiftPurchasedAdminNotice(
+        await GiftMembership.findById(b.gift._id).lean()
+      );
+
+      const sent = cap.of("gift_purchased_admin");
+      assert.equal(sent.length, 2);
+
+      const both = sent.find((m) => m.vars.recipientEmail === "withphone-r@example.com");
+      assert.equal(both.vars.recipientPhone, "+16315551234");
+      assert.ok(both.vars.recipientContact.includes("withphone-r@example.com"));
+      assert.ok(both.vars.recipientContact.includes("+16315551234"), "both are shown");
+      assert.ok(
+        renderTemplate("gift_purchased_admin", both.vars).html.includes("+16315551234"),
+        "and the phone reaches the rendered email"
+      );
+
+      const emailOnly = sent.find((m) => m.vars.recipientEmail === "nophone-r@example.com");
+      assert.equal(emailOnly.vars.recipientPhone, "");
+      assert.ok(
+        !renderTemplate("gift_purchased_admin", emailOnly.vars).html.includes("Recipient phone"),
+        "no empty phone row when there is no phone"
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  await test("no non-gift SMS automation can send, whatever the gift switch says", async () => {
+    /*
+     * The guarantee the whole isolation exists for, checked at BOTH gates:
+     * the service layer and the provider must agree, or a future caller
+     * reaching the provider directly could slip past.
+     */
+    const provider = require("../utils/sms/twilioProvider");
+    await withSmsFlags({ sms: undefined, gift: "true" }, async () => {
+      for (const type of ["BOOKING_REMINDER_24H", "MEMBERSHIP_STARTED", "SEASONAL_MARKETING", ""]) {
+        assert.equal(smsConfig.sendingAllowedFor(type), false, `${type} at the service gate`);
+        let threw = null;
+        try {
+          await provider.sendMessage({ to: "+16315551234", body: "x", notificationType: type });
+        } catch (error) {
+          threw = error;
+        }
+        assert.ok(threw, `${type} must be refused by the provider too`);
+        assert.equal(threw.reason, "sms_disabled", `${type} refused for the right reason`);
+      }
+    });
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {

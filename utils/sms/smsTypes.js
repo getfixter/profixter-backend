@@ -123,6 +123,25 @@ const SMS_TYPES = {
     description: "A Full Day visit finished. Carries the tip link.",
   },
 
+  /* -------------------------------- Gift -------------------------------- */
+  /*
+   * The one message with no alternative channel.
+   *
+   * Addressed to somebody who has no ProFixter account, may never have given
+   * us an email, and cannot otherwise be told that a present is waiting.
+   * That is why it has its own switch (GIFT_SMS_ENABLED) and is the only type
+   * that switch releases; see sendingAllowedFor in smsConfig.
+   *
+   * Time-critical: a gift notification that arrives a day late has largely
+   * missed its moment, and the purchaser is often standing next to the
+   * recipient waiting for the phone to buzz.
+   */
+  GIFT_INVITATION: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: true,
+    description: "Somebody was given a gift membership. Carries the claim link.",
+  },
+
   /* ------------------------------ Account ------------------------------ */
   ACCOUNT_CREATED: {
     channelClass: TRANSACTIONAL,

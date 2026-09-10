@@ -1,7 +1,7 @@
 const SmsMessage = require("../../models/SmsMessage");
 const SmsOptOut = require("../../models/SmsOptOut");
 
-const { BATCH, RETRY, smsEnabled } = require("./smsConfig");
+const { BATCH, RETRY, smsEnabled, sendingAllowedFor } = require("./smsConfig");
 const { checkEligibility } = require("./smsEligibility");
 const { estimateSegments, maskPhone, toE164 } = require("./smsPhone");
 const { renderSms } = require("./smsTemplates");
@@ -116,7 +116,11 @@ async function deliverClaimedMessage(record, { MessageModel = SmsMessage } = {})
   );
 
   try {
-    const result = await provider.sendMessage({ to: record.toPhone, body: record.body });
+    const result = await provider.sendMessage({
+      to: record.toPhone,
+      body: record.body,
+      notificationType: record.notificationType,
+    });
 
     await MessageModel.updateOne(
       { _id: record._id },
@@ -291,10 +295,15 @@ async function enqueueSms({
   }
 
   /*
-   * The production safety switch.
+   * The production safety switch, asked PER TYPE.
    *
-   * With SMS_ENABLED unset or false the message is rendered, checked, recorded
-   * and then deliberately not sent. The whole system therefore runs in
+   * Almost every type waits on SMS_ENABLED. The gift invitation has its own
+   * dial, because it is the one message whose recipient has no account and no
+   * other channel; see sendingAllowedFor in smsConfig for why that is a list
+   * of one rather than a general escape hatch.
+   *
+   * With sending disabled for this type the message is rendered, checked,
+   * recorded and then deliberately not sent. The whole system therefore runs in
    * production exactly as it will when live — schedulers evaluate, dedupe keys
    * are claimed, suppressions are recorded, the admin screen fills with real
    * data — while no customer is contacted.
@@ -303,7 +312,7 @@ async function enqueueSms({
    * release weeks of stale reminders at people whose appointments have already
    * happened; it must start from that moment forward.
    */
-  if (!smsEnabled()) {
+  if (!sendingAllowedFor(notificationType)) {
     await MessageModel.updateOne(
       { _id: record._id },
       { $set: { status: "simulated", suppressionReason: "sms_disabled" } }
@@ -396,9 +405,16 @@ async function runSmsRetrySweep({
       continue;
     }
 
-    // Sending was switched off after this row was queued. Leave it alone rather
-    // than failing it: it becomes sendable again if sending is switched back on.
-    if (!smsEnabled()) break;
+    /*
+     * Sending was switched off for this type after the row was queued. Leave
+     * it alone rather than failing it: it becomes sendable again if that type
+     * is switched back on.
+     *
+     * Per candidate, and `continue` rather than `break`, because the queue now
+     * holds a mix of types with different switches — one held-back booking
+     * reminder must not stop a gift invitation behind it from going out.
+     */
+    if (!sendingAllowedFor(candidate.notificationType)) continue;
 
     const result = await deliverClaimedMessage(candidate, { MessageModel });
     stats.retried += 1;
