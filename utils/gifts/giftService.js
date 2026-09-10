@@ -7,6 +7,7 @@ const { findCustomerByEmail } = require("../userLookup");
 const { coverageEndsAt, giftAccessState } = require("./giftAccess");
 const { createClaimToken } = require("./giftClaimToken");
 const { normalizePlan, quoteGift, termWindow } = require("./giftPricing");
+const { normalizeOccasion, sanitizePersonalMessage } = require("./giftOccasions");
 const { selfGiftingAllowed } = require("./giftConfig");
 
 /**
@@ -101,6 +102,8 @@ async function recordPurchasedGift({
   recipient,
   address,
   payment,
+  occasion,
+  personalMessage,
   Model = GiftMembership,
 }) {
   const email = normalizeEmail(recipient?.email);
@@ -115,6 +118,10 @@ async function recordPurchasedGift({
     recipientEmail: email,
     recipientFirstName: String(recipient?.firstName || "").slice(0, 80),
     recipientLastName: String(recipient?.lastName || "").slice(0, 80),
+    /* Presentation only. Sanitised again here: this function is reachable
+     * from the webhook, so it cannot assume the route already cleaned it. */
+    occasion: normalizeOccasion(occasion),
+    personalMessage: sanitizePersonalMessage(personalMessage),
     addressSnapshot: {
       line1: String(address?.line1 || "").slice(0, 200),
       city: String(address?.city || "").slice(0, 100),

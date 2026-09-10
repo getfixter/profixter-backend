@@ -232,12 +232,31 @@ test("the gift record stores tax, and keeps the total tax-inclusive", () => {
 });
 
 test("the frontend never sends an authoritative amount or tax", () => {
-  const body = checkoutSection.slice(0, checkoutSection.indexOf("const validation"));
-  assert.match(body, /const \{ plan, durationMonths, recipient = \{\}, address = \{\} \} = req\.body/);
-  for (const forbidden of ["amount", "totalCents", "tax", "priceCents", "unit_amount"]) {
+  /*
+   * Assert on the SET of fields destructured from the request body, not on the
+   * exact text of the line. The point being defended is "no money field is
+   * read from the browser", and that survives the line being reformatted or
+   * gaining a presentation field — which is exactly what happened when the
+   * occasion and personal message were added.
+   */
+  const match = checkoutSection.match(/const \{([\s\S]*?)\} = req\.body/);
+  assert(match, "the checkout body destructure could not be found");
+
+  const fields = match[1]
+    .split(",")
+    .map((part) => part.split("=")[0].trim())
+    .filter(Boolean);
+
+  assert.deepStrictEqual(
+    fields.sort(),
+    ["address", "durationMonths", "occasion", "personalMessage", "plan", "recipient"],
+    "the checkout body must carry only these fields"
+  );
+
+  for (const field of fields) {
     assert(
-      !new RegExp(`req\\.body[^\\n]*${forbidden}`).test(checkoutSection),
-      `checkout must not read ${forbidden} from the request body`
+      !/amount|total|price|tax|cent|discount|coupon|currency/i.test(field),
+      `checkout must not read ${field} from the request body`
     );
   }
 });

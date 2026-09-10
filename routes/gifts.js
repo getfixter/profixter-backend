@@ -12,6 +12,11 @@ const {
   offeredDurations,
 } = require("../utils/gifts/giftConfig");
 const { findGiftTimeline, giftAccessState } = require("../utils/gifts/giftAccess");
+const {
+  OCCASIONS,
+  normalizeOccasion,
+  sanitizePersonalMessage,
+} = require("../utils/gifts/giftOccasions");
 const { readClaimToken, verifyClaimToken } = require("../utils/gifts/giftClaimToken");
 const {
   claimGift,
@@ -178,17 +183,52 @@ router.post("/checkout-session", auth, async (req, res) => {
       return res.status(503).json({ message: "Payments are unavailable right now" });
     }
 
-    const purchaser = await User.findById(req.user.id);
-    if (!purchaser) return res.status(404).json({ message: "User not found" });
+    const {
+      plan,
+      durationMonths,
+      recipient = {},
+      address = {},
+      occasion,
+      personalMessage,
+    } = req.body || {};
 
-    const { plan, durationMonths, recipient = {}, address = {} } = req.body || {};
-
+    /*
+     * THE LAUNCH DURATION GATE, checked before anything else.
+     *
+     * offeredDurations() is what a customer may actually buy — [2] unless
+     * GIFT_DURATIONS says otherwise — while SUPPORTED_DURATIONS is only what
+     * the term arithmetic can express. A request for twelve months is refused
+     * here whatever the purchase screen offered, so editing the form,
+     * replaying a request or calling the API directly all fail identically.
+     *
+     * Ahead of the database lookup on purpose: a malformed request should
+     * cost a comparison rather than a query, and putting it first is what
+     * lets the guarantee be tested without standing up a database.
+     */
     if (!isOfferedDuration(durationMonths)) {
+      console.warn(
+        JSON.stringify({
+          event: "gift_duration_refused",
+          requested: String(durationMonths),
+          offered: offeredDurations(),
+        })
+      );
       return res.status(400).json({
         message: PURCHASE_ERRORS.unsupported_duration,
         code: "UNSUPPORTED_DURATION",
       });
     }
+
+    const purchaser = await User.findById(req.user.id);
+    if (!purchaser) return res.status(404).json({ message: "User not found" });
+
+    /*
+     * Presentation only, and cleaned here rather than trusted. An unknown
+     * occasion becomes the neutral greeting instead of an error: a gift
+     * should never fail to be bought over the wording on the card.
+     */
+    const giftOccasion = normalizeOccasion(occasion);
+    const giftMessage = sanitizePersonalMessage(personalMessage);
 
     const validation = await validateGiftPurchase({
       purchaser,
@@ -230,6 +270,8 @@ router.post("/checkout-session", auth, async (req, res) => {
       recipientEmail: validation.recipientEmail,
       recipientFirstName: String(recipient.firstName || "").slice(0, 80),
       recipientLastName: String(recipient.lastName || "").slice(0, 80),
+      occasion: giftOccasion,
+      personalMessage: giftMessage,
       addressLine1: String(address.line1 || "").slice(0, 200),
       addressCity: String(address.city || "").slice(0, 100),
       addressState: String(address.state || "").slice(0, 40),
@@ -312,9 +354,31 @@ router.get("/purchased", auth, async (req, res) => {
         durationMonths: gift.durationMonths,
         recipientEmail: gift.recipientEmail,
         recipientName: `${gift.recipientFirstName} ${gift.recipientLastName}`.trim(),
+        recipientFirstName: gift.recipientFirstName,
+        recipientLastName: gift.recipientLastName,
+        /*
+         * Presentation the purchaser wrote themselves, returned so their
+         * confirmation and history can show the card they actually sent.
+         * NOTHING about the claim token is returned here, ever — the token is
+         * a credential and the recipient's email is the only place it goes.
+         */
+        occasion: gift.occasion || "neutral",
+        personalMessage: gift.personalMessage || "",
         status: gift.status,
         state: giftAccessState(gift).state,
+        /*
+         * The money, exactly as Stripe reported it on the completed session.
+         * Nothing is recomputed and the client never derives tax: these are
+         * the stored authoritative figures, passed through so the purchaser
+         * can be shown a breakdown instead of having to work out for
+         * themselves why the total is larger than the quote.
+         */
+        amountSubtotalCents: gift.amountSubtotalCents,
+        discountCents: gift.discountCents,
+        taxCents: gift.taxCents,
         amountPaidCents: gift.amountPaidCents,
+        currency: gift.currency,
+        automaticTaxStatus: gift.automaticTaxStatus,
         refundStatus: gift.refundStatus,
         purchasedAt: gift.purchasedAt,
         claimedAt: gift.claimedAt,
@@ -399,6 +463,9 @@ router.get("/claim/:token", async (req, res) => {
         from: gift.purchaserSnapshot?.name || "",
         recipientEmail: gift.recipientEmail,
         recipientFirstName: gift.recipientFirstName,
+        recipientLastName: gift.recipientLastName,
+        occasion: gift.occasion || "neutral",
+        personalMessage: gift.personalMessage || "",
         addressSnapshot: gift.addressSnapshot,
       },
       // Lets the claim screen send them to sign-in or registration without

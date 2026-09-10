@@ -53,6 +53,7 @@ const SUITES = [
   "test_sms_core.js",
   "test_gift_membership.js",
   "test_gift_membership_tax.js",
+  "test_gift_digital_experience.js",
 ];
 
 /**

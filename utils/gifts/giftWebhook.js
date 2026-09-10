@@ -117,6 +117,8 @@ async function handleGiftCheckoutCompleted(session, { Model = GiftMembership } =
       firstName: meta.recipientFirstName,
       lastName: meta.recipientLastName,
     },
+    occasion: meta.occasion,
+    personalMessage: meta.personalMessage,
     address: {
       line1: meta.addressLine1,
       city: meta.addressCity,

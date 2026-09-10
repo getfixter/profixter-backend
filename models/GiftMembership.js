@@ -85,6 +85,27 @@ const GiftMembershipSchema = new mongoose.Schema(
     recipientFirstName: { type: String, default: "", trim: true },
     recipientLastName: { type: String, default: "", trim: true },
 
+    /* ---------------------------- Presentation ---------------------------- */
+    /*
+     * How the gift is PRESENTED, and nothing more.
+     *
+     * These two decide the words on the card and in the email. They are read
+     * only by templates — never by pricing, entitlement, access or anything
+     * Stripe sees. Keeping them beside the terms rather than inside them is
+     * what stops "a birthday gift" quietly becoming a different product.
+     *
+     * Both are sanitised at write time (utils/gifts/giftOccasions) rather than
+     * at render, so the database can never hold something a future template
+     * would have to remember to escape.
+     */
+    occasion: {
+      type: String,
+      enum: ["neutral", "new_home", "congratulations", "birthday", "thank_you", "just_because"],
+      default: "neutral",
+    },
+    /** Optional, from the purchaser. Capped and stripped of markup on write. */
+    personalMessage: { type: String, default: "", maxlength: 200 },
+
     /** Null until claimed. Set to the CUSTOMER account, never an employee one. */
     recipient: {
       type: mongoose.Schema.Types.ObjectId,

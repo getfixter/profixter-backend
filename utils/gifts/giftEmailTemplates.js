@@ -1,4 +1,5 @@
 const { PUBLIC_CONTACT_EMAIL } = require("../publicContact");
+const { occasionCopy } = require("./giftOccasions");
 
 /**
  * The gift membership emails.
@@ -37,6 +38,95 @@ function createGiftEmailTemplates({ escapeHtml, urls }) {
     </div>`;
 
   const months = (n) => `${n} month${Number(n) === 1 ? "" : "s"}`;
+
+  /*
+   * The gift card, for email.
+   *
+   * Nested tables, bgcolor attributes and inline styles only. No flexbox, no
+   * grid, no background-image, no web font, no class — Outlook strips or
+   * ignores all of them, and the card is the one thing in this message that
+   * must survive. The webpage version is richer; this has to promise the same
+   * thing, not reproduce it.
+   *
+   * The gold rule under the title is a coloured table cell rather than a
+   * border, because borders on empty elements collapse in several clients.
+   */
+  const giftCardBlock = ({ occasion, plan, durationMonths, from, toName, message }) => {
+    const copy = occasionCopy(occasion);
+    const messageRow = message
+      ? `
+            <tr>
+              <td style="padding:18px 28px 0;">
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                  <tr>
+                    <td width="3" bgcolor="#D4A574" style="width:3px; line-height:1px; font-size:1px;">&nbsp;</td>
+                    <td style="padding-left:14px; font-family:Georgia,'Times New Roman',serif; font-style:italic; font-size:16px; line-height:1.5; color:#4A4438;">${safe(
+                      message
+                    ).replace(/\n/g, "<br>")}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>`
+      : "";
+
+    return `
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:520px; margin:0 auto; border-radius:14px; overflow:hidden; border-collapse:separate;">
+      <!-- navy face -->
+      <tr>
+        <td bgcolor="#0B1628" style="background-color:#0B1628; padding:28px 28px 26px;">
+          <p style="margin:0 0 16px; font-family:Arial,Helvetica,sans-serif; font-size:15px; font-weight:bold; letter-spacing:1px; color:#EEF2FF;">
+            <span style="color:#306EEC;">PRO</span>FIXTER
+          </p>
+          <p style="margin:0 0 6px; font-family:Arial,Helvetica,sans-serif; font-size:11px; letter-spacing:2.4px; text-transform:uppercase; color:#A8BEE2;">
+            ${safe(copy.kicker)}
+          </p>
+          <p style="margin:0 0 4px; font-family:Georgia,'Times New Roman',serif; font-size:30px; line-height:1.15; color:#E8CFAE;">
+            ${safe(copy.title)}
+          </p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:16px 0 0;">
+            <tr><td width="54" height="2" bgcolor="#D4A574" style="width:54px; height:2px; line-height:2px; font-size:1px;">&nbsp;</td></tr>
+          </table>
+          <p style="margin:18px 0 0; font-family:Arial,Helvetica,sans-serif; font-size:16px; font-weight:bold; letter-spacing:1px; text-transform:uppercase; color:#EEF2FF;">
+            ${months(durationMonths)} of ProFixter ${safe(plan)}
+          </p>
+          <p style="margin:6px 0 0; font-family:Arial,Helvetica,sans-serif; font-size:11px; letter-spacing:2px; text-transform:uppercase; color:#8AA2CC;">
+            Handyman Membership
+          </p>
+        </td>
+      </tr>
+      <!-- cream face -->
+      <tr>
+        <td bgcolor="#FAF8F4" style="background-color:#FAF8F4; padding:22px 28px 26px;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+            <tr>
+              <td style="font-family:Arial,Helvetica,sans-serif; font-size:10px; letter-spacing:1.8px; text-transform:uppercase; color:#9A8C7A; padding-bottom:3px;">To</td>
+              <td style="font-family:Arial,Helvetica,sans-serif; font-size:10px; letter-spacing:1.8px; text-transform:uppercase; color:#9A8C7A; padding-bottom:3px;">From</td>
+            </tr>
+            <tr>
+              <td style="font-family:Arial,Helvetica,sans-serif; font-size:17px; font-weight:bold; color:#1A1B1D; padding-right:14px;">${safe(
+                toName,
+                "there"
+              )}</td>
+              <td style="font-family:Arial,Helvetica,sans-serif; font-size:17px; font-weight:bold; color:#1A1B1D;">${safe(
+                from
+              )}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>${messageRow}
+      <tr><td bgcolor="#FAF8F4" style="background-color:#FAF8F4; height:8px; line-height:8px; font-size:1px;">&nbsp;</td></tr>
+    </table>`;
+  };
+
+  /* The gift CTA: warm metal, dark text, and a real tap target. */
+  const giftButton = (href, label) => `
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:26px auto 6px;">
+      <tr>
+        <td bgcolor="#D4A574" style="border-radius:10px; background-color:#D4A574;">
+          <a href="${href}" style="display:inline-block; padding:16px 38px; font-family:Arial,Helvetica,sans-serif; font-size:16px; font-weight:bold; letter-spacing:0.4px; color:#1A1206; text-decoration:none; border-radius:10px;">${label}</a>
+        </td>
+      </tr>
+    </table>`;
 
   return {
     /* ------------------------------ Purchaser ---------------------------- */
@@ -93,29 +183,46 @@ function createGiftEmailTemplates({ escapeHtml, urls }) {
     }),
 
     /* ------------------------------ Recipient ---------------------------- */
-    gift_invitation: ({ name = "there", from, plan, durationMonths, claimUrl }) => ({
-      subject: `${safe(from)} sent you ${months(durationMonths)} of ProFixter ${safe(plan)}`,
-      html: shell(`
-        <p style="margin:0 0 14px;">Hi ${safe(name)},</p>
-        <p style="margin:0 0 6px; font-size:17px;">
-          <strong>${safe(from)}</strong> has given you ${months(durationMonths)} of
-          ProFixter <strong>${safe(plan)}</strong>.
+    gift_invitation: ({
+      name = "there",
+      from,
+      plan,
+      durationMonths,
+      claimUrl,
+      occasion,
+      personalMessage,
+    }) => {
+      const copy = occasionCopy(occasion);
+      return {
+        subject: `${safe(from)} sent you ${months(durationMonths)} of ProFixter ${safe(plan)}`,
+        html: shell(`
+        <p style="margin:0 0 20px; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:16px; color:#4b5563;">
+          <strong>${safe(from)}</strong> sent you a gift.
         </p>
-        <p style="margin:0 0 14px;">
-          That means a professional handyman at your home, with the visits and benefits
-          included in ${safe(plan)}. There is nothing to pay and no card to enter.
+        ${giftCardBlock({
+          occasion,
+          plan,
+          durationMonths,
+          from,
+          toName: name,
+          message: personalMessage,
+        })}
+        ${giftButton(claimUrl, "Open your gift")}
+        <p style="margin:14px 0 0; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6b7280;">
+          There is nothing to pay and no card to enter.
         </p>
-        ${button(claimUrl, "Claim your membership")}
-        <p style="margin:16px 0 0; color:#6b7280; font-size:14px;">
+        <p style="margin:10px 0 0; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6b7280;">
           Your ${months(durationMonths)} start when you claim, not today &mdash; so you lose
           nothing by claiming when it suits you.
         </p>
       `),
-      text:
-        `Hi ${name},\n\n${from} has given you ${months(durationMonths)} of ProFixter ${plan}.\n\n` +
-        `There is nothing to pay and no card to enter.\n\nClaim your membership: ${claimUrl}\n\n` +
-        `Your ${months(durationMonths)} start when you claim, not today.\n\n${SUPPORT_EMAIL}`,
-    }),
+        text:
+          `${copy.title}\n\n${from} sent you ${months(durationMonths)} of ProFixter ${plan}.\n\n` +
+          (personalMessage ? `"${personalMessage}"\n\n` : "") +
+          `There is nothing to pay and no card to enter.\n\nOpen your gift: ${claimUrl}\n\n` +
+          `Your ${months(durationMonths)} start when you claim, not today.\n\n${SUPPORT_EMAIL}`,
+      };
+    },
 
     gift_claim_reminder: ({ name = "there", from, plan, durationMonths, claimUrl }) => ({
       subject: `Still waiting for you: ${months(durationMonths)} of ProFixter ${safe(plan)}`,

@@ -98,6 +98,8 @@ async function sendGiftPurchaseEmails(gift, invitation) {
           plan: label,
           durationMonths: gift.durationMonths,
           claimUrl: claimUrl(invitation.token),
+          occasion: gift.occasion,
+          personalMessage: gift.personalMessage,
         },
         {
           bccAdmin: false,
@@ -121,6 +123,8 @@ async function sendGiftInvitation(gift, invitation) {
         plan: planLabel(gift.plan),
         durationMonths: gift.durationMonths,
         claimUrl: claimUrl(invitation.token),
+        occasion: gift.occasion,
+        personalMessage: gift.personalMessage,
       },
       {
         bccAdmin: false,
@@ -195,6 +199,8 @@ async function sendGiftClaimReminder(gift, invitation) {
         plan: planLabel(gift.plan),
         durationMonths: gift.durationMonths,
         claimUrl: claimUrl(invitation.token),
+        occasion: gift.occasion,
+        personalMessage: gift.personalMessage,
       },
       {
         bccAdmin: false,
