@@ -77,6 +77,16 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
   const ctaLabel = resolve(cta.label);
   const ctaUrl = routeUrl(cta.route);
   const closing = resolve(template.closing);
+  /*
+   * An optional promotion strip. Rendered only when a template asks for one,
+   * so every existing email is byte-identical to before.
+   *
+   * A code has to be READ and typed by hand, usually off a phone, so it gets
+   * a panel of its own rather than being buried mid-paragraph where people
+   * skim past it. Same palette and same table markup as the rest of the
+   * email; this is not a second design system.
+   */
+  const promo = resolve(template.promo) || null;
   const unsubUrl = unsubscribeUrl(email);
   const subject = resolve(template.subject);
   const preheader = resolve(template.preheader) || "";
@@ -116,6 +126,29 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
           }
         </td></tr>
 
+        ${
+          promo && promo.code
+            ? `<tr><td style="padding:2px 26px 6px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                 style="border:1px solid ${COLORS.line};border-radius:6px;background:${COLORS.panel};">
+            <tr><td style="padding:13px 16px;">
+              <div style="font-size:13px;line-height:19px;color:${COLORS.muted};">${escapeHtml(
+                promo.label || "Use this code at checkout"
+              )}</div>
+              <div style="margin-top:5px;font-family:'Courier New',Courier,monospace;font-size:19px;font-weight:700;letter-spacing:2px;color:${COLORS.ink};">${escapeHtml(
+                promo.code
+              )}</div>
+              ${
+                promo.detail
+                  ? `<div style="margin-top:4px;font-size:13px;line-height:19px;color:${COLORS.body};">${escapeHtml(promo.detail)}</div>`
+                  : ""
+              }
+            </td></tr>
+          </table>
+        </td></tr>`
+            : ""
+        }
+
         <tr><td style="padding:6px 26px 26px;">
           <a href="${escapeHtml(ctaUrl)}" style="display:inline-block;padding:13px 22px;background:${COLORS.accent};border:1px solid ${COLORS.accent};border-radius:6px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;">${escapeHtml(ctaLabel)}</a>
           ${
@@ -145,6 +178,18 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
     "",
     ...paragraphs,
     ...(bullets.length ? ["", ...bullets.map((b) => `- ${b}`)] : []),
+    /*
+     * The code has to survive into plain text as well. Plenty of people read
+     * mail with images and HTML off, and a promotion they cannot see is a
+     * promotion that does not exist for them.
+     */
+    ...(promo && promo.code
+      ? [
+          "",
+          `${promo.label || "Use this code at checkout"}: ${promo.code}`,
+          ...(promo.detail ? [promo.detail] : []),
+        ]
+      : []),
     "",
     `${ctaLabel}: ${ctaUrl}`,
     closing ? `\n${closing}` : "",

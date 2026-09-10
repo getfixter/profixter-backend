@@ -31,6 +31,7 @@ const CATEGORY = {
   USAGE: "usage",
   UPGRADE: "upgrade",
   REINTRO: "reintro",
+  GIFT: "gift",
 };
 
 /**
@@ -904,6 +905,129 @@ const FORMER_MEMBER = [
 
 const MEMBER_ROTATION = [...MEMBER_USAGE, ...MEMBER_OTHER];
 
+/* ------------------------------------------------------------------ */
+/* Gift membership                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Three ways of saying the same true thing, and one shared topic.
+ *
+ * WHY THEY ALL CARRY topic: "gift"
+ *
+ * The scheduler will not send two campaigns on the same topic inside
+ * COOLDOWN_DAYS.sameTopic, which is ninety days. Sharing a topic is
+ * therefore the whole spacing mechanism: it is what makes gift, gift, gift
+ * impossible without a rule written specially for gifting, and it puts these
+ * three roughly two to three months apart with ordinary marketing in between.
+ *
+ * They are ROTATION priority, so they take their turn rather than jumping
+ * the queue, and each is SELL, so they are withheld from anybody whose
+ * payment is failing.
+ *
+ * WHAT IS TRUE AND MUST STAY TRUE
+ * Four plans. One, two, three, six or twelve months. Paid once, nothing
+ * renews. The recipient picks their own property when they claim. GIFT takes
+ * 10% off and has no end date, which is why none of this copy has any
+ * urgency in it - there is no deadline to invent.
+ *
+ * The word "discount" is deliberately absent: a test forbids it in anything
+ * a former member can receive, and it reads as a sales pitch rather than a
+ * present in any case.
+ */
+
+const GIFT_PROMO = {
+  code: "GIFT",
+  label: "Use this code at checkout",
+  detail: "Takes 10% off any gift membership. No end date.",
+};
+
+const GIFT_LIBRARY = [
+  /*
+   * The emotional one, and the reason the product exists. Goes to everybody,
+   * because caring about somebody is not a function of whether you are a
+   * member.
+   */
+  {
+    id: "gift_someone_you_care_about_v1",
+    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift",
+    kind: KIND.SELL, priority: PRIORITY.ROTATION,
+    subject: "Take care of someone you care about",
+    altSubject: "A gift that shows up when something breaks",
+    preheader: "Reliable help around the house, when they need it.",
+    headline: "Give them a little help around the house",
+    paragraphs: [
+      "Parents who should not be on a ladder any more. A friend in their first place. Somebody who has been meaning to get to a list since last year.",
+      "Sometimes the best gift is not another thing to find room for. It is knowing that when something around the house needs attention, a person turns up and deals with it.",
+      "A ProFixter gift membership is exactly that: real handyman help for their home, paid for by you, used whenever they need it.",
+    ],
+    bullets: [
+      "Choose Basic, Plus, Premium or Elite",
+      "Give one, two, three, six or twelve months",
+      "They pick their own property when they claim it",
+      "Paid once. Nothing renews and nothing to cancel",
+    ],
+    promo: GIFT_PROMO,
+    ctaLabel: "Give a membership", ctaRoute: "gift",
+  },
+
+  /*
+   * The occasion one. A new house is the moment the need is most obvious and
+   * the moment people are most likely to be shopping for a present anyway.
+   */
+  {
+    id: "gift_new_home_v1",
+    audience: EVERYONE, category: CATEGORY.GIFT, topic: "gift",
+    kind: KIND.SELL, priority: PRIORITY.ROTATION,
+    subject: "Know someone with a new home?",
+    altSubject: "A housewarming gift they will actually use",
+    preheader: "Every new house arrives with a list.",
+    headline: "A housewarming gift that actually helps",
+    paragraphs: [
+      "Every new house comes with a list. Blinds to hang, a handle that came loose on day one, a shelf that has to go somewhere, something in the bathroom that was fine at the walkthrough and is not fine now.",
+      "It is the least fun part of moving in, and it lands in the weeks when nobody has the time.",
+      "Instead of another candle, give them a Fixter for a few months.",
+    ],
+    bullets: [
+      "One, two, three, six or twelve months of help",
+      "They choose the property when they claim the gift",
+      "Any of the four plans",
+    ],
+    promo: GIFT_PROMO,
+    ctaLabel: "Give a membership", ctaRoute: "gift",
+  },
+
+  /*
+   * The member one. MEMBER ONLY, and the audience list is the reason: the
+   * copy leans on knowing what having a Fixter is like, which is only
+   * honestly true of somebody who has one right now. A former member would
+   * be told they know something in the present tense that they left behind,
+   * and a non member would be sold their own experience of nothing. Those
+   * two get the first email instead.
+   */
+  {
+    id: "gift_member_knows_v1",
+    audience: "member", category: CATEGORY.GIFT, topic: "gift",
+    kind: KIND.SELL, priority: PRIORITY.ROTATION,
+    subject: "Give someone their own Fixter",
+    altSubject: "You already know how this feels",
+    preheader: "You already know how convenient this is.",
+    headline: "Give ProFixter to someone you care about",
+    paragraphs: [
+      "You already know what it is like to have a Fixter. Something goes wrong, you book it, somebody who knows your house turns up and it is dealt with.",
+      "Most people do not have that. They have a list, and a vague plan to find somebody eventually.",
+      "You can give that same help to somebody you care about, for as long as you like.",
+    ],
+    bullets: [
+      "Pick the plan and the number of months",
+      "One, two, three, six or twelve",
+      "They claim it and choose their own property",
+      "Paid once, and it does not renew",
+    ],
+    promo: GIFT_PROMO,
+    ctaLabel: "Give a membership", ctaRoute: "gift",
+  },
+];
+
 const ALL_TEMPLATES = [
   ...FIRST_CONTACT,
   ...NON_MEMBER_LIFECYCLE,
@@ -912,6 +1036,7 @@ const ALL_TEMPLATES = [
   ...MEMBER_ACTIVATION,
   ...MEMBER_ROTATION,
   ...FORMER_MEMBER,
+  ...GIFT_LIBRARY,
 ];
 
 const BY_ID = new Map(ALL_TEMPLATES.map((template) => [template.id, template]));
@@ -929,6 +1054,7 @@ module.exports = {
   FIRST_CONTACT,
   FIX_LIBRARY,
   FORMER_MEMBER,
+  GIFT_LIBRARY,
   KIND,
   MEMBER_ACTIVATION,
   MEMBER_ROTATION,

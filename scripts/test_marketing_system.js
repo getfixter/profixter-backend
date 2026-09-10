@@ -748,6 +748,289 @@ test("the campaigns cut in review are gone", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Gift membership marketing                                           */
+/* ------------------------------------------------------------------ */
+
+const { GIFT_LIBRARY, PRIORITY: LIB_PRIORITY } = require("../utils/marketing/marketingLibrary");
+const GIFT_IDS = GIFT_LIBRARY.map((t) => t.id);
+
+test("the gift campaigns are in the library and reach the right audiences", () => {
+  assert.strictEqual(GIFT_LIBRARY.length, 3, "three angles, not one repeated");
+  for (const id of GIFT_IDS) {
+    assert.ok(BY_ID.get(id), `${id} must be reachable through the library`);
+  }
+
+  const forMembers = GIFT_LIBRARY.filter((t) => audiencesOf(t).includes("member"));
+  const forNonMembers = GIFT_LIBRARY.filter((t) => audiencesOf(t).includes("non_member"));
+  const forFormer = GIFT_LIBRARY.filter((t) => audiencesOf(t).includes("former_member"));
+  assert.strictEqual(forMembers.length, 3, "members can receive all three angles");
+  assert.strictEqual(forNonMembers.length, 2, "non members get the two broad angles");
+  assert.strictEqual(forFormer.length, 2, "former members get the same two");
+});
+
+test("the member-only angle never reaches somebody who is not a member", () => {
+  /*
+   * "You already know what it is like to have a Fixter" is only honestly true
+   * of somebody who has one right now. A former member is being told they
+   * know something in the present tense that they gave up; a non member is
+   * being sold their own experience of nothing.
+   */
+  const memberOnly = BY_ID.get("gift_member_knows_v1");
+  assert.deepStrictEqual(audiencesOf(memberOnly), ["member"]);
+
+  for (const audience of ["non_member", "former_member"]) {
+    const verdict = templateEligible(memberOnly, profile({ audience }));
+    assert.strictEqual(verdict.eligible, false, `${audience} must not be eligible`);
+    assert.strictEqual(verdict.reason, "wrong_audience");
+  }
+
+  // And nothing else in the gift set makes a claim about being a member.
+  const claims = /\b(you already know|your membership|your plan|as a member)\b/i;
+  for (const t of GIFT_LIBRARY.filter((x) => x.id !== "gift_member_knows_v1")) {
+    const text = [t.subject, t.headline, ...(t.paragraphs || []), ...(t.bullets || [])].join(" ");
+    assert.ok(!claims.test(text), `${t.id} assumes a membership its audience may not have`);
+  }
+});
+
+test("the gift facts in the copy are the real ones", () => {
+  for (const t of GIFT_LIBRARY) {
+    const text = [...(t.paragraphs || []), ...(t.bullets || [])].join(" ");
+
+    // Durations, exactly as sold. No length we do not offer.
+    const months = text.match(/\b(one|two|three|six|twelve|\d+)\b(?=[^.]*months?)/gi) || [];
+    for (const m of months) {
+      assert.ok(
+        ["one", "two", "three", "six", "twelve", "1", "2", "3", "6", "12"].includes(m.toLowerCase()),
+        `${t.id} mentions an unsupported length: ${m}`
+      );
+    }
+    for (const bad of ["four months", "five months", "18 months", "24 months", "eighteen"]) {
+      assert.ok(!text.toLowerCase().includes(bad), `${t.id} offers ${bad}, which does not exist`);
+    }
+  }
+
+  // Every plan named must be a plan that exists.
+  const withPlans = GIFT_LIBRARY.filter((t) =>
+    [...(t.bullets || []), ...(t.paragraphs || [])].join(" ").includes("Basic")
+  );
+  for (const t of withPlans) {
+    const text = [...(t.bullets || []), ...(t.paragraphs || [])].join(" ");
+    for (const plan of ["Basic", "Plus", "Premium", "Elite"]) {
+      assert.ok(text.includes(plan), `${t.id} lists plans but omits ${plan}`);
+    }
+  }
+});
+
+test("every gift email offers GIFT at 10% off, with no invented deadline", () => {
+  for (const t of GIFT_LIBRARY) {
+    assert.ok(t.promo, `${t.id} must carry the promotion`);
+    assert.strictEqual(t.promo.code, "GIFT");
+    assert.ok(/10%/.test(t.promo.detail), `${t.id} must say 10%: ${t.promo.detail}`);
+
+    // The Stripe code has no expiry, so nothing here may imply one.
+    const text = [t.subject, t.altSubject, t.preheader, t.headline, ...(t.paragraphs || []), ...(t.bullets || []), t.promo.detail]
+      .filter(Boolean)
+      .join(" ");
+    for (const urgent of ["hurry", "ends soon", "today only", "this week only", "expires", "last chance", "limited"]) {
+      assert.ok(!text.toLowerCase().includes(urgent), `${t.id} invents urgency: ${urgent}`);
+    }
+  }
+});
+
+test("every gift call to action goes to /gift", () => {
+  for (const t of GIFT_LIBRARY) {
+    for (const audience of audiencesOf(t)) {
+      const cta = ctaFor(t, audience);
+      assert.strictEqual(cta.route, "gift", `${t.id} points at ${cta.route}`);
+      assert.strictEqual(routeUrl(cta.route), `${routeUrl("gift")}`);
+      assert.ok(/\/gift$/.test(routeUrl(cta.route)), "the destination is the gift page");
+      assert.ok(cta.label, `${t.id} needs a label`);
+    }
+  }
+});
+
+test("a gift email renders, on a phone, with the code readable", () => {
+  for (const t of GIFT_LIBRARY) {
+    const audience = audiencesOf(t)[0];
+    const out = renderMarketingEmail(t, {
+      name: "Sam Carter",
+      email: "sam@example.com",
+      audience,
+    });
+
+    assert.ok(out.subject && out.subject.length <= 78, `${t.id} subject too long for a phone`);
+    assert.ok(out.html.includes("GIFT"), `${t.id} must show the code`);
+    assert.ok(out.html.includes("10%"), `${t.id} must show the value`);
+    assert.ok(out.html.includes("/gift"), `${t.id} must link to the gift page`);
+
+    // Mobile: the shared shell is a fixed 600 max-width table with a viewport
+    // meta, and the promo strip must not have introduced a wider element.
+    assert.ok(out.html.includes("width=device-width"), "viewport meta");
+    assert.ok(out.html.includes("max-width:600px"), "the responsive shell");
+    const widerTable = /width="(6[1-9]\d|[7-9]\d\d|\d{4,})"/.exec(out.html);
+    assert.ok(!widerTable, `${t.id} has an element wider than the shell: ${widerTable && widerTable[0]}`);
+
+    // Compliance, same as every other marketing email.
+    assert.ok(out.html.includes("unsubscribe"), `${t.id} needs an unsubscribe link`);
+    assert.ok(out.html.includes(BUSINESS.addressLine), `${t.id} needs the postal address`);
+
+    assert.ok(out.text, "a plain text part");
+    assert.ok(out.text.includes("GIFT"), "the code survives into plain text");
+  }
+});
+
+test("no gift marketing email carries a claim token or anything private", () => {
+  /*
+   * A claim token is a credential that grants the membership to whoever holds
+   * it, and it belongs in one inbox: the recipient's, in the transactional
+   * invitation. Marketing is sent to a list and must never carry one.
+   */
+  for (const t of GIFT_LIBRARY) {
+    const out = renderMarketingEmail(t, {
+      name: "Sam Carter",
+      email: "sam@example.com",
+      audience: audiencesOf(t)[0],
+    });
+    const all = out.html + out.text + out.subject;
+
+    assert.ok(!/\/gift\/claim\//.test(all), `${t.id} contains a claim URL`);
+    assert.ok(!/\bclaimToken\b/i.test(all), `${t.id} mentions a claim token`);
+    assert.ok(!/\b[0-9a-f]{32,}\b/i.test(all), `${t.id} contains something token-shaped`);
+    assert.ok(!/\bG[0-9A-F]{8}\b/.test(all), `${t.id} leaks a gift number`);
+    // Card and payment detail have no business in marketing either.
+    for (const word of ["card ending", "payment method", "invoice", "stripe"]) {
+      assert.ok(!all.toLowerCase().includes(word), `${t.id} mentions ${word}`);
+    }
+  }
+});
+
+test("gift emails obey every existing suppression rule", () => {
+  const gift = BY_ID.get("gift_someone_you_care_about_v1");
+
+  // They are a sell, so they are withheld while a payment is failing.
+  assert.strictEqual(gift.kind, KIND.SELL, "asking for money is a sell");
+  const failing = templateEligible(gift, profile({ audience: "member", paymentTrouble: true }));
+  assert.strictEqual(failing.eligible, false);
+  assert.strictEqual(failing.reason, "recent_payment_failure");
+
+  // Nothing but activation reaches a member still in their onboarding window.
+  const onboarding = templateEligible(
+    gift,
+    profile({ audience: "member", inActivationWindow: true })
+  );
+  assert.strictEqual(onboarding.eligible, false);
+  assert.strictEqual(onboarding.reason, "activation_window_in_progress");
+
+  // Already sent recently: the ordinary reuse rule, no special casing.
+  const recent = templateEligible(
+    gift,
+    profile({
+      audience: "member",
+      campaignLastSentAt: new Map([[gift.id, new Date(NOW.getTime() - 30 * 86400000)]]),
+    })
+  );
+  assert.strictEqual(recent.eligible, false);
+  assert.strictEqual(recent.reason, "campaign_cooldown");
+});
+
+test("gift emails cannot arrive back to back", () => {
+  /*
+   * The whole spacing mechanism, and the reason all three share a topic:
+   * the ninety day same-topic cooldown does the work, with no rule written
+   * specially for gifting.
+   */
+  for (const t of GIFT_LIBRARY) {
+    assert.strictEqual(t.topic, "gift", `${t.id} must share the gift topic`);
+  }
+
+  const justSentOne = profile({
+    audience: "member",
+    sentTopicAt: new Map([["gift", new Date(NOW.getTime() - 30 * 86400000)]]),
+  });
+  for (const t of GIFT_LIBRARY) {
+    const verdict = templateEligible(t, justSentOne);
+    assert.strictEqual(verdict.eligible, false, `${t.id} should be held back`);
+    assert.strictEqual(verdict.reason, "topic_cooldown");
+  }
+
+  // Past the window they become available again.
+  const longAgo = profile({
+    audience: "member",
+    sentTopicAt: new Map([["gift", new Date(NOW.getTime() - 100 * 86400000)]]),
+  });
+  assert.strictEqual(templateEligible(GIFT_LIBRARY[0], longAgo).eligible, true);
+});
+
+test("gifting takes its turn rather than jumping the queue", () => {
+  // Rotation priority, not activation or lifecycle: adding gifting must not
+  // displace the messages that only mean something at a particular moment.
+  for (const t of GIFT_LIBRARY) {
+    assert.strictEqual(t.priority, LIB_PRIORITY.ROTATION, `${t.id} must not outrank lifecycle mail`);
+    assert.strictEqual(t.category, "gift");
+    assert.strictEqual(t.lifecycleDay, undefined, `${t.id} is evergreen, not lifecycle`);
+    assert.strictEqual(t.season, undefined, `${t.id} is evergreen, not seasonal`);
+  }
+});
+
+test("adding gifting did not loosen the frequency limits", () => {
+  /*
+   * The pace is set by configuration, not by how much content exists. More
+   * campaigns means more variety at the same cadence - never more email per
+   * person per week.
+   */
+  const { FREQUENCY, COOLDOWN_DAYS } = require("../utils/marketing/marketingConfig");
+  assert.strictEqual(FREQUENCY.globalMinDays, 7, "the hard floor between any two emails");
+  assert.strictEqual(FREQUENCY.nonMemberRotationDays, 14);
+  assert.strictEqual(FREQUENCY.memberRotationDays, 17);
+  assert.strictEqual(FREQUENCY.formerMemberRotationDays, 23);
+  assert.strictEqual(COOLDOWN_DAYS.sameTopic, 90);
+  assert.strictEqual(COOLDOWN_DAYS.campaignReuse, 365);
+});
+
+test("existing marketing emails are untouched by the promotion strip", () => {
+  // The strip renders only when a template asks for one, so nothing that
+  // existed before this work can have gained a panel.
+  const withPromo = ALL_TEMPLATES.filter((t) => t.promo);
+  assert.deepStrictEqual(
+    withPromo.map((t) => t.id).sort(),
+    [...GIFT_IDS].sort(),
+    "only the gift campaigns carry a promotion"
+  );
+
+  const plain = ALL_TEMPLATES.find((t) => !t.promo && t.ctaRoute);
+  const out = renderMarketingEmail(plain, {
+    name: "Sam",
+    email: "sam@example.com",
+    audience: audiencesOf(plain)[0],
+  });
+  assert.ok(!out.html.includes("Use this code at checkout"), "no stray promotion panel");
+  assert.ok(!out.html.includes("GIFT"), `${plain.id} should not mention the code`);
+});
+
+test("gift MARKETING and gift TRANSACTIONAL stay separate systems", () => {
+  /*
+   * The invitation, the claim confirmation and the admin notices are
+   * transactional: they are sent because of something that happened, they
+   * ignore marketing suppression, and one of them carries a credential.
+   * These are marketing: they go to a list, they obey unsubscribe, and they
+   * carry nothing but a public link.
+   */
+  const giftTemplates = require("../utils/gifts/giftEmailTemplates");
+  assert.ok(giftTemplates.createGiftEmailTemplates, "the transactional templates still exist");
+
+  const transactional = require("../utils/gifts/giftEmails");
+  for (const fn of ["sendGiftPurchaseEmails", "sendGiftInvitation", "sendGiftPurchasedAdminNotice"]) {
+    assert.strictEqual(typeof transactional[fn], "function", `${fn} must be unaffected`);
+  }
+
+  // No marketing campaign id may collide with a transactional template key.
+  for (const id of GIFT_IDS) {
+    assert.ok(!id.startsWith("gift_invitation"), "marketing must not shadow the invitation");
+    assert.ok(!id.startsWith("gift_claimed"), "nor the claim confirmation");
+  }
+});
+
+/* ------------------------------------------------------------------ */
 
 console.log(`
 marketing system: ${passed} passed, ${failures.length} failed`);

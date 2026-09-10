@@ -148,6 +148,7 @@ const ROUTES = {
   projects: "/projects",
   projectEstimate: "/projects#estimate",
   account: "/account",
+  gift: "/gift",
   services: "/services",
   renovations: "/renovations",
 };
