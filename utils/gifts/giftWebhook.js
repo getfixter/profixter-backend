@@ -83,8 +83,15 @@ async function handleGiftCheckoutCompleted(session, { Model = GiftMembership } =
    * An unpaid session is not a gift. Stripe sends checkout.session.completed
    * for sessions whose payment is still processing, so this is checked
    * explicitly rather than assumed from the event name.
+   *
+   * "no_payment_required" IS a settled gift. A 100% promotion code takes the
+   * total to zero, and Stripe then completes the session with that status
+   * and no payment intent at all — there was nothing to charge. Accepting
+   * only "paid" would have thrown those away: the purchaser completes
+   * checkout, and no gift is ever created for them.
    */
-  if (session.payment_status && session.payment_status !== "paid") {
+  const SETTLED = ["paid", "no_payment_required"];
+  if (session.payment_status && !SETTLED.includes(session.payment_status)) {
     console.warn(
       JSON.stringify({
         event: "gift_checkout_not_paid",

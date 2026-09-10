@@ -472,30 +472,61 @@ test("nothing in the gift feature reaches for SMS", () => {
 
 console.log("\nPromotion codes and the trial floor\n");
 
-test("gift checkout refuses promotion codes", () => {
+test("gift checkout accepts promotion codes, through Stripe's own system", () => {
   /*
-   * Every active promotion code in the live account is unrestricted, so all
-   * of them applied to gifts - several at 100% off, and one worth more than
-   * an entire Basic gift. Stripe cannot whitelist codes and a coupon's
-   * applies_to is immutable, so the only change that does not damage
-   * existing membership promotions is to refuse codes here.
-   *
-   * To offer a gift discount later: create a coupon restricted to the four
-   * gift Products, then set this back to true.
+   * Approved deliberately: every active code is unrestricted and two are
+   * worth 100%. What matters is that nothing here reimplements any of it —
+   * eligibility, expiry, redemption limits, first-time-customer rules and
+   * the arithmetic are all Stripe's answers.
    */
   const giftRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "gifts.js"), "utf8");
-  assert.match(
-    giftRoute,
-    /allow_promotion_codes:\s*false/,
-    "gift checkout must not accept promotion codes at launch"
-  );
+  assert.match(giftRoute, /allow_promotion_codes:\s*true/);
 
+  // No discount may be computed, chosen or capped on our side.
+  const code = codeOnly(giftRoute);
+  for (const forbidden of ["percent_off", "amount_off", "discounts:", "coupon:"]) {
+    assert(!code.includes(forbidden), `gift checkout must not reimplement ${forbidden}`);
+  }
+
+  // And membership checkout is unchanged.
   const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8");
-  assert.match(
-    stripeRoute,
-    /allow_promotion_codes:\s*true/,
-    "membership promotions must keep working exactly as before"
+  assert.match(stripeRoute, /allow_promotion_codes:\s*true/);
+});
+
+test("a 100% discount still produces a gift", () => {
+  /*
+   * The case that would have failed silently. A 100% code takes the total to
+   * zero, and Stripe completes that session as "no_payment_required" with no
+   * payment intent — accepting only "paid" meant the purchaser checked out
+   * and no gift was ever created.
+   */
+  const webhook = fs.readFileSync(
+    path.join(__dirname, "..", "utils", "gifts", "giftWebhook.js"),
+    "utf8"
   );
+  assert.match(webhook, /no_payment_required/, "a zero-total session must count as settled");
+  assert.match(webhook, /SETTLED\.includes\(session\.payment_status\)/);
+
+  // A null payment intent must not break the record.
+  assert.match(webhook, /session\?\.payment_intent\?\.id \|\| null/);
+});
+
+test("the money recorded is Stripe's, discount included", () => {
+  const webhook = fs.readFileSync(
+    path.join(__dirname, "..", "utils", "gifts", "giftWebhook.js"),
+    "utf8"
+  );
+  for (const field of [
+    "amount_subtotal",
+    "total_details?.amount_discount",
+    "total_details?.amount_tax",
+    "amount_total",
+  ]) {
+    assert(webhook.includes(field), `${field} must be read from the session`);
+  }
+  // Nothing derives a total locally.
+  const code = codeOnly(webhook);
+  assert(!/amountPaidCents:.*[-+*/]/.test(code), "the paid total must not be arithmetic");
 });
 
 test("the trial floor matches Stripe's measured minimum", () => {

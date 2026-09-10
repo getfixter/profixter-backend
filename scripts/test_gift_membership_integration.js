@@ -1293,6 +1293,111 @@ async function run() {
     assert(!/purchaser/i.test(serialized), "nothing about a purchaser may reach Stripe here");
   });
 
+  console.log("\nDiscounted and free gifts");
+
+  await test("a 100% discounted gift is created, not silently dropped", async () => {
+    /*
+     * Stripe completes a zero-total session with payment_status
+     * "no_payment_required" and NO payment intent. Accepting only "paid"
+     * meant the purchaser finished checkout and no gift ever existed.
+     */
+    const buyer = await makeUser({ email: `freegift-${Date.now()}@example.com` });
+    const session = sessionFor(buyer, {
+      recipientEmail: `freerecipient-${Date.now()}@example.com`,
+      discount: 49800,
+      amountTotal: 0,
+    });
+    session.payment_status = "no_payment_required";
+    session.payment_intent = null;
+
+    const result = await giftWebhook.handleGiftCheckoutCompleted(session);
+    assert.equal(result.created, true, "a fully discounted gift is still a gift");
+
+    const stored = await GiftMembership.findById(result.gift._id).lean();
+    assert.equal(stored.amountSubtotalCents, 49800);
+    assert.equal(stored.discountCents, 49800);
+    assert.equal(stored.amountPaidCents, 0, "nothing was charged");
+    assert.equal(stored.stripePaymentIntentId, null, "and there is no payment intent");
+    assert.equal(stored.plan, "plus", "the full entitlement is still granted");
+    assert.equal(stored.durationMonths, 2);
+  });
+
+  await test("two free gifts do not collide on the null payment intent", async () => {
+    // The unique index is partial on a string, so many nulls coexist.
+    const created = [];
+    for (let i = 0; i < 2; i += 1) {
+      const buyer = await makeUser({ email: `free${i}-${Date.now()}@example.com` });
+      const session = sessionFor(buyer, {
+        recipientEmail: `freer${i}-${Date.now()}@example.com`,
+        discount: 49800,
+        amountTotal: 0,
+      });
+      session.payment_status = "no_payment_required";
+      session.payment_intent = null;
+      const r = await giftWebhook.handleGiftCheckoutCompleted(session);
+      assert.equal(r.created, true, `gift ${i} should be created`);
+      created.push(String(r.gift._id));
+    }
+    assert.equal(new Set(created).size, 2, "two distinct gifts");
+  });
+
+  await test("a genuinely unpaid session is still refused", async () => {
+    const buyer = await makeUser({ email: `unpaid-${Date.now()}@example.com` });
+    const session = sessionFor(buyer, { recipientEmail: `unpaidr-${Date.now()}@example.com` });
+    session.payment_status = "unpaid";
+    const result = await giftWebhook.handleGiftCheckoutCompleted(session);
+    assert.equal(result.created, false);
+    assert.equal(result.reason, "not_paid");
+  });
+
+  await test("a partly discounted gift reconciles for the receipt", async () => {
+    const buyer = await makeUser({ email: `disc-${Date.now()}@example.com` });
+    const session = sessionFor(buyer, {
+      recipientEmail: `discr-${Date.now()}@example.com`,
+      discount: 12450,
+      tax: 3268,
+      amountTotal: 40618,
+    });
+    const result = await giftWebhook.handleGiftCheckoutCompleted(session);
+    const g = await GiftMembership.findById(result.gift._id).lean();
+    assert.equal(
+      g.amountSubtotalCents - g.discountCents + g.taxCents,
+      g.amountPaidCents,
+      "subtotal - discount + tax must equal what Stripe charged"
+    );
+    assert.equal(g.discountCents, 12450);
+    assert.equal(g.taxCents, 3268);
+  });
+
+  await test("a free gift grants the same entitlement as a paid one", async () => {
+    const email = `freeclaim-${Date.now()}@example.com`;
+    const buyer = await makeUser({ email: `freebuyer-${Date.now()}@example.com` });
+    const session = sessionFor(buyer, {
+      recipientEmail: email,
+      discount: 49800,
+      amountTotal: 0,
+    });
+    session.payment_status = "no_payment_required";
+    session.payment_intent = null;
+    const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+
+    const recipient = await makeUser({ email });
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(created.gift._id),
+      user: recipient,
+      addressId: recipient.addresses[0]._id,
+    });
+    assert.equal(claim.ok, true);
+    const active = await giftAccess.findActiveGift(
+      recipient._id,
+      recipient.addresses[0]._id
+    );
+    assert(active, "a free gift must still grant access");
+    const synthetic = giftAccess.syntheticGiftSubscription(active);
+    assert.equal(synthetic.subscriptionType, "plus");
+    assert.equal(synthetic.stripeCustomerId, undefined, "and still no billing identity");
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {

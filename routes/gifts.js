@@ -301,27 +301,25 @@ router.post("/checkout-session", auth, async (req, res) => {
       payment_method_types: ["card"],
       line_items: [lineItem],
       /*
-       * NO PROMOTION CODES ON GIFTS AT LAUNCH.
+       * Promotion codes are accepted, using Stripe's own system as-is.
        *
-       * A live audit found all 16 active promotion codes unrestricted, so
-       * every one of them applied to gifts: BARTER is 100% off forever,
-       * JULY4 is 100% off, KATEGIFT is $300 off — more than an entire Basic
-       * gift. Enabling gift sales with codes open would have handed anyone
-       * who knows one of those a free membership to give away.
+       * Every active code in the account is unrestricted, so all of them
+       * reach gifts — including two worth 100%. That is a deliberate,
+       * approved business decision, not an oversight: no coupon or
+       * promotion code is modified, restricted or recreated anywhere, and
+       * membership promotions are untouched.
        *
-       * Restricting the coupons themselves is not available: applies_to is
-       * immutable on a Stripe coupon, so narrowing them would mean deleting
-       * and recreating live membership promotions and changing discounts
-       * customers already hold. Refusing codes here is the narrow,
-       * reversible, non-destructive half of that trade — existing membership
-       * promos keep working exactly as they do today and nothing about them
-       * is touched.
+       * Stripe stays the authority on what a code is worth. Eligibility,
+       * expiry, redemption limits, first-time-customer rules and the
+       * discount arithmetic are all its answers, and the figures recorded
+       * against the gift are read back from the completed session rather
+       * than computed here.
        *
-       * To offer a gift discount later: create a coupon whose applies_to
-       * lists the four gift Products, then set this back to true. The stable
-       * Products exist precisely so that is possible.
+       * A 100% code produces a zero-total session, which Stripe reports as
+       * no_payment_required with no payment intent at all. The webhook is
+       * written to accept exactly that; see giftWebhook.
        */
-      allow_promotion_codes: false,
+      allow_promotion_codes: true,
       /*
        * Every ProFixter service charges tax the same way, so a gift does too.
        *
