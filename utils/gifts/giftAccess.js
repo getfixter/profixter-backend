@@ -1,4 +1,5 @@
 const GiftMembership = require("../../models/GiftMembership");
+const { addMonths } = require("./giftPricing");
 
 /**
  * Whether a gift is usable right now.
@@ -49,9 +50,22 @@ function giftAccessState(gift, now = new Date()) {
   const end = gift.endAt ? new Date(gift.endAt).getTime() : null;
 
   /*
-   * Claimed but with no window is a data fault, not a free membership. It is
-   * reported rather than silently treated as either active or expired, because
-   * both of those would hide it.
+   * Waiting its turn behind coverage with no knowable end.
+   *
+   * A gift queued behind an indefinitely renewing paid membership is claimed
+   * and paid for but has no window yet, on purpose. Not active — it must not
+   * burn a single day while the customer is still paying — and not a fault
+   * either. It is given real dates the moment the coverage ahead of it
+   * genuinely ends.
+   */
+  if (gift.startPending && start === null && end === null) {
+    return { state: "pending", active: false };
+  }
+
+  /*
+   * Claimed but with no window and no pending flag is a data fault, not a
+   * free membership. Reported rather than silently treated as active or
+   * expired, because both of those would hide it.
    */
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     return { state: "invalid_window", active: false };
@@ -73,12 +87,184 @@ function giftAccessState(gift, now = new Date()) {
  * against one house does not cover another. Ordered by start so that when two
  * queued gifts run back to back, the one covering today is the one returned.
  */
+/**
+ * When ALL gift coverage for one property finally runs out.
+ *
+ * Used to decide when a recipient's own paid membership should start billing,
+ * so they never pay for a day a gift already covers.
+ *
+ * Three shapes have to be added up, and missing any one of them would charge
+ * somebody early:
+ *
+ *   - the gift running now, which ends on a known date
+ *   - gifts queued behind it, which also have known dates
+ *   - PENDING gifts, which have no dates at all but do have a duration
+ *
+ * The last is the subtle one. A pending gift is real, paid-for coverage that
+ * simply has not been scheduled yet; ignoring it would start billing while
+ * months of prepaid time were still owed. Its months are added on to whatever
+ * the last dated coverage ends, in the same calendar arithmetic the terms use.
+ *
+ * Returns null when there is no gift coverage at all.
+ */
+async function projectedGiftCoverageEnd(
+  userId,
+  addressId,
+  { now = new Date(), Model = GiftMembership } = {}
+) {
+  if (!userId || !addressId) return null;
+
+  const gifts = await Model.find({
+    recipient: userId,
+    addressId,
+    status: "claimed",
+  })
+    /*
+     * status MUST be selected: giftAccessState reads it first and answers
+     * "unknown" for a document that does not carry one, which silently made
+     * every gift look like no coverage at all and would have billed a
+     * recipient straight over their remaining months.
+     */
+    .select("status startAt endAt startPending durationMonths claimedAt createdAt")
+    .sort({ claimedAt: 1, createdAt: 1 })
+    .lean();
+
+  if (!gifts.length) return null;
+
+  let end = null;
+  const consider = (value) => {
+    if (!value) return;
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return;
+    if (!end || date.getTime() > end.getTime()) end = date;
+  };
+
+  for (const gift of gifts) {
+    if (gift.startPending) continue;
+    const state = giftAccessState(gift, now);
+    if (state.state === "active" || state.state === "queued") consider(gift.endAt);
+  }
+
+  // Pending months stack on the end of everything already dated, or on now.
+  const pending = gifts.filter((gift) => gift.startPending);
+  for (const gift of pending) {
+    const base = end && end.getTime() > new Date(now).getTime() ? end : new Date(now);
+    const next = addMonths(base, gift.durationMonths);
+    if (next) end = next;
+  }
+
+  return end && end.getTime() > new Date(now).getTime() ? end : null;
+}
+
+/**
+ * Whether a paid membership is genuinely ending, and when.
+ *
+ * currentPeriodEnd on its own is NOT an ending — it is the next renewal, and
+ * treating it as an end is exactly the bug this replaced. A subscription is
+ * only ending if somebody has told it to stop: cancelAtPeriodEnd is set, a
+ * cancellationDate exists, or it is already in a terminal status.
+ *
+ * Returns a Date when the end is genuinely known, "indefinite" when the
+ * membership simply keeps renewing, and null when there is no coverage.
+ */
+function paidCoverageEnd(paid) {
+  if (!paid) return null;
+
+  const terminal = ["canceled", "cancelled", "expired", "incomplete_expired", "unpaid"];
+  const stopping =
+    paid.cancelAtPeriodEnd === true ||
+    !!paid.cancellationDate ||
+    terminal.includes(String(paid.status || ""));
+
+  if (!stopping) return "indefinite";
+
+  const end = paid.cancellationDate || paid.currentPeriodEnd || paid.nextPaymentDate || null;
+  return end ? new Date(end) : null;
+}
+
+/**
+ * Give a waiting gift its dates, the moment its turn genuinely arrives.
+ *
+ * DELIBERATELY NOT WORKER-ONLY. This runs on the access path as well as in
+ * the lifecycle sweep, so a recipient whose paid membership lapsed five
+ * minutes ago can book immediately rather than waiting for a cron. Both
+ * callers go through the same conditional update, so running them together
+ * cannot produce two windows.
+ *
+ * Only ever activates ONE gift — the oldest waiting. The rest keep waiting,
+ * which is what makes several gifts run in sequence rather than at once.
+ */
+async function activateDueGifts(
+  userId,
+  addressId,
+  { now = new Date(), Model = GiftMembership, SubscriptionModel = null } = {}
+) {
+  if (!userId || !addressId) return null;
+
+  const pending = await Model.find({
+    recipient: userId,
+    addressId,
+    status: "claimed",
+    startPending: true,
+  })
+    .sort({ claimedAt: 1, createdAt: 1 })
+    .lean();
+
+  if (!pending.length) return null;
+
+  // Any paid membership that is active right now is coverage; the gift waits.
+  const Subscription = SubscriptionModel || require("../../models/Subscription");
+  const paidNow = await Subscription.exists({
+    user: userId,
+    addressId,
+    status: { $in: ["active", "trialing"] },
+  });
+  if (paidNow) return null;
+
+  // Any dated gift still running or still to come also has to finish first.
+  const ahead = await Model.exists({
+    recipient: userId,
+    addressId,
+    status: "claimed",
+    startPending: { $ne: true },
+    endAt: { $gt: now },
+  });
+  if (ahead) return null;
+
+  const next = pending[0];
+  const window = addMonths(new Date(now), next.durationMonths);
+  if (!window) return null;
+
+  const result = await Model.updateOne(
+    { _id: next._id, startPending: true, startAt: null },
+    { $set: { startAt: new Date(now), endAt: window, startPending: false } }
+  );
+  if (result.modifiedCount !== 1) return null;
+
+  console.log(
+    JSON.stringify({
+      event: "gift_activated",
+      giftNumber: next.giftNumber,
+      reason: "coverage_ahead_ended",
+    })
+  );
+
+  return Model.findById(next._id).lean();
+}
+
 async function findActiveGift(
   userId,
   addressId,
   { now = new Date(), Model = GiftMembership } = {}
 ) {
   if (!userId || !addressId) return null;
+
+  /*
+   * Give a waiting gift its turn before deciding there is nothing to use.
+   * This is what keeps access correct without a background job: the first
+   * request after paid coverage ends activates the gift.
+   */
+  await activateDueGifts(userId, addressId, { now, Model });
 
   const candidates = await Model.find({
     recipient: userId,
@@ -203,7 +389,10 @@ function syntheticGiftSubscription(gift) {
 
 module.exports = {
   CLAIMABLE_STATUSES,
+  activateDueGifts,
   coverageEndsAt,
+  paidCoverageEnd,
+  projectedGiftCoverageEnd,
   findActiveGift,
   findGiftTimeline,
   giftAccessState,

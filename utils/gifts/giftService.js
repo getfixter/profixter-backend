@@ -4,7 +4,7 @@ const GiftMembership = require("../../models/GiftMembership");
 const Subscription = require("../../models/Subscription");
 const { normalizeEmail } = require("../identity");
 const { findCustomerByEmail } = require("../userLookup");
-const { coverageEndsAt, giftAccessState } = require("./giftAccess");
+const { coverageEndsAt, giftAccessState, paidCoverageEnd } = require("./giftAccess");
 const { createClaimToken } = require("./giftClaimToken");
 const { normalizePlan, quoteGift, termWindow } = require("./giftPricing");
 const { normalizeOccasion, sanitizePersonalMessage } = require("./giftOccasions");
@@ -223,7 +223,7 @@ function claimantMatches(gift, user) {
  * function or its callers writes to it — a gift must never modify, cancel,
  * pause or downgrade a membership somebody is paying for.
  */
-async function computeStartAt(
+async function computeStartPlan(
   { recipientId, addressId, now = new Date() },
   { SubscriptionModel = Subscription, GiftModel = GiftMembership } = {}
 ) {
@@ -232,7 +232,7 @@ async function computeStartAt(
     addressId,
     status: { $in: ["active", "trialing"] },
   })
-    .select("currentPeriodEnd cancellationDate nextPaymentDate")
+    .select("status currentPeriodEnd cancellationDate nextPaymentDate cancelAtPeriodEnd")
     .lean();
 
   const existingGifts = await GiftModel.find({
@@ -240,14 +240,39 @@ async function computeStartAt(
     addressId,
     status: "claimed",
   })
-    .select("status startAt endAt")
+    .select("status startAt endAt startPending durationMonths")
     .lean();
 
-  const paidCoverageEndsAt =
-    paid?.currentPeriodEnd || paid?.cancellationDate || paid?.nextPaymentDate || null;
+  /*
+   * A gift behind coverage with no knowable end waits without a date.
+   *
+   * currentPeriodEnd is the next RENEWAL, not an ending. Queuing a gift there
+   * meant that the moment the customer's membership renewed, the gift went
+   * "active" alongside coverage they were still paying for — and a two-month
+   * gift could expire having delivered nothing. So an indefinitely renewing
+   * membership produces a PENDING gift instead: no window, no access, no days
+   * consumed, and real dates the moment that membership genuinely stops.
+   */
+  const paidEnd = paidCoverageEnd(paid);
+  if (paidEnd === "indefinite") return { pending: true };
 
-  const ahead = coverageEndsAt({ paidCoverageEndsAt, existingGifts }, now);
-  return ahead || new Date(now);
+  // Another gift ahead is also waiting for an unknown date, so this one must.
+  if (existingGifts.some((gift) => gift.startPending)) return { pending: true };
+
+  const ahead = coverageEndsAt(
+    { paidCoverageEndsAt: paidEnd, existingGifts },
+    now
+  );
+  return { startAt: ahead || new Date(now) };
+}
+
+/**
+ * Kept for callers that only want the date. Returns null when the gift must
+ * wait for an end nobody can predict yet.
+ */
+async function computeStartAt(input, dependencies) {
+  const plan = await computeStartPlan(input, dependencies);
+  return plan.pending ? null : plan.startAt;
 }
 
 /**
@@ -278,12 +303,21 @@ async function claimGift({
     return { ok: false, reason: "address_required" };
   }
 
-  const startAt = await computeStartAt(
+  const plan = await computeStartPlan(
     { recipientId: user._id, addressId, now },
     dependencies
   );
-  const window = termWindow(startAt, gift.durationMonths);
-  if (!window) return { ok: false, reason: "invalid_term" };
+
+  /*
+   * Two shapes of claim, and the difference is whether an end date exists to
+   * queue behind. A pending claim stores no window at all — see the schema
+   * note on startPending for why that is the safe direction.
+   */
+  let window = null;
+  if (!plan.pending) {
+    window = termWindow(plan.startAt, gift.durationMonths);
+    if (!window) return { ok: false, reason: "invalid_term" };
+  }
 
   /*
    * Conditional on the status still being unclaimed, so two tabs racing the
@@ -297,8 +331,9 @@ async function claimGift({
         addressId,
         status: "claimed",
         claimedAt: new Date(now),
-        startAt: window.startAt,
-        endAt: window.endAt,
+        startAt: window ? window.startAt : null,
+        endAt: window ? window.endAt : null,
+        startPending: !window,
         // The link has done its job. Clearing the hash makes it unusable
         // immediately rather than leaving a working credential in an inbox.
         claimTokenHash: "",
@@ -311,10 +346,14 @@ async function claimGift({
   }
 
   const claimed = await Model.findById(gift._id).lean();
+  const state = giftAccessState(claimed, now).state;
   return {
     ok: true,
     gift: claimed,
-    queued: giftAccessState(claimed, now).state === "queued",
+    // "queued" covers both shapes of waiting: a known future date, and a
+    // pending gift behind a membership with no knowable end.
+    queued: state === "queued" || state === "pending",
+    pending: state === "pending",
   };
 }
 
@@ -399,6 +438,7 @@ module.exports = {
   claimGift,
   claimantMatches,
   computeStartAt,
+  computeStartPlan,
   giftNumber,
   issueInvitation,
   recordPurchasedGift,

@@ -256,6 +256,50 @@ async function sendGiftExpired(gift) {
   );
 }
 
+/**
+ * Tell Admin a gift was refunded.
+ *
+ * EMAIL ONLY. SMS is switched off until Twilio is approved, and nothing in
+ * the gift feature may depend on it — this path must work with SMS disabled,
+ * which it does because it never touches it.
+ *
+ * Sent to the admin address rather than bcc'd on a customer email, because
+ * there is no customer email here: the recipient is deliberately not told
+ * anything, since their access has not changed.
+ */
+async function sendGiftRefundAdminNotice(gift, { refund, refundStatus, giftState }) {
+  const adminAddress = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").trim();
+  if (!adminAddress) return null;
+
+  const money = (cents) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+
+  return attempt("gift_refunded_admin", () =>
+    mail.sendTx(
+      "gift_refunded_admin",
+      adminAddress,
+      {
+        giftNumber: gift.giftNumber,
+        purchaserName: gift.purchaserSnapshot?.name || "Unknown",
+        purchaserEmail: gift.purchaserSnapshot?.email || "unknown",
+        recipientName:
+          `${gift.recipientFirstName || ""} ${gift.recipientLastName || ""}`.trim() || "Unknown",
+        recipientEmail: gift.recipientEmail || "unknown",
+        plan: planLabel(gift.plan),
+        durationMonths: gift.durationMonths,
+        refundAmount: money(refund?.amount),
+        refundedTotal: money(gift.amountRefundedCents),
+        amountPaid: money(gift.amountPaidCents),
+        refundStatus: refundStatus || gift.refundStatus || "unknown",
+        giftState: giftState || "unknown",
+      },
+      {
+        bccAdmin: false,
+        logContext: logContextFor(gift, adminAddress, "transactional"),
+      }
+    )
+  );
+}
+
 module.exports = {
   claimUrl,
   planLabel,
@@ -265,4 +309,5 @@ module.exports = {
   sendGiftExpired,
   sendGiftInvitation,
   sendGiftPurchaseEmails,
+  sendGiftRefundAdminNotice,
 };

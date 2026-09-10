@@ -169,6 +169,27 @@ const GiftMembershipSchema = new mongoose.Schema(
     startAt: { type: Date, default: null, index: true },
     endAt: { type: Date, default: null, index: true },
 
+    /*
+     * Claimed, but deliberately without a window yet.
+     *
+     * A gift queued behind an INDEFINITELY RENEWING paid membership has no
+     * knowable start date. The old behaviour queued it at the paid
+     * subscription's currentPeriodEnd, which is the end of the current
+     * billing period rather than the end of the subscription — so the next
+     * renewal left the gift "active" alongside coverage the customer was
+     * still paying for, and a two-month gift could expire having delivered
+     * nothing at all.
+     *
+     * A pending gift therefore holds NO dates. That is the safe direction:
+     * with no window it grants no access, rather than granting access that
+     * silently burns prepaid time. It is given real dates the moment
+     * coverage ahead of it genuinely ends — by whichever comes first, a
+     * booking request or the lifecycle sweep, both through the same atomic
+     * update. This flag is what separates "waiting its turn" from the
+     * data fault that null dates would otherwise represent.
+     */
+    startPending: { type: Boolean, default: false, index: true },
+
     /* ------------------------------- Payment ------------------------------ */
     /*
      * WHAT THIS BLOCK MUST NEVER CONTAIN

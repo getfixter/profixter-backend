@@ -11,6 +11,7 @@ const {
   normalizeBillingCycle,
   resolveUserStripeCustomerId,
 } = require("../utils/subscriptionManagement");
+const { projectedGiftCoverageEnd } = require("../utils/gifts/giftAccess");
 
 const CLIENT_URL = process.env.CLIENT_URL || "https://www.profixter.com";
 
@@ -132,6 +133,55 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       }
     );
 
+    /*
+     * NEVER BILL OVER GIFT COVERAGE.
+     *
+     * A recipient with prepaid gift time who starts their own membership used
+     * to be charged immediately, so they paid for days a gift already covered
+     * and the remaining gift time was simply lost. Continue Membership sits
+     * on the account screen for the last two weeks of a gift, which made that
+     * the likely path rather than an edge case.
+     *
+     * So billing is deferred to the end of ALL gift coverage for this
+     * property — the running gift, anything queued behind it, and any pending
+     * gift still waiting for a date. Stripe's own trial does the work: the
+     * card is collected now, the subscription exists immediately, and the
+     * first invoice is raised when the trial ends.
+     *
+     * The customer here is the RECIPIENT's own, resolved from their own
+     * account exactly as for any other subscriber. Nothing about the
+     * purchaser is read, reachable or involved.
+     *
+     * Stripe requires a trial to end far enough out to be meaningful, so a
+     * gift ending within the floor below is rounded up rather than rejected.
+     * That direction is deliberate: it can only ever delay the first charge
+     * by hours, never bring it forward over covered days.
+     */
+    let giftCoverageEndsAt = null;
+    try {
+      giftCoverageEndsAt = await projectedGiftCoverageEnd(user._id, address._id, {
+        now: new Date(),
+      });
+    } catch (error) {
+      /*
+       * Gift lookup must never stop somebody buying a membership. Failing
+       * here means we bill immediately, which is the pre-existing behaviour;
+       * it is logged loudly because it silently costs a customer gift days.
+       */
+      logCheckout("error", "subscription_checkout_gift_coverage_lookup_failed", {
+        requestId,
+        userId: String(user._id),
+        error: error?.message || String(error),
+      });
+    }
+
+    const MIN_TRIAL_SECONDS = 48 * 60 * 60;
+    let trialEndUnix = null;
+    if (giftCoverageEndsAt) {
+      const earliest = Math.floor(Date.now() / 1000) + MIN_TRIAL_SECONDS;
+      trialEndUnix = Math.max(Math.floor(giftCoverageEndsAt.getTime() / 1000), earliest);
+    }
+
     const stripeCustomerId = await resolveUserStripeCustomerId(user);
     const sessionConfig = {
       mode: "subscription",
@@ -157,7 +207,9 @@ router.post("/create-checkout-session", auth, async (req, res) => {
           email,
           userId: String(user.userId || user._id),
           addressId: String(addressId),
+          ...(trialEndUnix ? { giftCoverageUntil: String(trialEndUnix) } : {}),
         },
+        ...(trialEndUnix ? { trial_end: trialEndUnix } : {}),
       },
       automatic_tax: { enabled: true },
       success_url: `${CLIENT_URL}/confirmationpage?session_id={CHECKOUT_SESSION_ID}`,
@@ -190,8 +242,17 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       addressId: String(addressId),
       plan,
       billingCycle: cycle,
+      billingStartsAt: trialEndUnix ? new Date(trialEndUnix * 1000).toISOString() : null,
+      deferredForGiftCoverage: !!trialEndUnix,
     });
-    return res.status(200).json({ url: session.url, eventId, sessionId: session.id });
+    return res.status(200).json({
+      url: session.url,
+      eventId,
+      sessionId: session.id,
+      // So the screen can say when the first charge happens instead of
+      // leaving the customer to discover it on a statement.
+      billingStartsAt: trialEndUnix ? new Date(trialEndUnix * 1000).toISOString() : null,
+    });
   } catch (error) {
     logCheckout("error", "subscription_checkout_session_failed", {
       requestId,

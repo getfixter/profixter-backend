@@ -182,6 +182,75 @@ function createGiftEmailTemplates({ escapeHtml, urls }) {
         `them. It runs through ${activeThrough}.\n\nNothing further is needed from you.\n\n${SUPPORT_EMAIL}`,
     }),
 
+    /* -------------------------------- Admin ------------------------------ */
+    /*
+     * A refund landed on a gift. EMAIL ONLY — SMS stays switched off until
+     * Twilio is approved, and nothing about gifts may depend on it.
+     *
+     * Deliberately does NOT say the entitlement was revoked, because it was
+     * not. A refund can be a partial goodwill gesture, a duplicate-charge
+     * correction, or a chargeback we intend to contest, so the money is
+     * reconciled automatically and the decision about access is left to a
+     * person. This message is what tells that person there is a decision to
+     * make.
+     */
+    gift_refunded_admin: ({
+      giftNumber,
+      purchaserName,
+      purchaserEmail,
+      recipientName,
+      recipientEmail,
+      plan,
+      durationMonths,
+      refundAmount,
+      refundedTotal,
+      amountPaid,
+      refundStatus,
+      giftState,
+    }) => ({
+      subject: `Gift refund (${safe(refundStatus)}) - ${safe(giftNumber)}`,
+      html: shell(`
+        <p style="margin:0 0 14px; font-size:17px;">
+          A <strong>${safe(refundStatus)}</strong> refund was recorded against a gift membership.
+        </p>
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse:collapse; margin:0 0 16px;">
+          ${[
+            ["Gift reference", safe(giftNumber)],
+            ["Plan", `${safe(plan)} &middot; ${months(durationMonths)}`],
+            ["Purchaser", `${safe(purchaserName)} (${safe(purchaserEmail)})`],
+            ["Recipient", `${safe(recipientName)} (${safe(recipientEmail)})`],
+            ["This refund", safe(refundAmount)],
+            ["Refunded in total", `${safe(refundedTotal)} of ${safe(amountPaid)}`],
+            ["Refund status", safe(refundStatus)],
+            ["Gift access right now", safe(giftState)],
+          ]
+            .map(
+              ([k, v]) =>
+                `<tr><td style="padding:6px 12px 6px 0; color:#6b7280; font-size:14px; white-space:nowrap;">${k}</td><td style="padding:6px 0; font-size:14px; color:#1f2937;"><strong>${v}</strong></td></tr>`
+            )
+            .join("")}
+        </table>
+        <p style="margin:0 0 10px; font-size:14px;">
+          <strong>The gift has NOT been revoked.</strong> Access is unchanged and the recipient can
+          still use whatever coverage remains.
+        </p>
+        <p style="margin:0; color:#6b7280; font-size:14px;">
+          If it should be withdrawn, cancel the gift in Admin. That is a deliberate step so a
+          disputed or partial refund cannot silently end a membership somebody is using.
+        </p>
+      `),
+      text:
+        `A ${refundStatus} refund was recorded against gift ${giftNumber}.\n\n` +
+        `Plan: ${plan} (${months(durationMonths)})\n` +
+        `Purchaser: ${purchaserName} (${purchaserEmail})\n` +
+        `Recipient: ${recipientName} (${recipientEmail})\n` +
+        `This refund: ${refundAmount}\n` +
+        `Refunded in total: ${refundedTotal} of ${amountPaid}\n` +
+        `Gift access right now: ${giftState}\n\n` +
+        `The gift has NOT been revoked. Cancel it in Admin if it should be withdrawn.\n\n` +
+        `${SUPPORT_EMAIL}`,
+    }),
+
     /* ------------------------------ Recipient ---------------------------- */
     gift_invitation: ({
       name = "there",

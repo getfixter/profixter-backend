@@ -2,6 +2,8 @@ const GiftMembership = require("../../models/GiftMembership");
 const User = require("../../models/User");
 const { normalizeEmail } = require("../identity");
 const { issueInvitation, recordPurchasedGift, syncRefund } = require("./giftService");
+const { sendGiftRefundAdminNotice } = require("./giftEmails");
+const { giftAccessState } = require("./giftAccess");
 
 /**
  * Turning a confirmed Stripe payment into a gift.
@@ -184,6 +186,25 @@ async function handleGiftRefund(charge, { Model = GiftMembership } = {}) {
   for (const refund of refunds) {
     const synced = await syncRefund({ gift: await Model.findById(gift._id), refund, Model });
     results.push(synced);
+
+    /*
+     * Tell Admin, once per refund that was actually new.
+     *
+     * Behind the duplicate check on purpose: a replayed webhook reconciles to
+     * the same numbers and must not send a second notice. Nothing here
+     * revokes the gift — that stays a deliberate human decision, and the
+     * email says so.
+     *
+     * EMAIL ONLY. SMS remains disabled pending Twilio.
+     */
+    if (synced?.ok && !synced.duplicate) {
+      const fresh = await Model.findById(gift._id).lean();
+      await sendGiftRefundAdminNotice(fresh, {
+        refund,
+        refundStatus: synced.refundStatus,
+        giftState: giftAccessState(fresh).state,
+      }).catch(() => null);
+    }
   }
 
   // Remember the charge for the audit trail now that we know which it was.

@@ -118,6 +118,24 @@ router.use(["/options", "/checkout-session"], (req, res, next) => {
   return next();
 });
 
+/**
+ * An email reduced to a hint.
+ *
+ * Enough for somebody to recognise their own address and know which account
+ * to sign in with; not enough to hand a stranger a working address. The
+ * domain stays because "which of my addresses was this?" is the actual
+ * question being answered.
+ */
+function maskEmail(value) {
+  const email = String(value || "").trim();
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  if (local.length <= 2) return `${local[0]}${"\u2022".repeat(3)}${domain}`;
+  return `${local.slice(0, 2)}${"\u2022".repeat(Math.min(local.length - 2, 6))}${domain}`;
+}
+
 /** Why a purchase was refused, in words a purchase screen can show. */
 const PURCHASE_ERRORS = {
   unknown_plan: "Choose a membership plan.",
@@ -461,12 +479,29 @@ router.get("/claim/:token", async (req, res) => {
         plan: gift.plan,
         durationMonths: gift.durationMonths,
         from: gift.purchaserSnapshot?.name || "",
-        recipientEmail: gift.recipientEmail,
+        /*
+         * WHAT AN UNAUTHENTICATED HOLDER OF THE LINK MAY SEE.
+         *
+         * This route has no auth by design — the recipient has to be able to
+         * look at their gift before signing in. That makes everything here
+         * readable by anyone the link reaches, including somebody it was
+         * forwarded to by mistake, so it carries only what the Digital Gift
+         * needs to render plus the hint required to sign in as the right
+         * person.
+         *
+         * Removed from this payload: the full recipient email (now masked),
+         * the property address, and the recipient's surname. The address in
+         * particular is somebody's home, and it was being handed to any
+         * holder of the URL. The claim screen fetches it from the
+         * authenticated companion route below, after identity is proven.
+         *
+         * The purchaser's email has never been here — only their display
+         * name, which the card has to show.
+         */
+        recipientEmailHint: maskEmail(gift.recipientEmail),
         recipientFirstName: gift.recipientFirstName,
-        recipientLastName: gift.recipientLastName,
         occasion: gift.occasion || "neutral",
         personalMessage: gift.personalMessage || "",
-        addressSnapshot: gift.addressSnapshot,
       },
       // Lets the claim screen send them to sign-in or registration without
       // making them find out by failing.
@@ -485,6 +520,45 @@ router.get("/claim/:token", async (req, res) => {
  * — forwarded, screenshotted, sitting in a shared inbox — so holding one is
  * not evidence of being the intended recipient. Checked server-side, always.
  */
+/**
+ * The rest of the gift, for a signed-in recipient who has proven who they are.
+ *
+ * Split from the public preview so the address hint — a real home address —
+ * is only ever sent to the account it belongs to. Same token check as the
+ * preview, plus the same identity rule the claim itself uses, so a forwarded
+ * link in the wrong hands gets nothing extra.
+ */
+router.get("/claim/:token/details", auth, async (req, res) => {
+  try {
+    const token = readClaimToken(req.params.token);
+    if (!token) {
+      return res.status(404).json({ message: "This gift link is not valid.", code: "INVALID" });
+    }
+
+    const verified = await verifyClaimToken(token);
+    if (!verified.ok || !verified.gift) {
+      return res.status(404).json({ message: "This gift link is not valid.", code: "INVALID" });
+    }
+
+    const me = await User.findById(req.user.id).select("email").lean();
+    if (!claimantMatches(verified.gift, me)) {
+      return res.status(403).json({
+        message: "This gift was sent to a different account.",
+        code: "RECIPIENT_MISMATCH",
+      });
+    }
+
+    return res.json({
+      recipientEmail: verified.gift.recipientEmail,
+      recipientLastName: verified.gift.recipientLastName,
+      addressSnapshot: verified.gift.addressSnapshot,
+    });
+  } catch (error) {
+    console.error("GET /gifts/claim/:token/details failed:", error);
+    return res.status(500).json({ message: "Unable to load this gift" });
+  }
+});
+
 router.post("/claim/:token", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);

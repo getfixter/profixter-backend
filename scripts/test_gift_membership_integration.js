@@ -29,6 +29,8 @@ const giftToken = require("../utils/gifts/giftClaimToken");
 const giftWebhook = require("../utils/gifts/giftWebhook");
 const { termWindow } = require("../utils/gifts/giftPricing");
 
+const DAY = 24 * 60 * 60 * 1000;
+
 let passed = 0;
 const failures = [];
 let mongod;
@@ -361,11 +363,20 @@ async function run() {
     assert.equal(claim.queued, true, "the gift waits its turn");
 
     const stored = await GiftMembership.findById(gift._id).lean();
-    assert.equal(
-      new Date(stored.startAt).getTime(),
-      periodEnd.getTime(),
-      "it begins exactly when the paid coverage ends"
-    );
+    /*
+     * It waits WITHOUT a date, and that is the point.
+     *
+     * This assertion used to be "startAt === currentPeriodEnd". That is the
+     * next RENEWAL, not an ending: the moment the membership renewed the
+     * gift went active alongside coverage Jane was still paying for, and a
+     * two-month gift could expire having delivered nothing. A membership
+     * that keeps renewing has no knowable end, so the gift holds no window
+     * at all until one exists.
+     */
+    assert.equal(stored.startPending, true, "it waits without a date");
+    assert.equal(stored.startAt, null, "no fabricated start");
+    assert.equal(stored.endAt, null, "and therefore no clock running");
+    assert.equal(giftAccess.giftAccessState(stored).state, "pending");
     assert.equal(giftAccess.giftAccessState(stored).active, false);
 
     // The paid subscription is byte-for-byte unchanged.
@@ -750,6 +761,536 @@ async function run() {
     stored = await GiftMembership.findById(created.gift._id);
     assert.equal(stored.refundStatus, "full");
     assert.equal(stored.amountRefundedCents, 54158);
+  });
+
+  console.log("\nQueuing behind a paid membership");
+
+  /*
+   * The rule: a gift must never consume a day while a paid membership is
+   * still providing coverage. currentPeriodEnd is the next RENEWAL, not an
+   * ending, so a renewing membership leaves the gift PENDING — no dates, no
+   * access, no clock — until that membership genuinely stops.
+   */
+  async function paidFor(user, overrides = {}) {
+    return Subscription.create({
+      user: user._id,
+      userId: user.userId,
+      subscriptionType: "premium",
+      addressId: user.addresses[0]._id,
+      startDate: new Date(Date.now() - 30 * DAY),
+      latestPaymentDate: new Date(Date.now() - 30 * DAY),
+      nextPaymentDate: new Date(Date.now() + 30 * DAY),
+      currentPeriodEnd: new Date(Date.now() + 30 * DAY),
+      status: "active",
+      stripeSubscriptionId: `sub_${Math.random().toString(16).slice(2)}`,
+      stripeCustomerId: "cus_recipient_own",
+      ...overrides,
+    });
+  }
+
+  async function claimedBehindPaid(email, subOverrides = {}) {
+    const { gift } = await purchasedGift(email);
+    const user = await makeUser({ email });
+    const sub = await paidFor(user, subOverrides);
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(gift._id),
+      user,
+      addressId: user.addresses[0]._id,
+    });
+    return { user, sub, gift: await GiftMembership.findById(gift._id).lean(), claim };
+  }
+
+  await test("a renewing paid membership leaves the gift pending, with no dates", async () => {
+    const { gift } = await claimedBehindPaid("renew1@example.com");
+    assert.equal(gift.startPending, true);
+    assert.equal(gift.startAt, null, "no fabricated start date");
+    assert.equal(gift.endAt, null);
+    assert.equal(giftAccess.giftAccessState(gift).state, "pending");
+    assert.equal(giftAccess.giftAccessState(gift).active, false);
+  });
+
+  await test("the paid membership renewing once consumes no gift time", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("renew2@example.com");
+    // Stripe renews: the period rolls forward.
+    await Subscription.updateOne(
+      { _id: sub._id },
+      { $set: { currentPeriodEnd: new Date(Date.now() + 60 * DAY) } }
+    );
+    const at = new Date(Date.now() + 31 * DAY);
+    await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, { now: at });
+    const after = await GiftMembership.findById(gift._id).lean();
+    assert.equal(after.startPending, true, "still waiting");
+    assert.equal(after.startAt, null, "and still no clock running");
+    assert.equal(giftAccess.giftAccessState(after, at).active, false);
+  });
+
+  await test("renewing many times still consumes no gift time", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("renew3@example.com");
+    for (const months of [1, 2, 3, 4, 5, 6]) {
+      await Subscription.updateOne(
+        { _id: sub._id },
+        { $set: { currentPeriodEnd: new Date(Date.now() + months * 30 * DAY) } }
+      );
+      const at = new Date(Date.now() + months * 30 * DAY + DAY);
+      await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, { now: at });
+      const cur = await GiftMembership.findById(gift._id).lean();
+      assert.equal(cur.startAt, null, `still pending after ${months} renewals`);
+    }
+    const final = await GiftMembership.findById(gift._id).lean();
+    assert.equal(giftAccess.giftAccessState(final, new Date(Date.now() + 200 * DAY)).state, "pending");
+  });
+
+  await test("cancelAtPeriodEnd is a genuine ending, so the gift is scheduled", async () => {
+    const periodEnd = new Date(Date.now() + 20 * DAY);
+    const { gift } = await claimedBehindPaid("cancelend@example.com", {
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: periodEnd,
+      nextPaymentDate: periodEnd,
+    });
+    assert.equal(gift.startPending, false, "a known ending gets a real date");
+    assert.equal(
+      new Date(gift.startAt).getTime(),
+      periodEnd.getTime(),
+      "it starts exactly when the paid coverage genuinely ends"
+    );
+    assert.equal(giftAccess.giftAccessState(gift).state, "queued");
+  });
+
+  await test("when the paid membership genuinely ends, the gift starts", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("ended@example.com");
+    await Subscription.updateOne({ _id: sub._id }, { $set: { status: "canceled" } });
+    const at = new Date(Date.now() + DAY);
+    const activated = await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, { now: at });
+    assert(activated, "the gift should have been activated");
+    const after = await GiftMembership.findById(gift._id).lean();
+    assert.equal(after.startPending, false);
+    assert.equal(new Date(after.startAt).getTime(), at.getTime(), "it starts the moment cover ends");
+    assert.equal(giftAccess.giftAccessState(after, at).active, true);
+    assert.equal(after.durationMonths, 2, "and still runs its full purchased term");
+  });
+
+  await test("ending early starts the gift early, not at the old period end", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("early@example.com", {
+      currentPeriodEnd: new Date(Date.now() + 200 * DAY),
+    });
+    await Subscription.updateOne({ _id: sub._id }, { $set: { status: "canceled" } });
+    const at = new Date(Date.now() + 2 * DAY);
+    await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, { now: at });
+    const after = await GiftMembership.findById(gift._id).lean();
+    assert.equal(new Date(after.startAt).getTime(), at.getTime());
+  });
+
+  await test("ZERO gift days are consumed while paid coverage runs", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("zero@example.com");
+    // Three months of renewals, then the membership stops.
+    for (const m of [1, 2, 3]) {
+      await Subscription.updateOne(
+        { _id: sub._id },
+        { $set: { currentPeriodEnd: new Date(Date.now() + m * 30 * DAY) } }
+      );
+      await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, {
+        now: new Date(Date.now() + m * 30 * DAY),
+      });
+    }
+    await Subscription.updateOne({ _id: sub._id }, { $set: { status: "canceled" } });
+    const at = new Date(Date.now() + 95 * DAY);
+    await giftAccess.activateDueGifts(user._id, user.addresses[0]._id, { now: at });
+
+    const after = await GiftMembership.findById(gift._id).lean();
+    const months =
+      (new Date(after.endAt).getFullYear() - new Date(after.startAt).getFullYear()) * 12 +
+      (new Date(after.endAt).getMonth() - new Date(after.startAt).getMonth());
+    assert.equal(months, 2, "the full two months are still ahead of them");
+    assert.equal(new Date(after.startAt).getTime(), at.getTime());
+  });
+
+  await test("several gifts behind a paid membership run one after another", async () => {
+    const email = "stack-pending@example.com";
+    const first = await purchasedGift(email);
+    const second = await purchasedGift(email);
+    const user = await makeUser({ email });
+    const addressId = user.addresses[0]._id;
+    const sub = await paidFor(user);
+
+    for (const p of [first, second]) {
+      const c = await giftService.claimGift({
+        gift: await GiftMembership.findById(p.gift._id),
+        user,
+        addressId,
+      });
+      assert.equal(c.ok, true);
+    }
+
+    let a = await GiftMembership.findById(first.gift._id).lean();
+    let b = await GiftMembership.findById(second.gift._id).lean();
+    assert.equal(a.startPending, true, "both wait while the membership renews");
+    assert.equal(b.startPending, true);
+
+    // The membership stops. Only the FIRST gift starts.
+    await Subscription.updateOne({ _id: sub._id }, { $set: { status: "canceled" } });
+    const at = new Date(Date.now() + DAY);
+    await giftAccess.activateDueGifts(user._id, addressId, { now: at });
+
+    a = await GiftMembership.findById(first.gift._id).lean();
+    b = await GiftMembership.findById(second.gift._id).lean();
+    assert.equal(a.startPending, false, "the first gift starts");
+    assert.equal(b.startPending, true, "the second keeps waiting - never concurrent");
+    assert.equal(giftAccess.giftAccessState(a, at).active, true);
+    assert.equal(giftAccess.giftAccessState(b, at).active, false);
+
+    // When the first runs out, the second takes over.
+    const later = new Date(new Date(a.endAt).getTime() + 60 * 1000);
+    await giftAccess.activateDueGifts(user._id, addressId, { now: later });
+    b = await GiftMembership.findById(second.gift._id).lean();
+    assert.equal(b.startPending, false, "the second gift starts when the first ends");
+    assert.equal(giftAccess.giftAccessState(b, later).active, true);
+    assert.equal(
+      new Date(b.startAt).getTime() >= new Date(a.endAt).getTime(),
+      true,
+      "and never overlaps it"
+    );
+  });
+
+  await test("booking activates a due gift without any worker having run", async () => {
+    const { user, sub, gift } = await claimedBehindPaid("noworker@example.com");
+    await Subscription.updateOne({ _id: sub._id }, { $set: { status: "canceled" } });
+    const at = new Date(Date.now() + DAY);
+    // findActiveGift is what the booking path calls. No sweep in between.
+    const found = await giftAccess.findActiveGift(user._id, user.addresses[0]._id, { now: at });
+    assert(found, "the gift is usable on the first request after cover ends");
+    assert.equal(String(found._id), String(gift._id));
+  });
+
+  console.log("\nContinuation must not bill over gift coverage");
+
+  await test("projected coverage includes a pending gift's unscheduled months", async () => {
+    const { user, sub } = await claimedBehindPaid("project@example.com");
+    // While the membership renews, the gift has no dates at all - but its
+    // months are still owed and must delay any billing.
+    const projected = await giftAccess.projectedGiftCoverageEnd(
+      user._id,
+      user.addresses[0]._id,
+      { now: new Date() }
+    );
+    assert(projected, "a pending gift still counts as coverage");
+    const monthsOut =
+      (projected.getFullYear() - new Date().getFullYear()) * 12 +
+      (projected.getMonth() - new Date().getMonth());
+    assert(monthsOut >= 1, `expected roughly two months of cover, got ${monthsOut}`);
+    await Subscription.deleteOne({ _id: sub._id });
+  });
+
+  await test("projected coverage runs to the LAST gift, not the active one", async () => {
+    const email = "projectlast@example.com";
+    const first = await purchasedGift(email);
+    const second = await purchasedGift(email);
+    const user = await makeUser({ email });
+    const addressId = user.addresses[0]._id;
+
+    for (const p of [first, second]) {
+      const c = await giftService.claimGift({
+        gift: await GiftMembership.findById(p.gift._id),
+        user,
+        addressId,
+      });
+      assert.equal(c.ok, true, `claim failed: ${c.reason}`);
+    }
+    const a = await GiftMembership.findById(first.gift._id).lean();
+    const b = await GiftMembership.findById(second.gift._id).lean();
+    assert(a.endAt, "first gift must have an end date");
+    assert(b.endAt, "second gift must have an end date");
+
+    const projected = await giftAccess.projectedGiftCoverageEnd(user._id, addressId, {
+      now: new Date(),
+    });
+    assert(projected, "two dated gifts must project coverage");
+    assert.equal(
+      projected.getTime(),
+      new Date(b.endAt).getTime(),
+      "billing must wait for the second gift, not the first"
+    );
+    assert(
+      projected.getTime() > new Date(a.endAt).getTime(),
+      "and that is later than the active one"
+    );
+  });
+
+  await test("no gift coverage means no deferral at all", async () => {
+    const user = await makeUser({ email: "nogift@example.com" });
+    const projected = await giftAccess.projectedGiftCoverageEnd(
+      user._id,
+      user.addresses[0]._id,
+      { now: new Date() }
+    );
+    assert.equal(projected, null, "an ordinary customer is billed immediately as before");
+  });
+
+  await test("expired gifts do not defer billing", async () => {
+    const email = "expiredgift@example.com";
+    const { gift } = await purchasedGift(email);
+    const user = await makeUser({ email });
+    const addressId = user.addresses[0]._id;
+    await giftService.claimGift({
+      gift: await GiftMembership.findById(gift._id),
+      user,
+      addressId,
+    });
+    const long = new Date(Date.now() + 400 * DAY);
+    const projected = await giftAccess.projectedGiftCoverageEnd(user._id, addressId, { now: long });
+    assert.equal(projected, null, "coverage that has run out defers nothing");
+  });
+
+  console.log("\nContinuation through the REAL subscription checkout route");
+
+  /*
+   * These drive routes/stripe.js itself rather than the helper it calls.
+   *
+   * The deferral has to be a SERVER decision: the recipient can reach
+   * /membership directly, or forge the request entirely, so a UI that knows
+   * about gifts protects nobody. Stripe's session create is intercepted, so
+   * nothing leaves the process and the exact config is asserted.
+   */
+  const subsModule = require("../utils/subscriptionManagement");
+  const originalCreate = subsModule.stripe.checkout.sessions.create;
+
+  async function checkoutFor(user, addressId, plan = "plus") {
+    let captured = null;
+    subsModule.stripe.checkout.sessions.create = async (config) => {
+      captured = config;
+      return { id: "cs_test_captured", url: "https://checkout.stripe.com/c/pay/cs_test" };
+    };
+
+    const express = require("express");
+    const http = require("http");
+    const authPath = require.resolve("../middleware/auth");
+    const routerPath = require.resolve("../routes/stripe");
+    const realAuth = require.cache[authPath];
+    require.cache[authPath] = {
+      id: authPath,
+      filename: authPath,
+      loaded: true,
+      exports: (req, _res, next) => {
+        req.user = { id: String(user._id) };
+        next();
+      },
+    };
+    delete require.cache[routerPath];
+    const router = require("../routes/stripe");
+    delete require.cache[routerPath];
+    if (realAuth) require.cache[authPath] = realAuth;
+    else delete require.cache[authPath];
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api/stripe/checkout", router);
+
+    const response = await new Promise((resolve) => {
+      const server = app.listen(0, () => {
+        const body = JSON.stringify({ plan, addressId: String(addressId), billingCycle: "monthly" });
+        const req = http.request(
+          {
+            host: "127.0.0.1",
+            port: server.address().port,
+            path: "/api/stripe/checkout/create-checkout-session",
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+            },
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c) => (raw += c));
+            res.on("end", () => {
+              server.close();
+              let parsed = {};
+              try {
+                parsed = JSON.parse(raw);
+              } catch {
+                parsed = { raw };
+              }
+              resolve({ status: res.statusCode, body: parsed });
+            });
+          }
+        );
+        req.write(body);
+        req.end();
+      });
+    });
+
+    subsModule.stripe.checkout.sessions.create = originalCreate;
+    return { response, captured };
+  }
+
+  /** A recipient with their own Stripe customer, so no customer lookup runs. */
+  async function recipientWithCustomer(email) {
+    return makeUser({ email, stripeCustomerId: "cus_recipient_own" });
+  }
+
+  async function claimFor(user, email) {
+    const { gift } = await purchasedGift(email);
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(gift._id),
+      user,
+      addressId: user.addresses[0]._id,
+    });
+    assert.equal(claim.ok, true, `claim failed: ${claim.reason}`);
+    return GiftMembership.findById(gift._id).lean();
+  }
+
+  await test("no gift means no deferral: an ordinary customer bills immediately", async () => {
+    const user = await recipientWithCustomer("plainbuyer@example.com");
+    const { response, captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(response.status, 200);
+    assert.equal(captured.mode, "subscription");
+    assert.equal(
+      captured.subscription_data.trial_end,
+      undefined,
+      "nothing should be deferred for somebody with no gift"
+    );
+    assert.equal(response.body.billingStartsAt, null);
+  });
+
+  await test("an ACTIVE gift defers billing to the day it ends", async () => {
+    const email = "activegift@example.com";
+    const user = await recipientWithCustomer(email);
+    const gift = await claimFor(user, email);
+    const { response, captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(response.status, 200);
+    const trialEnd = captured.subscription_data.trial_end;
+    assert(trialEnd, "billing must be deferred");
+    assert.equal(
+      trialEnd,
+      Math.floor(new Date(gift.endAt).getTime() / 1000),
+      "and deferred to exactly when the gift runs out"
+    );
+    assert(response.body.billingStartsAt, "the customer must be told the date");
+  });
+
+  await test("a DIRECT visit is deferred identically - the server decides, not the UI", async () => {
+    // Same request the CTA makes; nothing in it says where the click came
+    // from, which is the point: there is no UI-only path to bypass.
+    const email = "directvisit@example.com";
+    const user = await recipientWithCustomer(email);
+    const gift = await claimFor(user, email);
+    const { captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(
+      captured.subscription_data.trial_end,
+      Math.floor(new Date(gift.endAt).getTime() / 1000)
+    );
+  });
+
+  await test("MULTIPLE queued gifts push billing to the LAST one", async () => {
+    const email = "twogifts@example.com";
+    const user = await recipientWithCustomer(email);
+    const first = await claimFor(user, email);
+    const second = await claimFor(user, email);
+    assert(
+      new Date(second.endAt).getTime() > new Date(first.endAt).getTime(),
+      "the second gift must queue behind the first"
+    );
+    const { captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(
+      captured.subscription_data.trial_end,
+      Math.floor(new Date(second.endAt).getTime() / 1000),
+      "billing waits for the last gift, not the active one"
+    );
+  });
+
+  await test("an EXPIRED gift defers nothing", async () => {
+    const email = "expiredonly@example.com";
+    const user = await recipientWithCustomer(email);
+    const gift = await claimFor(user, email);
+    // Push it entirely into the past.
+    await GiftMembership.updateOne(
+      { _id: gift._id },
+      {
+        $set: {
+          startAt: new Date(Date.now() - 200 * DAY),
+          endAt: new Date(Date.now() - 100 * DAY),
+        },
+      }
+    );
+    const { captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(captured.subscription_data.trial_end, undefined);
+  });
+
+  await test("a gift on address A must not defer billing for address B", async () => {
+    const email = "twoaddresses@example.com";
+    const user = await makeUser({
+      email,
+      stripeCustomerId: "cus_recipient_own",
+      addresses: [
+        { line1: "1 Main St", city: "Lindenhurst", state: "NY", zip: "11757" },
+        { line1: "2 Ocean Rd", city: "Babylon", state: "NY", zip: "11702" },
+      ],
+    });
+    const addressA = user.addresses[0]._id;
+    const addressB = user.addresses[1]._id;
+
+    const { gift } = await purchasedGift(email);
+    const claim = await giftService.claimGift({
+      gift: await GiftMembership.findById(gift._id),
+      user,
+      addressId: addressA,
+    });
+    assert.equal(claim.ok, true);
+
+    const onA = await checkoutFor(user, addressA);
+    assert(onA.captured.subscription_data.trial_end, "address A is covered, so it defers");
+
+    const onB = await checkoutFor(user, addressB);
+    assert.equal(
+      onB.captured.subscription_data.trial_end,
+      undefined,
+      "address B has no gift and must bill immediately"
+    );
+  });
+
+  await test("a PENDING gift behind paid coverage still defers billing", async () => {
+    const email = "pendingdefer@example.com";
+    const user = await recipientWithCustomer(email);
+    const addressId = user.addresses[0]._id;
+    const sub = await Subscription.create({
+      user: user._id,
+      userId: user.userId,
+      subscriptionType: "premium",
+      addressId,
+      startDate: new Date(),
+      latestPaymentDate: new Date(),
+      nextPaymentDate: new Date(Date.now() + 30 * DAY),
+      currentPeriodEnd: new Date(Date.now() + 30 * DAY),
+      status: "active",
+      stripeSubscriptionId: "sub_paid",
+      stripeCustomerId: "cus_recipient_own",
+    });
+    const gift = await claimFor(user, email);
+    assert.equal(gift.startPending, true, "it waits behind the renewing membership");
+
+    // The duplicate-subscription guard must still fire FIRST for this address.
+    const { response } = await checkoutFor(user, addressId);
+    assert.equal(response.status, 409, "an existing paid membership still blocks a second one");
+    assert.equal(response.body.code, "ADDRESS_ALREADY_SUBSCRIBED");
+
+    // Once that membership ends, the pending months still defer billing.
+    await Subscription.deleteOne({ _id: sub._id });
+    const after = await checkoutFor(user, addressId);
+    assert.equal(after.response.status, 200);
+    assert(
+      after.captured.subscription_data.trial_end,
+      "the pending gift's unscheduled months must still delay the first charge"
+    );
+  });
+
+  await test("the deferred subscription still uses the RECIPIENT's own customer", async () => {
+    const email = "ownbilling@example.com";
+    const user = await recipientWithCustomer(email);
+    await claimFor(user, email);
+    const { captured } = await checkoutFor(user, user.addresses[0]._id);
+    assert.equal(captured.customer, "cus_recipient_own");
+    const serialized = JSON.stringify(captured);
+    assert(!serialized.includes("cus_purchaser"), "no purchaser customer may appear");
+    assert(!/purchaser/i.test(serialized), "nothing about a purchaser may reach Stripe here");
   });
 
   console.log("\nPayment safety");

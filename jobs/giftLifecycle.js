@@ -2,7 +2,7 @@ const cron = require("node-cron");
 
 const GiftMembership = require("../models/GiftMembership");
 const { CLAIM_REMINDER_DAYS, ENDING_SOON_DAYS, TIMEZONE, giftsEnabled } = require("../utils/gifts/giftConfig");
-const { giftAccessState } = require("../utils/gifts/giftAccess");
+const { giftAccessState, activateDueGifts } = require("../utils/gifts/giftAccess");
 const { issueInvitation } = require("../utils/gifts/giftService");
 const {
   sendGiftClaimReminder,
@@ -138,6 +138,29 @@ async function reconcileQueuedGifts(now, stats, Model = GiftMembership) {
   })
     .limit(BATCH_LIMIT)
     .lean();
+
+  /*
+   * First, give any PENDING gift its turn. A gift waiting behind an
+   * indefinitely renewing membership holds no dates at all, so it is not in
+   * the query above — it becomes visible only once activation gives it a
+   * window. Access does not depend on this running: the booking path
+   * activates through the same atomic update. This just means the account
+   * screen and the ending-soon email are right without anybody asking first.
+   */
+  const waiting = await Model.find({ status: "claimed", startPending: true })
+    .select("recipient addressId")
+    .limit(BATCH_LIMIT)
+    .lean();
+
+  const seen = new Set();
+  for (const gift of waiting) {
+    if (!gift.recipient || !gift.addressId) continue;
+    const key = `${gift.recipient}:${gift.addressId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const activated = await activateDueGifts(gift.recipient, gift.addressId, { now, Model });
+    if (activated) stats.pulledForward += 1;
+  }
 
   for (const gift of queued) {
     if (!gift.recipient || !gift.addressId) continue;

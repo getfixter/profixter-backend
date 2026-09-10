@@ -60,6 +60,20 @@ const escapeHtml = (v) =>
 
 const templates = createGiftEmailTemplates({ escapeHtml, urls: {} });
 
+const has = (src, snippet, message) => assert(src.includes(snippet), message || snippet);
+
+/*
+ * Strip comments before asserting a file does NOT contain something.
+ *
+ * Without this the suite reads its own documentation as evidence: a comment
+ * saying "the purchaser is never involved" contains the word purchaser, and
+ * one saying "SMS stays off until Twilio" contains Twilio. Both produced
+ * false failures. Absence has to be asserted against code.
+ */
+function codeOnly(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
+}
+
 const FAKE_PRODUCT = "prod_GiftPlusTest01";
 
 console.log("\nOccasions\n");
@@ -282,6 +296,177 @@ test("every occasion produces a sane email", () => {
     assert(email.html.includes(OCCASIONS[key].title), `${key} title missing from the email`);
     assert(email.subject.length < 120, `${key} subject is too long`);
     assert(email.html.includes("Open your gift"), `${key} lost its CTA`);
+  }
+});
+
+console.log("\nContinuation must not bill over gift coverage\n");
+
+const stripeRouteSource = fs.readFileSync(
+  path.join(__dirname, "..", "routes", "stripe.js"),
+  "utf8"
+);
+
+test("subscription checkout defers billing to the end of gift coverage", () => {
+  has(
+    stripeRouteSource,
+    "projectedGiftCoverageEnd",
+    "checkout must ask how long gift coverage runs"
+  );
+  has(stripeRouteSource, "trial_end: trialEndUnix", "and defer the first charge to it");
+  assert.match(
+    stripeRouteSource,
+    /trialEndUnix\s*=\s*Math\.max\(/,
+    "the deferral must never be brought forward below Stripe's floor"
+  );
+});
+
+test("the deferral can only ever delay a charge, never advance one", () => {
+  // Clamping upward is the safe direction: a gift ending in an hour bills a
+  // little late rather than billing over covered time.
+  const clamp = stripeRouteSource.slice(
+    stripeRouteSource.indexOf("const MIN_TRIAL_SECONDS"),
+    stripeRouteSource.indexOf("const stripeCustomerId")
+  );
+  assert.match(clamp, /Math\.max\(Math\.floor\(giftCoverageEndsAt/);
+  assert(!/Math\.min\(/.test(clamp), "nothing may pull the billing date earlier");
+});
+
+test("the deferral uses the RECIPIENT's own Stripe customer, never the purchaser's", () => {
+  // The gift lookup is by the signed-in user's own id and address; the
+  // customer is still resolved from that same account.
+  assert.match(
+    stripeRouteSource,
+    /projectedGiftCoverageEnd\(user\._id, address\._id/,
+    "coverage is looked up for the signed-in recipient's own property"
+  );
+  assert.match(stripeRouteSource, /resolveUserStripeCustomerId\(user\)/);
+  assert(
+    !/purchaser/i.test(codeOnly(stripeRouteSource)),
+    "no code in the subscription path may read anything about a purchaser"
+  );
+});
+
+test("a failed gift lookup bills as before rather than blocking the sale", () => {
+  const guard = stripeRouteSource.slice(
+    stripeRouteSource.indexOf("let giftCoverageEndsAt"),
+    stripeRouteSource.indexOf("const MIN_TRIAL_SECONDS")
+  );
+  has(guard, "catch", "the lookup must be guarded");
+  has(guard, "subscription_checkout_gift_coverage_lookup_failed", "and logged loudly");
+});
+
+test("the customer is told when billing starts", () => {
+  has(stripeRouteSource, "billingStartsAt", "the response must carry the date");
+});
+
+console.log("\nPublic claim preview carries no private data\n");
+
+const giftRouteSource = fs.readFileSync(path.join(__dirname, "..", "routes", "gifts.js"), "utf8");
+
+test("the unauthenticated preview exposes no email, address or surname", () => {
+  const preview = giftRouteSource.slice(
+    giftRouteSource.indexOf('router.get("/claim/:token"'),
+    giftRouteSource.indexOf('router.get("/claim/:token/details"')
+  );
+  assert(preview.length > 0, "the preview route could not be isolated");
+
+  const payload = preview.slice(preview.indexOf("return res.json({"), preview.indexOf("hasAccount"));
+  for (const leaked of [
+    "recipientEmail:",
+    "recipientLastName:",
+    "addressSnapshot:",
+    "purchaserSnapshot?.email",
+  ]) {
+    assert(!payload.includes(leaked), `the public preview must not return ${leaked}`);
+  }
+  has(payload, "recipientEmailHint", "only a masked hint may be sent");
+});
+
+test("the email hint is masked, and keeps the domain", () => {
+  const source = giftRouteSource.slice(
+    giftRouteSource.indexOf("function maskEmail"),
+    giftRouteSource.indexOf("/** Why a purchase was refused")
+  );
+  // eslint-disable-next-line no-eval
+  const maskEmail = eval(`(${source.slice(source.indexOf("function maskEmail"))})`);
+  assert.strictEqual(maskEmail("john.smith@example.com"), "jo\u2022\u2022\u2022\u2022\u2022\u2022@example.com");
+  assert.strictEqual(maskEmail(""), "");
+  assert(!maskEmail("john.smith@example.com").includes("hn.smith"), "the local part must be hidden");
+});
+
+test("the address is released only to a verified recipient", () => {
+  const details = giftRouteSource.slice(
+    giftRouteSource.indexOf('router.get("/claim/:token/details"'),
+    giftRouteSource.indexOf('router.post("/claim/:token"')
+  );
+  has(details, '"/claim/:token/details", auth', "the details route must require authentication");
+  has(details, "claimantMatches", "and must check identity, not merely a session");
+  has(details, "RECIPIENT_MISMATCH");
+  has(details, "addressSnapshot");
+});
+
+console.log("\nRefund notification\n");
+
+test("Admin is emailed when a gift is refunded, and only for new refunds", () => {
+  const webhook = fs.readFileSync(
+    path.join(__dirname, "..", "utils", "gifts", "giftWebhook.js"),
+    "utf8"
+  );
+  has(webhook, "sendGiftRefundAdminNotice", "a refund must notify Admin");
+  assert.match(
+    webhook,
+    /if \(synced\?\.ok && !synced\.duplicate\)/,
+    "a replayed webhook must not send a second notice"
+  );
+});
+
+test("the refund notice says the gift was NOT revoked", () => {
+  const templates = createGiftEmailTemplates({ escapeHtml, urls: {} });
+  const email = templates.gift_refunded_admin({
+    giftNumber: "GA1B2C3D4",
+    purchaserName: "Maria Smith",
+    purchaserEmail: "maria@example.com",
+    recipientName: "John Smith",
+    recipientEmail: "john@example.com",
+    plan: "Plus",
+    durationMonths: 2,
+    refundAmount: "$100.00",
+    refundedTotal: "$100.00",
+    amountPaid: "$541.58",
+    refundStatus: "partial",
+    giftState: "active",
+  });
+  for (const needed of [
+    "GA1B2C3D4",
+    "Maria Smith",
+    "John Smith",
+    "Plus",
+    "$100.00",
+    "$541.58",
+    "partial",
+  ]) {
+    assert(email.html.includes(needed), `the notice should identify ${needed}`);
+  }
+  assert(/has NOT been revoked/i.test(email.html), "it must say access is unchanged");
+  assert(email.subject.includes("GA1B2C3D4"));
+});
+
+test("nothing in the gift feature reaches for SMS", () => {
+  // SMS is switched off pending Twilio, and gift launch must not depend on it.
+  for (const file of [
+    "utils/gifts/giftEmails.js",
+    "utils/gifts/giftWebhook.js",
+    "utils/gifts/giftService.js",
+    "routes/gifts.js",
+    "jobs/giftLifecycle.js",
+  ]) {
+    const source = codeOnly(fs.readFileSync(path.join(__dirname, "..", file), "utf8"));
+    for (const sms of ["sendSms", "smsService", "utils/sms", "twilio"]) {
+      assert(
+        !source.toLowerCase().includes(sms.toLowerCase()),
+        `${file} must not reference ${sms}`
+      );
+    }
   }
 });
 
