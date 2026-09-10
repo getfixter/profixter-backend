@@ -1398,6 +1398,103 @@ async function run() {
     assert.equal(synthetic.stripeCustomerId, undefined, "and still no billing identity");
   });
 
+  console.log("\nEvery gift length grants exactly what was bought");
+
+  const monthsBetween = (from, to) =>
+    (new Date(to).getFullYear() - new Date(from).getFullYear()) * 12 +
+    (new Date(to).getMonth() - new Date(from).getMonth());
+
+  for (const months of [1, 2, 3, 6, 12]) {
+    await test(`a ${months}-month gift runs exactly ${months} month(s)`, async () => {
+      const email = `len${months}-${Date.now()}@example.com`;
+      const buyer = await makeUser({ email: `buyer${months}-${Date.now()}@example.com` });
+      const session = sessionFor(buyer, {
+        recipientEmail: email,
+        durationMonths: months,
+        amountTotal: 24900 * months,
+      });
+      session.amount_subtotal = 24900 * months;
+
+      const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+      assert.equal(created.created, true);
+      assert.equal(created.gift.durationMonths, months, "the purchased length is stored");
+
+      const recipient = await makeUser({ email });
+      const claim = await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId: recipient.addresses[0]._id,
+      });
+      assert.equal(claim.ok, true);
+
+      const g = await GiftMembership.findById(created.gift._id).lean();
+      assert.equal(
+        monthsBetween(g.startAt, g.endAt),
+        months,
+        `the window must span ${months} month(s)`
+      );
+
+      // Active on the first day, gone the day after it ends.
+      assert.equal(giftAccess.giftAccessState(g, new Date(g.startAt)).active, true);
+      const dayAfter = new Date(new Date(g.endAt).getTime() + DAY);
+      assert.equal(giftAccess.giftAccessState(g, dayAfter).active, false);
+    });
+  }
+
+  await test("different lengths stack without overlapping or losing a day", async () => {
+    const email = `mixed-${Date.now()}@example.com`;
+    const recipient = await makeUser({ email });
+    const addressId = recipient.addresses[0]._id;
+
+    const made = [];
+    for (const months of [1, 3, 12]) {
+      const buyer = await makeUser({ email: `mixedbuyer${months}-${Date.now()}@example.com` });
+      const session = sessionFor(buyer, {
+        recipientEmail: email,
+        durationMonths: months,
+        amountTotal: 24900 * months,
+      });
+      const created = await giftWebhook.handleGiftCheckoutCompleted(session);
+      const claim = await giftService.claimGift({
+        gift: await GiftMembership.findById(created.gift._id),
+        user: recipient,
+        addressId,
+      });
+      assert.equal(claim.ok, true, `claim ${months} failed: ${claim.reason}`);
+      made.push({ months, id: created.gift._id });
+    }
+
+    const stored = [];
+    for (const m of made) stored.push(await GiftMembership.findById(m.id).lean());
+    stored.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+
+    for (let i = 0; i < stored.length; i += 1) {
+      assert.equal(
+        monthsBetween(stored[i].startAt, stored[i].endAt),
+        stored[i].durationMonths,
+        "each gift keeps its own purchased length"
+      );
+      if (i > 0) {
+        assert.equal(
+          new Date(stored[i].startAt).getTime(),
+          new Date(stored[i - 1].endAt).getTime(),
+          "each begins exactly when the one before it ends - no gap, no overlap"
+        );
+      }
+    }
+
+    // Continuation must wait for the whole run, 16 months of it.
+    const projected = await giftAccess.projectedGiftCoverageEnd(recipient._id, addressId, {
+      now: new Date(),
+    });
+    assert.equal(
+      projected.getTime(),
+      new Date(stored[stored.length - 1].endAt).getTime(),
+      "billing waits for the last gift of the run"
+    );
+    assert.equal(monthsBetween(stored[0].startAt, projected), 16, "1 + 3 + 12 months of cover");
+  });
+
   console.log("\nPayment safety");
 
   await test("NO GIFT OPERATION EVER CREATES OR MODIFIES A SUBSCRIPTION", async () => {

@@ -536,6 +536,64 @@ test("the trial floor matches Stripe's measured minimum", () => {
   assert.match(stripeRoute, /MIN_TRIAL_SECONDS = 48 \* 60 \* 60/);
 });
 
+console.log("\nDurations and pricing\n");
+
+test("all five lengths are on sale, and one month is the default", () => {
+  const saved = process.env.GIFT_DURATIONS;
+  delete process.env.GIFT_DURATIONS;
+  const config = require("../utils/gifts/giftConfig");
+  assert.deepStrictEqual(config.offeredDurations(), [1, 2, 3, 6, 12]);
+  assert.strictEqual(config.defaultDuration(), 1, "the screen starts on one month");
+  if (saved !== undefined) process.env.GIFT_DURATIONS = saved;
+});
+
+test("every price is the monthly catalogue rate times the months", () => {
+  const { quoteGift } = require("../utils/gifts/giftPricing");
+  const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
+
+  // The table approved for launch, in cents.
+  const expected = {
+    basic: { 1: 14900, 2: 29800, 3: 44700, 6: 89400, 12: 178800 },
+    plus: { 1: 24900, 2: 49800, 3: 74700, 6: 149400, 12: 298800 },
+    premium: { 1: 34900, 2: 69800, 3: 104700, 6: 209400, 12: 418800 },
+    elite: { 1: 49900, 2: 99800, 3: 149700, 6: 299400, 12: 598800 },
+  };
+
+  for (const [plan, byMonths] of Object.entries(expected)) {
+    const monthly = Math.round(Number(PLAN_CATALOG[plan].monthly.price) * 100);
+    for (const [months, cents] of Object.entries(byMonths)) {
+      const quote = quoteGift({ plan, durationMonths: Number(months) });
+      assert.strictEqual(quote.ok, true, `${plan}/${months} should quote`);
+      assert.strictEqual(
+        quote.totalCents,
+        cents,
+        `${plan} x ${months} should be ${cents}, got ${quote.totalCents}`
+      );
+      // And it is genuinely derived, not a second copy of the table.
+      assert.strictEqual(quote.totalCents, monthly * Number(months));
+    }
+  }
+});
+
+test("the annual rate is never used to price a twelve-month gift", () => {
+  // A gift is a block of months with no commitment, so it is priced monthly.
+  const { quoteGift } = require("../utils/gifts/giftPricing");
+  const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
+  const twelve = quoteGift({ plan: "plus", durationMonths: 12 });
+  const annualCents = Math.round(Number(PLAN_CATALOG.plus.annual.price) * 100);
+  assert.notStrictEqual(twelve.totalCents, annualCents);
+  assert.strictEqual(twelve.totalCents, Math.round(Number(PLAN_CATALOG.plus.monthly.price) * 100) * 12);
+});
+
+test("the line item carries the chosen length, at every length", () => {
+  const { stripeLineItem } = require("../utils/gifts/giftPricing");
+  for (const months of [1, 2, 3, 6, 12]) {
+    const item = stripeLineItem({ plan: "plus", durationMonths: months, productId: FAKE_PRODUCT });
+    assert.strictEqual(item.price_data.unit_amount, 24900 * months);
+    assert(!JSON.stringify(item).includes("recurring"), "still no recurring at any length");
+  }
+});
+
 console.log("\nThe launch duration gate\n");
 
 /*
@@ -643,7 +701,8 @@ function callCheckout(durationMonths, { offered } = {}) {
 }
 
 async function durationGateTests() {
-  const mustRefuse = [12, 6, 3, 1, 24, 0, -2, 2.5, "12", null, undefined, "two"];
+  // 1, 2, 3, 6 and 12 are on sale now; everything else is still refused.
+  const mustRefuse = [24, 0, -2, 2.5, 4, 18, 100, null, undefined, "two", "", {}];
   for (const value of mustRefuse) {
     const res = await callCheckout(value);
     const label = `a request for ${JSON.stringify(value)} months is refused`;
@@ -659,15 +718,15 @@ async function durationGateTests() {
   }
 
   // The gate is config, not a hardcoded 2: it opens when launch says so.
-  const label = "the gate is configuration, so a future duration can be opened";
+  const label = "the gate is configuration, so a length can still be withdrawn";
   try {
-    const refusedNow = await callCheckout(6);
-    assert.strictEqual(refusedNow.body.code, "UNSUPPORTED_DURATION", "6 must be closed today");
-    const allowed = await callCheckout(6, { offered: "2,6" });
-    assert.notStrictEqual(
-      allowed.body.code,
+    const openNow = await callCheckout(6);
+    assert.notStrictEqual(openNow.body.code, "UNSUPPORTED_DURATION", "6 is on sale today");
+    const withdrawn = await callCheckout(6, { offered: "1,2" });
+    assert.strictEqual(
+      withdrawn.body.code,
       "UNSUPPORTED_DURATION",
-      "with 6 offered the duration gate must not be what refuses it"
+      "narrowing GIFT_DURATIONS must close it again"
     );
     passed += 1;
     console.log(`  PASS  ${label}`);
@@ -676,12 +735,19 @@ async function durationGateTests() {
     console.log(`  FAIL  ${label}\n        ${error.message}`);
   }
 
-  const twoLabel = "two months is the only duration offered at launch";
+  const twoLabel = "every offered length is actually purchasable";
   try {
     const { offeredDurations } = require("../utils/gifts/giftConfig");
     const saved = process.env.GIFT_DURATIONS;
     delete process.env.GIFT_DURATIONS;
-    assert.deepStrictEqual(offeredDurations(), [2], "launch default must be two months only");
+    for (const months of offeredDurations()) {
+      const res = await callCheckout(months);
+      assert.notStrictEqual(
+        res.body.code,
+        "UNSUPPORTED_DURATION",
+        `${months} months is offered and must be buyable`
+      );
+    }
     if (saved !== undefined) process.env.GIFT_DURATIONS = saved;
     passed += 1;
     console.log(`  PASS  ${twoLabel}`);

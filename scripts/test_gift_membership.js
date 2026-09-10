@@ -82,12 +82,18 @@ test("only the word 'true' enables the feature", () => {
   }
 });
 
-test("only the 2-month gift is offered at launch", () => {
-  assert.deepEqual(config.offeredDurations(), [2]);
-  assert.equal(config.isOfferedDuration(2), true);
-  assert.equal(config.isOfferedDuration(6), false);
-  // But the architecture already understands the others.
-  assert.equal(config.isSupportedDuration(6), true);
+test("every supported length is on sale, starting at one month", () => {
+  // Gifting launched at two months only. It is an ordinary product now, so
+  // all five lengths are offered and the screen starts on the cheapest.
+  assert.deepEqual(config.offeredDurations(), [1, 2, 3, 6, 12]);
+  assert.equal(config.defaultDuration(), 1);
+  for (const months of [1, 2, 3, 6, 12]) {
+    assert.equal(config.isOfferedDuration(months), true, `${months} should be on sale`);
+  }
+  // Anything the term arithmetic does not understand is still refused.
+  for (const months of [4, 5, 18, 24, 0, -1]) {
+    assert.equal(config.isOfferedDuration(months), false, `${months} must not be offered`);
+  }
   assert.deepEqual(config.SUPPORTED_DURATIONS, [1, 2, 3, 6, 12]);
 });
 

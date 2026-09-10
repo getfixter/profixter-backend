@@ -8,6 +8,7 @@ const User = require("../models/User");
 const { normalizeEmail } = require("../utils/identity");
 const {
   giftsEnabled,
+  defaultDuration,
   isOfferedDuration,
   offeredDurations,
 } = require("../utils/gifts/giftConfig");
@@ -157,7 +158,18 @@ const PURCHASE_ERRORS = {
  * into the client, so a price change is picked up without a frontend deploy
  * and the quote on screen cannot disagree with the amount charged.
  */
-router.get("/options", auth, async (_req, res) => {
+/*
+ * PUBLIC on purpose.
+ *
+ * Plans, lengths and prices are the same figures already printed on the
+ * membership pages, so there is nothing here to protect — and requiring a
+ * session did real damage: the shared API client treats any 401 as a dead
+ * session and redirects to sign-in, so a visitor who merely looked at the
+ * gift page was thrown off it. Making this public is what lets somebody
+ * discover gifting, see what it costs, and decide before creating an
+ * account. Buying still requires one.
+ */
+router.get("/options", async (_req, res) => {
   try {
     const durations = offeredDurations();
     const plans = PLAN_NAMES.map((plan) => {
@@ -172,7 +184,12 @@ router.get("/options", auth, async (_req, res) => {
       return { plan, label: plan.charAt(0).toUpperCase() + plan.slice(1), quotes };
     });
 
-    return res.json({ plans, durations, currency: "usd" });
+    return res.json({
+      plans,
+      durations,
+      defaultDurationMonths: defaultDuration(),
+      currency: "usd",
+    });
   } catch (error) {
     console.error("GET /gifts/options failed:", error);
     return res.status(500).json({ message: "Unable to load gift options" });

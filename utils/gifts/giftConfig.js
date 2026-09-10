@@ -26,21 +26,45 @@ function giftsEnabled() {
 /**
  * Durations the architecture understands, and the subset a customer may pick.
  *
- * Two lists rather than one because they answer different questions. The first
- * is what the term arithmetic, pricing and storage support; the second is what
- * the purchase screen offers today. Launch exposes two months only, and
- * enabling six is then a config change rather than a code change.
+ * Two lists rather than one because they answer different questions. The
+ * first is what the term arithmetic, pricing and storage support; the second
+ * is what the purchase screen offers today. They happen to match now that
+ * every length is on sale, and keeping them separate is still worth it —
+ * withdrawing one is then a config change rather than a code change.
  */
 const SUPPORTED_DURATIONS = [1, 2, 3, 6, 12];
 
+/**
+ * The default offering, now that gifting is a normal product.
+ *
+ * It launched at two months only, deliberately narrow. All five supported
+ * lengths are on sale now, and GIFT_DURATIONS can still narrow or reorder
+ * them without a deploy — the list is validated against SUPPORTED_DURATIONS,
+ * so a typo cannot invent a length the term arithmetic does not understand.
+ */
+const DEFAULT_OFFERED_DURATIONS = [1, 2, 3, 6, 12];
+
 function offeredDurations() {
   const raw = String(process.env.GIFT_DURATIONS || "").trim();
-  if (!raw) return [2];
+  if (!raw) return [...DEFAULT_OFFERED_DURATIONS];
   const chosen = raw
     .split(",")
     .map((value) => Number(value.trim()))
     .filter((value) => SUPPORTED_DURATIONS.includes(value));
-  return chosen.length ? chosen : [2];
+  return chosen.length ? chosen : [...DEFAULT_OFFERED_DURATIONS];
+}
+
+/**
+ * What the purchase screen starts on.
+ *
+ * One month: the cheapest way in, and the easiest decision for somebody
+ * buying for a friend rather than for their own home. Falls back to the
+ * shortest thing actually on sale if one month is ever withdrawn, so the
+ * default can never point at a length that cannot be bought.
+ */
+function defaultDuration() {
+  const offered = offeredDurations();
+  return offered.includes(1) ? 1 : Math.min(...offered);
 }
 
 function isOfferedDuration(months) {
@@ -97,6 +121,7 @@ function configSnapshot() {
     giftsEnabled: giftsEnabled(),
     selfGiftingAllowed: selfGiftingAllowed(),
     offeredDurations: offeredDurations(),
+    defaultDuration: defaultDuration(),
     supportedDurations: SUPPORTED_DURATIONS,
     claimTokenTtlDays: CLAIM_TOKEN_TTL_DAYS,
     endingSoonDays: ENDING_SOON_DAYS,
@@ -115,6 +140,8 @@ function configSnapshot() {
 
 module.exports = {
   CLAIM_REMINDER_DAYS,
+  DEFAULT_OFFERED_DURATIONS,
+  defaultDuration,
   CLAIM_TOKEN_TTL_DAYS,
   ENDING_SOON_DAYS,
   SUPPORTED_DURATIONS,
