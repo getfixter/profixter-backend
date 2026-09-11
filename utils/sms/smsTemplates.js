@@ -540,7 +540,31 @@ function renderSms(notificationType, vars = {}) {
     throw new Error(`No SMS template for notification type: ${notificationType}`);
   }
 
-  let body = String(template(vars) || "").replace(/\s+/g, " ").trim();
+  /*
+   * An admin's saved wording, when one exists for this type.
+   *
+   * THE COMPLIANCE STEPS BELOW STILL RUN ON IT. That is the reason the override
+   * is resolved here rather than at the call sites: whatever an admin saved is
+   * just a different source for `body`, and the opt-out line, the whitespace
+   * collapse and the length cap apply to it exactly as they apply to the code
+   * template. An override cannot opt itself out of the rules by being an
+   * override.
+   *
+   * Required lazily to keep this module loadable without a database - the
+   * template catalogue is asserted in tests that never connect to one - and
+   * because the override layer imports the helpers defined above.
+   */
+  let overridden = null;
+  try {
+    overridden = require("../communications/templateOverrides").renderSmsOverride(
+      notificationType,
+      vars
+    );
+  } catch {
+    overridden = null;
+  }
+
+  let body = String(overridden ?? template(vars) ?? "").replace(/\s+/g, " ").trim();
 
   if (isMarketing(notificationType) && !/reply stop/i.test(body)) {
     body = `${body} ${OPT_OUT_LINE}`;

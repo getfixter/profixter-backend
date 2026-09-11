@@ -20,6 +20,7 @@ const {
   startOneTimeVisitHoldCleanup,
 } = require("./jobs/oneTimeVisitHolds");
 const { startSmsJobs } = require("./jobs/smsJobs");
+const { startOverrideRefresh } = require("./utils/communications/templateOverrides");
 const { startGiftLifecycle } = require("./jobs/giftLifecycle");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
@@ -214,6 +215,9 @@ app.use("/api/admin/tips", require("./routes/adminTips"));
 app.use("/api/admin/email-logs", require("./routes/adminEmailLogs"));
 // Before the catch-all admin router, exactly as email-logs is.
 app.use("/api/admin/sms", require("./routes/adminSms"));
+// Template control and unified email+SMS history. Admin-only on both sides:
+// message bodies carry customer names, appointment times and claim links.
+app.use("/api/admin/communications", require("./routes/adminCommunications"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
 app.use(
   "/api/admin/ai-commander/ghl",
@@ -600,6 +604,17 @@ startMarketingEmails();
  * exactly how a customer would end up with two of everything.
  */
 startSmsJobs();
+
+/*
+ * Keep admin-edited message wording warm in memory.
+ *
+ * renderSms is synchronous and is called from templates, triggers and the retry
+ * sweep, so it cannot await a database read. This loads the overrides once at
+ * boot and refreshes them on a timer; an instance that makes an edit refreshes
+ * itself immediately. With no overrides saved, every message renders from its
+ * tested code default exactly as before.
+ */
+startOverrideRefresh();
 
 /*
  * The gift lifecycle sweep: reminder emails and bookkeeping.

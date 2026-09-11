@@ -4,6 +4,27 @@ const EmailLogSchema = new mongoose.Schema(
   {
     templateKey: { type: String, default: "", trim: true, index: true },
     subject: { type: String, default: "", trim: true },
+
+    /*
+     * What the customer actually received, frozen at the moment we sent it.
+     *
+     * FORWARD-ONLY, AND THE GAP IS PERMANENT.
+     *
+     * Until these fields existed this collection recorded that an email was
+     * sent and what its subject was, but never its content. Those older rows
+     * cannot be repaired: the body was rendered, handed to the transport and
+     * discarded, and reconstructing one from today's template would be a
+     * fabrication that looks exactly like evidence. Admin shows them as
+     * "snapshot unavailable" rather than guessing, and `bodySnapshot` being
+     * false is what marks them.
+     *
+     * Kept here rather than derived from the template on read for the same
+     * reason SmsMessage stores its body: editing a template tomorrow must not
+     * rewrite what somebody was told today.
+     */
+    bodySnapshot: { type: Boolean, default: false },
+    html: { type: String, default: "" },
+    text: { type: String, default: "" },
     recipientEmail: { type: String, default: "", lowercase: true, trim: true, index: true },
     recipientName: { type: String, default: "", trim: true },
     customerEmail: { type: String, default: "", lowercase: true, trim: true, index: true },

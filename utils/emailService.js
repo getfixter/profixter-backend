@@ -1046,10 +1046,28 @@ function providerResponse(info) {
   });
 }
 
+/*
+ * How much rendered HTML one audit row may keep.
+ *
+ * Generous, because the point is to be able to read back exactly what was
+ * sent, and every current template renders well inside it. Truncation is
+ * marked in the stored value rather than silent, so a row that hit the ceiling
+ * cannot be mistaken for the whole message.
+ */
+const EMAIL_SNAPSHOT_LIMIT = 100000;
+
+function snapshotValue(value) {
+  const text = typeof value === "string" ? value : "";
+  if (text.length <= EMAIL_SNAPSHOT_LIMIT) return text;
+  return `${text.slice(0, EMAIL_SNAPSHOT_LIMIT)}\n<!-- snapshot truncated -->`;
+}
+
 function buildEmailLogPayload({
   status,
   to,
   subject,
+  html,
+  text,
   info,
   error,
   logContext = {},
@@ -1058,9 +1076,18 @@ function buildEmailLogPayload({
   const recipientEmail = normalizeEmailValue(
     logContext.recipientEmail || to
   );
+  const htmlSnapshot = snapshotValue(html);
+  const textSnapshot = snapshotValue(text);
   return {
     templateKey: String(logContext.templateKey || "").trim(),
     subject: String(subject || "").trim(),
+    /*
+     * The content as rendered, for this row only. Marked present so Admin can
+     * tell "this email had no body" apart from "this row predates snapshots".
+     */
+    bodySnapshot: Boolean(htmlSnapshot || textSnapshot),
+    html: htmlSnapshot,
+    text: textSnapshot,
     recipientEmail,
     recipientName: String(logContext.recipientName || "").trim(),
     customerEmail: normalizeEmailValue(
@@ -1146,6 +1173,8 @@ async function sendRaw({
         status: "sent",
         to: cleanTo,
         subject,
+        html,
+        text: plainText,
         info,
         logContext,
       })
@@ -1172,6 +1201,8 @@ async function sendRaw({
         status: "failed",
         to: cleanTo,
         subject,
+        html,
+        text: plainText,
         error: err,
         logContext,
       })
