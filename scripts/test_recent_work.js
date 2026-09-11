@@ -681,6 +681,142 @@ async function run() {
     });
 
     /* ============================================================ */
+    section("The whole lifecycle, one photo, in order");
+
+    await test("upload -> publish -> public -> unpublish -> republish -> delete -> purge", async () => {
+      const steps = [];
+      const publicCount = async () => (await call("GET", "/api/recent-work")).body.photos.length;
+      const row = async (id) => WorkPhoto.findById(id).lean();
+
+      /* --- UPLOAD (library only, so publishing is its own observable step) --- */
+      const uploaded = await uploadAs(adminToken, [await photoWithGps()], {
+        title: "Lifecycle photo",
+        category: "kitchen-remodeling",
+        publicLocation: "Babylon, NY",
+      });
+      assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+      const id = uploaded.body.created[0].id;
+      steps.push("uploaded");
+
+      /* --- PROCESS + STORE: three variants, EXIF gone --- */
+      const stored = await row(id);
+      assert.equal(bucket.size, 3, "three objects");
+      for (const variant of ["thumb", "display", "full"]) {
+        const object = bucket.get(stored[variant].key);
+        assert.ok(object, `${variant} missing from storage`);
+        const meta = await sharp(object.body).metadata();
+        assert.equal(meta.format, "jpeg");
+        assert.equal(meta.exif, undefined, `${variant} kept EXIF`);
+      }
+      assert.ok(stored.thumb.width <= 480 && stored.display.width <= 1280 && stored.full.width <= 2000);
+      steps.push("processed+stored");
+
+      /* --- ADMIN PREVIEW: the admin list shows it with a thumbnail --- */
+      const library = await call("GET", "/api/admin/recent-work?view=library", adminToken);
+      const inLibrary = library.body.photos.find((p) => p.id === id);
+      assert.ok(inLibrary, "not in the admin library");
+      assert.ok(inLibrary.thumbUrl, "no thumbnail for the admin to look at");
+      assert.equal(inLibrary.status, STATUS.LIBRARY);
+      assert.equal(await publicCount(), 0, "library-only must not be public");
+      steps.push("admin-preview");
+
+      /* --- PUBLISH --- */
+      const published = await call("POST", `/api/admin/recent-work/${id}/publish`, adminToken);
+      assert.equal(published.status, 200);
+      assert.equal(published.body.photo.status, STATUS.PUBLISHED);
+      steps.push("published");
+
+      /* --- PUBLIC API: present, and wearing only public clothes --- */
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos.length, 1);
+      const dto = feed.body.photos[0];
+      assert.equal(dto.id, id);
+      assert.equal(dto.title, "Lifecycle photo");
+      assert.equal(dto.location, "Babylon, NY");
+      assert.deepEqual(
+        Object.keys(dto).sort(),
+        ["caption", "category", "featured", "fullUrl", "height", "id", "imageUrl",
+         "location", "publishedAt", "thumbUrl", "title", "width"].sort()
+      );
+      /* Every URL the public is handed must resolve to a real stored object. */
+      for (const url of [dto.thumbUrl, dto.imageUrl, dto.fullUrl]) {
+        const key = url.split(".amazonaws.com/")[1];
+        assert.ok(bucket.has(key), `public URL points at nothing: ${url}`);
+        assert.match(key, /^recent-work\//, "public URL must live under the owned prefix");
+      }
+      steps.push("public-api");
+
+      /* --- UNPUBLISH: gone publicly, kept entirely --- */
+      const unpublished = await call("POST", `/api/admin/recent-work/${id}/unpublish`, adminToken);
+      assert.equal(unpublished.status, 200);
+      assert.equal(await publicCount(), 0, "still public after unpublish");
+      const kept = await row(id);
+      assert.equal(kept.status, STATUS.LIBRARY);
+      assert.ok(kept.firstPublishedAt, "history of having been live is kept");
+      assert.equal(bucket.size, 3, "unpublish must not delete the images");
+      const stillInLibrary = await call("GET", "/api/admin/recent-work?view=library", adminToken);
+      assert.ok(stillInLibrary.body.photos.some((p) => p.id === id), "vanished from the library");
+      steps.push("unpublished");
+
+      /* --- REPUBLISH --- */
+      await call("POST", `/api/admin/recent-work/${id}/publish`, adminToken);
+      assert.equal(await publicCount(), 1, "did not come back");
+      const republished = await row(id);
+      assert.equal(
+        new Date(republished.firstPublishedAt).getTime(),
+        new Date(kept.firstPublishedAt).getTime(),
+        "firstPublishedAt is history and must not move"
+      );
+      steps.push("republished");
+
+      /* --- DELETE --- */
+      const deleted = await call("DELETE", `/api/admin/recent-work/${id}`, adminToken);
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.body.storagePurged, true);
+      steps.push("deleted");
+
+      /* --- VERIFY PUBLIC REMOVAL + S3 CLEANUP --- */
+      assert.equal(await publicCount(), 0, "still public after delete");
+      assert.equal(bucket.size, 0, "the image files are still in storage");
+      const tombstone = await row(id);
+      assert.equal(tombstone.status, STATUS.ARCHIVED);
+      assert.ok(tombstone.deletedAt && tombstone.storagePurgedAt);
+      assert.equal(tombstone.deletedByName, "Taras", "who deleted it is recorded");
+      const gone = await call("GET", "/api/admin/recent-work?view=library", adminToken);
+      assert.ok(!gone.body.photos.some((p) => p.id === id), "still listed after delete");
+      steps.push("purged");
+
+      assert.equal(
+        steps.join(" -> "),
+        "uploaded -> processed+stored -> admin-preview -> published -> public-api -> " +
+        "unpublished -> republished -> deleted -> purged"
+      );
+    });
+
+    await test("several photos at once survive the same walk", async () => {
+      const upload = await uploadAs(
+        adminToken,
+        [await plainPhoto(1600, 1200), await plainPhoto(900, 1600), await plainPhoto(1000, 1000)],
+        { title: "Bathroom day", category: "bathroom-remodeling", publishNow: "true" }
+      );
+      assert.equal(upload.body.created.length, 3);
+      assert.equal(bucket.size, 9, "three photos, three variants each");
+      assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 3);
+
+      /* Mixed orientations must all survive with sane dimensions. */
+      for (const photo of (await call("GET", "/api/recent-work")).body.photos) {
+        assert.ok(photo.width > 0 && photo.height > 0, "public DTO needs dimensions for layout");
+        assert.ok(photo.width <= 1280, `display too large: ${photo.width}`);
+      }
+
+      for (const photo of upload.body.created) {
+        await call("DELETE", `/api/admin/recent-work/${photo.id}`, adminToken);
+      }
+      assert.equal(bucket.size, 0, "every object cleaned up");
+      assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
+    });
+
+    /* ============================================================ */
     section("Adversarial: the client does not get a vote");
 
     await test("a member cannot declare themselves a Fixter", async () => {
