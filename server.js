@@ -89,7 +89,6 @@ methods: "GET,POST,PUT,PATCH,DELETE",
       "Authorization",
       "Content-Type",
       "x-ghl-secret",
-      "x-jarvis-ghl-webhook-secret",
     ],
   })
 );
@@ -219,15 +218,6 @@ app.use("/api/admin/sms", require("./routes/adminSms"));
 // message bodies carry customer names, appointment times and claim links.
 app.use("/api/admin/communications", require("./routes/adminCommunications"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
-app.use(
-  "/api/admin/ai-commander/ghl",
-  require("./src/aiCommanderGhl/aiCommanderGhl.routes")
-);
-app.use("/api/admin/jarvis", require("./routes/jarvisUploads"));
-app.use(
-  "/api",
-  require("./src/jarvisSkills/roofingSalesAgent/roofingSalesAgent.routes")
-);
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin/marketing", require("./routes/adminMarketing"));
 app.use("/api/admin", require("./routes/admin"));
