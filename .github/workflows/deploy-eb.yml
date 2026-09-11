@@ -4,6 +4,19 @@ on:
   push:
     branches:
       - main
+    # A commit that cannot change what production runs should not restart
+    # production. Every deployment re-runs "npm --omit=dev install" on the live
+    # instance and briefly takes the API down, and on 2026-09-11 one of those
+    # restarts - for a commit containing a single test file - wedged the box and
+    # cost forty minutes of downtime. None of these paths are required by
+    # server.js or anything it loads, so skipping them removes a whole class of
+    # avoidable risk. Anything genuinely needed at runtime lives outside this
+    # list, and workflow_dispatch remains for deploying by hand.
+    paths-ignore:
+      - 'scripts/**'
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
