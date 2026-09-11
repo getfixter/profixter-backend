@@ -264,6 +264,22 @@ router.post("/register", async (req, res) => {
   try {
     const { name, email, password, phone, address, city, state, zip, county } = req.body;
 
+    /*
+     * Marketing-SMS consent, and ONLY when the customer actually ticked it.
+     *
+     * Compared against the literal boolean rather than read for truthiness, so
+     * that "false", "0", "no" or any other string a future client sends cannot
+     * become consent by accident - a string is always truthy, and that is
+     * exactly the bug that would silently enrol somebody in promotional
+     * texting they never agreed to.
+     *
+     * THE ABSENCE OF THIS FIELD IS NOT CONSENT, AND NEITHER IS A PHONE NUMBER.
+     * Registration requires a phone so we can text about the visits a customer
+     * books; that is the transactional basis and it is not permission to
+     * advertise. Marketing needs its own express opt-in, which is what this is.
+     */
+    const smsMarketingConsent = req.body?.smsMarketingConsent === true;
+
     const cleanEmail = String(email || "").trim().toLowerCase();
     if (![name, cleanEmail, password, phone, address, city, state, zip, county].every(Boolean)) {
       return res.status(400).json({
@@ -311,6 +327,29 @@ router.post("/register", async (req, res) => {
       subscription: null,
       subscriptionExpiry: null,
       subscriptionStart: null,
+
+      /*
+       * The consent record, written at the moment it was given.
+       *
+       * marketingEnabled is the field smsEligibility reads before any
+       * promotional send; the timestamp and source beside it are the evidence
+       * that it was given, which is the half that matters if consent is ever
+       * disputed. Left undefined when the box was not ticked rather than set
+       * to false, so "never asked" stays distinguishable from "said no" -
+       * eligibility treats both as no, and only one of them is worth a
+       * follow-up conversation later.
+       *
+       * transactionalEnabled is deliberately NOT set here. Absent means yes for
+       * service messages, which is the rule smsEligibility already encodes; a
+       * customer who wants those off opts out with STOP.
+       */
+      smsPreferences: smsMarketingConsent
+        ? {
+            marketingEnabled: true,
+            marketingConsentAt: new Date(),
+            marketingConsentSource: "signup_web_form",
+          }
+        : undefined,
     });
 
     user.addresses.push({
