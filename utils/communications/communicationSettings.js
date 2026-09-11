@@ -267,6 +267,13 @@ const EMAIL_SETTINGS = {
     appliesTo: "All visit kinds",
     schedule: "Due 24 hours before; catch-up down to 2 hours before; sweep runs every minute.",
   },
+  fixter_close_booking_reminder: {
+    label: "Fixter: close the job",
+    trigger: "A booking is still Confirmed two hours after it was due to start.",
+    appliesTo: "The assigned Fixter only - never the customer",
+    schedule: "Due at start + 2 hours; sent once, catch-up for 24 hours; sweep runs every minute.",
+    channelClass: "internal",
+  },
   booking_reminder_60m: {
     label: "60-minute reminder",
     trigger: "The hour-before reminder sweep.",

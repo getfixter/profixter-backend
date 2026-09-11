@@ -156,6 +156,28 @@ const BookingSchema = new mongoose.Schema({
   reminder60mTagAttempts: { type: Number, default: 0 },
   reminder60mTagError: { type: String, default: "" },
 
+  /*
+   * The close-the-job nudge to the assigned Fixter, two hours after the visit
+   * was due to start.
+   *
+   * Same claim shape as the customer reminders above, and for the same reason:
+   * QueuedAt is a lock held while a send is in flight, SentAt is the record that
+   * one went out, SkippedAt is a terminal decision not to send with a reason
+   * beside it. Nothing here is derived from a stored due time - it comes from
+   * date - so moving the appointment moves the nudge with it.
+   *
+   * This one is internal. It never reaches the customer, and it never changes
+   * the booking's status: an unclosed job is a person to prompt, not a record
+   * to quietly rewrite.
+   */
+  fixterCloseReminderQueuedAt: { type: Date },
+  fixterCloseReminderSentAt: { type: Date },
+  fixterCloseReminderSkippedAt: { type: Date },
+  fixterCloseReminderSkipReason: { type: String, default: "" },
+  fixterCloseReminderAttempts: { type: Number, default: 0 },
+  fixterCloseReminderLastError: { type: String, default: "" },
+  fixterCloseReminderMessageId: { type: String, default: "" },
+
   // Delayed post-completion review request tracking.
   completedAt: { type: Date, default: null },
   reviewRequestQueuedAt: { type: Date, default: null },
@@ -185,5 +207,11 @@ BookingSchema.index({
  */
 BookingSchema.index({ status: 1, date: 1, reminder24hSentAt: 1, reminder24hSkippedAt: 1 });
 BookingSchema.index({ status: 1, date: 1, reminder60mSentAt: 1, reminder60mSkippedAt: 1 });
+BookingSchema.index({
+  status: 1,
+  date: 1,
+  fixterCloseReminderSentAt: 1,
+  fixterCloseReminderSkippedAt: 1,
+});
 
 module.exports = mongoose.model('Booking', BookingSchema);

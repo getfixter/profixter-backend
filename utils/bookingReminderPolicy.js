@@ -40,6 +40,24 @@ const REMINDER_24H_MIN_LEAD_MS = 2 * HOUR_MS;
  */
 const REMINDER_60M_GRACE_AFTER_START_MS = 15 * MINUTE_MS;
 
+/**
+ * How long after the appointment was due to start we ask the assigned Fixter
+ * whether the job is finished. Two hours is long enough that a normal visit is
+ * over and short enough that the work is still fresh in mind.
+ */
+const FIXTER_CLOSE_LAG_MS = 2 * HOUR_MS;
+
+/**
+ * And how long that question stays worth asking.
+ *
+ * A day, for the same reason the 24-hour reminder has a floor: the nudge exists
+ * to get a record closed while someone still remembers the visit, and one that
+ * arrives three days late is answered by guessing. Past this the booking is
+ * marked skipped with a reason, so an unclosed job that never got a nudge is
+ * distinguishable from one the sweep simply never reached.
+ */
+const FIXTER_CLOSE_GIVE_UP_MS = 24 * HOUR_MS;
+
 /** A claimed reminder whose worker vanished is reclaimable after this. */
 const REMINDER_LOCK_STALE_MS = 10 * MINUTE_MS;
 
@@ -249,6 +267,99 @@ function evaluate60MinuteReminder(booking, nowInput = new Date()) {
 }
 
 /**
+ * The close-the-job nudge for the assigned Fixter.
+ *
+ * A DIFFERENT QUESTION FROM THE CUSTOMER REMINDERS, AND A DIFFERENT RECIPIENT.
+ *
+ * Those ask "is the customer ready for us"; this asks "did whoever went there
+ * tell us it is done". So it is due *after* the appointment rather than before,
+ * it is addressed to the assigned employee rather than the customer, and the
+ * only status it is interested in is the one that means nobody has closed the
+ * job yet.
+ *
+ * Confirmed is exactly that status. A booking still reading Confirmed two hours
+ * after it was due to start either has not happened or has not been written
+ * down, and both are worth a nudge. Completed and Canceled are already answers
+ * and get nothing - not a late nudge, not a "just checking".
+ *
+ * The recipient is passed in rather than read off the booking, because the
+ * denormalised assignedFixterEmail can be empty on older bookings while the
+ * employee record behind assignedFixterId still has a good address. Resolving
+ * that is the worker's job; deciding what to do about the result is this one's.
+ *
+ * Missing fixter and missing email deliberately do NOT mark the booking
+ * skipped. A job can be assigned late, and burning the nudge permanently the
+ * first time a sweep sees an unassigned booking would mean the one case this
+ * feature exists for - nobody has touched this booking - is also the case it
+ * silently gives up on. They stay pending until the give-up window closes.
+ */
+function evaluateFixterCloseReminder(booking, nowInput = new Date(), options = {}) {
+  const fixterEmail =
+    options.fixterEmail === undefined
+      ? booking?.assignedFixterEmail
+      : options.fixterEmail;
+
+  if (hasValue(booking?.fixterCloseReminderSentAt)) {
+    return { eligible: false, reason: "already_sent" };
+  }
+  if (hasValue(booking?.fixterCloseReminderSkippedAt)) {
+    return { eligible: false, reason: "already_skipped" };
+  }
+
+  const startMs = bookingStartMs(booking);
+  if (startMs === null) {
+    return { eligible: false, reason: "invalid_booking_date" };
+  }
+
+  /*
+   * Terminal first, and separately from "not confirmed", because the two mean
+   * different things: a Completed booking is the success case this reminder is
+   * trying to produce, while a Pending one has not been confirmed yet and is
+   * not this sweep's business either way.
+   */
+  if (isTerminalStatus(booking?.status)) {
+    return { eligible: false, reason: "already_closed_or_canceled" };
+  }
+  if (!isConfirmedStatus(booking?.status)) {
+    return { eligible: false, reason: "status_not_confirmed" };
+  }
+
+  const nowMs = new Date(nowInput).getTime();
+  const msSinceDue = nowMs - (startMs + FIXTER_CLOSE_LAG_MS);
+
+  if (msSinceDue < 0) {
+    return { eligible: false, reason: "not_yet_due", msSinceDue };
+  }
+  if (msSinceDue > FIXTER_CLOSE_GIVE_UP_MS) {
+    return {
+      eligible: false,
+      shouldMarkSkipped: true,
+      reason: "too_late_to_nudge",
+      msSinceDue,
+    };
+  }
+
+  if (!String(booking?.assignedFixterId || "").trim()) {
+    return { eligible: false, reason: "no_fixter_assigned", msSinceDue };
+  }
+  if (!validEmail(fixterEmail)) {
+    return { eligible: false, reason: "fixter_email_unusable", msSinceDue };
+  }
+
+  if (attemptsExceeded(booking, "fixterCloseReminderAttempts")) {
+    return {
+      eligible: false,
+      shouldMarkSkipped: true,
+      reason: "max_attempts_exceeded",
+      msSinceDue,
+    };
+  }
+
+  const mode = msSinceDue <= 5 * MINUTE_MS ? "on_time" : "catch_up";
+  return { eligible: true, reason: mode, mode, msSinceDue };
+}
+
+/**
  * Whether a date change is big enough to be a different appointment.
  *
  * Saving a booking without moving it must not resend anything; moving it to
@@ -293,6 +404,18 @@ function clearedReminderState() {
     reminder60mTagAt: null,
     reminder60mTagAttempts: 0,
     reminder60mTagError: "",
+    /*
+     * The nudge moves with the appointment. A booking pushed from Tuesday to
+     * Friday has not had its Friday visit yet, so a Tuesday nudge - sent or
+     * skipped - must not decide anything about Friday.
+     */
+    fixterCloseReminderQueuedAt: null,
+    fixterCloseReminderSentAt: null,
+    fixterCloseReminderSkippedAt: null,
+    fixterCloseReminderSkipReason: "",
+    fixterCloseReminderAttempts: 0,
+    fixterCloseReminderLastError: "",
+    fixterCloseReminderMessageId: "",
   };
 }
 
@@ -332,6 +455,8 @@ function evaluateTagRetry(booking, kind, nowInput = new Date()) {
 }
 
 module.exports = {
+  FIXTER_CLOSE_GIVE_UP_MS,
+  FIXTER_CLOSE_LAG_MS,
   HOUR_MS,
   MINUTE_MS,
   REMINDER_24H_LEAD_MS,
@@ -345,6 +470,7 @@ module.exports = {
   due60MinuteAt,
   evaluate24HourReminder,
   evaluate60MinuteReminder,
+  evaluateFixterCloseReminder,
   evaluateTagRetry,
   isConfirmedStatus,
   isMaterialDateChange,

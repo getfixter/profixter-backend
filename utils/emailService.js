@@ -769,6 +769,46 @@ const TEMPLATES = {
     ),
   }),
 
+  /*
+   * The only email in this file addressed to a colleague rather than a
+   * customer, which is why it says nothing a customer would need and asks for
+   * one specific action. It is a nudge about a record, not an apology or a
+   * status update, so it stays four lines long.
+   */
+  fixter_close_booking_reminder: ({
+    fixterName = "there",
+    customerName = "your customer",
+    date,
+    bookingNumber = "",
+    address = "",
+  }) => ({
+    subject: "Please close your ProFixter job",
+    html: frame(
+      `
+      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Hi ${escapeHtml(
+        String(fixterName).split(/\s+/)[0] || "there"
+      )},</h2>
+      <p>
+        Your <strong>${date ? formatNYCTime(date) : "recent"}</strong> appointment with
+        <strong>${escapeHtml(customerName)}</strong> was scheduled more than 2 hours ago.
+      </p>
+      <p>If the job is finished, please update the booking status to <strong>Done</strong> in ProFixter Admin.</p>
+
+      <div style="margin:12px 0 10px; padding:12px; background:${BRAND.gray100}; border-radius:10px; font-size:14px;">
+        ${bookingNumber ? `<div><strong>Booking:</strong>&nbsp;#${escapeHtml(bookingNumber)}</div>` : ""}
+        ${address ? `<div style="margin-top:4px;"><strong>Address:</strong>&nbsp;${escapeHtml(address)}</div>` : ""}
+      </div>
+
+      <div style="margin:14px 0; text-align:center;">
+        ${btn(`${URLS.site}/admin`, "Open ProFixter Admin")}
+      </div>
+
+      <p style="margin-top:14px; font-size:14px; color:${BRAND.gray700};">Thank you,<br />ProFixter</p>
+    `,
+      { preheader: "A job may still need closing." }
+    ),
+  }),
+
   booking_reminder_60m: ({ name = "there", date }) => ({
     subject: "We're on the way — see you soon",
     html: frame(
@@ -1136,6 +1176,7 @@ async function sendRaw({
   replyTo = REPLY_TO,
   headers = {},
   attachments,
+  messageId,
   logContext = {},
 }) {
   const cleanTo = String(to || "").trim().toLowerCase();
@@ -1154,6 +1195,19 @@ async function sendRaw({
     replyTo,
     headers: { "X-Entity-Ref-ID": Date.now().toString(), ...headers },
   };
+  /*
+   * A caller-supplied Message-ID, for a message that must be the same message
+   * every time it is generated.
+   *
+   * This is NOT provider-enforced idempotency: SES over SMTP has no such
+   * mechanism, and nothing here prevents a second copy from being accepted.
+   * What it does is make the two copies identical in the one field receiving
+   * mail servers use to recognise a message they already hold - Gmail and most
+   * MTAs collapse a repeated Message-ID rather than showing it twice - and it
+   * makes a duplicate provably a duplicate afterwards instead of a guess.
+   * Omitted, nodemailer generates a fresh one exactly as before.
+   */
+  if (messageId) mail.messageId = messageId;
   if (attachments?.length) mail.attachments = attachments;
 
   if (bccAdmin && ADMIN) mail.bcc = ADMIN;
@@ -1242,6 +1296,8 @@ async function sendTx(key, to, vars = {}, opts = {}) {
     html,
     text,
     bccAdmin,
+    messageId: opts.messageId,
+    headers: opts.headers,
     logContext: {
       templateKey: key,
       source: "sendTx",

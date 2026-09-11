@@ -126,6 +126,22 @@ const EMAIL_DEFINITIONS = {
   },
   booking_reminder_24h: { label: "24-hour reminder", preheader: "Your visit is tomorrow.", tokens: bookingTokens },
   booking_reminder_60m: { label: "60-minute reminder", preheader: "Your visit is coming up.", tokens: bookingTokens },
+  /*
+   * Internal: the tokens name the colleague and the job, not the customer's
+   * plan or entitlements, because none of that is the question being asked.
+   */
+  fixter_close_booking_reminder: {
+    label: "Fixter: close the job",
+    preheader: "A job may still need closing.",
+    tokens: (v) => ({
+      fixterFirstName: firstNameOf(v.fixterName || v.technicianName),
+      customerName: String(v.customerName || v.name || ""),
+      bookingNumber: String(v.bookingNumber || ""),
+      bookingWhen: when(v.date),
+      address: String(v.address || ""),
+      adminButton: actionButton(`${URLS.site}/admin`, "Open ProFixter Admin", "primary"),
+    }),
+  },
   booking_review_request: {
     label: "Review request",
     preheader: "How did we do?",

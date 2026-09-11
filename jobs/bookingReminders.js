@@ -9,8 +9,11 @@ const {
   REMINDER_60M_LEAD_MS,
   REMINDER_LOCK_STALE_MS,
   REMINDER_MAX_ATTEMPTS,
+  FIXTER_CLOSE_GIVE_UP_MS,
+  FIXTER_CLOSE_LAG_MS,
   evaluate24HourReminder,
   evaluate60MinuteReminder,
+  evaluateFixterCloseReminder,
   evaluateTagRetry,
 } = require("../utils/bookingReminderPolicy");
 const {
@@ -19,6 +22,18 @@ const {
   formatBookingDateTime,
   addTag,
 } = require("../utils/ghlContact");
+/*
+ * The native SMS passes below have referenced these three since they were
+ * written, but the requires were never added, so every cycle ended in
+ * "ReferenceError: bookingKey is not defined" - caught by the per-sweep handler
+ * and logged as a failed sweep. The emails and the CRM tag were unaffected
+ * because they run first; what was lost was the SMS enqueue, silently, and a
+ * failed-sweep line every minute that made a real failure indistinguishable
+ * from this one.
+ */
+const SmsMessage = require("../models/SmsMessage");
+const { notifyBookingReminder } = require("../utils/sms/smsNotifications");
+const { bookingKey } = require("../utils/sms/smsDedupe");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -565,6 +580,235 @@ async function processReminder(kind, now, stats) {
   await retryPendingSms(config, now, stats);
 }
 
+/**
+ * The close-the-job nudge.
+ *
+ * A THIRD SWEEP IN THE SAME CYCLE, NOT A SECOND SCHEDULER. It rides the minute
+ * cron the customer reminders already use, claims work the same way, and is
+ * isolated in its own try block so it can neither be broken by them nor break
+ * them.
+ *
+ * What it does NOT do is the important part. No GHL tag, so no SMS to anyone.
+ * No customer email. No status write: an unclosed booking is a person to
+ * prompt, not a record to quietly complete on their behalf, and a sweep that
+ * marked jobs Done would destroy the only signal that says a visit's outcome is
+ * unknown.
+ */
+const FIXTER_CLOSE = {
+  label: "fixter_close",
+  templateKey: "fixter_close_booking_reminder",
+  queuedField: "fixterCloseReminderQueuedAt",
+  sentField: "fixterCloseReminderSentAt",
+  skippedField: "fixterCloseReminderSkippedAt",
+  skipReasonField: "fixterCloseReminderSkipReason",
+  attemptsField: "fixterCloseReminderAttempts",
+  lastErrorField: "fixterCloseReminderLastError",
+  messageIdField: "fixterCloseReminderMessageId",
+  evaluate: (booking, now) => evaluateFixterCloseReminder(booking, now),
+  /*
+   * Due at start + 2h, and selectable for a day after that, so an outage or a
+   * deploy delays the nudge instead of consuming it.
+   */
+  dateRange: (now) => ({
+    $gte: new Date(now.getTime() - FIXTER_CLOSE_LAG_MS - FIXTER_CLOSE_GIVE_UP_MS),
+    $lte: new Date(now.getTime() - FIXTER_CLOSE_LAG_MS),
+  }),
+  /* Older than that and never settled: give it a terminal reason, once. */
+  abandonRange: (now) => ({
+    $gt: new Date(now.getTime() - FIXTER_CLOSE_LAG_MS - FIXTER_CLOSE_GIVE_UP_MS - 7 * 24 * 60 * 60 * 1000),
+    $lte: new Date(now.getTime() - FIXTER_CLOSE_LAG_MS - FIXTER_CLOSE_GIVE_UP_MS),
+  }),
+};
+
+const FIXTER_CLOSE_SELECT = [
+  "status name email bookingNumber date service selectedTask",
+  "address city state zip",
+  "assignedFixterId assignedFixterName assignedFixterEmail",
+  "fixterCloseReminderQueuedAt fixterCloseReminderSentAt",
+  "fixterCloseReminderSkippedAt fixterCloseReminderAttempts",
+].join(" ");
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safeEmail(value));
+}
+
+/**
+ * Where to send it.
+ *
+ * assignedFixterEmail is denormalised onto the booking at assignment time, but
+ * it was added after bookings already existed and not every path that sets an
+ * assignee has always filled it in. The employee record behind assignedFixterId
+ * is the source of truth, so an empty or malformed copy falls back to it rather
+ * than being read as "this Fixter has no email".
+ */
+async function resolveFixterRecipients(candidates) {
+  const ids = [
+    ...new Set(
+      candidates
+        .filter((b) => b.assignedFixterId && !looksLikeEmail(b.assignedFixterEmail))
+        .map((b) => String(b.assignedFixterId))
+    ),
+  ];
+  if (!ids.length) return new Map();
+
+  const users = await User.find({ _id: { $in: ids } })
+    .select("_id email name")
+    .lean();
+  return new Map(users.map((u) => [String(u._id), { email: u.email, name: u.name }]));
+}
+
+async function processFixterCloseReminder(now, stats) {
+  const config = FIXTER_CLOSE;
+  const staleBefore = new Date(now.getTime() - REMINDER_LOCK_STALE_MS);
+  const notSent = emptyField(config.sentField);
+  const notSkipped = emptyField(config.skippedField);
+  const lockAvailable = availableLock(config.queuedField, staleBefore);
+
+  const candidates = await Booking.find({
+    status: /^confirmed$/i,
+    date: config.dateRange(now),
+    $and: [notSent, notSkipped, lockAvailable],
+  })
+    .select(FIXTER_CLOSE_SELECT)
+    .sort({ date: 1 })
+    .limit(200)
+    .lean();
+
+  stats.scanned = candidates.length;
+  const fallback = await resolveFixterRecipients(candidates);
+
+  for (const booking of candidates) {
+    const fromUser = fallback.get(String(booking.assignedFixterId || ""));
+    const fixterEmail = looksLikeEmail(booking.assignedFixterEmail)
+      ? safeEmail(booking.assignedFixterEmail)
+      : safeEmail(fromUser?.email);
+    const fixterName = booking.assignedFixterName || fromUser?.name || "";
+
+    const verdict = evaluateFixterCloseReminder(booking, now, { fixterEmail });
+    if (!verdict.eligible) {
+      if (verdict.shouldMarkSkipped) {
+        await abandonOne(config, booking, verdict.reason, stats);
+      } else {
+        stats.notDue += 1;
+      }
+      continue;
+    }
+
+    /*
+     * Claim on exactly the selector's conditions. Two workers racing the same
+     * booking produce one winner and one no-op, so an overlapping cycle, a
+     * second instance or a scheduler rerun cannot put a second copy in the
+     * Fixter's inbox.
+     */
+    const lockTime = new Date();
+    const claim = await Booking.updateOne(
+      {
+        _id: booking._id,
+        status: /^confirmed$/i,
+        $and: [notSent, notSkipped, lockAvailable],
+      },
+      {
+        $set: { [config.queuedField]: lockTime },
+        $inc: { [config.attemptsField]: 1 },
+      }
+    );
+    if (claim.modifiedCount !== 1) {
+      stats.locked += 1;
+      continue;
+    }
+
+    stats.claimed += 1;
+    const startedAt = Date.now();
+    try {
+      /*
+       * The same nudge for the same visit is always the same message.
+       *
+       * Keyed on the booking and the appointment instant, so a rescheduled
+       * booking is a new message that will be delivered, while a second attempt
+       * at an unmoved one carries the identity of the first. See sendRaw: this
+       * narrows a real window rather than closing it, because the transport has
+       * no idempotent send to offer.
+       */
+      const messageId = `<fixter-close-reminder.${booking._id}.${new Date(
+        booking.date
+      ).getTime()}@profixter.com>`;
+
+      const info = await sendTx(
+        config.templateKey,
+        fixterEmail,
+        {
+          fixterName,
+          customerName: booking.name || "",
+          date: booking.date,
+          bookingNumber: booking.bookingNumber,
+          address: buildAddress(booking),
+        },
+        {
+          messageId,
+          headers: { "X-Entity-Ref-ID": messageId },
+          logContext: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+            customerName: booking.name || "",
+            recipientName: fixterName,
+            recipientEmail: fixterEmail,
+            emailType: "internal_reminder",
+            source: "bookingReminders",
+          },
+        }
+      );
+
+      /* Recorded only once the provider accepted it, as the others are. */
+      await Booking.updateOne(
+        { _id: booking._id, [config.queuedField]: lockTime },
+        {
+          $set: {
+            [config.sentField]: new Date(),
+            [config.messageIdField]: String(info?.messageId || "").slice(0, 200),
+            [config.lastErrorField]: "",
+          },
+          $unset: { [config.queuedField]: 1 },
+        }
+      );
+
+      stats.sent += 1;
+      console.log(
+        JSON.stringify({
+          event: "fixter_close_reminder_sent",
+          mode: verdict.mode,
+          minutesAfterDue: Math.round(verdict.msSinceDue / 60000),
+          durationMs: Date.now() - startedAt,
+          messageId: info?.messageId || "",
+          fixterDomain: fixterEmail.split("@").pop() || "",
+          ...bookingLogShape(booking),
+        })
+      );
+    } catch (error) {
+      await Booking.updateOne(
+        { _id: booking._id, [config.queuedField]: lockTime },
+        {
+          $set: {
+            [config.lastErrorField]: String(error?.message || "").slice(0, 300),
+          },
+          $unset: { [config.queuedField]: 1 },
+        }
+      );
+      stats.failed += 1;
+      console.warn(
+        JSON.stringify({
+          event: "fixter_close_reminder_failed",
+          attempt: Number(booking[config.attemptsField] || 0) + 1,
+          ...bookingLogShape(booking),
+          error: errorDetails(error),
+        })
+      );
+    }
+    await sleep(80);
+  }
+
+  await markAbandoned(config, now, stats);
+}
+
 function emptyStats() {
   return {
     scanned: 0,
@@ -589,7 +833,12 @@ function emptyStats() {
  * shared catch.
  */
 async function runBookingReminderCycle(now = new Date()) {
-  const stats = { "24h": emptyStats(), "60m": emptyStats(), sweepErrors: [] };
+  const stats = {
+    "24h": emptyStats(),
+    "60m": emptyStats(),
+    fixterClose: emptyStats(),
+    sweepErrors: [],
+  };
 
   for (const kind of ["24h", "60m"]) {
     try {
@@ -606,8 +855,28 @@ async function runBookingReminderCycle(now = new Date()) {
     }
   }
 
+  /*
+   * Separate try block on purpose: a failure closing the loop on internal
+   * housekeeping must not stop a customer being reminded of their appointment.
+   */
+  try {
+    await processFixterCloseReminder(now, stats.fixterClose);
+  } catch (error) {
+    stats.sweepErrors.push("fixter_close");
+    console.error(
+      JSON.stringify({
+        event: "reminder_sweep_failed",
+        reminder: "fixter_close",
+        error: errorDetails(error),
+      })
+    );
+  }
+
   const noteworthy =
     stats.sweepErrors.length ||
+    stats.fixterClose.sent ||
+    stats.fixterClose.failed ||
+    stats.fixterClose.abandoned ||
     ["24h", "60m"].some(
       (k) =>
         stats[k].sent ||
@@ -626,6 +895,7 @@ async function runBookingReminderCycle(now = new Date()) {
         at: now.toISOString(),
         "24h": stats["24h"],
         "60m": stats["60m"],
+        fixterClose: stats.fixterClose,
         sweepErrors: stats.sweepErrors,
       })
     );
@@ -642,7 +912,7 @@ async function runBookingReminderCycle(now = new Date()) {
  * signal: no heartbeat for an hour means reminders are not being processed.
  */
 async function logReminderHeartbeat(now = new Date()) {
-  const [due24, due60] = await Promise.all([
+  const [due24, due60, dueFixterClose] = await Promise.all([
     Booking.countDocuments({
       status: /^confirmed$/i,
       date: REMINDERS["24h"].dateRange(now),
@@ -659,6 +929,14 @@ async function logReminderHeartbeat(now = new Date()) {
         emptyField("reminder60mSkippedAt"),
       ],
     }),
+    Booking.countDocuments({
+      status: /^confirmed$/i,
+      date: FIXTER_CLOSE.dateRange(now),
+      $and: [
+        emptyField("fixterCloseReminderSentAt"),
+        emptyField("fixterCloseReminderSkippedAt"),
+      ],
+    }),
   ]);
   console.log(
     JSON.stringify({
@@ -667,9 +945,10 @@ async function logReminderHeartbeat(now = new Date()) {
       newYork: now.toLocaleString("en-US", { timeZone: "America/New_York" }),
       pending24h: due24,
       pending60m: due60,
+      pendingFixterClose: dueFixterClose,
     })
   );
-  return { pending24h: due24, pending60m: due60 };
+  return { pending24h: due24, pending60m: due60, pendingFixterClose: dueFixterClose };
 }
 
 function startBookingReminders() {
@@ -729,10 +1008,12 @@ function startBookingReminders() {
 }
 
 module.exports = {
+  FIXTER_CLOSE,
   REMINDERS,
   applyReminderSms,
   retryPendingSms,
   logReminderHeartbeat,
+  processFixterCloseReminder,
   processReminder,
   runBookingReminderCycle,
   startBookingReminders,
