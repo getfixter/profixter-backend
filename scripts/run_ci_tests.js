@@ -51,6 +51,7 @@ const SUITES = [
   "test_subscription_cancellation_admin_email.js",
   "test_billing_portal_configuration.js",
   "test_sms_core.js",
+  "test_sms_marketing_preference.js",
   "test_gift_membership.js",
   "test_gift_membership_tax.js",
   "test_gift_digital_experience.js",

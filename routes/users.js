@@ -12,6 +12,10 @@ const {
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 const { findDuplicateAddress } = require("../utils/introVisitEligibility");
+const { toE164 } = require("../utils/sms/smsPhone");
+// The eligibility layer's own reading of an opt-out row, reused rather than
+// reimplemented so the account screen and the send path cannot disagree.
+const { optOutFor } = require("../utils/sms/smsEligibility");
 
 async function subscriptionBlocksDestructiveAction(subscription, source) {
   if (!subscription) return false;
@@ -92,6 +96,149 @@ router.get("/me/addresses", auth, async (req, res) => {
     return res.json({ addresses: list, defaultAddressId: defaultId });
   } catch (e) {
     console.error("GET /me/addresses error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ─────────────── Marketing SMS preference (account settings) ───────────────
+ *
+ * The opt-in that signup collects, for everybody who registered before it
+ * existed. Without this, marketing consent could only ever accrue from new
+ * accounts and every current customer would be permanently unreachable on the
+ * channel - not because they declined, but because they were never asked.
+ *
+ * MARKETING ONLY. THIS TOUCHES NOTHING ELSE.
+ *
+ * Not transactional messaging: service texts about a visit somebody booked
+ * rest on a different basis and are switched off with STOP, not here. Not
+ * SmsOptOut: that is keyed to the handset rather than the account and is the
+ * carrier-level answer. Not GHL, not email marketing, not gift SMS - each has
+ * its own consent and its own switch, and collapsing any of them into this one
+ * checkbox is how a preference screen quietly becomes a liability.
+ */
+
+/**
+ * The phone-level opt-out standing against this account's number, if any.
+ *
+ * Read through the same optOutFor the eligibility layer uses rather than
+ * querying SmsOptOut directly, so a START that resolved an earlier STOP is
+ * interpreted here exactly as it is at send time. Two readings of the same row
+ * that disagree would show a customer a checkbox that silently does nothing.
+ */
+async function phoneOptOutFor(user) {
+  const e164 = toE164(user?.phone);
+  if (!e164) return { phone: null, optOut: null };
+  return { phone: e164, optOut: await optOutFor(e164) };
+}
+
+function smsPreferenceDTO(user, optOut) {
+  const prefs = user?.smsPreferences || {};
+  return {
+    // Absent means off. Nobody is opted in by default, and a missing field is
+    // "never asked" rather than a quiet yes.
+    marketingEnabled: prefs.marketingEnabled === true,
+    marketingConsentAt: prefs.marketingConsentAt || null,
+    marketingConsentSource: prefs.marketingConsentSource || "",
+    /*
+     * The handset-level state, surfaced so the UI can explain itself.
+     *
+     * A number under a STOP cannot receive anything, so showing an ordinary
+     * checkbox there would be offering a choice we are not able to honour.
+     */
+    phoneOptedOut: Boolean(optOut),
+    phoneOptOutScope: optOut?.scope || "",
+  };
+}
+
+router.get("/me/sms-preferences", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id).select("phone smsPreferences");
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    const { optOut } = await phoneOptOutFor(me);
+    return res.json(smsPreferenceDTO(me, optOut));
+  } catch (e) {
+    console.error("GET /me/sms-preferences error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.put("/me/sms-preferences", auth, async (req, res) => {
+  try {
+    /*
+     * The literal boolean, or nothing.
+     *
+     * Same rule the register route applies: a string is always truthy, so
+     * accepting anything looser would let "false" opt somebody in.
+     */
+    const marketingEnabled = req.body?.marketingEnabled;
+    if (marketingEnabled !== true && marketingEnabled !== false) {
+      return res.status(400).json({ message: "marketingEnabled must be true or false" });
+    }
+
+    const me = await User.findById(req.user.id).select("phone smsPreferences");
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    const { optOut } = await phoneOptOutFor(me);
+
+    /*
+     * A STOP on the handset outranks anything chosen here, and the refusal is
+     * explicit rather than a silent no-op.
+     *
+     * The customer texted STOP to a carrier-registered number; only a START
+     * from that same handset undoes it. Letting an account screen quietly flip
+     * the preference back on would leave our database claiming a consent
+     * Twilio would refuse to act on - and clearing the SmsOptOut row from here
+     * would be worse still, because it would erase the record of a withdrawal
+     * we are legally required to honour.
+     *
+     * Only opting IN is blocked. Somebody under a STOP who wants marketing off
+     * in their account as well is agreeing with us, and that is allowed
+     * through below.
+     */
+    if (marketingEnabled === true && optOut) {
+      return res.status(409).json({
+        message:
+          "This phone number has opted out of SMS. Text START to re-enable messages before turning marketing texts on.",
+        ...smsPreferenceDTO(me, optOut),
+      });
+    }
+
+    /*
+     * Turning it on records WHEN and HOW, because those are the half of a
+     * consent record that answers a dispute. Turning it off sets only the flag:
+     * this is a marketing preference, not a STOP, so it must not touch
+     * optedOutAt or optOutSource - those mirror the handset-level withdrawal
+     * and are the webhook's to write - and it must not touch
+     * transactionalEnabled, so visit reminders keep working.
+     *
+     * The consent timestamp is deliberately left in place on the way out. It
+     * is the historical fact that consent was once given, which stays true
+     * after it is withdrawn, and marketingEnabled=false is what eligibility
+     * actually reads.
+     */
+    const update = marketingEnabled
+      ? {
+          "smsPreferences.marketingEnabled": true,
+          "smsPreferences.marketingConsentAt": new Date(),
+          "smsPreferences.marketingConsentSource": "account_settings",
+        }
+      : { "smsPreferences.marketingEnabled": false };
+
+    await User.updateOne({ _id: me._id }, { $set: update });
+
+    const fresh = await User.findById(me._id).select("phone smsPreferences");
+    console.log(
+      JSON.stringify({
+        event: "sms_marketing_preference_changed",
+        userId: String(me._id),
+        marketingEnabled,
+        source: "account_settings",
+      })
+    );
+    return res.json(smsPreferenceDTO(fresh, optOut));
+  } catch (e) {
+    console.error("PUT /me/sms-preferences error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 });
