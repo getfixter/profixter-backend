@@ -28,6 +28,15 @@ const {
   emailSettingsFor,
   smsSettingsFor,
 } = require("../utils/communications/communicationSettings");
+const emailMarkup = require("../utils/communications/emailMarkup");
+const {
+  EMAIL_DEFINITIONS,
+  SAMPLE_EMAIL_VARS,
+  buildEmailTokens,
+  emailTokenNames,
+  protectedTokensFor,
+} = require("../utils/communications/emailTokens");
+const { NON_REGISTRY_EMAILS } = require("../utils/communications/emailCatalogue");
 
 /**
  * Admin control over what the system says to customers.
@@ -119,53 +128,74 @@ async function smsCatalogue() {
   });
 }
 
-function emailCatalogue() {
-  return Object.keys(EMAIL_TEMPLATES)
+async function emailCatalogue() {
+  const rows = await CommunicationTemplate.find({ channel: "email" }).lean();
+  const byKey = new Map(rows.map((r) => [r.templateKey, r]));
+
+  const registered = Object.keys(EMAIL_TEMPLATES)
     .sort()
     .map((key) => {
+      const def = EMAIL_DEFINITIONS[key];
       const settings = emailSettingsFor(key);
-      let subject = "";
+      const row = byKey.get(key);
+      const active = Boolean(row?.active && String(row.body || "").trim());
+
+      let codeSubject = "";
       try {
-        subject = String(EMAIL_TEMPLATES[key](emailSampleVars()).subject || "");
+        codeSubject = String(EMAIL_TEMPLATES[key](SAMPLE_EMAIL_VARS).subject || "");
       } catch {
-        subject = "";
+        codeSubject = "";
       }
+
       return {
         channel: "email",
         templateKey: key,
-        label: settings.label,
-        channelClass: settings.channelClass,
-        editable: false,
-        editableNote: settings.editableNote,
-        subject,
-        hasOverride: false,
+        label: def?.label || settings.label,
+        channelClass: def?.channelClass || settings.channelClass,
+        /*
+         * Only templates with a token definition can be edited. A registered
+         * template without one would give the editor an empty variable list and
+         * no way to reproduce its dynamic values, which is worse than saying so.
+         */
+        editable: Boolean(def),
+        editableNote: def ? "" : settings.editableNote,
+        disposition: def ? "editable" : "visible",
+        subject: active ? row.subject : codeSubject,
+        codeSubject,
+        body: active ? row.body : "",
+        hasOverride: active,
+        updatedAt: row?.updatedAt || null,
+        updatedByName: row?.updatedByName || "",
+        revisionCount: row?.revisions?.length || 0,
+        variables: def ? emailTokenNames(key) : [],
+        protectedTokens: protectedTokensFor(key),
       };
     });
-}
 
-/** Safe sample values for email preview. Never a real customer record. */
-function emailSampleVars() {
-  return {
-    name: "Sam Rivera",
-    firstName: "Sam",
-    email: "sam@example.com",
-    plan: "Premium",
-    planLabel: "Premium",
-    billingCycle: "monthly",
-    amount: "$99.00",
-    bookingNumber: "10000001",
-    date: new Date("2026-03-03T19:00:00.000Z").toISOString(),
-    service: "Handyman visit",
-    address: "1 Main St, Huntington, NY 11743",
-    fixterName: "Alex Morgan",
-    technicianName: "Alex Morgan",
-    code: "123456",
-    userId: "10000001",
-    claimUrl: "https://www.profixter.com/gift/claim/sample-token",
-    fromName: "Sam Rivera",
-    months: 2,
-    accessUntil: new Date("2026-04-01T12:00:00.000Z").toISOString(),
-  };
+  /*
+   * Everything sent through sendRaw or sendPromo, listed so no email type is
+   * invisible to Admin. Not editable: their bodies are assembled at the call
+   * site or are generated documents. See utils/communications/emailCatalogue.
+   */
+  const nonRegistry = Object.entries(NON_REGISTRY_EMAILS).map(([key, info]) => ({
+    channel: "email",
+    templateKey: key,
+    label: info.label,
+    channelClass: info.channelClass,
+    editable: false,
+    disposition: info.disposition,
+    category: info.category,
+    audience: info.audience,
+    trigger: info.trigger,
+    source: info.source,
+    protectedNote: info.protectedNote || "",
+    dynamic: Boolean(info.dynamic),
+    subject: "",
+    hasOverride: false,
+    variables: [],
+  }));
+
+  return [...registered, ...nonRegistry];
 }
 
 router.get("/templates", auth, ...onlyAdmin, async (req, res) => {
@@ -173,7 +203,7 @@ router.get("/templates", auth, ...onlyAdmin, async (req, res) => {
     const channel = String(req.query.channel || "").trim();
     const payload = { protectedContent: PROTECTED_CONTENT };
     if (channel !== "email") payload.sms = await smsCatalogue();
-    if (channel !== "sms") payload.email = emailCatalogue();
+    if (channel !== "sms") payload.email = await emailCatalogue();
     return res.json(payload);
   } catch (error) {
     console.error("Communication template list failed:", error);
@@ -198,9 +228,15 @@ router.get("/templates/:channel/:templateKey", auth, ...onlyAdmin, async (req, r
     }
 
     if (channel === "email") {
-      if (!EMAIL_TEMPLATES[templateKey]) return res.status(404).json({ message: "Unknown email template" });
-      const item = emailCatalogue().find((r) => r.templateKey === templateKey);
-      return res.json({ item, settings: emailSettingsFor(templateKey), revisions: [] });
+      const list = await emailCatalogue();
+      const item = list.find((r) => r.templateKey === templateKey);
+      if (!item) return res.status(404).json({ message: "Unknown email template" });
+      const row = await CommunicationTemplate.findOne({ channel: "email", templateKey }).lean();
+      return res.json({
+        item,
+        settings: emailSettingsFor(templateKey),
+        revisions: (row?.revisions || []).slice().reverse(),
+      });
     }
 
     return res.status(400).json({ message: "channel must be sms or email" });
@@ -230,13 +266,46 @@ router.post("/preview", auth, ...onlyAdmin, async (req, res) => {
     if (channel === "email") {
       const fn = EMAIL_TEMPLATES[templateKey];
       if (!fn) return res.status(404).json({ message: "Unknown email template" });
-      const rendered = fn(emailSampleVars());
+
+      const def = EMAIL_DEFINITIONS[templateKey];
+      const candidateBody = typeof req.body?.body === "string" ? req.body.body : null;
+      const candidateSubject = typeof req.body?.subject === "string" ? req.body.subject : null;
+
+      /*
+       * When the editor sends a candidate, render it exactly as a real send
+       * would: the same token values, the same markup renderer, the same
+       * branded frame. A preview that took a shortcut would be a preview of
+       * something the customer is never going to receive.
+       */
+      if (def && candidateBody !== null) {
+        const values = buildEmailTokens(templateKey, SAMPLE_EMAIL_VARS);
+        const validation = validateEmailSave(templateKey, candidateSubject ?? "", candidateBody);
+        const inner = emailMarkup.renderBody(candidateBody, values);
+        const { frame, toText } = require("../utils/emailService");
+        const html = frame(inner, { preheader: def.preheader || "" });
+        return res.json({
+          channel: "email",
+          templateKey,
+          subject: emailMarkup.renderSubject(candidateSubject ?? "", values),
+          html,
+          text: toText(html),
+          validation: { valid: validation.valid, errors: validation.errors },
+          variables: emailTokenNames(templateKey),
+          protectedTokens: protectedTokensFor(templateKey),
+          sent: false,
+        });
+      }
+
+      const rendered = fn(SAMPLE_EMAIL_VARS);
       return res.json({
         channel: "email",
         templateKey,
         subject: String(rendered.subject || ""),
         html: String(rendered.html || ""),
         text: String(rendered.text || ""),
+        validation: { valid: true, errors: [] },
+        variables: def ? emailTokenNames(templateKey) : [],
+        protectedTokens: protectedTokensFor(templateKey),
         sent: false,
       });
     }
@@ -314,6 +383,203 @@ function validateSmsSave(templateKey, body) {
 
   return { valid: errors.length === 0, errors, rendered, measurement: measure(rendered) };
 }
+
+/**
+ * Everything that must be true before an admin's email is accepted.
+ *
+ * The protected-token check is the one that matters. A password reset without
+ * its code, or a gift invitation without its claim button, is an email that
+ * looks fine in the editor and is useless to the person who receives it - and
+ * nobody would notice until a customer could not reset their password. So a
+ * body that drops a required token is refused, by name.
+ */
+function validateEmailSave(templateKey, subject, body) {
+  const def = EMAIL_DEFINITIONS[templateKey];
+  if (!def) return { valid: false, errors: ["This email template is not editable."] };
+
+  const allowed = emailTokenNames(templateKey);
+  const result = emailMarkup.validate({ subject, body, allowed });
+  const errors = [...result.errors];
+
+  for (const required of protectedTokensFor(templateKey)) {
+    if (!result.usedTokens.includes(required)) {
+      errors.push(
+        `{{${required}}} must stay in the body. It carries this email's secure action, and the ` +
+          "message does not work without it."
+      );
+    }
+  }
+
+  return { valid: errors.length === 0, errors, usedTokens: result.usedTokens };
+}
+
+router.put("/templates/email/:templateKey", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const templateKey = String(req.params.templateKey || "");
+    if (!EMAIL_TEMPLATES[templateKey] || !EMAIL_DEFINITIONS[templateKey]) {
+      return res.status(404).json({ message: "Unknown or non-editable email template" });
+    }
+    if (typeof req.body?.body !== "string" || typeof req.body?.subject !== "string") {
+      return res.status(400).json({ message: "subject and body are required" });
+    }
+
+    const { subject, body } = req.body;
+    const check = validateEmailSave(templateKey, subject, body);
+    if (!check.valid) {
+      return res.status(400).json({ message: "Template rejected", errors: check.errors });
+    }
+
+    const identity = adminIdentity(req);
+    const existing = await CommunicationTemplate.findOne({ channel: "email", templateKey });
+
+    if (existing) {
+      existing.revisions.push({
+        body: existing.body,
+        subject: existing.subject,
+        updatedAt: existing.updatedAt || new Date(),
+        updatedBy: existing.updatedBy,
+        updatedByName: existing.updatedByName,
+      });
+      existing.body = body;
+      existing.subject = subject;
+      existing.active = true;
+      existing.updatedBy = identity.updatedBy;
+      existing.updatedByName = identity.updatedByName;
+      await existing.save();
+    } else {
+      await CommunicationTemplate.create({
+        channel: "email",
+        templateKey,
+        subject,
+        body,
+        active: true,
+        ...identity,
+      });
+    }
+
+    overrides.invalidate();
+    await overrides.refresh({ force: true });
+
+    console.log(
+      JSON.stringify({
+        event: "communication_template_saved",
+        channel: "email",
+        templateKey,
+        by: identity.updatedBy,
+      })
+    );
+
+    return res.json({ templateKey, subject, body, hasOverride: true });
+  } catch (error) {
+    console.error("Email template save failed:", error);
+    return res.status(500).json({ message: "Failed to save template" });
+  }
+});
+
+router.post("/templates/email/:templateKey/reset", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const templateKey = String(req.params.templateKey || "");
+    if (!EMAIL_TEMPLATES[templateKey]) {
+      return res.status(404).json({ message: "Unknown email template" });
+    }
+
+    const identity = adminIdentity(req);
+    const existing = await CommunicationTemplate.findOne({ channel: "email", templateKey });
+    if (existing) {
+      if (String(existing.body || "").trim()) {
+        existing.revisions.push({
+          body: existing.body,
+          subject: existing.subject,
+          updatedAt: existing.updatedAt || new Date(),
+          updatedBy: existing.updatedBy,
+          updatedByName: existing.updatedByName,
+        });
+      }
+      existing.active = false;
+      existing.body = "";
+      existing.subject = "";
+      existing.updatedBy = identity.updatedBy;
+      existing.updatedByName = identity.updatedByName;
+      await existing.save();
+    }
+
+    overrides.invalidate();
+    await overrides.refresh({ force: true });
+
+    console.log(
+      JSON.stringify({
+        event: "communication_template_reset",
+        channel: "email",
+        templateKey,
+        by: identity.updatedBy,
+      })
+    );
+
+    let codeSubject = "";
+    try {
+      codeSubject = String(EMAIL_TEMPLATES[templateKey](SAMPLE_EMAIL_VARS).subject || "");
+    } catch {
+      codeSubject = "";
+    }
+    return res.json({ templateKey, hasOverride: false, subject: codeSubject, body: "" });
+  } catch (error) {
+    console.error("Email template reset failed:", error);
+    return res.status(500).json({ message: "Failed to reset template" });
+  }
+});
+
+/**
+ * Put a previous version back.
+ *
+ * Restoring is a save, not a rewind: the current wording is pushed onto the
+ * revision stack first, so restoring the wrong one is itself undoable.
+ */
+router.post("/templates/:channel/:templateKey/restore/:index", auth, ...onlyAdmin, async (req, res) => {
+  try {
+    const { channel, templateKey } = req.params;
+    if (channel !== "sms" && channel !== "email") {
+      return res.status(400).json({ message: "channel must be sms or email" });
+    }
+
+    const row = await CommunicationTemplate.findOne({ channel, templateKey });
+    if (!row) return res.status(404).json({ message: "No saved versions for this template" });
+
+    const index = Number(req.params.index);
+    const revision = row.revisions[index];
+    if (!revision) return res.status(404).json({ message: "That version no longer exists" });
+
+    const check =
+      channel === "sms"
+        ? validateSmsSave(templateKey, revision.body)
+        : validateEmailSave(templateKey, revision.subject || "", revision.body);
+    if (!check.valid) {
+      return res.status(400).json({ message: "That version is no longer valid", errors: check.errors });
+    }
+
+    const identity = adminIdentity(req);
+    row.revisions.push({
+      body: row.body,
+      subject: row.subject,
+      updatedAt: row.updatedAt || new Date(),
+      updatedBy: row.updatedBy,
+      updatedByName: row.updatedByName,
+    });
+    row.body = revision.body;
+    row.subject = revision.subject || "";
+    row.active = true;
+    row.updatedBy = identity.updatedBy;
+    row.updatedByName = identity.updatedByName;
+    await row.save();
+
+    overrides.invalidate();
+    await overrides.refresh({ force: true });
+
+    return res.json({ templateKey, channel, body: row.body, subject: row.subject, hasOverride: true });
+  } catch (error) {
+    console.error("Template restore failed:", error);
+    return res.status(500).json({ message: "Failed to restore version" });
+  }
+});
 
 router.put("/templates/sms/:templateKey", auth, ...onlyAdmin, async (req, res) => {
   try {

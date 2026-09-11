@@ -1,5 +1,7 @@
 const CommunicationTemplate = require("../../models/CommunicationTemplate");
 const { DEFINITIONS, buildTokenValues, renderTokenTemplate } = require("./smsTokens");
+const { EMAIL_DEFINITIONS, buildEmailTokens } = require("./emailTokens");
+const emailMarkup = require("./emailMarkup");
 
 /**
  * The live override lookup, in memory, because rendering is synchronous.
@@ -24,6 +26,8 @@ const CACHE_TTL_MS = 60 * 1000;
 const cache = {
   /** channel -> templateKey -> body */
   sms: new Map(),
+  /** templateKey -> { subject, body } */
+  email: new Map(),
   loadedAt: 0,
   loading: null,
 };
@@ -35,9 +39,10 @@ function isFresh() {
 /**
  * Pull active overrides into memory.
  *
- * Only SMS is read. Email rows may exist - the model allows them so the schema
- * does not need migrating later - but nothing consults them, which is what
- * "reserved" means here rather than "half-wired".
+ * Both channels, in one query. A row is only cached once it is complete for
+ * its channel - an email override needs both a subject and a body, because
+ * half an override is worse than none: the customer would get admin wording
+ * under a code subject, or the reverse.
  */
 async function refresh({ force = false, Model = CommunicationTemplate } = {}) {
   if (!force && isFresh()) return cache;
@@ -45,17 +50,30 @@ async function refresh({ force = false, Model = CommunicationTemplate } = {}) {
 
   cache.loading = (async () => {
     try {
-      const rows = await Model.find({ channel: "sms", active: true })
-        .select("templateKey body")
+      const rows = await Model.find({ active: true })
+        .select("channel templateKey body subject")
         .lean();
-      const next = new Map();
+      const nextSms = new Map();
+      const nextEmail = new Map();
       for (const row of rows) {
         // A row for a type the code no longer has is dropped, not trusted.
-        if (row.templateKey && DEFINITIONS[row.templateKey] && String(row.body || "").trim()) {
-          next.set(row.templateKey, row.body);
+        if (row.channel === "sms") {
+          if (row.templateKey && DEFINITIONS[row.templateKey] && String(row.body || "").trim()) {
+            nextSms.set(row.templateKey, row.body);
+          }
+        } else if (row.channel === "email") {
+          if (
+            row.templateKey &&
+            EMAIL_DEFINITIONS[row.templateKey] &&
+            String(row.body || "").trim() &&
+            String(row.subject || "").trim()
+          ) {
+            nextEmail.set(row.templateKey, { subject: row.subject, body: row.body });
+          }
         }
       }
-      cache.sms = next;
+      cache.sms = nextSms;
+      cache.email = nextEmail;
       cache.loadedAt = Date.now();
     } catch (error) {
       /*
@@ -84,8 +102,9 @@ function invalidate() {
 }
 
 /** Set the cache directly. Tests use this; nothing in production does. */
-function primeForTest(entries = {}) {
+function primeForTest(entries = {}, emailEntries = {}) {
   cache.sms = new Map(Object.entries(entries));
+  cache.email = new Map(Object.entries(emailEntries));
   cache.loadedAt = Date.now();
 }
 
@@ -139,8 +158,55 @@ function startOverrideRefresh({ intervalMs = CACHE_TTL_MS } = {}) {
   return timer;
 }
 
+function hasEmailOverride(templateKey) {
+  return cache.email.has(templateKey);
+}
+
+/**
+ * Render an email through the admin's saved version when one is in force.
+ *
+ * Returns null when there is nothing to apply, so sendTx falls back to its own
+ * code template and this module never needs to know what that template says.
+ *
+ * THE FRAME COMES FROM emailService, NOT FROM HERE. The admin edits the content
+ * inside the branded shell; the shell itself, the header, the footer and the
+ * preheader are assembled by the same function every code template uses. An
+ * edited email is therefore visually a ProFixter email by construction rather
+ * than by the admin remembering to keep it one.
+ */
+function renderEmailOverride(templateKey, vars = {}) {
+  if (!hasEmailOverride(templateKey)) return null;
+  const def = EMAIL_DEFINITIONS[templateKey];
+  if (!def) return null;
+
+  try {
+    const { frame, toText } = require("../emailService");
+    const saved = cache.email.get(templateKey);
+    const values = buildEmailTokens(templateKey, vars);
+    const inner = emailMarkup.renderBody(saved.body, values);
+    if (!inner.trim()) return null;
+
+    const subject = emailMarkup.renderSubject(saved.subject, values);
+    if (!subject) return null;
+
+    const html = frame(inner, { preheader: def.preheader || "" });
+    return { subject, html, text: toText(html) };
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "communication_email_override_render_failed",
+        templateKey,
+        error: String(error?.message || "").slice(0, 200),
+      })
+    );
+    return null;
+  }
+}
+
 module.exports = {
   CACHE_TTL_MS,
+  hasEmailOverride,
+  renderEmailOverride,
   getSmsOverride,
   hasSmsOverride,
   invalidate,

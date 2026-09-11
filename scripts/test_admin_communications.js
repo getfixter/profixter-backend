@@ -119,7 +119,16 @@ async function main() {
     for (const key of Object.keys(EMAIL_TEMPLATES)) {
       assert.ok(listed.has(key), `missing ${key}`);
     }
-    assert.strictEqual(body.email.length, Object.keys(EMAIL_TEMPLATES).length);
+    /*
+     * More than the registry, deliberately. The list also carries the sendRaw
+     * keys - internal alerts, campaigns, generated documents - so no email the
+     * system sends is invisible in Admin. test_admin_email_templates owns the
+     * assertion that every one of those is classified.
+     */
+    assert.ok(
+      body.email.length >= Object.keys(EMAIL_TEMPLATES).length,
+      "the email list must include at least the registry"
+    );
   });
 
   await test("reserved SMS types are labelled as having no trigger", async () => {
@@ -130,10 +139,25 @@ async function main() {
     assert.match(s.trigger, /No trigger currently exists/i);
   });
 
-  await test("email templates are marked not editable, with the reason", async () => {
+  await test("registered email templates are editable; the rest say why not", async () => {
     const body = await (await api("/api/admin/communications/templates")).json();
-    assert.ok(body.email.every((r) => r.editable === false));
-    assert.match(body.email[0].editableNote, /not editable yet/i);
+    const byKey = new Map(body.email.map((r) => [r.templateKey, r]));
+
+    /* Phase 2 made the registry editable. */
+    for (const key of Object.keys(EMAIL_TEMPLATES)) {
+      assert.strictEqual(byKey.get(key).editable, true, `${key} should be editable`);
+    }
+
+    /* Everything else is listed with a disposition rather than omitted. */
+    const nonEditable = body.email.filter((r) => !r.editable);
+    assert.ok(nonEditable.length > 0, "sendRaw keys should be listed too");
+    for (const row of nonEditable) {
+      assert.ok(
+        ["visible", "generated"].includes(row.disposition),
+        `${row.templateKey} needs a disposition`
+      );
+      assert.ok(row.trigger, `${row.templateKey} needs a documented trigger`);
+    }
   });
 
   /* ------------------------------------------------------------------ */

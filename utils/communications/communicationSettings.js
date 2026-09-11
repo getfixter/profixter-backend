@@ -386,12 +386,18 @@ function emailSettingsFor(templateKey) {
     appliesTo: info.appliesTo || "",
     schedule: info.schedule || "Immediately, on the triggering event.",
     channelClass: info.channelClass || "transactional",
+    /*
+     * Editability is decided by emailTokens, not here: a template is editable
+     * exactly when it has a token definition and a projection that can supply
+     * its dynamic values. This note is what the screen shows for the ones that
+     * do not - the sendRaw keys whose bodies are built at the call site or are
+     * generated documents.
+     */
     editable: false,
     editableNote:
-      "Email bodies are not editable yet. The defaults are JavaScript rendering functions that " +
-      "produce styled HTML through shared helpers, and making them editable means authoring a safe " +
-      "token form for each one. Storing executable code or raw HTML template logic would be the " +
-      "wrong way to solve that, so it is deferred rather than bodged.",
+      "This email's body is assembled where it is sent rather than from a template - an internal " +
+      "alert built from a booking, a campaign whose copy lives in the campaign editor, or a " +
+      "generated document. Its trigger and recipients are described below.",
   };
 }
 

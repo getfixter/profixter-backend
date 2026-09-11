@@ -1214,7 +1214,27 @@ async function sendRaw({
 async function sendTx(key, to, vars = {}, opts = {}) {
   const t = TEMPLATES[key];
   if (!t) throw new Error(`Unknown template: ${key}`);
-  const { subject, html, text } = t(vars);
+
+  /*
+   * An admin's saved version, when one exists for this template.
+   *
+   * Resolved here so every caller inherits it without knowing it exists, and
+   * so the rendered result still flows through sendRaw - meaning the branded
+   * frame, the logging, the snapshot and the suppression checks are identical
+   * whether the wording came from code or from the database.
+   *
+   * Required lazily: the override module imports emailTokens, which imports
+   * this file for the frame primitives. A top-level require would close that
+   * loop during module initialisation.
+   */
+  let overridden = null;
+  try {
+    overridden = require("./communications/templateOverrides").renderEmailOverride(key, vars);
+  } catch {
+    overridden = null;
+  }
+
+  const { subject, html, text } = overridden || t(vars);
   const bccAdmin = opts.bccAdmin ?? BCC_ADMIN.has(key);
   return sendRaw({
     to,
@@ -1272,6 +1292,18 @@ async function sendPromoMarkdown(
 }
 
 module.exports = {
+  /*
+   * The branded shell and its primitives, exported so the Admin override
+   * renderer can wrap edited content in the SAME frame the code templates use.
+   * Re-implementing the layout there would let the two drift, and the first
+   * sign of that would be a customer receiving an email that looks almost but
+   * not quite like ours.
+   */
+  frame,
+  btn,
+  escapeHtml,
+  toText,
+  URLS,
   sendRaw,
   sendTx,
   sendPromo,
