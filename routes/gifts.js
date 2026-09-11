@@ -184,6 +184,14 @@ router.get("/options", async (_req, res) => {
           durationMonths: quote.durationMonths,
           totalCents: quote.totalCents,
           perMonthCents: quote.perMonthCents,
+          /*
+           * How the total was reached. Twelve months is sold at the annual
+           * membership rate, so the screen must not print "per month times
+           * months" for it - the multiplication would not match the price
+           * beside it.
+           */
+          pricingBasis: quote.pricingBasis,
+          savingsCents: quote.savingsCents,
         }));
       return { plan, label: plan.charAt(0).toUpperCase() + plan.slice(1), quotes };
     });

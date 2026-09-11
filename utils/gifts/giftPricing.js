@@ -23,17 +23,41 @@ function normalizePlan(plan) {
 /**
  * The monthly price a gift is priced from.
  *
- * Always the MONTHLY figure, never the annual one, even for a twelve-month
- * gift. An annual subscription is discounted because it is a commitment to
- * keep paying; a gift is a fixed block of months with no commitment attached,
- * so it is priced at the monthly rate times the number of months. Quoting the
- * annual rate would sell a year of membership for the price of ten months and
- * call it a gift.
+ * The monthly rate, which prices every gift length except twelve months.
+ * See annualPriceCents below for why a year is different.
  */
 function monthlyPriceCents(plan) {
   const normalized = normalizePlan(plan);
   if (!normalized) return 0;
   const dollars = getPlanPrice(normalized, "monthly");
+  return Math.round(Number(dollars || 0) * 100);
+}
+
+/** Twelve months, at any length, is one year. */
+const ANNUAL_MONTHS = 12;
+
+/**
+ * The annual membership price, which is what a twelve-month gift costs.
+ *
+ * THIS REVERSED AN EARLIER DECISION, deliberately and on instruction. A
+ * twelve-month gift used to be quoted at twelve times the monthly rate, on
+ * the reasoning that the annual discount buys a commitment and a gift
+ * commits to nothing. The business decision is that somebody gifting a full
+ * year should pay what a year costs - Pay 10, Get 12 - and the recipient
+ * still receives all twelve months.
+ *
+ * READ FROM THE CATALOG, never restated here. getPlanPrice is the same
+ * accessor the membership checkout uses, so a gifted year and a bought year
+ * cannot drift apart: changing the annual price in one place changes both.
+ *
+ * Zero when a plan has no annual price, and the caller falls back to the
+ * monthly arithmetic rather than refusing to quote - a missing annual price
+ * should not take a plan off sale.
+ */
+function annualPriceCents(plan) {
+  const normalized = normalizePlan(plan);
+  if (!normalized) return 0;
+  const dollars = getPlanPrice(normalized, "annual");
   return Math.round(Number(dollars || 0) * 100);
 }
 
@@ -61,12 +85,34 @@ function quoteGift({ plan, durationMonths }) {
     return { ok: false, reason: "plan_has_no_price" };
   }
 
+  /*
+   * Twelve months is sold at the annual membership price; every other
+   * length is the monthly rate times the months.
+   *
+   * ONE CALCULATION, HERE. stripeLineItem builds the Checkout amount from
+   * this quote rather than doing its own arithmetic, and the options
+   * endpoint serves the purchase screen from it too, so the price shown,
+   * the price charged and the price recorded cannot disagree.
+   */
+  const listCents = perMonthCents * months;
+  const annualCents = months === ANNUAL_MONTHS ? annualPriceCents(normalized) : 0;
+  const onAnnualRate = annualCents > 0;
+  const totalCents = onAnnualRate ? annualCents : listCents;
+
   return {
     ok: true,
     plan: normalized,
     durationMonths: months,
     perMonthCents,
-    totalCents: perMonthCents * months,
+    totalCents,
+    /*
+     * How this total was reached, so a screen can say "Pay 10, get 12"
+     * instead of printing a multiplication that no longer adds up.
+     */
+    pricingBasis: onAnnualRate ? "annual" : "monthly",
+    /* What the same months would cost at the monthly rate, and the gap. */
+    listCents,
+    savingsCents: Math.max(listCents - totalCents, 0),
     currency: "usd",
     /* The live recurring price id, carried for reference only. A gift is
      * never billed against it; see stripeLineItem below. */
@@ -171,6 +217,8 @@ function formatTermDate(value) {
 }
 
 module.exports = {
+  ANNUAL_MONTHS,
+  annualPriceCents,
   PLAN_NAMES,
   addMonths,
   formatTermDate,

@@ -551,12 +551,16 @@ test("every price is the monthly catalogue rate times the months", () => {
   const { quoteGift } = require("../utils/gifts/giftPricing");
   const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
 
-  // The table approved for launch, in cents.
+  /*
+   * The approved table, in cents. Twelve months is the ANNUAL membership
+   * price - Pay 10, Get 12 - and every shorter length is the monthly rate
+   * times the months.
+   */
   const expected = {
-    basic: { 1: 14900, 2: 29800, 3: 44700, 6: 89400, 12: 178800 },
-    plus: { 1: 24900, 2: 49800, 3: 74700, 6: 149400, 12: 298800 },
-    premium: { 1: 34900, 2: 69800, 3: 104700, 6: 209400, 12: 418800 },
-    elite: { 1: 49900, 2: 99800, 3: 149700, 6: 299400, 12: 598800 },
+    basic: { 1: 14900, 2: 29800, 3: 44700, 6: 89400, 12: 149000 },
+    plus: { 1: 24900, 2: 49800, 3: 74700, 6: 149400, 12: 249000 },
+    premium: { 1: 34900, 2: 69800, 3: 104700, 6: 209400, 12: 349000 },
+    elite: { 1: 49900, 2: 99800, 3: 149700, 6: 299400, 12: 499000 },
   };
 
   for (const [plan, byMonths] of Object.entries(expected)) {
@@ -569,27 +573,73 @@ test("every price is the monthly catalogue rate times the months", () => {
         cents,
         `${plan} x ${months} should be ${cents}, got ${quote.totalCents}`
       );
-      // And it is genuinely derived, not a second copy of the table.
-      assert.strictEqual(quote.totalCents, monthly * Number(months));
+      /*
+       * And genuinely derived from the catalog, not a second copy of the
+       * table: twelve months reads the annual price, everything else the
+       * monthly one.
+       */
+      const fromCatalog =
+        Number(months) === 12
+          ? Math.round(Number(PLAN_CATALOG[plan].annual.price) * 100)
+          : monthly * Number(months);
+      assert.strictEqual(quote.totalCents, fromCatalog);
     }
   }
 });
 
-test("the annual rate is never used to price a twelve-month gift", () => {
-  // A gift is a block of months with no commitment, so it is priced monthly.
+test("the annual rate comes from the catalog, not a second price list", () => {
+  /*
+   * The rule reversed on instruction: a twelve-month gift now costs what a
+   * year of membership costs. The thing worth protecting is that there is
+   * ONE annual price - change it for membership and the gift follows.
+   */
   const { quoteGift } = require("../utils/gifts/giftPricing");
   const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
-  const twelve = quoteGift({ plan: "plus", durationMonths: 12 });
-  const annualCents = Math.round(Number(PLAN_CATALOG.plus.annual.price) * 100);
-  assert.notStrictEqual(twelve.totalCents, annualCents);
-  assert.strictEqual(twelve.totalCents, Math.round(Number(PLAN_CATALOG.plus.monthly.price) * 100) * 12);
+
+  for (const plan of ["basic", "plus", "premium", "elite"]) {
+    const twelve = quoteGift({ plan, durationMonths: 12 });
+    assert.strictEqual(
+      twelve.totalCents,
+      Math.round(Number(PLAN_CATALOG[plan].annual.price) * 100),
+      `${plan} must read the catalog's annual price`
+    );
+  }
+
+  /* No gift price may be written down anywhere but the catalog. */
+  const fs = require("fs");
+  const path = require("path");
+  const source = fs.readFileSync(
+    path.join(__dirname, "../utils/gifts/giftPricing.js"),
+    "utf8"
+  );
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const literal of ["149000", "249000", "349000", "499000", "1490", "2490", "3490", "4990"]) {
+    assert.ok(
+      !code.includes(literal),
+      `giftPricing hardcodes ${literal}; prices belong in the catalog`
+    );
+  }
 });
 
 test("the line item carries the chosen length, at every length", () => {
   const { stripeLineItem } = require("../utils/gifts/giftPricing");
   for (const months of [1, 2, 3, 6, 12]) {
     const item = stripeLineItem({ plan: "plus", durationMonths: months, productId: FAKE_PRODUCT });
-    assert.strictEqual(item.price_data.unit_amount, 24900 * months);
+    /*
+     * The charged amount, which is the point: the Checkout line item must
+     * carry the same total the purchase screen quoted, annual rate included.
+     */
+    const { quoteGift } = require("../utils/gifts/giftPricing");
+    const expectedCents = quoteGift({ plan: "plus", durationMonths: months }).totalCents;
+    assert.strictEqual(item.price_data.unit_amount, expectedCents);
+    if (months === 12) {
+      const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
+      assert.strictEqual(
+        expectedCents,
+        Math.round(Number(PLAN_CATALOG.plus.annual.price) * 100),
+        "a twelve-month gift must CHARGE the annual price, not just display it"
+      );
+    }
     assert(!JSON.stringify(item).includes("recurring"), "still no recurring at any length");
   }
 });

@@ -125,16 +125,44 @@ test("pricing is read from PLAN_CATALOG, not duplicated", () => {
   }
 });
 
-test("a gift is priced monthly even for twelve months", () => {
+test("a twelve-month gift is priced like an annual membership", () => {
   /*
-   * The annual price is discounted because it is a commitment to keep paying.
-   * A gift is a block of months with no commitment, so quoting the annual rate
-   * would sell a year for the price of ten months.
+   * THE RULE CHANGED, on instruction. A year used to be quoted at twelve
+   * times the monthly rate; the business decision is Pay 10, Get 12 - the
+   * purchaser pays what a year costs and the recipient still receives all
+   * twelve months.
+   *
+   * Read from the catalog rather than compared against a number written
+   * here, so a gifted year and a bought year cannot drift apart.
    */
-  const twelve = pricing.quoteGift({ plan: "plus", durationMonths: 12 });
-  assert.equal(twelve.totalCents, 24900 * 12);
   const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
-  assert.notEqual(twelve.totalCents, PLAN_CATALOG.plus.annual.price * 100);
+
+  for (const plan of ["basic", "plus", "premium", "elite"]) {
+    const twelve = pricing.quoteGift({ plan, durationMonths: 12 });
+    const annualCents = Math.round(Number(PLAN_CATALOG[plan].annual.price) * 100);
+    const monthlyCents = Math.round(Number(PLAN_CATALOG[plan].monthly.price) * 100);
+
+    assert.equal(twelve.totalCents, annualCents, `${plan} must cost the annual price`);
+    assert.equal(twelve.pricingBasis, "annual");
+    assert.equal(twelve.savingsCents, monthlyCents * 12 - annualCents);
+    /* And it is genuinely cheaper than paying by the month. */
+    assert.ok(twelve.totalCents < monthlyCents * 12, `${plan} should save something`);
+    /* Still twelve months of membership. */
+    assert.equal(twelve.durationMonths, 12);
+  }
+});
+
+test("no other gift length was touched by the annual rule", () => {
+  const { PLAN_CATALOG } = require("../utils/subscriptionManagement");
+  for (const plan of ["basic", "plus", "premium", "elite"]) {
+    const monthlyCents = Math.round(Number(PLAN_CATALOG[plan].monthly.price) * 100);
+    for (const months of [1, 2, 3, 6]) {
+      const quote = pricing.quoteGift({ plan, durationMonths: months });
+      assert.equal(quote.totalCents, monthlyCents * months, `${plan}/${months} must be unchanged`);
+      assert.equal(quote.pricingBasis, "monthly");
+      assert.equal(quote.savingsCents, 0);
+    }
+  }
 });
 
 test("unknown plans and durations are refused", () => {
