@@ -720,3 +720,10 @@ router.post("/google", async (req, res) => {
 });
 
 module.exports = router;
+/*
+ * Exported so the membership question has one answer.
+ * Recent Work gates member uploads on live cover, and re-deriving that from
+ * Subscription rows elsewhere is how the gift-holder bug got written the first
+ * time. Attaching it to the router keeps the route file the owner.
+ */
+module.exports.buildPerAddressCoverage = buildPerAddressCoverage;

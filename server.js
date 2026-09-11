@@ -22,6 +22,7 @@ const {
 const { startSmsJobs } = require("./jobs/smsJobs");
 const { startOverrideRefresh } = require("./utils/communications/templateOverrides");
 const { startGiftLifecycle } = require("./jobs/giftLifecycle");
+const { startRecentWorkPublisher } = require("./jobs/recentWorkPublisher");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
 const {
@@ -192,6 +193,8 @@ app.use("/api/password-reset", require("./routes/passwordReset"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/requests", require("./routes/requests"));
+// Public gallery read needs no token; the submission route inside it does.
+app.use("/api/recent-work", require("./routes/recentWork"));
 app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
@@ -217,6 +220,7 @@ app.use("/api/admin/sms", require("./routes/adminSms"));
 // Template control and unified email+SMS history. Admin-only on both sides:
 // message bodies carry customer names, appointment times and claim links.
 app.use("/api/admin/communications", require("./routes/adminCommunications"));
+app.use("/api/admin/recent-work", require("./routes/adminRecentWork"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin/marketing", require("./routes/adminMarketing"));
@@ -578,6 +582,8 @@ if (process.env.BOOKING_REMINDERS_ENABLED !== "false") {
  * ENABLE_MARKETING_EMAILS is true, so deploying the code and turning marketing
  * on stay two separate decisions.
  */
+startRecentWorkPublisher();
+
 startMarketingEmails();
 
 /*
