@@ -6,6 +6,8 @@ const router = express.Router();
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const smsNotify = require("../utils/sms/smsNotifications");
+const { optOutFor } = require("../utils/sms/smsEligibility");
+const { toE164 } = require("../utils/sms/smsPhone");
 const { normalizePhoneE164 } = require("../utils/identity");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
@@ -454,6 +456,57 @@ router.get("/users/:id/addressesDetailed", auth, onlyAdmin, async (req, res) => 
   if (!u) return res.status(404).json({ message: "User not found" });
   const rows = await getAddressPlansForUser(u);
   res.json(rows);
+});
+
+/**
+ * What this customer has actually agreed to be texted about.
+ *
+ * READ-ONLY, AND DELIBERATELY SO.
+ *
+ * There is no matching write route and there must never be one. Consent is
+ * something the customer performs; an admin button that set transactionalEnabled
+ * would manufacture a record asserting they did something they did not, which is
+ * worse than having no record at all - it is a false one, and it is the first
+ * thing that would be examined if a complaint were ever made. Support's job here
+ * is to read the state and, if the customer wants texts on, tell them where the
+ * switch is.
+ *
+ * The handset STOP is reported from SmsOptOut rather than from the copy mirrored
+ * onto the user, and through the same optOutFor the send path uses, so that a
+ * START which resolved an earlier STOP is interpreted here exactly as it is at
+ * send time. An admin screen that disagreed with the eligibility engine would be
+ * worse than no screen.
+ */
+router.get("/users/:id/sms-consent", auth, onlyAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("phone smsPreferences").lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const prefs = user.smsPreferences || {};
+    const e164 = toE164(user.phone);
+    const optOut = e164 ? await optOutFor(e164) : null;
+
+    return res.json({
+      /*
+       * Strict === true on both, so an account written before these fields
+       * existed reports "not opted in" rather than inheriting a consent nobody
+       * gave. Absence is never consent, here or anywhere else.
+       */
+      transactionalEnabled: prefs.transactionalEnabled === true,
+      transactionalConsentAt: prefs.transactionalConsentAt || null,
+      transactionalConsentSource: prefs.transactionalConsentSource || "",
+      marketingEnabled: prefs.marketingEnabled === true,
+      marketingConsentAt: prefs.marketingConsentAt || null,
+      marketingConsentSource: prefs.marketingConsentSource || "",
+      phoneOptedOut: Boolean(optOut),
+      phoneOptOutScope: optOut?.scope || "",
+      phoneOptedOutAt: optOut?.optedOutAt || null,
+      phoneOptOutSource: optOut?.source || "",
+    });
+  } catch (error) {
+    console.error("GET /admin/users/:id/sms-consent error:", error);
+    return res.status(500).json({ message: "Failed to read SMS consent" });
+  }
 });
 
 router.post("/users/subscription-sync/repair", auth, ...onlyAdmin, async (req, res) => {

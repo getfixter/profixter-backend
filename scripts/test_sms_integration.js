@@ -106,6 +106,22 @@ async function makeUser(overrides = {}) {
     email: overrides.email || `sam${Math.random().toString(36).slice(2, 8)}@example.com`,
     phone: "6315991363",
     role: "customer",
+    /*
+     * A customer who ticked the service-text box, which is now the only kind
+     * who can be sent one.
+     *
+     * This file tests the DELIVERY machinery - retries, dedupe, opt-outs,
+     * undeliverable numbers - and every one of those tests needs a message that
+     * gets far enough to exercise it. Consent itself is tested in
+     * test_sms_consent_mechanics.js, where the default is the opposite and
+     * absence is proved to suppress. Any test here that cares about consent
+     * overrides smsPreferences explicitly.
+     */
+    smsPreferences: {
+      transactionalEnabled: true,
+      transactionalConsentAt: new Date(),
+      transactionalConsentSource: "signup_web_form",
+    },
     ...overrides,
   });
 }
@@ -801,28 +817,39 @@ async function run() {
     assert.equal(await SmsOptOut.countDocuments({ phone: "+16315991363" }), 1);
   });
 
-  await test("a START restores service messaging but NOT marketing", async () => {
+  await test("a START lifts the block and grants NO consent of either kind", async () => {
     /*
-     * START is a reply to a service message, not the express written consent
-     * that promotional texting requires. Restoring marketing on a START would
-     * treat the two as the same thing.
+     * START used to restore service messaging. It no longer restores anything.
+     *
+     * A five-letter inbound text is not the affirmative, per-channel, recorded
+     * act that either channel now requires - it is most often a reply to a
+     * message, or a word typed to see what happens. Manufacturing consent out
+     * of it would rebuild the exact defect the forced-consent work removed, so
+     * START lifts the carrier-level block and stops there. Whoever comes back
+     * turns on what they want, where we can record when and how.
      */
     const user = await makeUser({
       phone: "+16315991363",
-      smsPreferences: { marketingEnabled: true },
+      smsPreferences: { transactionalEnabled: true, marketingEnabled: true },
     });
     await webhook.applyOptOut("+16315991363", "stop");
     await webhook.applyOptIn("+16315991363", "start");
 
     const optOut = await SmsOptOut.findOne({ phone: "+16315991363" });
-    assert.ok(optOut.optedInAt, "the opt-out must be resolved");
+    assert.ok(optOut.optedInAt, "the handset block must be resolved");
 
     const reloaded = await User.findById(user._id).lean();
     assert.equal(reloaded.smsPreferences.marketingEnabled, false, "marketing stays off");
+    assert.equal(
+      reloaded.smsPreferences.transactionalEnabled,
+      false,
+      "the STOP withdrew service consent and START does not give it back"
+    );
 
     const booking = await makeBooking(reloaded);
     const result = await smsNotify.notifyBookingReminder(booking, reloaded, "24h");
-    assert.equal(result.status, "simulated", "service messaging is restored");
+    assert.equal(result.status, "suppressed", "no consent, so still no message");
+    assert.equal(result.reason, "transactional_disabled_by_user");
   });
 
   console.log("\nVisit types end to end");

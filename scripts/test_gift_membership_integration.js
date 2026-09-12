@@ -2535,7 +2535,23 @@ async function run() {
     });
   });
 
-  await test("with GIFT_SMS_ENABLED unset the gift text is only simulated", async () => {
+  await test("the gift text is now refused for want of consent, before the switch", async () => {
+    /*
+     * THE GIFT INVITATION IS THE ONE TYPE SHAPED LIKE AN EXCEPTION.
+     *
+     * It is addressed to a recipient who by definition has no ProFixter
+     * account, and therefore no consent record and nowhere to keep one. When
+     * service SMS required only the absence of a refusal, that was survivable;
+     * once it required an affirmative tick, a bare phone number belonging to
+     * somebody who has never heard of us is exactly the recipient the
+     * forced-consent rules exist to protect.
+     *
+     * So it is refused at the consent check, which now happens BEFORE the
+     * GIFT_SMS_ENABLED gate - hence the changed reason below. The outcome is
+     * the same one it has always been: no text is sent, and the feature stays
+     * disabled. Turning it on will require designing a real consent step for
+     * the recipient first, and this refusal is what will force that.
+     */
     await withSmsFlags({ sms: undefined, gift: undefined }, async () => {
       await SmsMessage.deleteMany({});
       const purchaser = await makeUser({ email: "sim-" + Date.now() + "@example.com" });
@@ -2547,9 +2563,9 @@ async function run() {
       await giftEmails.sendGiftPurchaseEmails(gift, created.invitation);
 
       const texts = await SmsMessage.find({}).lean();
-      assert.equal(texts.length, 1, "the message is still recorded");
-      assert.equal(texts[0].status, "simulated", "but deliberately not sent");
-      assert.equal(texts[0].suppressionReason, "sms_disabled");
+      assert.equal(texts.length, 1, "the attempt is still recorded for the audit");
+      assert.equal(texts[0].status, "suppressed", "and deliberately not sent");
+      assert.equal(texts[0].suppressionReason, "transactional_requires_account");
     });
   });
 

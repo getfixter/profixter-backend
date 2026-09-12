@@ -265,20 +265,46 @@ router.post("/register", async (req, res) => {
     const { name, email, password, phone, address, city, state, zip, county } = req.body;
 
     /*
-     * Marketing-SMS consent, and ONLY when the customer actually ticked it.
+     * The two SMS ticks, each read as the customer actually left it.
      *
-     * Compared against the literal boolean rather than read for truthiness, so
-     * that "false", "0", "no" or any other string a future client sends cannot
+     * Compared against the literal boolean rather than for truthiness, so that
+     * "false", "0", "no" or any other string a future client sends cannot
      * become consent by accident - a string is always truthy, and that is
-     * exactly the bug that would silently enrol somebody in promotional
-     * texting they never agreed to.
+     * exactly the bug that would silently enrol somebody in texting they never
+     * agreed to.
      *
-     * THE ABSENCE OF THIS FIELD IS NOT CONSENT, AND NEITHER IS A PHONE NUMBER.
-     * Registration requires a phone so we can text about the visits a customer
-     * books; that is the transactional basis and it is not permission to
-     * advertise. Marketing needs its own express opt-in, which is what this is.
+     * THE ABSENCE OF EITHER FIELD IS NOT CONSENT, AND NEITHER IS A PHONE
+     * NUMBER. Registration still requires a phone, because a Fixter has to be
+     * able to ring the doorbell and call when they are outside. It is not
+     * permission to text. Service texts and marketing texts each need their own
+     * express opt-in, which is what these two are, and a customer who ticks
+     * neither gets a working account that is simply never texted.
      */
+    const smsTransactionalConsent = req.body?.smsTransactionalConsent === true;
     const smsMarketingConsent = req.body?.smsMarketingConsent === true;
+    /**
+     * The smsPreferences subdocument for the ticks we were given, or undefined.
+     *
+     * Built here rather than inline so that adding a third channel later means
+     * adding a branch to one function instead of editing an object literal
+     * buried in the middle of a 120-line constructor.
+     */
+    function smsConsentRecord() {
+      const now = new Date();
+      const record = {};
+      if (smsTransactionalConsent) {
+        record.transactionalEnabled = true;
+        record.transactionalConsentAt = now;
+        record.transactionalConsentSource = "signup_web_form";
+      }
+      if (smsMarketingConsent) {
+        record.marketingEnabled = true;
+        record.marketingConsentAt = now;
+        record.marketingConsentSource = "signup_web_form";
+      }
+      return Object.keys(record).length ? record : undefined;
+    }
+
 
     const cleanEmail = String(email || "").trim().toLowerCase();
     if (![name, cleanEmail, password, phone, address, city, state, zip, county].every(Boolean)) {
@@ -331,25 +357,21 @@ router.post("/register", async (req, res) => {
       /*
        * The consent record, written at the moment it was given.
        *
-       * marketingEnabled is the field smsEligibility reads before any
-       * promotional send; the timestamp and source beside it are the evidence
-       * that it was given, which is the half that matters if consent is ever
-       * disputed. Left undefined when the box was not ticked rather than set
-       * to false, so "never asked" stays distinguishable from "said no" -
-       * eligibility treats both as no, and only one of them is worth a
-       * follow-up conversation later.
+       * transactionalEnabled and marketingEnabled are the two fields
+       * smsEligibility reads before any send. The timestamp and source beside
+       * each one are the evidence that consent was given, which is the half
+       * that matters if it is ever disputed.
        *
-       * transactionalEnabled is deliberately NOT set here. Absent means yes for
-       * service messages, which is the rule smsEligibility already encodes; a
-       * customer who wants those off opts out with STOP.
+       * A box left unticked writes nothing at all rather than writing false, so
+       * "never asked" stays distinguishable from "said no" forever. Eligibility
+       * treats both as no; only one of them is worth a follow-up conversation.
+       *
+       * When neither box is ticked this is undefined and the account has no
+       * smsPreferences subdocument, which is exactly what an account created
+       * before any of this existed looks like. Both are read as off, which is
+       * the correct and honest answer for a customer who never opted in.
        */
-      smsPreferences: smsMarketingConsent
-        ? {
-            marketingEnabled: true,
-            marketingConsentAt: new Date(),
-            marketingConsentSource: "signup_web_form",
-          }
-        : undefined,
+      smsPreferences: smsConsentRecord(),
     });
 
     user.addresses.push({

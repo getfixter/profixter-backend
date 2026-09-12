@@ -201,7 +201,14 @@ async function main() {
   });
 
   await test("LEAVES TRANSACTIONAL SMS ELIGIBLE - the reminder still sends", async () => {
+    /*
+     * The service opt-in is now given explicitly, because absence stopped
+     * meaning yes. The claim under test is unchanged and is the one that
+     * matters: declining advertising must never silence the reminders a
+     * customer separately asked for.
+     */
     const { user, token } = await makeUser();
+    await api(token).put({ transactionalEnabled: true });
     await api(token).put({ marketingEnabled: true });
     await api(token).put({ marketingEnabled: false });
 
@@ -317,9 +324,11 @@ async function main() {
     const a = await makeUser({ phone: shared });
     const b = await makeUser({ phone: shared });
 
-    // Both opted in before the STOP arrived.
-    await api(a.token).put({ marketingEnabled: true });
-    await api(b.token).put({ marketingEnabled: true });
+    // Both opted in to everything before the STOP arrived, so that what the
+    // STOP silences below is a consent that genuinely existed.
+    for (const who of [a, b]) {
+      await api(who.token).put({ transactionalEnabled: true, marketingEnabled: true });
+    }
 
     await SmsOptOut.create({
       phone: shared,

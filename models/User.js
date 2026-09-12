@@ -114,26 +114,30 @@ const UserSchema = new mongoose.Schema(
     /**
      * SMS communication preferences.
      *
-     * DEFAULTS ARE ASYMMETRIC ON PURPOSE, AND THE ASYMMETRY IS THE POINT.
+     * BOTH CHANNELS NOW REQUIRE AN AFFIRMATIVE TICK. ABSENCE IS NEVER CONSENT.
      *
-     * Every field is optional and absent on every document written before this
-     * existed, so nothing has to be backfilled and no historical record is
-     * rewritten. The eligibility engine reads absence differently per channel:
+     * This used to be asymmetric: marketing needed an opt-in, and transactional
+     * was allowed unless the customer had said no. The reasoning was that a
+     * number given to book a visit was given in order to be texted about that
+     * visit. A carrier reviewer read the same arrangement as making SMS a
+     * condition of having an account - the customer could not create one
+     * without handing over a number we would then text - and rejected the A2P
+     * campaign for forced consent (error 30923).
      *
-     *   transactional  absent means allowed. Somebody who gave us their number
-     *                  to book a visit expects to hear about that visit, and
-     *                  service messaging about a transaction they initiated is
-     *                  what the number was collected for.
+     * So absence now means NO on both channels. A customer registers, books and
+     * pays with neither box ticked and is never texted; everything reaches them
+     * by email exactly as before. The only thing that turns service SMS on is
+     * the customer turning it on.
      *
-     *   marketing      absent means NOT allowed. Promotional texting needs
-     *                  express written consent that ProFixter has never asked
-     *                  for, so no existing customer may receive marketing SMS
-     *                  until they affirmatively opt in. This flag is the record
-     *                  that they did.
+     * Every field stays optional and absent on documents written before this
+     * existed, so nothing is backfilled and no historical record is rewritten.
+     * Nobody is grandfathered in: an account that predates the checkbox has no
+     * transactionalEnabled, which now reads as off, which is the honest answer
+     * because that customer was never actually asked.
      *
-     * Reading absence rather than backfilling a value also keeps the two
-     * distinguishable forever: false here means a person chose to switch it
-     * off, which is not the same fact as never having been asked.
+     * false and absent are both "not eligible" but they stay distinguishable
+     * forever - false means a person chose to switch it off, absent means we
+     * never asked - because only one of those is worth a follow-up conversation.
      *
      * None of this overrides SmsOptOut. A STOP from the handset wins over every
      * preference recorded here.
@@ -141,6 +145,9 @@ const UserSchema = new mongoose.Schema(
     smsPreferences: {
       transactionalEnabled: { type: Boolean, default: undefined },
       marketingEnabled: { type: Boolean, default: undefined },
+      /** When and how they consented to service texts. Evidence, not decoration. */
+      transactionalConsentAt: { type: Date, default: null },
+      transactionalConsentSource: { type: String, default: "" },
       /** When and how they consented to marketing. Evidence, not decoration. */
       marketingConsentAt: { type: Date, default: null },
       marketingConsentSource: { type: String, default: "" },

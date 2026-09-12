@@ -100,21 +100,26 @@ router.get("/me/addresses", auth, async (req, res) => {
   }
 });
 
-/* ─────────────── Marketing SMS preference (account settings) ───────────────
+/* ─────────────── SMS preferences (account settings) ───────────────
  *
- * The opt-in that signup collects, for everybody who registered before it
- * existed. Without this, marketing consent could only ever accrue from new
- * accounts and every current customer would be permanently unreachable on the
- * channel - not because they declined, but because they were never asked.
+ * TWO SEPARATE OPT-INS, NEITHER OF THEM IMPLIED BY ANYTHING ELSE.
  *
- * MARKETING ONLY. THIS TOUCHES NOTHING ELSE.
+ * Signup asks new customers for both. This is the same pair of questions for
+ * everybody who registered before they existed - which, for service texts, is
+ * every customer in the database. Without this they would be unreachable on the
+ * channel permanently: not because they declined, but because nobody ever
+ * asked, and after the forced-consent finding "we have their number" stopped
+ * counting as an answer.
  *
- * Not transactional messaging: service texts about a visit somebody booked
- * rest on a different basis and are switched off with STOP, not here. Not
- * SmsOptOut: that is keyed to the handset rather than the account and is the
- * carrier-level answer. Not GHL, not email marketing, not gift SMS - each has
- * its own consent and its own switch, and collapsing any of them into this one
- * checkbox is how a preference screen quietly becomes a liability.
+ * NOBODY IS GRANDFATHERED. An account with no recorded consent shows both
+ * switches off, and only the customer can move them.
+ *
+ * THIS TOUCHES SMS AND NOTHING ELSE. Not email, which carries the receipts and
+ * confirmations and is unaffected by either switch. Not SmsOptOut, which is
+ * keyed to the handset rather than the account and is the carrier-level answer.
+ * Not GHL, not gift messaging - each has its own consent and its own switch,
+ * and collapsing any of them into this screen is how a preference page quietly
+ * becomes a liability.
  */
 
 /**
@@ -134,8 +139,15 @@ async function phoneOptOutFor(user) {
 function smsPreferenceDTO(user, optOut) {
   const prefs = user?.smsPreferences || {};
   return {
-    // Absent means off. Nobody is opted in by default, and a missing field is
-    // "never asked" rather than a quiet yes.
+    /*
+     * Absent means off, on both channels. A missing field is "never asked"
+     * rather than a quiet yes, and the strict === true is what guarantees an
+     * account written before these fields existed reports honestly instead of
+     * inheriting a consent nobody gave.
+     */
+    transactionalEnabled: prefs.transactionalEnabled === true,
+    transactionalConsentAt: prefs.transactionalConsentAt || null,
+    transactionalConsentSource: prefs.transactionalConsentSource || "",
     marketingEnabled: prefs.marketingEnabled === true,
     marketingConsentAt: prefs.marketingConsentAt || null,
     marketingConsentSource: prefs.marketingConsentSource || "",
@@ -163,17 +175,51 @@ router.get("/me/sms-preferences", auth, async (req, res) => {
   }
 });
 
+/**
+ * The two switches, set independently.
+ *
+ * A request may carry either field or both. Anything else present is ignored,
+ * and a request carrying neither is rejected rather than treated as a no-op, so
+ * a client that misspells a field name finds out immediately instead of
+ * silently failing to save a consent the customer believes they gave.
+ */
+const SMS_CHANNELS = [
+  {
+    field: "transactionalEnabled",
+    enabledPath: "smsPreferences.transactionalEnabled",
+    atPath: "smsPreferences.transactionalConsentAt",
+    sourcePath: "smsPreferences.transactionalConsentSource",
+  },
+  {
+    field: "marketingEnabled",
+    enabledPath: "smsPreferences.marketingEnabled",
+    atPath: "smsPreferences.marketingConsentAt",
+    sourcePath: "smsPreferences.marketingConsentSource",
+  },
+];
+
 router.put("/me/sms-preferences", auth, async (req, res) => {
   try {
     /*
-     * The literal boolean, or nothing.
+     * Literal booleans, or nothing.
      *
      * Same rule the register route applies: a string is always truthy, so
      * accepting anything looser would let "false" opt somebody in.
      */
-    const marketingEnabled = req.body?.marketingEnabled;
-    if (marketingEnabled !== true && marketingEnabled !== false) {
-      return res.status(400).json({ message: "marketingEnabled must be true or false" });
+    const requested = [];
+    for (const channel of SMS_CHANNELS) {
+      const value = req.body?.[channel.field];
+      if (value === undefined) continue;
+      if (value !== true && value !== false) {
+        return res.status(400).json({ message: `${channel.field} must be true or false` });
+      }
+      requested.push({ channel, value });
+    }
+
+    if (!requested.length) {
+      return res.status(400).json({
+        message: "Provide transactionalEnabled and/or marketingEnabled as true or false",
+      });
     }
 
     const me = await User.findById(req.user.id).select("phone smsPreferences");
@@ -187,52 +233,53 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
      *
      * The customer texted STOP to a carrier-registered number; only a START
      * from that same handset undoes it. Letting an account screen quietly flip
-     * the preference back on would leave our database claiming a consent
-     * Twilio would refuse to act on - and clearing the SmsOptOut row from here
-     * would be worse still, because it would erase the record of a withdrawal
-     * we are legally required to honour.
+     * a preference back on would leave our database claiming a consent Twilio
+     * would refuse to act on - and clearing the SmsOptOut row from here would
+     * be worse still, because it would erase the record of a withdrawal we are
+     * legally required to honour.
      *
-     * Only opting IN is blocked. Somebody under a STOP who wants marketing off
+     * Only opting IN is blocked. Somebody under a STOP who wants a channel off
      * in their account as well is agreeing with us, and that is allowed
      * through below.
      */
-    if (marketingEnabled === true && optOut) {
+    if (optOut && requested.some((r) => r.value === true)) {
       return res.status(409).json({
         message:
-          "This phone number has opted out of SMS. Text START to re-enable messages before turning marketing texts on.",
+          "This phone number has opted out of SMS. Text START to re-enable messages before turning texts back on.",
         ...smsPreferenceDTO(me, optOut),
       });
     }
 
     /*
-     * Turning it on records WHEN and HOW, because those are the half of a
-     * consent record that answers a dispute. Turning it off sets only the flag:
-     * this is a marketing preference, not a STOP, so it must not touch
-     * optedOutAt or optOutSource - those mirror the handset-level withdrawal
-     * and are the webhook's to write - and it must not touch
-     * transactionalEnabled, so visit reminders keep working.
+     * Turning a channel on records WHEN and HOW, because those are the half of
+     * a consent record that answers a dispute. Turning it off sets only the
+     * flag: this is a preference, not a STOP, so it must not touch optedOutAt
+     * or optOutSource - those mirror the handset-level withdrawal and are the
+     * webhook's to write - and switching one channel off must never disturb
+     * the other, or the email that carries the actual receipts.
      *
-     * The consent timestamp is deliberately left in place on the way out. It
-     * is the historical fact that consent was once given, which stays true
-     * after it is withdrawn, and marketingEnabled=false is what eligibility
-     * actually reads.
+     * The consent timestamp is deliberately left in place on the way out. It is
+     * the historical fact that consent was once given, which stays true after
+     * it is withdrawn, and the enabled flag is what eligibility actually reads.
      */
-    const update = marketingEnabled
-      ? {
-          "smsPreferences.marketingEnabled": true,
-          "smsPreferences.marketingConsentAt": new Date(),
-          "smsPreferences.marketingConsentSource": "account_settings",
-        }
-      : { "smsPreferences.marketingEnabled": false };
+    const now = new Date();
+    const update = {};
+    for (const { channel, value } of requested) {
+      update[channel.enabledPath] = value;
+      if (value === true) {
+        update[channel.atPath] = now;
+        update[channel.sourcePath] = "account_settings";
+      }
+    }
 
     await User.updateOne({ _id: me._id }, { $set: update });
 
     const fresh = await User.findById(me._id).select("phone smsPreferences");
     console.log(
       JSON.stringify({
-        event: "sms_marketing_preference_changed",
+        event: "sms_preference_changed",
         userId: String(me._id),
-        marketingEnabled,
+        changed: Object.fromEntries(requested.map((r) => [r.channel.field, r.value])),
         source: "account_settings",
       })
     );

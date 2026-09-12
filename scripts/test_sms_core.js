@@ -715,13 +715,83 @@ test("marketing requires an explicit opt-in; absence is not consent", () => {
   );
 });
 
-test("transactional is allowed when no preference has been recorded", () => {
-  // Nobody has an SMS preference yet; service messages must still work.
-  assert.equal(eligibility.accountAllows({}, "BOOKING_REMINDER_24H").eligible, true);
+test("transactional is refused when no preference has been recorded", () => {
+  /*
+   * The rule this test used to assert was the opposite, and it is why the A2P
+   * campaign was rejected for forced consent: an account with no recorded
+   * preference was treated as having agreed to service texts, and since
+   * registration required a phone number, that made SMS a condition of having
+   * an account. Absence is now refused on both channels.
+   */
+  for (const user of [{}, { smsPreferences: {} }]) {
+    const verdict = eligibility.accountAllows(user, "BOOKING_REMINDER_24H");
+    assert.equal(verdict.eligible, false);
+    assert.equal(verdict.reason, "transactional_not_opted_in");
+  }
+});
+
+test("never asked and said no are refused for different reasons", () => {
+  /*
+   * Both refuse the message. Only one of them describes a customer who made a
+   * choice, and an operator asked why a text did not arrive needs to know
+   * which - so the distinction is kept in the reason rather than flattened.
+   */
   assert.equal(
-    eligibility.accountAllows({ smsPreferences: {} }, "BOOKING_CONFIRMED").eligible,
+    eligibility.accountAllows({ smsPreferences: {} }, "BOOKING_CONFIRMED").reason,
+    "transactional_not_opted_in"
+  );
+  assert.equal(
+    eligibility.accountAllows(
+      { smsPreferences: { transactionalEnabled: false } },
+      "BOOKING_CONFIRMED"
+    ).reason,
+    "transactional_disabled_by_user"
+  );
+});
+
+test("an affirmative service opt-in is eligible", () => {
+  assert.equal(
+    eligibility.accountAllows(
+      { smsPreferences: { transactionalEnabled: true } },
+      "BOOKING_CONFIRMED"
+    ).eligible,
     true
   );
+});
+
+test("neither channel implies the other", () => {
+  // Ticking offers must not enrol somebody in reminders, or the reverse.
+  assert.equal(
+    eligibility.accountAllows(
+      { smsPreferences: { marketingEnabled: true } },
+      "BOOKING_CONFIRMED"
+    ).eligible,
+    false
+  );
+  assert.equal(
+    eligibility.accountAllows(
+      { smsPreferences: { transactionalEnabled: true } },
+      "KITCHEN_BATH_MARKETING"
+    ).eligible,
+    false
+  );
+});
+
+test("nothing except the tick counts as service consent", () => {
+  /*
+   * Each of these was at some point offered as a reason service SMS should be
+   * allowed. Every one of them is the inference that made the campaign
+   * non-compliant, so every one of them is refused.
+   */
+  const notConsent = [
+    { phone: "+16315551234" },
+    { termsAccepted: true, consentAt: new Date() },
+    { subscription: "premium", subscriptionExpiry: new Date(Date.now() + 8.64e7) },
+    { smsPreferences: { marketingEnabled: true, marketingConsentAt: new Date() } },
+  ];
+  for (const user of notConsent) {
+    assert.equal(eligibility.accountAllows(user, "BOOKING_CONFIRMED").eligible, false);
+  }
 });
 
 test("transactional is refused when the customer switched it off", () => {
@@ -734,7 +804,15 @@ test("transactional is refused when the customer switched it off", () => {
 });
 
 test("excludeFromMarketing blocks marketing but not service messages", () => {
-  const user = { excludeFromMarketing: true, smsPreferences: { marketingEnabled: true } };
+  /*
+   * The service opt-in is stated explicitly now rather than inherited from an
+   * empty preference object, which is the whole point of the new rule: this
+   * test is about excludeFromMarketing, and it has to say so.
+   */
+  const user = {
+    excludeFromMarketing: true,
+    smsPreferences: { marketingEnabled: true, transactionalEnabled: true },
+  };
   assert.equal(eligibility.accountAllows(user, "KITCHEN_BATH_MARKETING").eligible, false);
   assert.equal(eligibility.accountAllows(user, "BOOKING_REMINDER_24H").eligible, true);
 });

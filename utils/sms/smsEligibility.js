@@ -14,14 +14,13 @@ const { toE164 } = require("./smsPhone");
  * function to read, and a new trigger added next year inherits every rule
  * without its author having to know they exist.
  *
- * THE RULES ARE NOT SYMMETRIC BETWEEN THE TWO CHANNELS, ON PURPOSE
- * Marketing needs express permission that ProFixter has never asked for, so it
- * requires an explicit opt-in and a narrow daytime window. Transactional
- * messaging is about a transaction the customer initiated with us and is
- * allowed unless they have said no. Treating the two the same in either
- * direction would be wrong: identical strictness silences appointment
- * reminders people are relying on, and identical looseness sends
- * advertisements to people who never agreed to receive them.
+ * BOTH CHANNELS REQUIRE AN AFFIRMATIVE OPT-IN. THEY DIFFER ONLY IN DEGREE.
+ * Neither service nor marketing SMS may be sent to somebody who has not ticked
+ * the box for it. The rules that remain asymmetric are the ones about timing
+ * and reach: marketing is additionally held to a narrow daytime window and a
+ * separate channel switch, because an advertisement that arrives at the wrong
+ * hour is a nuisance while an hour-before reminder that does not arrive is a
+ * missed appointment. What they no longer differ on is consent.
  */
 
 /** A refusal, with a reason that gets stored on the record. */
@@ -104,17 +103,27 @@ async function optOutFor(phone, OptOutModel = SmsOptOut) {
 /**
  * Does this account permit this class of message?
  *
- * ABSENCE IS READ DIFFERENTLY PER CHANNEL, AND THAT IS THE WHOLE RULE.
+ * ABSENCE IS NOT CONSENT ON EITHER CHANNEL. THAT IS THE WHOLE RULE.
  *
- * Nobody in the database has an SMS preference yet, because the fields are new.
- * For transactional that absence means yes: the number was given to us to book
- * a visit and messages about that visit are what it is for. For marketing it
- * means no, and it will keep meaning no until the person affirmatively opts in,
- * because promotional texting requires consent that has never been collected.
+ * This function used to read absence asymmetrically: marketing needed an
+ * explicit opt-in, transactional was allowed unless the customer had said no.
+ * The argument was that a number handed over to book a visit was handed over in
+ * order to be texted about that visit.
  *
- * The practical consequence is deliberate: on the day this ships, marketing SMS
- * has an audience of zero. That is the correct audience for a channel nobody
- * has agreed to.
+ * A carrier reviewer disagreed, and they were looking at something the code
+ * could not see: registration REQUIRED a phone number, so "give us a number we
+ * will text you on" was a condition of having an account at all. That is forced
+ * consent (A2P error 30923) regardless of how reasonable the messages are.
+ *
+ * So service SMS now requires the same affirmative act marketing does. Only
+ * transactionalEnabled === true is eligible; false and absent are both refused,
+ * with different reasons so the audit can tell "said no" from "never asked".
+ *
+ * NOTHING ELSE IS TREATED AS CONSENT. Not a phone number on the account, not an
+ * accepted Terms of Service, not an existing booking, not a paid membership,
+ * and not consent to the other channel. Each of those was at some point offered
+ * as a reason SMS should be allowed, and each of them is the exact inference
+ * that made the campaign non-compliant.
  */
 function accountAllows(user, notificationType) {
   const prefs = user?.smsPreferences || {};
@@ -125,7 +134,13 @@ function accountAllows(user, notificationType) {
     return yes;
   }
 
+  /*
+   * Explicitly switched off reads differently from never asked. Both refuse
+   * the message; only one of them describes a customer who made a choice, and
+   * an operator answering "why did they not get the text" needs to know which.
+   */
   if (prefs.transactionalEnabled === false) return no("transactional_disabled_by_user");
+  if (prefs.transactionalEnabled !== true) return no("transactional_not_opted_in");
   return yes;
 }
 
@@ -153,16 +168,32 @@ async function checkEligibility({
   if (!e164) return no("no_valid_phone");
 
   /*
-   * A message may be addressed to a number with no account behind it, which is
-   * legitimate for a booking taken over the phone. Only account-level rules are
-   * skipped in that case; the opt-out and window rules still apply.
+   * NO ACCOUNT MEANS NO CONSENT RECORD, WHICH MEANS NO MESSAGE.
+   *
+   * This used to let a transactional message through to a bare phone number on
+   * the grounds that a booking taken over the telephone is still a booking the
+   * customer asked for. That reasoning does not survive the forced-consent
+   * question: consent has to be something the person did, and a number typed
+   * into our admin screen by somebody else is not it. There is nowhere to read
+   * a tick from and nowhere to store the evidence, so the honest answer is no.
+   *
+   * The customer is not left uninformed - email and the phone call the booking
+   * was made on both still work. If they want texts, they create an account and
+   * tick the box, and then there is a record saying so.
+   *
+   * ONE TYPE IS SHAPED LIKE AN EXCEPTION AND IS DELIBERATELY NOT GIVEN ONE:
+   * GIFT_INVITATION is addressed to a recipient who by definition has no
+   * account yet. It is refused here like everything else. It is also disabled
+   * at the switch (GIFT_SMS_ENABLED=false) and stays that way, so this changes
+   * no behaviour today; when somebody wants to turn it on they will have to
+   * design a real consent step for the recipient first, and this refusal is
+   * what will make them.
    */
   if (user) {
     const account = accountAllows(user, notificationType);
     if (!account.eligible) return account;
-  } else if (isMarketing(notificationType)) {
-    // Marketing needs a consenting account. There is no anonymous consent.
-    return no("marketing_requires_account");
+  } else {
+    return no(isMarketing(notificationType) ? "marketing_requires_account" : "transactional_requires_account");
   }
 
   if (isMarketing(notificationType) && !smsMarketingEnabled()) {

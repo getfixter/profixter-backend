@@ -286,6 +286,15 @@ router.post("/inbound", async (req, res) => {
  * Upsert on the phone, and mirror it onto every account that uses that number
  * so the account screen tells the truth too. The opt-out row is what the
  * eligibility check reads; the user fields are for people looking at a customer.
+ *
+ * BOTH CHANNEL FLAGS ARE CLEARED, NOT JUST MARKETING.
+ *
+ * A STOP is a withdrawal of consent to be texted, full stop - the customer did
+ * not carve out an exception for appointment reminders. Leaving
+ * transactionalEnabled set to true would leave the database asserting a consent
+ * the customer has just revoked, which is the wrong record to keep and the
+ * wrong thing to show an operator. The consent timestamps are left alone: they
+ * record the historical fact that consent was once given, which stays true.
  */
 async function applyOptOut(phone, keyword) {
   const now = new Date();
@@ -313,6 +322,7 @@ async function applyOptOut(phone, keyword) {
     accounts,
     {
       $set: {
+        "smsPreferences.transactionalEnabled": false,
         "smsPreferences.marketingEnabled": false,
         "smsPreferences.optedOutAt": now,
         "smsPreferences.optOutSource": "sms_stop_keyword",
@@ -328,11 +338,20 @@ async function applyOptOut(phone, keyword) {
  * rather than deleted: the history of a number that opted out and back in is
  * exactly the record you want if consent is ever disputed.
  *
- * NOTE WHAT THIS DOES NOT DO. It restores service messaging only. Marketing
- * stays off, because START is a reply to a service message and is not the
- * express written consent that promotional texting requires. Somebody who wants
- * marketing again has to opt in through the account, where we can record how
- * and when.
+ * NOTE WHAT THIS DOES NOT DO. IT GRANTS NO CONSENT TO ANYTHING.
+ *
+ * It lifts the handset-level block and nothing else. Neither
+ * transactionalEnabled nor marketingEnabled is set, so a customer who texts
+ * START is unblocked at the carrier level and still receives no SMS until they
+ * tick a box in their account.
+ *
+ * That is deliberate and it is the conservative reading on purpose. START is
+ * most often a reply to a message the customer received, or a word typed to
+ * find out what happens; it is not the affirmative, recorded, per-channel act
+ * that either channel now requires, and a system that manufactured consent out
+ * of a five-letter inbound text would have reintroduced the exact defect this
+ * work exists to remove. Somebody who wants texts back turns them on where we
+ * can record when and how.
  */
 async function applyOptIn(phone, keyword) {
   const now = new Date();
@@ -352,6 +371,9 @@ async function applyOptIn(phone, keyword) {
    * Every account on this handset, not just the one whose phone happens to be
    * spelled in E.164. Several people can legitimately share a number, and a
    * STOP has to be visible on all of their accounts.
+   *
+   * Only the mirrored block is cleared here. The consent flags stay exactly
+   * where the customer left them.
    */
   const accounts = userPhoneQuery(phone);
   if (accounts) await User.updateMany(
