@@ -50,9 +50,24 @@ for (const flag of SMS_FLAGS) process.env[flag] = "false";
  * The frontend lives in a sibling checkout. Several cases below are about what
  * a carrier reviewer can see on the signup page, which is a fact about that
  * file and nowhere else - asserting it against a mock would assert the mock.
+ *
+ * THAT CHECKOUT IS NOT ALWAYS THERE, AND ITS ABSENCE MUST NOT LOOK LIKE A PASS.
+ *
+ * The backend deploy workflow checks out one repository, so on CI this path
+ * does not exist. Reading it unconditionally is what broke the first attempt to
+ * deploy this work: the suite threw ENOENT, backend validation failed, and the
+ * deploy was correctly refused for a reason that had nothing to do with the
+ * code being deployed.
+ *
+ * These cases therefore SKIP when the sibling checkout is missing, and say so
+ * loudly - counted separately, listed at the end, never folded into the passes.
+ * They run in full on any machine with both repositories, which is where this
+ * work is done and reviewed. Everything that can be checked from the backend
+ * alone still runs everywhere, unconditionally.
  */
 const FRONTEND = path.join(__dirname, "..", "..", "FrontEnd");
 const SIGNUP_PAGE = path.join(FRONTEND, "app", "(auth)", "signup", "page.tsx");
+const FRONTEND_PRESENT = fs.existsSync(SIGNUP_PAGE);
 
 /**
  * Source with line endings normalised.
@@ -68,6 +83,7 @@ function readSource(file) {
 
 let passed = 0;
 const failures = [];
+const skipped = [];
 
 async function test(name, fn) {
   try {
@@ -79,6 +95,23 @@ async function test(name, fn) {
     console.log(`  FAIL  ${name}`);
     console.log(`        ${error?.message || error}`);
   }
+}
+
+/**
+ * A case that needs the sibling FrontEnd checkout.
+ *
+ * Skipped rather than failed when it is absent, and skipped rather than quietly
+ * passed - a consent assertion that silently stopped running would be worse
+ * than one that never existed.
+ */
+async function frontendTest(name, fn) {
+  if (!FRONTEND_PRESENT) {
+    skipped.push(name);
+    console.log(`  SKIP  ${name}`);
+    console.log(`        no FrontEnd checkout beside this repo; run locally to cover it`);
+    return;
+  }
+  await test(name, fn);
 }
 
 function section(title) {
@@ -171,9 +204,9 @@ async function main() {
   section("The signup page a carrier reviewer actually opens");
   /* ================================================================== */
 
-  const signup = readSource(SIGNUP_PAGE);
+  const signup = FRONTEND_PRESENT ? readSource(SIGNUP_PAGE) : "";
 
-  await test("both SMS consents start unchecked", () => {
+  await frontendTest("both SMS consents start unchecked", () => {
     /*
      * A pre-ticked box is not affirmative consent under TCPA/CTIA or Twilio's
      * web form opt-in standard, and it is the first thing a reviewer checks.
@@ -186,7 +219,7 @@ async function main() {
     }
   });
 
-  await test("service and marketing are two separate controls", () => {
+  await frontendTest("service and marketing are two separate controls", () => {
     for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
       assert.ok(signup.includes(`id="${id}"`), `missing checkbox ${id}`);
     }
@@ -196,7 +229,7 @@ async function main() {
     );
   });
 
-  await test("Terms acceptance is a third, separate control", () => {
+  await frontendTest("Terms acceptance is a third, separate control", () => {
     assert.ok(signup.includes('id="agree-terms"'), "the Terms checkbox is gone");
     /*
      * Bundling is the specific defect. The Terms box must not be the thing that
@@ -211,7 +244,7 @@ async function main() {
     }
   });
 
-  await test("neither SMS choice takes part in validation", () => {
+  await frontendTest("neither SMS choice takes part in validation", () => {
     /*
      * THE COMPLIANCE CLAIM RESTS ON THIS CASE.
      *
@@ -227,7 +260,7 @@ async function main() {
     }
   });
 
-  await test("the choices are visible without creating an account", () => {
+  await frontendTest("the choices are visible without creating an account", () => {
     /*
      * Signup is a four-step wizard and the boxes used to be on step 4, which
      * meant a reviewer opening the page saw an address form and no sign that
@@ -245,7 +278,7 @@ async function main() {
     }
   });
 
-  await test("the page says in words that SMS is not required", () => {
+  await frontendTest("the page says in words that SMS is not required", () => {
     assert.ok(
       /without agreeing to receive text messages/i.test(signup),
       "the page must state plainly that an account can be created without SMS"
@@ -253,7 +286,7 @@ async function main() {
     assert.ok(/Text messages &mdash; optional/i.test(signup), "the panel heading must say optional");
   });
 
-  await test("the required CTIA disclosures sit with the service checkbox", () => {
+  await frontendTest("the required CTIA disclosures sit with the service checkbox", () => {
     const panel = signup.slice(signup.indexOf('aria-labelledby="sms-consent-heading"'));
     for (const phrase of [
       "(631) 888-6340",
@@ -266,7 +299,7 @@ async function main() {
     }
   });
 
-  await test("the old forced-consent sentence is gone", () => {
+  await frontendTest("the old forced-consent sentence is gone", () => {
     /*
      * Comments are stripped first. The file explains in a comment what the
      * page used to say and why it changed, which is worth keeping and is not
@@ -853,7 +886,7 @@ async function main() {
     );
   });
 
-  await test("the privacy non-sharing statement is intact and prominent", () => {
+  await frontendTest("the privacy non-sharing statement is intact and prominent", () => {
     /*
      * This exact sentence is what cleared A2P error 30908, and it has to carry
      * all six elements in one sentence. Splitting it across two is what failed.
@@ -866,42 +899,56 @@ async function main() {
     }
   });
 
-  await test("no customer-facing copy claims START resumes messages", () => {
-    /*
-     * THE CLAIM AND THE CODE HAVE TO AGREE, OR THE CAMPAIGN IS MISDESCRIBED.
-     *
-     * applyOptIn lifts the handset block and grants no consent. Any page that
-     * tells a customer START will resume their texts is describing a system we
-     * do not have - and it is exactly the sentence a carrier reviewer would
-     * quote back at us. The CTIA boilerplate that ships with most SMS terms
-     * ("To rejoin, start again as you did initially, and we will resume sending
-     * SMS messages to you") says precisely that, which is why it is named here.
-     */
-    const surfaces = [
-      path.join(FRONTEND, "app", "terms", "page.tsx"),
-      path.join(FRONTEND, "app", "privacy", "page.tsx"),
-      path.join(FRONTEND, "app", "communication-consent", "page.tsx"),
-      path.join(FRONTEND, "app", "components", "account", "SmsPreferences.tsx"),
-      path.join(__dirname, "..", "routes", "users.js"),
-    ];
-    const forbidden = [
-      /we will resume sending\s+SMS messages/i,
-      /START[^.]{0,80}\band we will (resume|start) (sending|texting)/i,
-      /text START[^.]{0,60}to (resume|restart) (your )?(texts|messages)/i,
-      /START[^.]{0,60}\bre-?subscribes?\b/i,
-    ];
-    for (const file of surfaces) {
+  /*
+   * THE CLAIM AND THE CODE HAVE TO AGREE, OR THE CAMPAIGN IS MISDESCRIBED.
+   *
+   * applyOptIn lifts the handset block and grants no consent. Any surface that
+   * tells a customer START will resume their texts is describing a system we do
+   * not have - and it is the sentence a carrier reviewer would quote back at
+   * us. The CTIA boilerplate that ships with most SMS terms ("To rejoin, start
+   * again as you did initially, and we will resume sending SMS messages to
+   * you") says precisely that, which is why it is named here.
+   *
+   * Split by repository so the backend half still runs where only this repo is
+   * checked out. The rule is identical on both sides; only the file list differs.
+   */
+  const FORBIDDEN_START_CLAIMS = [
+    /we will resume sending\s+SMS messages/i,
+    /START[^.]{0,80}\band we will (resume|start) (sending|texting)/i,
+    /text START[^.]{0,60}to (resume|restart) (your )?(texts|messages)/i,
+    /START[^.]{0,60}\bre-?subscribes?\b/i,
+  ];
+
+  function assertNoStartClaims(files) {
+    for (const file of files) {
       const src = readSource(file).replace(/\s+/g, " ");
-      for (const pattern of forbidden) {
+      for (const pattern of FORBIDDEN_START_CLAIMS) {
         assert.ok(
           !pattern.test(src),
           `${path.basename(file)} claims START resumes messaging: ${pattern}`
         );
       }
     }
+  }
+
+  await test("no backend copy claims START resumes messages", () => {
+    assertNoStartClaims([
+      path.join(__dirname, "..", "routes", "users.js"),
+      path.join(__dirname, "..", "routes", "smsWebhook.js"),
+      path.join(__dirname, "..", "utils", "sms", "twilioOptOutCopy.js"),
+    ]);
   });
 
-  await test("the pages that mention START say it grants nothing", () => {
+  await frontendTest("no customer-facing page claims START resumes messages", () => {
+    assertNoStartClaims([
+      path.join(FRONTEND, "app", "terms", "page.tsx"),
+      path.join(FRONTEND, "app", "privacy", "page.tsx"),
+      path.join(FRONTEND, "app", "communication-consent", "page.tsx"),
+      path.join(FRONTEND, "app", "components", "account", "SmsPreferences.tsx"),
+    ]);
+  });
+
+  await frontendTest("the pages that mention START say it grants nothing", () => {
     /*
      * The negative case above is not enough on its own - deleting the sentence
      * would pass it while leaving a customer with no idea what START does.
@@ -925,7 +972,7 @@ async function main() {
     }
   });
 
-  await test("the legal pages describe the new mechanics", () => {
+  await frontendTest("the legal pages describe the new mechanics", () => {
     const consent = readSource(
       path.join(FRONTEND, "app", "communication-consent", "page.tsx")
     ).replace(/\s+/g, " ");
@@ -993,7 +1040,18 @@ async function main() {
   await mongod.stop();
   server.close();
 
-  console.log(`\n${passed} passed, ${failures.length} failed\n`);
+  const skipNote = skipped.length ? `, ${skipped.length} skipped` : "";
+  console.log(`\n${passed} passed, ${failures.length} failed${skipNote}\n`);
+  if (skipped.length) {
+    /*
+     * Named individually rather than counted. A bare "12 skipped" at the
+     * bottom of a green run is easy to read past; a list of the consent
+     * assertions that did not actually run is not.
+     */
+    console.log("Skipped - no FrontEnd checkout beside this repo:");
+    for (const name of skipped) console.log(`  - ${name}`);
+    console.log("");
+  }
   if (failures.length) process.exit(1);
 }
 
