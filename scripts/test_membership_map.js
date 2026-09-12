@@ -126,34 +126,38 @@ async function main() {
   /* ================================================================== */
 
   for (const plan of ["basic", "plus", "premium", "elite"]) {
-    await test(`${plan} active -> one ${plan} pin`, async () => {
+    await test(`${plan} active -> one pin, with no tier attached`, async () => {
       await reset();
       await makeSubscription({ subscriptionType: plan });
       const rows = await points();
       assert.strictEqual(rows.length, 1, `expected one pin, got ${rows.length}`);
-      assert.strictEqual(rows[0].plan, plan);
+      /*
+       * Every tier earns a pin and no tier is identifiable from one. The plan is
+       * still read upstream - an unrecognised one is not a membership this map
+       * publishes - but it stops before the payload.
+       */
+      assert.deepStrictEqual(Object.keys(rows[0]).sort(), ["x", "y"]);
     });
   }
 
-  await test("changing plan changes the pin's tier, not its place", async () => {
+  await test("A PLAN CHANGE IS INVISIBLE ON THE MAP", async () => {
+    /*
+     * The V3 rule, and the inverse of the V2 one.
+     *
+     * V2 restyled the marker when somebody upgraded, which made the map a public
+     * record of what each customer pays. Now an upgrade and a downgrade produce
+     * a byte-identical point: same place, same absence of any tier. The only
+     * thing that can change a pin is gaining or losing access.
+     */
     await reset();
     const sub = await makeSubscription({ subscriptionType: "basic" });
     const before = (await points())[0];
-    assert.strictEqual(before.plan, "basic");
 
     await Subscription.updateOne({ _id: sub._id }, { $set: { subscriptionType: "elite" } });
-    const after = (await points())[0];
-    assert.strictEqual(after.plan, "elite", "an upgrade must restyle the marker");
-    /*
-     * The position is seeded from the subscription, not the plan, so upgrading
-     * must not teleport the pin across town - which would look like a different
-     * customer rather than the same one moving up.
-     */
-    assert.strictEqual(after.x, before.x);
-    assert.strictEqual(after.y, before.y);
+    assert.deepStrictEqual((await points())[0], before, "an upgrade must change nothing");
 
     await Subscription.updateOne({ _id: sub._id }, { $set: { subscriptionType: "plus" } });
-    assert.strictEqual((await points())[0].plan, "plus", "a downgrade must restyle too");
+    assert.deepStrictEqual((await points())[0], before, "a downgrade must change nothing");
   });
 
   /* ================================================================== */
@@ -279,7 +283,7 @@ async function main() {
     });
     const rows = await points();
     assert.strictEqual(rows.length, 1, "a live claimed gift is an active membership");
-    assert.strictEqual(rows[0].plan, "premium");
+    assert.deepStrictEqual(Object.keys(rows[0]).sort(), ["x", "y"], "and carries no tier");
   });
 
   await test("an expired gift loses its pin", async () => {
@@ -323,7 +327,13 @@ async function main() {
     });
     const rows = await points();
     assert.strictEqual(rows.length, 1, "one home is one pin");
-    assert.strictEqual(rows[0].plan, "plus", "paid cover is resolved first, as everywhere else");
+    /*
+     * Paid cover is still resolved before gifts, exactly as everywhere else in
+     * the application - it is simply no longer observable from the payload,
+     * which is the point of V3. What matters publicly is that one home is one
+     * pin rather than two.
+     */
+    assert.deepStrictEqual(Object.keys(rows[0]).sort(), ["x", "y"]);
   });
 
   /* ================================================================== */
@@ -507,6 +517,7 @@ async function main() {
 
   await test("the payload carries three keys per point and nothing else", async () => {
     await reset();
+    /* One of every tier, so a tier leaking into the payload would be caught. */
     for (const plan of ["basic", "plus", "premium", "elite"]) {
       await makeSubscription({ subscriptionType: plan, addressSnapshot: { line1: "9 X St", city: "Babylon", state: "NY", zip: ZIP_B } });
     }
@@ -519,7 +530,12 @@ async function main() {
 
     assert.deepStrictEqual(Object.keys(body).sort(), ["points", "viewBox"]);
     for (const point of body.points) {
-      assert.deepStrictEqual(Object.keys(point).sort(), ["plan", "x", "y"]);
+      /*
+       * EXACTLY TWO KEYS. The membership tier was removed from the public shape
+       * in V3 - the map says somebody here is a member, not what they pay - so
+       * a third key appearing is a regression whatever it is called.
+       */
+      assert.deepStrictEqual(Object.keys(point).sort(), ["x", "y"]);
     }
 
     /*
@@ -531,11 +547,33 @@ async function main() {
       "lat", "lng", "latitude", "longitude", "coord",
       "user", "userId", "_id", "id", "subscription", "gift", "customer",
       "stripe", "seed", "salt", "total", "count",
+      "plan", "tier", "basic", "plus", "premium", "elite", "level",
     ];
     for (const word of forbidden) {
       assert.ok(
         !new RegExp(`"${word}"`, "i").test(raw),
         `the public payload contains a "${word}" field`
+      );
+    }
+  });
+
+  await test("no tier word survives anywhere in the raw response", async () => {
+    /*
+     * Asserted against the response TEXT, not the parsed keys, because the risk
+     * is not only a "plan" field - it is the word "elite" turning up as a value,
+     * a comment, or a key nobody thought to look at.
+     */
+    await reset();
+    for (const plan of ["basic", "plus", "premium", "elite"]) {
+      await makeSubscription({ subscriptionType: plan });
+    }
+    map.clearCache();
+
+    const raw = await (await fetch(`${base}/api/membership-map`)).text();
+    for (const word of ["basic", "plus", "premium", "elite", "plan", "tier", "level"]) {
+      assert.ok(
+        !new RegExp(word, "i").test(raw),
+        `the public payload mentions "${word}"`
       );
     }
   });

@@ -20,9 +20,14 @@ const { MAP_BOUNDS, VIEWBOX, project } = require("./projection");
  *
  * WHAT LEAVES THIS MODULE
  *
- * A list of {x, y, plan}. No name, no address, no ZIP, no coordinates, no user,
- * no subscription, no gift, no id of any kind, and no count of anything. The
- * ids that exist in this file are used as hash input and never emitted.
+ * A list of {x, y}. No name, no address, no ZIP, no coordinates, no user, no
+ * subscription, no gift, no id of any kind, no count of anything - and, since
+ * V3, no membership tier either. The ids and plans that exist in this file are
+ * used to decide who belongs on the map and are never emitted.
+ *
+ * Dropping the tier is data minimisation rather than decoration: the map only
+ * ever needed to say that somebody here is a member, and a published plan would
+ * have let anyone reading the network tab rank ProFixter customers by spend.
  *
  * WHAT IS NOT PUBLISHED, ON PURPOSE
  *
@@ -31,7 +36,13 @@ const { MAP_BOUNDS, VIEWBOX, project } = require("./projection");
  * states a number and nothing here computes one for publication.
  */
 
-/** Plan tiers, in the order the legend presents them. */
+/**
+ * The tiers a membership may hold.
+ *
+ * INTERNAL ONLY SINCE V3. Nothing here reaches the browser; the list survives
+ * because an unrecognised subscriptionType is not a membership this map will
+ * publish, which is an eligibility rule rather than a display one.
+ */
 const PLANS = ["basic", "plus", "premium", "elite"];
 
 /**
@@ -151,20 +162,28 @@ async function buildPayload({ now = new Date() } = {}) {
       if (!point) continue;
       const projected = project(point.lat, point.lng);
       if (!projected) continue;
-      points.push({ x: projected.x, y: projected.y, plan: membership.plan });
+      /*
+       * THE PLAN IS READ AND THEN DROPPED, DELIBERATELY.
+       *
+       * It is still required upstream - an unrecognised tier is not a
+       * membership this map will publish - but it stops here. The public map
+       * says that somebody in this area is a member; which tier they pay for is
+       * their business and nobody else's, and a payload that carried it would
+       * let anyone with devtools sort ProFixter's customers by spend.
+       */
+      points.push({ x: projected.x, y: projected.y });
     }
   }
 
   /*
-   * Ordered by plan so the rarer tiers paint last and are not hidden under a
-   * neighbouring Basic pin. Within a tier, by position, so the render order is
-   * stable between builds and the entrance animation does not reshuffle.
+   * Ordered by position alone now that every marker looks the same.
+   *
+   * This used to paint rarer tiers last so they were not hidden under a
+   * neighbouring Basic pin. With one universal marker there is no tier to
+   * favour, and sorting by position keeps the order stable between builds so
+   * the entrance animation does not reshuffle itself.
    */
-  points.sort((a, b) => {
-    const tier = PLANS.indexOf(a.plan) - PLANS.indexOf(b.plan);
-    if (tier !== 0) return tier;
-    return a.y - b.y || a.x - b.x;
-  });
+  points.sort((a, b) => a.y - b.y || a.x - b.x);
 
   return { viewBox: VIEWBOX, points };
 }
