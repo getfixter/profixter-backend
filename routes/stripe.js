@@ -213,7 +213,16 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       },
       automatic_tax: { enabled: true },
       success_url: `${CLIENT_URL}/confirmationpage?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${CLIENT_URL}/?canceled=true&plan=${plan}&billingCycle=${cycle}`,
+      /*
+       * Back to the comparison, not to the homepage.
+       *
+       * Backing out of Stripe used to land on "/" carrying plan and
+       * billingCycle in the query string - which nothing on the homepage read.
+       * The customer was silently returned to the top of the funnel with their
+       * choice discarded. The plans page restores the cycle and address from
+       * these params and says plainly that nothing was charged.
+       */
+      cancel_url: `${CLIENT_URL}/membership/plans?canceled=true&plan=${plan}&billingCycle=${cycle}`,
     };
 
     if (stripeCustomerId) {
