@@ -2,7 +2,7 @@ const Subscription = require("../../models/Subscription");
 const GiftMembership = require("../../models/GiftMembership");
 const { subscriptionGrantsAccess } = require("../subscriptionManagement");
 const { giftAccessState } = require("../gifts/giftAccess");
-const { publicPointFor, hasGeographyFor } = require("./publicPoint");
+const { placeZipCluster, hasGeographyFor } = require("./publicPoint");
 const { MAP_BOUNDS, VIEWBOX, project } = require("./projection");
 
 /**
@@ -37,12 +37,18 @@ const PLANS = ["basic", "plus", "premium", "elite"];
 /**
  * How long a built map is reused.
  *
- * Membership changes do not need to reach the homepage in under a second, and
- * the homepage should not put a query on the database per visitor. Five minutes
- * means one aggregate read per five minutes no matter the traffic, and a
- * cancellation is off the map within one window.
+ * Ninety seconds, down from five minutes in V1, and it is the whole mechanism -
+ * see the note below the cache for why the obvious event-driven version was
+ * built and then taken out again.
+ *
+ * This is also the only thing that can notice the changes nobody writes: a
+ * subscription whose period simply elapses, or a gift that reaches its end date.
+ * Those records stop granting access because time passed, so no hook anywhere
+ * would have fired for them and only a re-read finds them.
+ *
+ * At most one aggregate query per ninety seconds, regardless of traffic.
  */
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 90 * 1000;
 
 let cache = { at: 0, payload: null };
 
@@ -115,23 +121,38 @@ async function activeMemberships({ now = new Date() } = {}) {
 /**
  * Build the published payload.
  *
+ * Memberships are grouped by ZIP before any position is chosen, because the
+ * right spread is a property of the group rather than of one member: a lone
+ * membership should sit on its town, and only genuine crowding justifies
+ * pushing pins apart. Placing one at a time - which is what V1 did - has no way
+ * to know the difference, so it scattered everybody to solve a collision most
+ * of them did not have.
+ *
  * A membership that cannot be placed safely is skipped rather than guessed at.
  * An unknown ZIP has no shape to constrain a pin to, and a pin that is merely
- * somewhere on Long Island would be a decoration pretending to be information.
+ * somewhere on Long Island would be decoration pretending to be information.
  */
 async function buildPayload({ now = new Date() } = {}) {
   const memberships = await activeMemberships({ now });
-  const points = [];
 
+  /* Group first, place second. */
+  const byZip = new Map();
   for (const membership of memberships) {
     if (!hasGeographyFor(membership.zip)) continue;
-    const point = publicPointFor({ zip: membership.zip, seed: membership.seed });
-    if (!point) continue;
+    if (!byZip.has(membership.zip)) byZip.set(membership.zip, []);
+    byZip.get(membership.zip).push(membership);
+  }
 
-    const projected = project(point.lat, point.lng);
-    if (!projected) continue;
-
-    points.push({ x: projected.x, y: projected.y, plan: membership.plan });
+  const points = [];
+  for (const [zip, group] of byZip) {
+    const placed = placeZipCluster({ zip, seeds: group.map((m) => m.seed) });
+    for (const membership of group) {
+      const point = placed.get(membership.seed);
+      if (!point) continue;
+      const projected = project(point.lat, point.lng);
+      if (!projected) continue;
+      points.push({ x: projected.x, y: projected.y, plan: membership.plan });
+    }
   }
 
   /*
@@ -161,6 +182,33 @@ async function getPayload({ now = new Date(), force = false } = {}) {
 function clearCache() {
   cache = { at: 0, payload: null };
 }
+
+/*
+ * WHY THERE IS NO EVENT-DRIVEN INVALIDATION HERE.
+ *
+ * The obvious improvement is to clear this cache the moment a membership is
+ * written, and it was built and then removed, because it did not work and did
+ * not say so.
+ *
+ * Mongoose compiles middleware into a model when mongoose.model() runs. This
+ * module requires the models, so anything it registers with Model.schema.post()
+ * afterwards is accepted without complaint and never fires. Measured: after a
+ * second membership was saved, the cache still served one pin; after a
+ * deleteMany, it still served one pin. A stale map that believes it is fresh is
+ * worse than one that admits it is ninety seconds old.
+ *
+ * Making it genuinely work needs one of three things, none of which a homepage
+ * decoration has earned. Declaring the hooks inside models/Subscription.js and
+ * models/GiftMembership.js means those models importing this one, which is a
+ * circular dependency. Calling clearCache() from every write site means the
+ * Stripe webhook, the checkout route, several admin routes and the gift
+ * lifecycle all have to remember - and the one added next year will not, and
+ * nothing will fail. Change streams mean a second persistent connection to
+ * Mongo for a marketing band.
+ *
+ * So the TTL above is the mechanism, deliberately, at the short end of the
+ * range: ninety seconds, one aggregate query per window regardless of traffic.
+ */
 
 module.exports = {
   CACHE_TTL_MS,

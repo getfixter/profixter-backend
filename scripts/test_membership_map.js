@@ -59,7 +59,26 @@ async function main() {
   const Subscription = require("../models/Subscription");
   const GiftMembership = require("../models/GiftMembership");
   const map = require("../utils/membershipMap");
-  const { publicPointFor, pointInRings, ZIP_GEOGRAPHY, radiusForZip } = require("../utils/membershipMap/publicPoint");
+  const {
+    placeZipCluster,
+    pointInRings,
+    ZIP_GEOGRAPHY,
+    clusterRadiusM,
+    zipSpreadCeilingM,
+    SOLO_OFFSET_M,
+    MAX_SOLO_OFFSET_M,
+    ABSOLUTE_MAX_OFFSET_M,
+  } = require("../utils/membershipMap/publicPoint");
+
+  /** Metres between two lat/lng points, near enough at this latitude. */
+  const metresBetween = (a, b) =>
+    Math.hypot(
+      (a.lat - b.lat) * 111320,
+      (a.lng - b.lng) * 111320 * Math.cos((a.lat * Math.PI) / 180)
+    );
+
+  /** One membership's point, via the cluster placer. */
+  const soloPoint = (zip, seed) => placeZipCluster({ zip, seeds: [seed] }).get(seed);
   const { project, VIEWBOX } = require("../utils/membershipMap/projection");
 
   const app = express();
@@ -311,68 +330,158 @@ async function main() {
   section("The published position is not a customer's location");
   /* ================================================================== */
 
-  await test("the point always lands inside the ZIP's own polygon", async () => {
+  await test("every placement lands inside the ZIP's own polygon", async () => {
     /*
-     * The containment rule, exercised across every service-area ZIP and several
-     * seeds each. This is what stops a pin in Great South Bay, in the Sound, or
-     * in the next town over.
+     * Exercised across every service-area ZIP at several cluster sizes. This is
+     * what stops a pin in Great South Bay, in the Sound, or in the next town.
      */
     const zips = Object.keys(ZIP_GEOGRAPHY);
     let checked = 0;
     for (const zip of zips) {
-      const geography = ZIP_GEOGRAPHY[zip];
-      for (let i = 0; i < 6; i += 1) {
-        const point = publicPointFor({ zip, seed: `probe:${zip}:${i}` });
-        assert.ok(point, `no point produced for ${zip}`);
-        assert.ok(
-          pointInRings(point.lat, point.lng, geography.rings),
-          `${zip} seed ${i} landed outside its own area`
-        );
-        checked += 1;
+      const rings = ZIP_GEOGRAPHY[zip].rings;
+      for (const count of [1, 2, 4, 7]) {
+        const seeds = Array.from({ length: count }, (_, i) => `probe:${zip}:${count}:${i}`);
+        const placed = placeZipCluster({ zip, seeds });
+        assert.strictEqual(placed.size, count, `${zip} placed ${placed.size} of ${count}`);
+        for (const [seed, point] of placed) {
+          assert.ok(
+            pointInRings(point.lat, point.lng, rings),
+            `${zip} (${count} members) put ${seed} outside its own area`
+          );
+          checked += 1;
+        }
       }
     }
     console.log(`        (${checked} placements across ${zips.length} ZIPs)`);
   });
 
-  await test("the point is stable for the same membership", async () => {
-    const a = publicPointFor({ zip: ZIP, seed: "sub:abc123" });
-    const b = publicPointFor({ zip: ZIP, seed: "sub:abc123" });
-    assert.deepStrictEqual(a, b, "a reload must not move somebody's pin");
-  });
-
-  await test("different memberships in one ZIP get different points", async () => {
-    const seen = new Set();
-    for (let i = 0; i < 12; i += 1) {
-      const p = publicPointFor({ zip: ZIP, seed: `sub:spread${i}` });
-      seen.add(`${p.lat.toFixed(5)},${p.lng.toFixed(5)}`);
-    }
-    assert.ok(seen.size >= 10, `expected spread, got ${seen.size} distinct of 12`);
-  });
-
-  await test("the displacement is materially more than a block", async () => {
+  await test("A LONE MEMBER SITS ON THEIR OWN TOWN", async () => {
     /*
-     * The pin is not derived from the house at all, so there is no "offset from
-     * the property" to measure. What can be measured is the size of the area a
-     * pin could be anywhere within, and that has to be a town rather than a
-     * street.
+     * THE HEADLINE FIX OF V2.
+     *
+     * V1 scattered every membership anywhere inside its ZIP, which pushed the
+     * median pin 836m from its town centre and the worst 2358m - the next town
+     * over. It did that to avoid a collision, and twenty-five of thirty-two ZIPs
+     * have exactly one member and therefore nothing to collide with.
      */
-    const radius = radiusForZip(ZIP_GEOGRAPHY[ZIP]);
-    assert.ok(radius >= 700, `placement radius ${radius}m is too tight`);
-    const spread = [];
-    for (let i = 0; i < 60; i += 1) {
-      const p = publicPointFor({ zip: ZIP, seed: `sub:radius${i}` });
-      spread.push(p);
+    for (const zip of Object.keys(ZIP_GEOGRAPHY).slice(0, 40)) {
+      const g = ZIP_GEOGRAPHY[zip];
+      const point = soloPoint(zip, `solo:${zip}`);
+      const offset = metresBetween(point, { lat: g.lat, lng: g.lng });
+      assert.ok(
+        offset <= MAX_SOLO_OFFSET_M + 1,
+        `${zip}: a lone member sits ${Math.round(offset)}m out, cap is ${MAX_SOLO_OFFSET_M}m`
+      );
     }
-    const lats = spread.map((p) => p.lat);
-    const lngs = spread.map((p) => p.lng);
-    const latSpanM = (Math.max(...lats) - Math.min(...lats)) * 111_320;
-    assert.ok(latSpanM > 900, `pins for one ZIP only span ${Math.round(latSpanM)}m`);
+  });
+
+  await test("no pin anywhere may exceed the absolute offset cap", async () => {
+    for (const zip of Object.keys(ZIP_GEOGRAPHY)) {
+      const g = ZIP_GEOGRAPHY[zip];
+      for (const count of [1, 3, 6, 9]) {
+        const seeds = Array.from({ length: count }, (_, i) => `cap:${zip}:${count}:${i}`);
+        for (const point of placeZipCluster({ zip, seeds }).values()) {
+          const offset = metresBetween(point, { lat: g.lat, lng: g.lng });
+          assert.ok(
+            offset <= ABSOLUTE_MAX_OFFSET_M + 1,
+            `${zip}: pin ${Math.round(offset)}m out exceeds ${ABSOLUTE_MAX_OFFSET_M}m`
+          );
+        }
+      }
+    }
+  });
+
+  await test("members in one ZIP are separated enough to count", async () => {
+    /*
+     * A cluster has to read as several memberships rather than one blob, which
+     * means the closest pair must be genuinely apart - while staying inside the
+     * town. Both halves of that are asserted.
+     */
+    const zip = ZIP;
+    const g = ZIP_GEOGRAPHY[zip];
+    for (const count of [2, 3, 4, 6]) {
+      const seeds = Array.from({ length: count }, (_, i) => `sep:${count}:${i}`);
+      const points = [...placeZipCluster({ zip, seeds }).values()];
+      let closest = Infinity;
+      for (let i = 0; i < points.length; i += 1) {
+        for (let j = i + 1; j < points.length; j += 1) {
+          closest = Math.min(closest, metresBetween(points[i], points[j]));
+        }
+      }
+      assert.ok(closest > 300, `${count} members: closest pair only ${Math.round(closest)}m apart`);
+      for (const point of points) {
+        const offset = metresBetween(point, { lat: g.lat, lng: g.lng });
+        assert.ok(offset <= ABSOLUTE_MAX_OFFSET_M, `${count} members: a pin strayed ${Math.round(offset)}m`);
+      }
+    }
+  });
+
+  await test("the cluster ring never outgrows the ZIP it is in", async () => {
+    /*
+     * A compact village ZIP must get a tighter cluster than a large eastern
+     * Suffolk one, or a crowded small town would fling its pins into the
+     * neighbours.
+     */
+    for (const zip of Object.keys(ZIP_GEOGRAPHY)) {
+      const g = ZIP_GEOGRAPHY[zip];
+      const ceiling = zipSpreadCeilingM(g);
+      for (const count of [2, 5, 10]) {
+        assert.ok(
+          clusterRadiusM(g, count) <= ceiling + 1,
+          `${zip}: ring for ${count} exceeds its own ceiling`
+        );
+      }
+    }
+  });
+
+  await test("a position is stable for the same membership", async () => {
+    const a = placeZipCluster({ zip: ZIP, seeds: ["sub:abc", "sub:def"] });
+    const b = placeZipCluster({ zip: ZIP, seeds: ["sub:def", "sub:abc"] });
+    /*
+     * Also proves order-independence: the same two memberships handed over in
+     * the opposite order must land in the same two places, or a change to how
+     * Mongo returns rows would move everybody's pin.
+     */
+    assert.deepStrictEqual(a.get("sub:abc"), b.get("sub:abc"));
+    assert.deepStrictEqual(a.get("sub:def"), b.get("sub:def"));
+  });
+
+  await test("a neighbour joining keeps everybody in the same town", async () => {
+    /*
+     * WHAT STABILITY ACTUALLY MEANS HERE, AND WHAT IT DOES NOT.
+     *
+     * A membership must not move because of anything about itself - reloads,
+     * restarts and plan changes are all asserted elsewhere to leave a pin
+     * exactly where it was. When the SET of members in a ZIP changes, the
+     * cluster re-packs: slots are dealt in hash order, so a newcomer sorting
+     * into the middle shifts the ones after it by a slot.
+     *
+     * That is deliberate rather than tolerated. Pinning each member to a slot
+     * for life needs a sparse slot space, and a sparse space puts early
+     * members hundreds of metres further out than the packing requires - which
+     * is the V1 mistake in a new costume. Re-packing keeps the cluster tight
+     * and honest; what it must never do is move somebody out of their town.
+     */
+    const before = placeZipCluster({ zip: ZIP, seeds: ["sub:a", "sub:b", "sub:c"] });
+    const after = placeZipCluster({ zip: ZIP, seeds: ["sub:a", "sub:b", "sub:c", "sub:d"] });
+    const anchor = { lat: ZIP_GEOGRAPHY[ZIP].lat, lng: ZIP_GEOGRAPHY[ZIP].lng };
+    for (const seed of ["sub:a", "sub:b", "sub:c"]) {
+      const offset = metresBetween(after.get(seed), anchor);
+      assert.ok(
+        offset <= ABSOLUTE_MAX_OFFSET_M,
+        `${seed} ended up ${Math.round(offset)}m from its town centre`
+      );
+      assert.ok(
+        pointInRings(after.get(seed).lat, after.get(seed).lng, ZIP_GEOGRAPHY[ZIP].rings),
+        `${seed} was re-packed outside its own ZIP`
+      );
+    }
   });
 
   await test("an unknown ZIP is skipped, never guessed", async () => {
-    assert.strictEqual(publicPointFor({ zip: "99999", seed: "x" }), null);
-    assert.strictEqual(publicPointFor({ zip: "", seed: "x" }), null);
-    assert.strictEqual(publicPointFor({ zip: ZIP, seed: "" }), null);
+    assert.strictEqual(placeZipCluster({ zip: "99999", seeds: ["x"] }).size, 0);
+    assert.strictEqual(placeZipCluster({ zip: "", seeds: ["x"] }).size, 0);
+    assert.strictEqual(placeZipCluster({ zip: ZIP, seeds: [] }).size, 0);
   });
 
   await test("a membership on an out-of-area ZIP produces no pin", async () => {

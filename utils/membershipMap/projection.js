@@ -23,16 +23,20 @@
 /**
  * The visible window: the ProFixter service area, with a little air.
  *
- * Derived from the bounding box of the 169 service-area ZIP polygons, padded so
- * the coastline is not flush against the frame. Deliberately excludes the far
- * eastern county fragments that would otherwise stretch the frame and shrink
- * the part of the island anybody actually lives in.
+ * Hugs the bounding box of the 169 service-area ZIP polygons with only a hair
+ * of air, because every degree of empty ocean in the frame is a degree the
+ * island itself does not get. V1 carried 3.5% wasted width and 8.9% wasted
+ * height, which on a 390px phone is most of the reason Long Island looked small
+ * inside a large dark box.
+ *
+ * Deliberately excludes the far eastern county fragments that would otherwise
+ * stretch the frame and shrink the part of the island anybody actually lives in.
  */
 const MAP_BOUNDS = {
-  west: -73.81,
-  east: -71.82,
-  south: 40.54,
-  north: 41.24,
+  west: -73.79,
+  east: -71.835,
+  south: 40.565,
+  north: 41.228,
 };
 
 /** The latitude longitude is scaled at - the middle of the frame. */

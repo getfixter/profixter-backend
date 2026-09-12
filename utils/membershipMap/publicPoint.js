@@ -7,63 +7,106 @@ const ZIP_GEOGRAPHY = require("./zipGeography.json");
  *
  * THE HOUSE IS NEVER LOCATED. THAT IS THE WHOLE PRIVACY DESIGN.
  *
- * ProFixter has never geocoded a customer address and this feature deliberately
- * does not start. The obvious implementation - geocode the property, then push
- * the pin a little way off - would CREATE precise customer coordinates that do
- * not currently exist anywhere in the system, and then rely on an offset to
- * throw that precision away again. Every one of those coordinates would be a
- * new thing to leak, log, back up and regret.
+ * ProFixter has never geocoded a customer address and this deliberately does
+ * not start. Geocoding the property and pushing the pin a little way off would
+ * CREATE precise customer coordinates that do not exist anywhere in the system,
+ * then rely on an offset to throw that precision away again - a new column to
+ * leak, log, back up and regret.
  *
- * So the input here is the ZIP code, which is an area rather than a place. The
- * most precise fact that exists anywhere in this pipeline is "this membership
- * is somewhere in 11757", and the published point is a position inside that
- * area chosen by a hash. Its relationship to the actual property is arbitrary
- * by construction: the property was never an input, so the displacement is not
- * a radius anybody can subtract, it is the whole ZIP.
+ * So the input is the ZIP, which is an area rather than a place. The most
+ * precise fact anywhere in this pipeline is "somewhere in 11757". The property
+ * was never an input, so the displacement is not a radius anybody can subtract.
  *
- * WHAT THE JITTER IS ACTUALLY FOR
- * Not privacy - the ZIP-level derivation already provides that. Without it,
- * every member in one ZIP would stack on one pixel, which looks broken and
- * understates the footprint. The jitter spreads them, and nothing more.
+ * WHY V2 MOVED THE PINS BACK TOWARDS THE MIDDLE
+ *
+ * V1 scattered each membership anywhere inside its ZIP, on the theory that a
+ * wider spread was privately safer. It was not - the ZIP is what provides the
+ * privacy, and the scatter was the only thing choosing WHERE in the ZIP. All it
+ * bought was dishonesty: the median pin sat 836m from its own town centre and
+ * the worst sat 2358m away, which on Long Island is the next town. Eight of
+ * forty-three members appeared somewhere they do not live.
+ *
+ * Worse, the scatter was pointless for most of them. Spread exists only to stop
+ * two members in one ZIP landing on the same pixel, and TWENTY-FIVE OF THIRTY-
+ * TWO ZIPS HAVE EXACTLY ONE MEMBER. Those pins were being flung up to two
+ * kilometres off-centre to avoid a collision with nobody.
+ *
+ * V2 places by ZIP rather than by member. One member sits essentially on the
+ * ZIP's own representative point. Several members are dealt deterministic slots
+ * on a compact ring around it, sized by how many there are. The spread is now
+ * exactly as large as the crowding requires and no larger, so a Lindenhurst
+ * member looks like they live in Lindenhurst.
  *
  * STABILITY
- * The position is derived, not stored and not random. The same membership
- * resolves to the same point on every request, across restarts and deploys,
- * for as long as it stays active - and vanishes when it does not.
+ * Positions are derived, never random and never stored. The same membership
+ * resolves to the same point across requests, restarts and deploys - and
+ * vanishes the moment its access does. Slots are dealt in hash order rather
+ * than database order, so a neighbour joining or leaving does not reshuffle
+ * everybody else's pin.
  */
 
 /**
  * Salt for the position hash.
  *
  * Defence in depth rather than the mechanism. Somebody who knew both the salt
- * and a subscription id could recompute that membership's pin, but the pin only
- * tells them the ZIP, which the hash is not needed to guess. Privacy rests on
- * the ZIP-level derivation above; this makes the mapping non-reproducible by
- * anybody outside the server, which costs nothing to add.
+ * and a subscription id could recompute that pin, but the pin only tells them
+ * the ZIP, which the hash is not needed to guess. Privacy rests on the ZIP-level
+ * derivation; this costs nothing and makes the mapping non-reproducible off-box.
  */
 const SALT = process.env.MEMBERSHIP_MAP_SALT || "profixter-membership-map-v1";
 
 /**
- * How far a pin may sit from the area's internal point.
+ * How far a lone member sits from the ZIP's representative point.
  *
- * Scaled to the ZIP'S OWN LAND AREA rather than a fixed radius, because a
- * fixed one is wrong in both directions on Long Island: dense village ZIPs are
- * a couple of kilometres across and would throw pins into the next town, while
- * eastern Suffolk ZIPs are enormous and would leave a tight knot of pins in the
- * middle of a large area.
+ * Not zero, because a map where every single-member ZIP sits on a mathematically
+ * exact centroid looks generated rather than observed - and a pin visibly
+ * snapped to a centroid also advertises that it is the only one there. Small
+ * enough - under a quarter of a kilometre - that it is unambiguously the right
+ * neighbourhood of the right town.
  *
- * Land area only - AREAWATER is excluded upstream, so a ZIP fronting Great
- * South Bay does not get a radius inflated by the water it looks at.
- *
- * The 0.55 factor keeps the disc comfortably inside a roughly circular area;
- * anything the shape rejects is caught by the containment test below.
+ * This is slot 0 of the spiral below rather than a separate rule, so a lone
+ * member and the first of five are placed by exactly the same arithmetic.
  */
-const RADIUS_FACTOR = 0.55;
-const MIN_RADIUS_M = 700;
-const MAX_RADIUS_M = 2500;
+const SOLO_OFFSET_M = 191;
 
-/** Deterministic attempts to land inside the polygon before giving up. */
-const PLACEMENT_ATTEMPTS = 12;
+/**
+ * One step of the spiral a crowded ZIP is packed along.
+ *
+ * Slot i sits SPIRAL_STEP_M * sqrt(i + 0.5) from the anchor, so the first pin is
+ * about 190m out - the lone-member case - the second about 330m, the fourth
+ * about 520m. Growth slows as the count rises, which is what keeps a busy town
+ * compact instead of letting the tenth member define how far the first sits.
+ *
+ * Everything is bounded by the ZIP's own ceiling below, so this is the shape of
+ * the packing rather than a promise about distance.
+ */
+const SPIRAL_STEP_M = 270;
+
+/**
+ * The largest offset any pin may take, whatever the arithmetic above produces.
+ *
+ * Also bounded per-ZIP by the area's own size: a compact village ZIP gets a
+ * proportionally tighter cluster than a large eastern Suffolk one, so nothing is
+ * ever pushed outside the town it belongs to.
+ */
+const ABSOLUTE_MAX_OFFSET_M = 1100;
+const ZIP_RADIUS_FACTOR = 0.45;
+
+/**
+ * Deterministic wobble applied to every slot radius.
+ *
+ * Without it a cluster is a perfect spiral, which reads as a diagram rather
+ * than a distribution. Small enough that it never changes which town a pin is
+ * in, and derived from the seed so it never changes at all.
+ */
+const WOBBLE_MIN = 0.92;
+const WOBBLE_MAX = 1.08;
+
+/** The furthest a lone member can land, wobble included. */
+const MAX_SOLO_OFFSET_M = Math.round(SOLO_OFFSET_M * WOBBLE_MAX);
+
+/** Deterministic shrink attempts before a pin falls back to the anchor. */
+const SHRINK_STEPS = [1, 0.72, 0.5, 0.3];
 
 const EARTH_RADIUS_M = 6378137;
 
@@ -71,26 +114,47 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-/** Two independent unit floats from one seed and counter. */
-function unitPair(seed, counter) {
-  const digest = crypto.createHash("sha256").update(`${SALT}:${seed}:${counter}`).digest();
-  return [digest.readUInt32BE(0) / 0x1_0000_0000, digest.readUInt32BE(4) / 0x1_0000_0000];
+function digest(...parts) {
+  return crypto.createHash("sha256").update(`${SALT}:${parts.join(":")}`).digest();
 }
 
-function radiusForZip(geography) {
+/** A stable unit float in [0,1) from any inputs. */
+function unit(...parts) {
+  return digest(...parts).readUInt32BE(0) / 0x1_0000_0000;
+}
+
+/**
+ * How far this ZIP may spread its pins, from its own land area.
+ *
+ * Land only - water area is excluded upstream, so a ZIP fronting Great South
+ * Bay is not granted a wider cluster because of the water it looks at.
+ */
+function zipSpreadCeilingM(geography) {
   const land = Number(geography?.landM2) || 0;
-  if (land <= 0) return MIN_RADIUS_M;
+  if (land <= 0) return SOLO_OFFSET_M;
   const equivalent = Math.sqrt(land / Math.PI);
-  return clamp(equivalent * RADIUS_FACTOR, MIN_RADIUS_M, MAX_RADIUS_M);
+  return clamp(equivalent * ZIP_RADIUS_FACTOR, SOLO_OFFSET_M, ABSOLUTE_MAX_OFFSET_M);
+}
+
+/**
+ * How far the furthest pin sits when `count` members share this ZIP.
+ *
+ * The outermost slot of the spiral, clamped by the area's own ceiling. Reported
+ * rather than used to place: the spiral needs no knowledge of the count, which
+ * is the entire point of it.
+ */
+function clusterRadiusM(geography, count) {
+  const outermost = SOLO_OFFSET_M + SPIRAL_STEP_M * Math.sqrt(Math.max(count, 1) - 1);
+  return Math.min(outermost, zipSpreadCeilingM(geography), ABSOLUTE_MAX_OFFSET_M);
 }
 
 /**
  * Move a point by a distance and bearing.
  *
- * Flat-earth offsets over a couple of kilometres at latitude 41, which is
- * accurate to well under the simplification already baked into the polygon.
- * The longitude step is divided by cos(lat) so the displacement is the same
- * number of metres east-west as north-south rather than being squashed.
+ * Flat-earth offsets over at most a kilometre at latitude 41, accurate to well
+ * under the simplification already baked into the polygon. Longitude is divided
+ * by cos(lat) so the displacement is the same number of metres east-west as
+ * north-south rather than being squashed.
  */
 function offsetPoint(lat, lng, metres, bearingRad) {
   const dNorth = metres * Math.cos(bearingRad);
@@ -103,14 +167,12 @@ function offsetPoint(lat, lng, metres, bearingRad) {
 /**
  * Is the point inside the area?
  *
- * Ray casting, toggled across EVERY ring of the ZCTA rather than one of them.
- * That single loop buys two things at once. A genuinely multi-part area is
- * covered in full instead of having half of it treated as water - 11772 is
- * exactly this, a village plus a separate southern stretch, and the Census
- * internal point sits in the smaller half. And an inner ring subtracts itself:
- * a point inside an outer ring and also inside a hole crosses an even number of
- * edges and comes back outside, which is correct without inspecting winding
- * order.
+ * Ray casting toggled across EVERY ring of the ZCTA. That one loop buys two
+ * things: a genuinely multi-part area is covered in full instead of having half
+ * of it treated as water - 11772 is a village plus a separate southern stretch,
+ * with the Census internal point in the smaller half - and an inner ring
+ * subtracts itself, because a point inside an outer ring and also inside a hole
+ * crosses an even number of edges and comes back outside.
  *
  * This is what stops a pin appearing in Great South Bay, in the Sound, or three
  * towns away. The safe area is the actual area, not a circle drawn near it.
@@ -131,42 +193,93 @@ function pointInRings(lat, lng, rings) {
 }
 
 /**
- * The published position for one membership, or null if it cannot be placed.
+ * Place one pin at a bearing and distance, pulling it in until it fits.
  *
- * Returns null rather than guessing. A ZIP outside the service-area table has
- * no shape to constrain a pin to, and a pin that is merely somewhere on Long
- * Island is not something to publish as if it meant something.
+ * A crescent-shaped coastal ZIP can easily put a slot in the water. Rather than
+ * rejecting the slot and re-rolling somewhere arbitrary, the same bearing is
+ * retried closer in: the pin keeps the direction its slot gave it - which is
+ * what keeps a cluster looking like a cluster - and simply sits nearer the
+ * middle. The anchor is the last resort and is always inside by definition.
  */
-function publicPointFor({ zip, seed }) {
+function placeAt(geography, distanceM, bearingRad) {
+  for (const factor of SHRINK_STEPS) {
+    const candidate = offsetPoint(geography.lat, geography.lng, distanceM * factor, bearingRad);
+    if (pointInRings(candidate.lat, candidate.lng, geography.rings)) return candidate;
+  }
+  return { lat: geography.lat, lng: geography.lng };
+}
+
+/**
+ * Positions for every active membership in ONE ZIP.
+ *
+ * Takes the whole group rather than one member at a time, because the right
+ * spread is a property of the group: it is the answer to "how many pins have to
+ * fit here", which a single membership cannot know on its own. This is the
+ * change that fixes V1 - placement became a per-ZIP decision instead of a
+ * per-member one.
+ *
+ * Returns a Map of seed to {lat, lng}. Seeds that cannot be placed are absent.
+ */
+function placeZipCluster({ zip, seeds }) {
   const key = String(zip || "").trim();
   const geography = ZIP_GEOGRAPHY[key];
-  if (!geography || !Array.isArray(geography.rings) || !geography.rings.length) return null;
-  if (!seed) return null;
+  const out = new Map();
+  if (!geography || !Array.isArray(geography.rings) || !geography.rings.length) return out;
 
-  const radius = radiusForZip(geography);
-
-  for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt += 1) {
-    const [u, v] = unitPair(seed, attempt);
-    /*
-     * sqrt(u) rather than u, so points are spread evenly across the disc
-     * instead of bunching toward the middle.
-     */
-    const distance = radius * Math.sqrt(u);
-    const bearing = v * 2 * Math.PI;
-    const candidate = offsetPoint(geography.lat, geography.lng, distance, bearing);
-    if (pointInRings(candidate.lat, candidate.lng, geography.rings)) {
-      return { lat: candidate.lat, lng: candidate.lng };
-    }
-  }
+  const usable = (seeds || []).filter(Boolean);
+  if (!usable.length) return out;
 
   /*
-   * Every attempt fell outside - a long thin ZIP, or a coastal one shaped like
-   * a crescent. The Census internal point is guaranteed by definition to lie
-   * within the area, so it is the one position that is always safe. Several
-   * memberships in such a ZIP will share it; a small stack of pins is a far
-   * better outcome than one pin in the water.
+   * Dealt in hash order, not database order.
+   *
+   * Slot n must belong to the same membership tomorrow as it does today, or a
+   * cancellation somewhere else in the town would silently rearrange everybody
+   * who stayed. Hashing gives a total order that depends only on the memberships
+   * present, not on how Mongo happened to return them.
    */
-  return { lat: geography.lat, lng: geography.lng };
+  const ordered = [...usable].sort((a, b) => {
+    const ha = digest("order", a).toString("hex");
+    const hb = digest("order", b).toString("hex");
+    return ha < hb ? -1 : ha > hb ? 1 : 0;
+  });
+
+  /*
+   * A phyllotaxis spiral: slot i sits at i turns of the golden angle, a step
+   * out proportional to sqrt(i).
+   *
+   * CHOSEN BECAUSE THE GEOMETRY DOES NOT DEPEND ON HOW MANY MEMBERS THERE ARE.
+   *
+   * The obvious layout - deal n evenly-spaced slots around one ring - has to
+   * recompute every angle when n changes, so a single new membership in a town
+   * rotates everybody already there. Measured, a third member joining moved an
+   * existing pin 615m: nobody has moved house, but the map says they have.
+   *
+   * Here slot i is at the same angle and the same distance whatever else is in
+   * the ZIP, so joining appends a pin and leaving removes one. Only members
+   * whose hash sorts after a newcomer shift, and they shift by one slot rather
+   * than by a whole rotation. It is also how sunflowers pack seeds, which is to
+   * say it stays evenly spaced at every count without being told the count.
+   *
+   * The solo case falls out of the same formula rather than being special-cased:
+   * slot 0 is sqrt(0.5) steps out, which is the lone-member offset.
+   */
+  const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+  const ceiling = Math.min(zipSpreadCeilingM(geography), ABSOLUTE_MAX_OFFSET_M);
+  /* Rotated per ZIP so neighbouring towns do not show the same rosette. */
+  const rotation = unit("rotate", key) * 2 * Math.PI;
+
+  ordered.forEach((seed, index) => {
+    /*
+     * A touch of deterministic wobble, so a cluster looks like a distribution
+     * rather than a diagram. Tied to the seed, so it never changes.
+     */
+    const wobble = WOBBLE_MIN + unit("wobble", seed) * (WOBBLE_MAX - WOBBLE_MIN);
+    const distance = Math.min((SOLO_OFFSET_M + SPIRAL_STEP_M * Math.sqrt(index)) * wobble, ceiling);
+    const bearing = rotation + index * GOLDEN_ANGLE;
+    out.set(seed, placeAt(geography, distance, bearing));
+  });
+
+  return out;
 }
 
 /** Whether the table knows a ZIP at all. Used to skip records early. */
@@ -175,11 +288,14 @@ function hasGeographyFor(zip) {
 }
 
 module.exports = {
-  MAX_RADIUS_M,
-  MIN_RADIUS_M,
+  ABSOLUTE_MAX_OFFSET_M,
+  MAX_SOLO_OFFSET_M,
+  SPIRAL_STEP_M,
+  SOLO_OFFSET_M,
   ZIP_GEOGRAPHY,
+  clusterRadiusM,
   hasGeographyFor,
+  placeZipCluster,
   pointInRings,
-  publicPointFor,
-  radiusForZip,
+  zipSpreadCeilingM,
 };
