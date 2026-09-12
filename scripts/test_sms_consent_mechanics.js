@@ -668,6 +668,144 @@ async function main() {
   });
 
   /* ================================================================== */
+  section("The Twilio Advanced Opt-Out replies");
+  /* ================================================================== */
+
+  const optOutCopy = require("../utils/sms/twilioOptOutCopy");
+
+  await test("every keyword reply fits one console field and two segments", () => {
+    /*
+     * A single smart quote or en dash pasted into the console switches the body
+     * to UCS-2, cutting the per-segment budget from 153 characters to 67. The
+     * bodies are written in plain ASCII for that reason and pinned here, along
+     * with Twilio's 320-character field limit.
+     */
+    for (const field of ["OPT_OUT_MESSAGE", "OPT_IN_MESSAGE", "HELP_MESSAGE"]) {
+      const body = optOutCopy[field];
+      const { gsm7, segments } = optOutCopy.measure(body);
+      assert.ok(gsm7, `${field} is not GSM-7; a non-ASCII character halves the segment budget`);
+      assert.ok(body.length <= 320, `${field} is ${body.length} chars; the console field holds 320`);
+      assert.ok(segments <= 2, `${field} costs ${segments} segments`);
+    }
+  });
+
+  await test("the START reply is the wording Taras approved, verbatim", () => {
+    /*
+     * Pinned as an exact string rather than by pattern. This body was settled
+     * word by word between two wrong versions - one claiming a consent we do
+     * not have, one denying an unblock that did happen - so an edit to it is a
+     * decision somebody has to make again deliberately, not a tidy-up.
+     */
+    assert.strictEqual(
+      optOutCopy.OPT_IN_MESSAGE,
+      "ProFixter: This number can receive texts from us again. To choose which " +
+        "ProFixter texts you want, turn on service or offer texts in your account " +
+        "at profixter.com/account. Msg&data rates may apply. Reply STOP to opt out, " +
+        "HELP for help."
+    );
+  });
+
+  await test("the START reply claims no subscription to either category", () => {
+    /*
+     * Twilio's stock confirmation says the customer has been re-subscribed.
+     * Ours must not, because applyOptIn sets neither consent flag - the
+     * database would be contradicted by its own confirmation message.
+     */
+    const body = optOutCopy.OPT_IN_MESSAGE;
+    for (const claim of [
+      /re-?subscrib/i,
+      /you are (now )?(subscribed|signed up|opted in)/i,
+      /you will (now )?(receive|get) (texts|messages)/i,
+      /we will (resume|start) (sending|texting)/i,
+    ]) {
+      assert.ok(!claim.test(body), `the START reply claims a subscription: ${claim}`);
+    }
+  });
+
+  await test("the START reply does not contradict Twilio's own unblock", () => {
+    /*
+     * The opposite failure, and the reason an earlier draft was rejected.
+     * START really does clear the carrier block, so a reply denying that the
+     * number can receive anything would be both confusing and at odds with the
+     * keyword Twilio reserves as an opt-in. It has to state the unblock, then
+     * point at where the ProFixter choice is actually made.
+     */
+    const body = optOutCopy.OPT_IN_MESSAGE;
+    assert.ok(
+      /can receive texts from us again/i.test(body),
+      "the START reply must state the carrier-level unblock plainly"
+    );
+    assert.ok(
+      !/not (signed up|subscribed|opted in)/i.test(body),
+      "the START reply must not deny an opt-in keyword doing what Twilio says it does"
+    );
+    assert.ok(
+      /profixter\.com\/account/.test(body),
+      "the START reply must say where the application-level choice is made"
+    );
+  });
+
+  await test("each reply carries the disclosures its keyword owes", () => {
+    assert.ok(/ProFixter/.test(optOutCopy.OPT_OUT_MESSAGE), "STOP reply must name the brand");
+    assert.ok(
+      /unsubscribed|no more texts/i.test(optOutCopy.OPT_OUT_MESSAGE),
+      "STOP reply must confirm the unsubscribe"
+    );
+    for (const field of ["OPT_IN_MESSAGE", "HELP_MESSAGE"]) {
+      assert.ok(/Msg&data rates may apply/.test(optOutCopy[field]), `${field} needs the rates line`);
+      assert.ok(/Reply STOP to opt out/.test(optOutCopy[field]), `${field} needs the STOP line`);
+    }
+    assert.ok(
+      /631-599-1363/.test(optOutCopy.HELP_MESSAGE),
+      "HELP reply must carry a real contact route"
+    );
+    assert.ok(
+      /Premium Island Homes/.test(optOutCopy.HELP_MESSAGE),
+      "HELP reply must name the legal entity behind the brand"
+    );
+  });
+
+  await test("our webhook recognises every keyword we ask Twilio to use", () => {
+    /*
+     * Twilio enforces the opt-out; we mirror it so our eligibility agrees with
+     * theirs. A keyword added to the console list that our webhook ignores
+     * would leave the two silently disagreeing about who is blocked - Twilio
+     * refusing sends we keep believing are allowed.
+     */
+    const webhookSrc = readSource(path.join(__dirname, "..", "routes", "smsWebhook.js"));
+    const setFor = (name) => {
+      /*
+       * Sliced rather than matched with a regular expression. The words are a
+       * literal array in the source and a pattern for it needs enough escaping
+       * to be worth getting wrong once; indexOf cannot be misread.
+       */
+      const marker = `${name} = new Set([`;
+      const from = webhookSrc.indexOf(marker);
+      assert.ok(from >= 0, `${name} not found in routes/smsWebhook.js`);
+      const body = webhookSrc.slice(from + marker.length, webhookSrc.indexOf("])", from));
+      return new Set(
+        body
+          .split(",")
+          .map((entry) => entry.trim().replace(/^["']|["']$/g, ""))
+          .filter(Boolean)
+      );
+    };
+    const pairs = [
+      [optOutCopy.OPT_OUT_KEYWORDS, setFor("STOP_WORDS"), "STOP_WORDS"],
+      [optOutCopy.OPT_IN_KEYWORDS, setFor("START_WORDS"), "START_WORDS"],
+      [optOutCopy.HELP_KEYWORDS, setFor("HELP_WORDS"), "HELP_WORDS"],
+    ];
+    for (const [consoleKeywords, ours, name] of pairs) {
+      for (const keyword of consoleKeywords) {
+        assert.ok(
+          ours.has(keyword.toLowerCase()),
+          `${keyword} is configured in Twilio but ${name} does not recognise it`
+        );
+      }
+    }
+  });
+
+  /* ================================================================== */
   section("What must NOT have changed");
   /* ================================================================== */
 
