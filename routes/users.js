@@ -245,7 +245,7 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
     if (optOut && requested.some((r) => r.value === true)) {
       return res.status(409).json({
         message:
-          "This phone number has opted out of SMS. Text START to re-enable messages before turning texts back on.",
+          "This phone number has opted out of SMS. Text START to lift the block on your phone, then turn the texts you want back on here.",
         ...smsPreferenceDTO(me, optOut),
       });
     }

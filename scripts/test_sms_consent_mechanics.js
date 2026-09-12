@@ -728,6 +728,65 @@ async function main() {
     }
   });
 
+  await test("no customer-facing copy claims START resumes messages", () => {
+    /*
+     * THE CLAIM AND THE CODE HAVE TO AGREE, OR THE CAMPAIGN IS MISDESCRIBED.
+     *
+     * applyOptIn lifts the handset block and grants no consent. Any page that
+     * tells a customer START will resume their texts is describing a system we
+     * do not have - and it is exactly the sentence a carrier reviewer would
+     * quote back at us. The CTIA boilerplate that ships with most SMS terms
+     * ("To rejoin, start again as you did initially, and we will resume sending
+     * SMS messages to you") says precisely that, which is why it is named here.
+     */
+    const surfaces = [
+      path.join(FRONTEND, "app", "terms", "page.tsx"),
+      path.join(FRONTEND, "app", "privacy", "page.tsx"),
+      path.join(FRONTEND, "app", "communication-consent", "page.tsx"),
+      path.join(FRONTEND, "app", "components", "account", "SmsPreferences.tsx"),
+      path.join(__dirname, "..", "routes", "users.js"),
+    ];
+    const forbidden = [
+      /we will resume sending\s+SMS messages/i,
+      /START[^.]{0,80}\band we will (resume|start) (sending|texting)/i,
+      /text START[^.]{0,60}to (resume|restart) (your )?(texts|messages)/i,
+      /START[^.]{0,60}\bre-?subscribes?\b/i,
+    ];
+    for (const file of surfaces) {
+      const src = readSource(file).replace(/\s+/g, " ");
+      for (const pattern of forbidden) {
+        assert.ok(
+          !pattern.test(src),
+          `${path.basename(file)} claims START resumes messaging: ${pattern}`
+        );
+      }
+    }
+  });
+
+  await test("the pages that mention START say it grants nothing", () => {
+    /*
+     * The negative case above is not enough on its own - deleting the sentence
+     * would pass it while leaving a customer with no idea what START does.
+     * Wherever START is offered as the way out of a STOP, the page must also
+     * say that the customer still has to switch their texts back on.
+     */
+    const surfaces = [
+      path.join(FRONTEND, "app", "terms", "page.tsx"),
+      path.join(FRONTEND, "app", "communication-consent", "page.tsx"),
+      path.join(FRONTEND, "app", "components", "account", "SmsPreferences.tsx"),
+    ];
+    for (const file of surfaces) {
+      const src = readSource(file).replace(/\s+/g, " ");
+      if (!/START/.test(src)) continue;
+      assert.ok(
+        /does not by itself|on its own does not|does not by itself resume|switch on the ones you want|turn the categories you want back on|account settings/i.test(
+          src
+        ),
+        `${path.basename(file)} mentions START without saying the customer must opt back in`
+      );
+    }
+  });
+
   await test("the legal pages describe the new mechanics", () => {
     const consent = readSource(
       path.join(FRONTEND, "app", "communication-consent", "page.tsx")
