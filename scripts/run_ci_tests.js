@@ -43,6 +43,7 @@ const SUITES = [
   "test_customer_availability_readiness.js",
   "test_calendar_deployment_gate.js",
   "test_booking_content_updates.js",
+  "test_booking_photo_sanitizer.js",
   "test_marketing_system.js",
   "test_marketing_longterm.js",
   "test_unsubscribe_token.js",

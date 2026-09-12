@@ -9,8 +9,6 @@ const {
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const sharp = require("sharp");
-const path = require("path");
 const mongoose = require("mongoose");
 const moment = require("moment-timezone");
 
@@ -30,6 +28,13 @@ const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const mail = require("../utils/emailService");
 const { deletePublicObjects, putPublicObject } = require("../utils/s3");
+const {
+  MAX_PHOTO_BYTES,
+  MAX_PHOTOS,
+  ensureSanitized,
+  sanitizeUploadedPhotos,
+  stemOf,
+} = require("../utils/imageSanitizer");
 const {
   subscriptionGrantsAccess,
   hasStripeSecretKey,
@@ -107,8 +112,13 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50 MB per file
-    files: 10, // allow 10 images
+    /*
+     * 20 MB covers any phone photograph, including 48 MP frames, while ten
+     * 50 MB files at once was a quarter of this instance's memory before a
+     * single one had been decoded.
+     */
+    fileSize: MAX_PHOTO_BYTES,
+    files: MAX_PHOTOS,
   },
 });
 
@@ -137,59 +147,25 @@ async function uploadBookingImages({ files = [], bookingDate, bookingNumber }) {
   if (S3_BUCKET) {
     const baseKey = `${S3_PREFIX}/${formattedDate}/booking-${bookingNumber}`;
 
-    for (const f of files || []) {
-      const ext = path.extname(f.originalname).toLowerCase();
-      const stem = safeName(path.basename(f.originalname, ext));
-      let finalBuffer = f.buffer;
-      let finalExt = ext;
-      let finalContentType = f.mimetype || "application/octet-stream";
+    /*
+     * Sanitize the whole batch first, then write. A file that turns out not to
+     * be an image rejects the request before anything has been stored, so
+     * there is never a half-uploaded set of photos to go back and delete.
+     */
+    const prepared = [];
+    for (const f of files || []) prepared.push(await ensureSanitized(f));
 
-      const needsConversion =
-        [".heic", ".heif", ".png", ".bmp", ".tiff", ".tif"].includes(ext) ||
-        [
-          "image/heic",
-          "image/heif",
-          "image/png",
-          "image/bmp",
-          "image/tiff",
-        ].includes(f.mimetype);
-
-      if (needsConversion) {
-        finalBuffer = await sharp(f.buffer)
-          .rotate()
-          .resize(1600, 1600, {
-            fit: "inside",
-            withoutEnlargement: true,
-          })
-          .jpeg({
-            quality: 75,
-            chromaSubsampling: "4:2:0",
-            mozjpeg: true,
-          })
-          .toBuffer();
-        finalExt = ".jpg";
-        finalContentType = "image/jpeg";
-      } else if ([".jpg", ".jpeg"].includes(ext)) {
-        finalBuffer = await sharp(f.buffer)
-          .rotate()
-          .resize(1600, 1600, {
-            fit: "inside",
-            withoutEnlargement: true,
-          })
-          .jpeg({
-            quality: 75,
-            chromaSubsampling: "4:2:0",
-            mozjpeg: true,
-          })
-          .toBuffer();
-      }
-
-      const key = `${baseKey}/${Date.now()}-${stem}${finalExt}`;
+    for (let i = 0; i < (files || []).length; i += 1) {
+      const f = files[i];
+      const ready = prepared[i];
+      const stem = safeName(stemOf(f.originalname));
+      const key = `${baseKey}/${Date.now()}-${stem}${ready.ext}`;
       const url = await putPublicObject({
         Bucket: S3_BUCKET,
         Key: key,
-        Body: finalBuffer,
-        ContentType: finalContentType,
+        Body: ready.buffer,
+        /* What we produced, not what the upload claimed to be. */
+        ContentType: ready.contentType,
       });
       uploadedS3Keys.push(key);
       images.push(url);
@@ -776,6 +752,7 @@ router.post(
   auth,
   ensureNotBlacklisted,
   upload.array("images", 10),
+  sanitizeUploadedPhotos,
   async (req, res) => {
     let booking = null;
     let entitlement = null;
@@ -1293,6 +1270,7 @@ router.post(
   auth,
   ensureNotBlacklisted,
   upload.array("images", 10),
+  sanitizeUploadedPhotos,
   async (req, res) => {
     let entitlement = null;
     let booking = null;
@@ -1474,6 +1452,7 @@ router.post(
   auth,
   ensureNotBlacklisted,
   upload.array("images", 10),
+  sanitizeUploadedPhotos,
   async (req, res) => {
     let booking = null;
     let entitlement = null;
@@ -1691,6 +1670,7 @@ router.post(
   auth,
   ensureNotBlacklisted,
   upload.array("images", 10),
+  sanitizeUploadedPhotos,
   async (req, res) => {
     res.set("X-Bookings-Route", BOOKINGS_ROUTE_VERSION);
 
@@ -1899,85 +1879,29 @@ router.post(
       if (S3_BUCKET) {
         const baseKey = `${S3_PREFIX}/${formattedDate}/booking-${bookingNumber}`;
 
-        for (const f of req.files || []) {
-          const ext = path.extname(f.originalname).toLowerCase();
-          const stem = safeName(path.basename(f.originalname, ext));
+        /*
+         * Sanitize the batch before storing any of it.
+         *
+         * What stood here re-encoded only files whose NAME ended in a known
+         * extension, and when sharp threw it logged a warning and uploaded the
+         * original bytes anyway - so the one input most likely to be hostile
+         * was the one that reached S3 untouched, wearing a Content-Type the
+         * client chose. ensureSanitized decides from the bytes and has no such
+         * escape hatch.
+         */
+        const prepared = [];
+        for (const f of req.files || []) prepared.push(await ensureSanitized(f));
 
-          let finalBuffer = f.buffer;
-          let finalExt = ext;
-          let finalContentType = f.mimetype || "application/octet-stream";
-
-          const needsConversion =
-            [".heic", ".heif", ".png", ".bmp", ".tiff", ".tif"].includes(ext) ||
-            [
-              "image/heic",
-              "image/heif",
-              "image/png",
-              "image/bmp",
-              "image/tiff",
-            ].includes(f.mimetype);
-
-          if (needsConversion) {
-            try {
-              console.log(`🔄 Converting ${f.originalname} to optimized JPG...`);
-              finalBuffer = await sharp(f.buffer)
-                .rotate()
-                .resize(1600, 1600, {
-                  fit: "inside",
-                  withoutEnlargement: true,
-                })
-                .jpeg({
-                  quality: 75,
-                  chromaSubsampling: "4:2:0",
-                  mozjpeg: true,
-                })
-                .toBuffer();
-
-              finalExt = ".jpg";
-              finalContentType = "image/jpeg";
-              console.log(
-                `✅ Converted ${f.originalname} to JPG (${(
-                  finalBuffer.length / 1024
-                ).toFixed(1)}KB)`
-              );
-            } catch (convErr) {
-              console.error(
-                `❌ Image conversion failed for ${f.originalname}:`,
-                convErr.message
-              );
-            }
-          } else if ([".jpg", ".jpeg"].includes(ext)) {
-            try {
-              finalBuffer = await sharp(f.buffer)
-                .rotate()
-                .resize(1600, 1600, {
-                  fit: "inside",
-                  withoutEnlargement: true,
-                })
-                .jpeg({
-                  quality: 75,
-                  chromaSubsampling: "4:2:0",
-                  mozjpeg: true,
-                })
-                .toBuffer();
-              console.log(
-                `✅ Optimized ${f.originalname} (${(
-                  finalBuffer.length / 1024
-                ).toFixed(1)}KB)`
-              );
-            } catch (optErr) {
-              console.warn(
-                `⚠️ JPG optimization failed for ${f.originalname}, using original`
-              );
-            }
-          }
-
-          const key = `${baseKey}/${Date.now()}-${stem}${finalExt}`;
+        for (let i = 0; i < (req.files || []).length; i += 1) {
+          const f = req.files[i];
+          const ready = prepared[i];
+          const stem = safeName(stemOf(f.originalname));
+          const key = `${baseKey}/${Date.now()}-${stem}${ready.ext}`;
           const url = await putPublicObject({
             Bucket: S3_BUCKET,
             Key: key,
-            Body: finalBuffer,
-            ContentType: finalContentType,
+            Body: ready.buffer,
+            ContentType: ready.contentType,
           });
           uploadedS3Keys.push(key);
           images.push(url);
