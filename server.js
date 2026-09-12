@@ -195,6 +195,7 @@ app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/requests", require("./routes/requests"));
 // Public gallery read needs no token; the submission route inside it does.
 app.use("/api/recent-work", require("./routes/recentWork"));
+app.use("/api/membership-map", require("./routes/membershipMap"));
 app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));

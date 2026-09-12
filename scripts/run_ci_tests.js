@@ -46,6 +46,7 @@ const SUITES = [
   "test_booking_photo_sanitizer.js",
   "test_document_storage_privacy.js",
   "test_checkout_return_urls.js",
+  "test_membership_map.js",
   "test_marketing_system.js",
   "test_marketing_longterm.js",
   "test_unsubscribe_token.js",
