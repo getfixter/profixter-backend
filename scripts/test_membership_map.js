@@ -557,8 +557,25 @@ async function main() {
 
   await test("it is cached, and it takes no token", async () => {
     const res = await fetch(`${base}/api/membership-map`);
-    assert.match(res.headers.get("cache-control") || "", /max-age=\d+/);
     assert.strictEqual(res.status, 200, "must answer without authentication");
+
+    /*
+     * THE HEADER AND THE IN-PROCESS MEMO HAVE TO AGREE.
+     *
+     * What a visitor actually experiences is the LARGER of the two, so the
+     * shorter one is a fiction if they drift apart. V2 cut the memo to ninety
+     * seconds and left this header at five minutes, which meant a browser or
+     * CDN could serve a map three and a half minutes staler than the server
+     * itself believed - and nothing anywhere would have said so.
+     */
+    const header = res.headers.get("cache-control") || "";
+    const maxAge = Number((header.match(/max-age=(\d+)/) || [])[1]);
+    assert.ok(Number.isFinite(maxAge), `no max-age in "${header}"`);
+    assert.strictEqual(
+      maxAge * 1000,
+      map.CACHE_TTL_MS,
+      `header says ${maxAge}s but the server caches for ${map.CACHE_TTL_MS / 1000}s`
+    );
   });
 
   await test("every published point lands inside the drawn viewBox", async () => {

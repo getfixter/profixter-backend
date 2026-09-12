@@ -27,12 +27,20 @@ router.get("/", async (_req, res) => {
     const payload = await getPayload();
 
     /*
-     * Cached hard, on purpose. Membership changes do not need to reach the
-     * homepage in under a second, and a decorative section must not put a
-     * database read behind every visitor. Five minutes fresh, ten more while
-     * revalidating - a cancellation is off the map inside one window.
+     * Matched to the server-side cache, deliberately.
+     *
+     * These two numbers have to agree or the shorter one is a fiction. The
+     * in-process memo was cut to ninety seconds in V2; this header was left at
+     * five minutes, which meant a browser or CDN could still be showing a map
+     * built three and a half minutes after the server had stopped believing it.
+     * The effective staleness a visitor sees is the LARGER of the two, so the
+     * header is the one that actually decides.
+     *
+     * Ninety seconds fresh, five more minutes servable while it revalidates in
+     * the background - so a cancellation is off the map inside one window and
+     * nobody ever waits on a rebuild.
      */
-    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+    res.set("Cache-Control", "public, max-age=90, stale-while-revalidate=300");
     return res.json(payload);
   } catch (error) {
     console.error("membership map read failed:", error);
