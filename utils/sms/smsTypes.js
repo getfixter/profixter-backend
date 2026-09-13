@@ -197,6 +197,39 @@ const SMS_TYPES = {
     timeCritical: false,
     description: "Configurable seasonal or campaign promotion.",
   },
+
+  /* ------------------------ Lifecycle marketing ----------------------- */
+  /*
+   * MARKETING, every one of them, and that is the whole point of listing
+   * them separately.
+   *
+   * These accompany a lifecycle the customer is already in - they have an
+   * unused free visit, or a Fixter has been to their house - which makes
+   * them feel service-adjacent and tempting to classify as transactional.
+   * They are not. Nobody asked for them, they exist to sell something, and
+   * under the A2P architecture that means an explicit marketing opt-in and
+   * nothing less. Service consent alone never authorises one.
+   */
+  FREE_VISIT_REMINDER: {
+    channelClass: MARKETING,
+    timeCritical: false,
+    description: "Track A: the free first visit is still unused.",
+  },
+  FREE_VISIT_LAST_CALL: {
+    channelClass: MARKETING,
+    timeCritical: false,
+    description: "Track A: the final free-visit reminder.",
+  },
+  POST_FREE_VISIT_THANKS: {
+    channelClass: MARKETING,
+    timeCritical: false,
+    description: "Track B: a few days after the free visit was completed.",
+  },
+  POST_FREE_VISIT_MEMBERSHIP: {
+    channelClass: MARKETING,
+    timeCritical: false,
+    description: "Track B: membership, to somebody who has had their free visit.",
+  },
 };
 
 /*

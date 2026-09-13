@@ -874,6 +874,13 @@ async function main() {
      * The campaign was submitted with these bodies. Changing one during a
      * consent fix would invalidate the submission for a reason nobody would
      * connect back to this work, so the file is pinned by hash.
+     *
+     * Re-pinned when the four Free First Visit lifecycle templates were added.
+     * Every body that existed at A2P submission is byte-for-byte identical -
+     * that change was twenty-seven added lines and no removed or modified
+     * ones, and the assertion below this one proves the submitted bodies
+     * individually rather than trusting the hash alone. The new templates are
+     * marketing-class and cannot send without an explicit marketing opt-in.
      */
     const digest = crypto
       .createHash("sha256")
@@ -881,7 +888,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "240621bb5d10bbd95652e91e1684bf7cbd48417311a28f87dbe501cdbbafb68b",
+      "356762e5bce1748a0b6c1ca17d6a7f2137613f4285d7ead65ec6fb70ee31e29c",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

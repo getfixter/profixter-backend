@@ -20,6 +20,14 @@ const { SMS_TYPES } = require("../sms/smsTypes");
  * rather than remembered.
  */
 
+/* Said once, because a stop condition repeated by hand is a stop condition that drifts. */
+const STOP_A_TEXT =
+  "Stops the moment a free visit is booked, the moment one is completed, on an active membership, on unsubscribe or suppression, and permanently once the final reminder has gone out.";
+const STOP_B_TEXT =
+  "Stops immediately on an active membership, and on unsubscribe or suppression.";
+const CONSENT_TEXT =
+  "Marketing class: requires marketingEnabled === true on the account. Service consent alone never authorises it. Global STOP, marketing-scope opt-out and deliverability suppression all still apply.";
+
 const FLAGS = {
   sms: "SMS_ENABLED",
   marketing: "SMS_MARKETING_ENABLED",
@@ -239,6 +247,47 @@ const SMS_SETTINGS = {
     appliesTo: "Whatever audience the campaign document defines",
     schedule: "Campaign sweep runs hourly at quarter past.",
     eligibility: "Same consent, window and frequency caps as other marketing.",
+    flags: `Requires both ${FLAGS.sms} and ${FLAGS.marketing}.`,
+  },
+
+  /*
+   * The Free First Visit lifecycle texts.
+   *
+   * Documented here in the same shape as everything else so the Communications
+   * screen can state the audience, the trigger, the timing and the reasons a
+   * message stops - which for a lifecycle message is the part an admin most
+   * needs and is least able to infer from the copy.
+   */
+  FREE_VISIT_REMINDER: {
+    trigger: "Track A: the account has an unused, unbooked Free First Visit.",
+    event: "Marketing lifecycle, Track A",
+    appliesTo: "Registered non-members whose free visit is still available",
+    schedule: "Day 4, counted from registration.",
+    eligibility: `${STOP_A_TEXT} ${CONSENT_TEXT}`,
+    flags: `Requires both ${FLAGS.sms} and ${FLAGS.marketing}.`,
+  },
+  FREE_VISIT_LAST_CALL: {
+    trigger: "Track A: the free visit is still unused a month after registration.",
+    event: "Marketing lifecycle, Track A",
+    appliesTo: "Registered non-members whose free visit is still available",
+    schedule: "Day 30, counted from registration.",
+    eligibility: `${STOP_A_TEXT} ${CONSENT_TEXT}`,
+    flags: `Requires both ${FLAGS.sms} and ${FLAGS.marketing}.`,
+  },
+  POST_FREE_VISIT_THANKS: {
+    trigger: "Track B: a Free First Visit was marked Completed.",
+    event: "Marketing lifecycle, Track B",
+    appliesTo: "Customers who had their free visit and have not joined",
+    schedule: "Day 3, counted from the visit - never from registration.",
+    eligibility: `${STOP_B_TEXT} ${CONSENT_TEXT}`,
+    flags: `Requires both ${FLAGS.sms} and ${FLAGS.marketing}.`,
+  },
+  POST_FREE_VISIT_MEMBERSHIP: {
+    trigger: "Track B: a Free First Visit was completed and no membership followed.",
+    event: "Marketing lifecycle, Track B",
+    appliesTo: "Customers who had their free visit and have not joined",
+    schedule: "Day 16, counted from the visit.",
+    eligibility: `${STOP_B_TEXT} ${CONSENT_TEXT}`,
     flags: `Requires both ${FLAGS.sms} and ${FLAGS.marketing}.`,
     notes: "Body normally comes from the campaign document; the template is the fallback.",
   },

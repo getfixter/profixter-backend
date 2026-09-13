@@ -288,11 +288,20 @@ const NON_REGISTRY_EMAILS = {
     audience: "Customer",
     channelClass: "marketing",
     trigger: "The marketing engine sends one of its own configured templates.",
-    source: "utils/marketing/marketingRunner.js",
+    source: "utils/marketing/marketingLibrary.js",
     dynamic: true,
+    /*
+     * This used to claim the marketing engine "already has an editor". It
+     * does not, and saying so here was worse than saying nothing: an admin
+     * reading the catalogue would have gone looking for a screen that has
+     * never existed. routes/adminMarketing.js exposes status, the campaign
+     * list, a preview, a dry run and history - all read-only.
+     */
     protectedNote:
-      "Key is marketing:<template id>. Copy lives in the marketing engine's own template " +
-      "configuration, which already has an editor.",
+      "Key is marketing:<template id>. The copy lives in code, in " +
+      "utils/marketing/marketingLibrary.js, and changing it is a deploy. Admin can " +
+      "preview every campaign and see exactly who would receive what through " +
+      "Marketing > Campaigns and the dry run, but cannot edit the wording.",
   },
 };
 

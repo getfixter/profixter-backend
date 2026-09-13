@@ -288,10 +288,26 @@ test("marketing and transactional are disjoint and complete", () => {
   for (const type of marketing) assert.ok(!transactional.has(type));
 });
 
-test("the three promotional types are the only marketing types", () => {
+test("the marketing types are exactly these, and nothing has crept in", () => {
+  /*
+   * An exhaustive list on purpose. The failure this guards against is a new
+   * message being quietly classified as marketing - or worse, a marketing
+   * message being classified as transactional to get it past the consent
+   * gate - and either shows up here as a failing test rather than as a
+   * complaint. Adding a type is allowed; adding one without noticing is not.
+   *
+   * The four lifecycle types accompany the Free First Visit sequences. They
+   * sit next to a service the customer is already receiving, which is exactly
+   * what makes them tempting to call transactional. They are not: nobody asked
+   * for them and they exist to sell something.
+   */
   assert.deepEqual(types.typesOfClass("marketing").sort(), [
+    "FREE_VISIT_LAST_CALL",
+    "FREE_VISIT_REMINDER",
     "KITCHEN_BATH_MARKETING",
     "MEMBERSHIP_MARKETING",
+    "POST_FREE_VISIT_MEMBERSHIP",
+    "POST_FREE_VISIT_THANKS",
     "SEASONAL_MARKETING",
   ]);
 });

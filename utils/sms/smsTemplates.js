@@ -514,6 +514,34 @@ const TEMPLATES = {
   /* Copy comes from the campaign document; this is the safety net. */
   SEASONAL_MARKETING: ({ body }) =>
     clean(body, 240) || `${BRAND}: see what is new this season at ${SITE}`,
+
+  /* ------------------------ Lifecycle marketing ----------------------- */
+  /*
+   * One segment each, and written to stay that way.
+   *
+   * The opt-out line is NOT written into these. renderSms appends it to every
+   * marketing body that does not already carry one, and writing it in as well
+   * meant the admin-editable default and the code template disagreed by one
+   * sentence - which a test duly caught.
+   *
+   * Plain hyphens and straight quotes throughout: a single en dash is
+   * outside GSM-7 and silently doubles the cost of the whole message.
+   */
+  FREE_VISIT_REMINDER: () =>
+    `${BRAND}: your first visit is still free, labor and trip included. ` +
+    `Pick one job and we will handle it: ${SITE}/book`,
+
+  FREE_VISIT_LAST_CALL: () =>
+    `${BRAND}: the free first visit is still on your account. Most people start ` +
+    `with the thing they walk past every day: ${SITE}/book`,
+
+  POST_FREE_VISIT_THANKS: () =>
+    `${BRAND}: thanks for having us out. If anything else needs doing, your ` +
+    `Fixter is a booking away: ${SITE}/book`,
+
+  POST_FREE_VISIT_MEMBERSHIP: () =>
+    `${BRAND}: what is next on the list? Membership keeps a Fixter booked in ` +
+    `regularly, from $149/mo: ${SITE}/membership`,
 };
 
 /* -------------------------------------------------------------------------- */

@@ -82,6 +82,7 @@ router.get("/campaigns", (req, res) => {
       altSubject: t.altSubject,
       lifecycleDay: t.lifecycleDay ?? null,
       activationDay: t.activationDay ?? null,
+      trackBDay: t.trackBDay ?? null,
       season: t.season || null,
       ctaRoute: t.ctaRoute,
       gated: [
@@ -90,6 +91,9 @@ router.get("/campaigns", (req, res) => {
         t.requiresUpgradeAvailable && "upgrade_available",
         t.requiresMonthlyBilling && "monthly_billing",
       ].filter(Boolean),
+      /* Plain English for the Communications screen, built from the same
+         fields the scheduler actually enforces so the two cannot drift. */
+      lifecycle: describeLifecycle(t),
     })),
   });
 });
@@ -147,6 +151,129 @@ router.get("/history", async (req, res) => {
     return res.json({ sends: rows });
   } catch (error) {
     console.error("Marketing history failed:", error?.message || error);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * What an admin needs to know about a lifecycle campaign, in words.
+ *
+ * Derived from the template's own fields rather than written out by hand:
+ * a description maintained separately from the rule it describes is a
+ * description that is eventually wrong.
+ */
+function describeLifecycle(t) {
+  if (t.trackBDay !== undefined) {
+    return {
+      track: "B",
+      audience: "Completed the Free First Visit, not a member",
+      trigger: "The free visit was marked Completed",
+      timing: `Day ${t.trackBDay}, counted from the visit`,
+      channel: "Email",
+      stopConditions: [
+        "An active membership begins",
+        "Unsubscribed or suppressed",
+        "Re-checked immediately before sending",
+      ],
+    };
+  }
+  if (t.requiresFreeVisitEligible) {
+    return {
+      track: "A",
+      audience: "Registered, free visit unused and unbooked, not a member",
+      trigger: "Account registration",
+      timing: `Day ${t.lifecycleDay}, counted from registration`,
+      channel: "Email",
+      stopConditions: [
+        "A free visit is booked",
+        "A free visit is completed",
+        "An active membership begins",
+        "Unsubscribed or suppressed",
+        t.finalFreeVisitReminder
+          ? "This is the last reminder; the sequence closes after it"
+          : "The final reminder has already been sent",
+      ],
+    };
+  }
+  return null;
+}
+
+/**
+ * Did the lifecycle do anything?
+ *
+ * Deliberately a report over data we already keep rather than a funnel
+ * product: MarketingSend records who received what and when, Booking knows
+ * when a free visit was booked and completed, Subscription knows when
+ * somebody joined. The only thing missing was somebody asking.
+ *
+ * "After" means strictly after the send, so a booking made an hour before
+ * the email cannot be credited to it.
+ */
+router.get("/lifecycle-report", async (req, res) => {
+  try {
+    const Booking = require("../models/Booking");
+    const Subscription = require("../models/Subscription");
+
+    const trackA = ALL_TEMPLATES.filter((t) => t.requiresFreeVisitEligible).map((t) => t.id);
+    const trackB = ALL_TEMPLATES.filter((t) => t.trackBDay !== undefined).map((t) => t.id);
+
+    const report = async (campaignIds, kind) => {
+      const rows = [];
+      for (const campaignId of campaignIds) {
+        const sends = await MarketingSend.find({ campaignId, status: "sent" })
+          .select("user sentAt")
+          .lean();
+
+        let bookedAfter = 0;
+        let completedAfter = 0;
+        let subscribedAfter = 0;
+
+        for (const send of sends) {
+          const after = { $gt: send.sentAt };
+          if (kind === "A") {
+            if (await Booking.exists({ user: send.user, isFreeFirstVisit: true, createdAt: after })) {
+              bookedAfter += 1;
+            }
+            if (await Booking.exists({ user: send.user, isFreeFirstVisit: true, completedAt: after })) {
+              completedAfter += 1;
+            }
+          }
+          if (await Subscription.exists({ user: send.user, createdAt: after })) {
+            subscribedAfter += 1;
+          }
+        }
+
+        rows.push({
+          campaignId,
+          sent: sends.length,
+          recipients: new Set(sends.map((s) => String(s.user))).size,
+          ...(kind === "A" ? { freeVisitBookedAfter: bookedAfter, freeVisitCompletedAfter: completedAfter } : {}),
+          membershipStartedAfter: subscribedAfter,
+        });
+      }
+      return rows;
+    };
+
+    /* How many people are standing in each track right now. */
+    const completedFreeVisitUsers = await Booking.distinct("user", {
+      isFreeFirstVisit: true,
+      $or: [{ completedAt: { $ne: null } }, { status: { $regex: /^(completed|complete|done)$/i } }],
+    });
+    const activeMemberUsers = await Subscription.distinct("user", {
+      status: { $in: ["active", "trialing"] },
+    });
+    const memberSet = new Set(activeMemberUsers.map(String));
+    const trackBStanding = completedFreeVisitUsers.filter((u) => u && !memberSet.has(String(u))).length;
+
+    return res.json({
+      trackA: { campaigns: await report(trackA, "A") },
+      trackB: {
+        standing: trackBStanding,
+        campaigns: await report(trackB, "B"),
+      },
+    });
+  } catch (error) {
+    console.error("Marketing lifecycle report failed:", error?.message || error);
     return res.status(500).json({ message: "Server error" });
   }
 });

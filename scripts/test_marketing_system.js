@@ -203,7 +203,7 @@ test("every annual campaign is gated behind the price check", () => {
 /* ------------------------------------------------------------------ */
 
 const SAMPLE_TO = { name: "Dana", email: "dana@example.com" };
-const sample = renderMarketingEmail(t("nonmember_free_visit_v1"), SAMPLE_TO);
+const sample = renderMarketingEmail(t("nonmember_free_visit_v2"), SAMPLE_TO);
 
 test("every email carries the postal address", () => {
   assert.ok(sample.html.includes(BUSINESS.addressLine));
@@ -247,7 +247,7 @@ test("the unsubscribe token is opaque and needs no login", () => {
 });
 
 test("customer-supplied content cannot become markup", () => {
-  const evil = renderMarketingEmail(t("nonmember_free_visit_v1"), {
+  const evil = renderMarketingEmail(t("nonmember_free_visit_v2"), {
     name: '<script>alert(1)</script>',
     email: "x@example.com",
   });
@@ -256,7 +256,7 @@ test("customer-supplied content cannot become markup", () => {
 });
 
 test("the email refuses to render without a recipient", () => {
-  assert.throws(() => renderMarketingEmail(t("nonmember_free_visit_v1"), { name: "A" }));
+  assert.throws(() => renderMarketingEmail(t("nonmember_free_visit_v2"), { name: "A" }));
 });
 
 test("the email refuses to render without a postal address", () => {
@@ -264,7 +264,7 @@ test("the email refuses to render without a postal address", () => {
   BUSINESS.addressLine = "";
   try {
     assert.throws(
-      () => renderMarketingEmail(t("nonmember_free_visit_v1"), { name: "A", email: "a@b.com" }),
+      () => renderMarketingEmail(t("nonmember_free_visit_v2"), { name: "A", email: "a@b.com" }),
       /addressLine/
     );
   } finally {
@@ -289,7 +289,7 @@ test("every campaign in the library renders", () => {
 });
 
 test("the first-name variable is filled, never left raw", () => {
-  const out = renderMarketingEmail(t("nonmember_free_visit_v1"), { name: "Dana", email: "d@e.com" });
+  const out = renderMarketingEmail(t("nonmember_free_visit_v2"), { name: "Dana", email: "d@e.com" });
   assert.ok(out.html.includes("Hi Dana,"), "greeting did not interpolate");
   assert.ok(!out.html.includes("${"), "unresolved template placeholder");
 });
@@ -342,20 +342,20 @@ test("legacy accounts with no role are still customers", () => {
 test("a campaign never reaches the wrong audience", () => {
   assert.strictEqual(blocks(t("member_referral_v1"), profile()), "wrong_audience");
   assert.strictEqual(
-    blocks(t("nonmember_free_visit_v1"), profile({ audience: "member" })),
+    blocks(t("nonmember_free_visit_v2"), profile({ audience: "member" })),
     "wrong_audience"
   );
 });
 
 test("a campaign rests for fifteen months before it can repeat", () => {
-  const fresh = profile({ campaignLastSentAt: new Map([["nonmember_free_visit_v1", ago(200)]]) });
-  assert.strictEqual(blocks(t("nonmember_free_visit_v1"), fresh), "campaign_cooldown");
+  const fresh = profile({ campaignLastSentAt: new Map([["nonmember_free_visit_v2", ago(200)]]) });
+  assert.strictEqual(blocks(t("nonmember_free_visit_v2"), fresh), "campaign_cooldown");
 
   const stale = profile({
-    campaignLastSentAt: new Map([["nonmember_free_visit_v1", ago(500)]]),
+    campaignLastSentAt: new Map([["nonmember_free_visit_v2", ago(500)]]),
     sentTopicAt: new Map([["free_visit", ago(500)]]),
   });
-  assert.ok(allows(t("nonmember_free_visit_v1"), stale), "should be reusable after the cooldown");
+  assert.ok(allows(t("nonmember_free_visit_v2"), stale), "should be reusable after the cooldown");
 });
 
 test("a topic rests for 90 days", () => {
@@ -376,7 +376,7 @@ test("the same category may follow itself, but never by preference", () => {
 
 test("the free first visit is never advertised to somebody who used it", () => {
   assert.strictEqual(
-    blocks(t("nonmember_free_visit_v1"), profile({ freeVisitUsed: true })),
+    blocks(t("nonmember_free_visit_v2"), profile({ freeVisitUsed: true })),
     "free_visit_already_used"
   );
 });
@@ -385,10 +385,10 @@ test("an existing customer is never welcomed as a new one", () => {
   // The product would still grant the entitlement, but "thanks for setting up
   // your account" is wrong for somebody who has been booking for a year.
   assert.strictEqual(
-    blocks(t("nonmember_free_visit_v1"), profile({ everBooked: true })),
+    blocks(t("nonmember_free_visit_v2"), profile({ everBooked: true })),
     "already_an_existing_customer"
   );
-  assert.ok(allows(t("nonmember_free_visit_v1"), profile({ registeredAt: ago(3) })));
+  assert.ok(allows(t("nonmember_free_visit_v2"), profile({ registeredAt: ago(3) })));
 });
 
 test("annual campaigns stay suppressed while the prices are broken", () => {
@@ -465,8 +465,8 @@ test("activation waits for its day, then gives up", () => {
 
 test("lifecycle emails wait for their day", () => {
   const fresh = profile({ registeredAt: ago(1) });
-  assert.strictEqual(blocks(t("nonmember_free_visit_v1"), fresh), "lifecycle_not_due");
-  assert.ok(allows(t("nonmember_free_visit_v1"), profile({ registeredAt: ago(3) })));
+  assert.strictEqual(blocks(t("nonmember_free_visit_v2"), fresh), "lifecycle_not_due");
+  assert.ok(allows(t("nonmember_free_visit_v2"), profile({ registeredAt: ago(3) })));
 });
 
 test("seasonal emails only send in season", () => {
@@ -490,7 +490,7 @@ test("a missing date reads as never, not as now", () => {
 test("a brand new account starts at the beginning of the sequence", () => {
   const p = profile({ registeredAt: ago(3), lastMarketingAt: null });
   const { template } = selectCampaign(p, { annualPricingWorking: false });
-  assert.strictEqual(template.id, "nonmember_free_visit_v1");
+  assert.strictEqual(template.id, "nonmember_free_visit_v2");
 });
 
 test("activation outranks everything else for a new member", () => {
@@ -506,12 +506,12 @@ test("activation outranks everything else for a new member", () => {
 test("the lifecycle is walked in order, not skipped", () => {
   const p = profile({
     registeredAt: ago(300),
-    campaignLastSentAt: new Map([["nonmember_free_visit_v1", ago(200)]]),
+    campaignLastSentAt: new Map([["nonmember_free_visit_v2", ago(200)]]),
     sentTopicAt: new Map([["free_visit", ago(200)]]),
     lastMarketingCategory: "free_visit",
   });
   const { template } = selectCampaign(p, { annualPricingWorking: false });
-  assert.strictEqual(template.id, "nonmember_around_house_v1", "day 7 should follow day 2");
+  assert.strictEqual(template.id, "nonmember_free_visit_ideas_v1", "day 7 should follow day 2");
 });
 
 test("the frequency floor holds even when something is due", () => {

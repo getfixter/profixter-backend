@@ -331,6 +331,44 @@ const DEFINITIONS = {
     tokens: () => ({}),
   },
 
+  /* ------------------------ Lifecycle marketing ----------------------- */
+  /*
+   * The four texts that accompany the Free First Visit lifecycle. Editable
+   * here like any other template; when and whether they send is decided by
+   * the lifecycle rules and the consent gates, not by this copy.
+   */
+  FREE_VISIT_REMINDER: {
+    label: "Free visit reminder (Track A, day 4)",
+    template:
+      "{{brand}}: your first visit is still free, labor and trip included. " +
+      "Pick one job and we will handle it: {{site}}/book",
+    tokens: () => ({}),
+  },
+
+  FREE_VISIT_LAST_CALL: {
+    label: "Free visit reminder (Track A, day 30)",
+    template:
+      "{{brand}}: the free first visit is still on your account. Most people start " +
+      "with the thing they walk past every day: {{site}}/book",
+    tokens: () => ({}),
+  },
+
+  POST_FREE_VISIT_THANKS: {
+    label: "After the free visit (Track B, day 3)",
+    template:
+      "{{brand}}: thanks for having us out. If anything else needs doing, your " +
+      "Fixter is a booking away: {{site}}/book",
+    tokens: () => ({}),
+  },
+
+  POST_FREE_VISIT_MEMBERSHIP: {
+    label: "After the free visit (Track B, day 16)",
+    template:
+      "{{brand}}: what is next on the list? Membership keeps a Fixter booked in " +
+      "regularly, from $149/mo: {{site}}/membership",
+    tokens: () => ({}),
+  },
+
   /*
    * The campaign body arrives from the campaign document, so the whole message
    * is one token. An override here changes only the safety net that shows when
