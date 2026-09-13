@@ -7,7 +7,11 @@ const {
   SEND_WINDOW,
   TIMEZONE,
 } = require("./marketingConfig");
-const { daysSince, templateEligible } = require("./marketingEligibility");
+const {
+  daysSince,
+  inPostFreeVisitSequence,
+  templateEligible,
+} = require("./marketingEligibility");
 const {
   stripe,
   hasStripeSecretKey,
@@ -178,10 +182,18 @@ function paceFor(audience) {
 
 function rotationReady(profile, template) {
   const sinceLast = daysSince(profile.lastMarketingAt, profile.now);
-  // The hard floor is not negotiable, whatever the priority. personEligible
-  // enforces it too; a scheduler that could hand back a send inside the floor
-  // is one refactor away from that being the only check left.
-  if (sinceLast < FREQUENCY.globalMinDays) return false;
+  /*
+   * The hard floor is not negotiable, whatever the priority. personEligible
+   * enforces it too; a scheduler that could hand back a send inside the floor
+   * is one refactor away from that being the only check left.
+   *
+   * The single exception is the post-free-visit sequence, which runs on its
+   * own shorter floor - and only for its own four templates, so a seasonal
+   * tip cannot slip through the gap the sequence opens.
+   */
+  const scripted = template.trackBDay !== undefined && inPostFreeVisitSequence(profile);
+  const floor = scripted ? FREQUENCY.postFreeVisitMinDays : FREQUENCY.globalMinDays;
+  if (sinceLast < floor) return false;
 
   if (template.priority >= 75) return true;
   return sinceLast >= paceFor(profile.audience);
@@ -258,16 +270,24 @@ function selectCampaign(profile, options = {}) {
   const SCRIPTED = 75;
   const kindRank = (t) =>
     t.priority >= SCRIPTED ? 0 : (t.kind === KIND.HELP) === preferHelp ? 0 : 1;
-  const categoryRank = (t) =>
-    profile.lastMarketingCategory && t.category === profile.lastMarketingCategory ? 1 : 0;
+  const categoryRank = (t) => {
+    if (t.priority >= SCRIPTED) return 0;
+    return profile.lastMarketingCategory && t.category === profile.lastMarketingCategory ? 1 : 0;
+  };
 
   eligible.sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     if (kindRank(a) !== kindRank(b)) return kindRank(a) - kindRank(b);
     if (categoryRank(a) !== categoryRank(b)) return categoryRank(a) - categoryRank(b);
 
-    const aLife = a.lifecycleDay ?? a.activationDay ?? Infinity;
-    const bLife = b.lifecycleDay ?? b.activationDay ?? Infinity;
+    /*
+     * Only ever compared between templates of equal priority, which is what
+     * keeps this honest: trackBDay counts from a visit and lifecycleDay from
+     * a registration, and the priority tier above separates them so the two
+     * measurements are never weighed against each other.
+     */
+    const aLife = a.lifecycleDay ?? a.activationDay ?? a.trackBDay ?? Infinity;
+    const bLife = b.lifecycleDay ?? b.activationDay ?? b.trackBDay ?? Infinity;
     if (aLife !== bLife) return aLife - bLife;
 
     const aTopic = profile.sentTopicAt.get(a.topic);

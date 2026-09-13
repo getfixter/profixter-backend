@@ -5,6 +5,7 @@ const MarketingSend = require("../../models/MarketingSend");
 const Subscription = require("../../models/Subscription");
 const VisitEntitlement = require("../../models/VisitEntitlement");
 const { subscriptionGrantsAccess } = require("../subscriptionManagement");
+const { STATE: FREE_VISIT_STATE, freeVisitStateFor } = require("./freeVisitLifecycle");
 const {
   CATEGORY_COOLDOWN_DAYS,
   COOLDOWN_DAYS,
@@ -13,7 +14,7 @@ const {
   RESERVED_EMAIL_DOMAINS,
   audienceEnabled,
 } = require("./marketingConfig");
-const { KIND, audiencesOf } = require("./marketingLibrary");
+const { FINAL_FREE_VISIT_CAMPAIGN_ID, KIND, audiencesOf } = require("./marketingLibrary");
 
 /**
  * Who a person is right now, and what they may be sent.
@@ -147,7 +148,7 @@ async function buildProfile(user, now = new Date(), options = {}) {
     recentCancelled,
     fullDayEntitlement,
     oneTimeEntitlement,
-    freeVisitUsed,
+    freeVisit,
     bookingsEver,
     projectLead,
   ] = await Promise.all([
@@ -185,7 +186,12 @@ async function buildProfile(user, now = new Date(), options = {}) {
       status: { $in: ["paid", "consumed"] },
       createdAt: { $gte: daysAgo(COOLDOWN_DAYS.afterOneTimePurchase, now) },
     }).lean(),
-    Booking.countDocuments({ user: user._id, isFreeFirstVisit: true }),
+    /*
+     * Three states, not a count. A cancelled free visit used to be read as a
+     * used one, which silently and permanently disqualified the customer from
+     * the offer the product still says is theirs.
+     */
+    freeVisitStateFor(user._id),
     Booking.countDocuments({ user: user._id }),
     /*
      * Project leads are keyed by email, not user id, because the estimate form
@@ -251,7 +257,21 @@ async function buildProfile(user, now = new Date(), options = {}) {
     recentlyCancelledBooking: recentCancelled > 0,
     boughtFullDayRecently: !!fullDayEntitlement,
     boughtOneTimeRecently: !!oneTimeEntitlement,
-    freeVisitUsed: freeVisitUsed > 0,
+    /*
+     * The free visit, in the only three shapes that matter to marketing.
+     * freeVisitUsed is kept as the old boolean so nothing outside this module
+     * has to change its mind about what "used" means: it is true once the
+     * visit has actually happened, and no longer true merely because one was
+     * booked and cancelled.
+     */
+    freeVisitState: freeVisit.state,
+    /* True once the last concentrated free-visit reminder has gone out. */
+    freeVisitSequenceClosed: campaignLastSentAt.has(FINAL_FREE_VISIT_CAMPAIGN_ID),
+    freeVisitUsed: freeVisit.state === FREE_VISIT_STATE.COMPLETED,
+    freeVisitOpen: freeVisit.state === FREE_VISIT_STATE.OPEN,
+    freeVisitCompletedAt: freeVisit.completedAt,
+    /* Day 0 of Track B is the visit, never the registration. */
+    daysSinceFreeVisit: daysSince(freeVisit.completedAt, now),
     projectLead: projectLead || null,
     /*
      * A new member is still being onboarded until they book or the window
@@ -266,6 +286,31 @@ async function buildProfile(user, now = new Date(), options = {}) {
       memberDays <= ACTIVATION_WINDOW_DAYS,
   };
 }
+
+/**
+ * Is this person part-way through the post-free-visit sequence right now?
+ *
+ * Used to choose which frequency floor applies. Deliberately a property of
+ * the person rather than of a template, because personEligible runs before
+ * anything has been selected and would otherwise hold the whole sequence at
+ * the ordinary seven day pace.
+ */
+function inPostFreeVisitSequence(profile) {
+  if (!profile) return false;
+  if (profile.audience !== "non_member") return false;
+  if (profile.freeVisitState !== "completed") return false;
+  const age = profile.daysSinceFreeVisit;
+  return Number.isFinite(age) && age >= 0 && age <= POST_FREE_VISIT_WINDOW_DAYS;
+}
+
+/**
+ * How long the sequence may claim the shorter floor.
+ *
+ * The last scripted email is day 30; the few days after it are included so a
+ * send delayed by a weekend or a daily cap is not pushed out of its own
+ * sequence. After that the person is an ordinary non-member again.
+ */
+const POST_FREE_VISIT_WINDOW_DAYS = 35;
 
 /** Days since a date, or Infinity when it never happened. */
 function daysSince(date, now = new Date()) {
@@ -290,7 +335,10 @@ async function personEligible(profile) {
   if (await isUnsubscribed(user.email)) return { eligible: false, reason: "unsubscribed" };
 
   const sinceLast = daysSince(profile.lastMarketingAt, now);
-  if (sinceLast < FREQUENCY.globalMinDays) {
+  const floor = inPostFreeVisitSequence(profile)
+    ? FREQUENCY.postFreeVisitMinDays
+    : FREQUENCY.globalMinDays;
+  if (sinceLast < floor) {
     return { eligible: false, reason: "frequency_cap", daysSinceLast: Number(sinceLast.toFixed(1)) };
   }
 
@@ -367,6 +415,8 @@ function templateEligible(template, profile, options = {}) {
 
   if (template.requiresFreeVisitEligible) {
     if (profile.freeVisitUsed) return no("free_visit_already_used");
+    /* One is booked. Telling them to book it is telling them nothing. */
+    if (profile.freeVisitOpen) return no("free_visit_already_booked");
     if (profile.audience !== "non_member") return no("free_visit_members_not_eligible");
     /*
      * The product would still grant the free visit: its rule is per address and
@@ -376,6 +426,19 @@ function templateEligible(template, profile, options = {}) {
      * with us since 2025, whatever the entitlement says.
      */
     if (profile.everBooked) return no("already_an_existing_customer");
+
+    /*
+     * "We will stop reminding you after this one."
+     *
+     * The last concentrated Track A email says that in as many words, so the
+     * sequence has to be able to end. Once the final reminder has gone out,
+     * no free-visit campaign is eligible for that person again and they fall
+     * back to the ordinary rotation. A promise a scheduler cannot keep is
+     * worse copy than not making it.
+     */
+    if (profile.freeVisitSequenceClosed && !template.finalFreeVisitReminder) {
+      return no("free_visit_sequence_closed");
+    }
   }
 
   if (template.requiresMonthlyBilling && profile.billingCycle !== "monthly") {
@@ -422,6 +485,22 @@ function templateEligible(template, profile, options = {}) {
     if (age < template.lifecycleDay) return no("lifecycle_not_due");
   }
 
+  /*
+   * Track B: the sequence for somebody who has had their free visit and has
+   * not become a member.
+   *
+   * Counted from the visit, not from the account. Somebody who registered in
+   * March and had their visit yesterday is on day one of this sequence, and
+   * anchoring it to registration would have skipped them straight to the end
+   * of a conversation they had not started.
+   */
+  if (template.trackBDay !== undefined) {
+    if (profile.freeVisitState !== "completed") return no("no_completed_free_visit");
+    if (profile.audience !== "non_member") return no("already_a_member");
+    if (!Number.isFinite(profile.daysSinceFreeVisit)) return no("free_visit_date_unknown");
+    if (profile.daysSinceFreeVisit < template.trackBDay) return no("track_b_not_due");
+  }
+
   if (template.season && template.season !== seasonOf(now)) return no("out_of_season");
 
   return { eligible: true, reason: "" };
@@ -442,6 +521,7 @@ module.exports = {
   FAILED_SUBSCRIPTION_STATUS,
   buildProfile,
   daysSince,
+  inPostFreeVisitSequence,
   isMarketableAccount,
   isUnsubscribed,
   personEligible,

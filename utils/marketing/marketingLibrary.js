@@ -19,6 +19,8 @@
 /* Categories, used to keep consecutive emails from feeling alike. */
 const CATEGORY = {
   FREE_VISIT: "free_visit",
+  /* After the free visit, before the membership. See TRACK B below. */
+  POST_FREE_VISIT: "post_free_visit",
   MEMBERSHIP: "membership",
   ANNUAL: "annual",
   ONE_TIME: "one_time",
@@ -59,6 +61,18 @@ const PRIORITY = {
    * fire once, for accounts over 90 days old with no history at all.
    */
   REINTRO: 85,
+  /*
+   * Above the opening lifecycle, below a first hello.
+   *
+   * Somebody who had a Fixter in their house last week is in a different
+   * conversation from somebody who signed up and never booked, and the
+   * post-visit sequence has to win that comparison. Without its own tier
+   * both sat on LIFECYCLE and the tiebreak - lowest scheduled day - handed
+   * the slot to whichever generic campaign happened to have a low day
+   * number, because a day counted from registration and a day counted from
+   * the visit are not the same measurement and must not be compared.
+   */
+  POST_FREE_VISIT: 82,
   LIFECYCLE: 80,
   /*
    * All ordinary rotation content sits on one tier, helpful and commercial
@@ -343,35 +357,53 @@ const FIRST_CONTACT = [
 /* Non member lifecycle: the ordered opening sequence                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * TRACK A - four emails with one job: get the Free First Visit used.
+ *
+ * The previous opening was two generic campaigns that happened to mention
+ * the offer. It went to thirty-seven people and produced no bookings at all,
+ * which is a clear enough verdict on copy that asks somebody to "book a
+ * visit" without telling them what they already have.
+ *
+ * So all four say the same four facts, in different words and from different
+ * angles: you have a free visit, it covers one job, labor and the trip are
+ * included, and you do not have to join anything to use it. Membership is
+ * mentioned once, in passing, at the end - selling a subscription to somebody
+ * who has never met us is asking for the second decision before the first.
+ *
+ * The sequence ends. Day 45 says so and the eligibility rules enforce it.
+ */
 const NON_MEMBER_LIFECYCLE = [
   {
-    id: "nonmember_free_visit_v1",
+    id: "nonmember_free_visit_v2",
     audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit",
     kind: KIND.HELP, lifecycleDay: 2, priority: PRIORITY.LIFECYCLE,
     requiresFreeVisitEligible: true,
-    subject: "Your first ProFixter visit is free",
-    altSubject: "What needs fixing at home?",
-    preheader: "One free visit for your first job. No membership needed.",
-    headline: "Your first visit is on us",
+    subject: "Your first visit is free - pick one job",
+    altSubject: "There is a free visit on your account",
+    preheader: "One job, labor and trip included, no membership needed.",
+    headline: "Your first visit is free",
     paragraphs: [
-      ({ name }) => `Hi ${name}, thanks for setting up your ProFixter account.`,
-      "Your first visit is free. Pick something small you have been meaning to take care of and let a Fixter handle it.",
-      "Most people start with the thing they walk past every day and have stopped noticing.",
+      ({ name }) => `Hi ${name}, thanks for setting up your account. There is a free first visit on it.`,
+      "It covers one job. A Fixter comes out, does the work, and that is the visit - labor and the trip are included.",
+      "You do not need a membership to use it. It is there so you can see how we work before deciding whether you want us again.",
+      "Most people pick the thing they walk past every day and have stopped noticing.",
     ],
     ctaLabel: "Book your free visit", ctaRoute: "book",
-    closing: "It takes about a minute to book.",
+    closing: "Booking takes about a minute.",
   },
   {
-    id: "nonmember_around_house_v1",
-    audience: "non_member", category: CATEGORY.FIX, topic: "around_house",
-    kind: KIND.HELP, lifecycleDay: 7, priority: PRIORITY.LIFECYCLE,
-    subject: "What's been waiting around your house?",
-    altSubject: "The small stuff adds up",
-    preheader: "The jobs that never quite make it to the top of the list.",
-    headline: "What's been waiting around your house?",
+    id: "nonmember_free_visit_ideas_v1",
+    audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit_ideas",
+    kind: KIND.HELP, lifecycleDay: 9, priority: PRIORITY.LIFECYCLE,
+    requiresFreeVisitEligible: true,
+    subject: "Not sure what to use the free visit on?",
+    altSubject: "Ideas for your free visit",
+    preheader: "It only has to be one job. Here are the usual ones.",
+    headline: "Not sure what to use it on?",
     paragraphs: [
-      "Most homes have a short list of small things nobody gets around to.",
-      "A Fixter can work through several of them in one visit.",
+      "Your free first visit is still unused. The most common reason people leave it is not knowing whether their job counts.",
+      "It almost certainly does. One job, and these are the ones we get asked for most:",
     ],
     bullets: [
       "A TV or mirror still waiting to go up",
@@ -381,12 +413,50 @@ const NON_MEMBER_LIFECYCLE = [
       "Shelves that never got hung",
       "Loose handles and hardware",
     ],
-    ctaLabel: "Book a visit", ctaRoute: "book",
+    ctaLabel: "Book your free visit", ctaRoute: "book",
+    closing: "Labor and the trip are included. Pick one and we will handle it.",
+  },
+  {
+    id: "nonmember_free_visit_still_yours_v1",
+    audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit_unclaimed",
+    kind: KIND.HELP, lifecycleDay: 21, priority: PRIORITY.LIFECYCLE,
+    requiresFreeVisitEligible: true,
+    subject: "Still unclaimed: your free first visit",
+    altSubject: "The free visit has not been used",
+    preheader: "No deadline. One job, labor and trip included.",
+    headline: "It is still sitting there",
+    paragraphs: [
+      ({ name }) => `Hi ${name}, the free first visit on your account has not been used yet.`,
+      "There is no deadline on it and nothing to cancel. One job, labor and the trip included, and you are under no obligation afterwards.",
+      "We are a Long Island handyman company - in-house Fixters, licensed and insured, working across Nassau and Suffolk. The free visit is the easiest way to find out whether we are any good.",
+    ],
+    ctaLabel: "Book your free visit", ctaRoute: "book",
+  },
+  {
+    id: "nonmember_free_visit_final_v1",
+    audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit_final",
+    kind: KIND.HELP, lifecycleDay: 45, priority: PRIORITY.LIFECYCLE,
+    requiresFreeVisitEligible: true,
+    /* The one campaign allowed to send after the sequence has closed, because
+       it is what closes it. See templateEligible. */
+    finalFreeVisitReminder: true,
+    subject: "Last note about your free visit",
+    altSubject: "We will stop mentioning this",
+    preheader: "Still yours whenever you want it. This is the last reminder.",
+    headline: "Last note about the free visit",
+    paragraphs: [
+      "This is the last time we will bring this up.",
+      "The free first visit stays on your account whether or not you ever use it. One job, labor and the trip included, no membership required.",
+      "If something around the house has been annoying you for months, that is what it is for. If not, no harm done - we will leave you alone about it.",
+    ],
+    ctaLabel: "Book your free visit", ctaRoute: "book",
+    closing: "If you would rather have a Fixter coming regularly, membership starts at $149 a month. Otherwise, we will see you whenever something breaks.",
   },
   {
     id: "nonmember_membership_intro_v1",
     audience: "non_member", category: CATEGORY.MEMBERSHIP, topic: "membership",
-    kind: KIND.SELL, lifecycleDay: 15, priority: PRIORITY.LIFECYCLE,
+    /* Day 52, not 15: after the free-visit sequence has closed. */
+    kind: KIND.SELL, lifecycleDay: 52, priority: PRIORITY.LIFECYCLE,
     subject: "A Fixter when you need one",
     altSubject: "Stop keeping a list",
     preheader: "Membership means help before the list gets long.",
@@ -401,7 +471,8 @@ const NON_MEMBER_LIFECYCLE = [
   {
     id: "nonmember_one_time_v1",
     audience: "non_member", category: CATEGORY.ONE_TIME, topic: "one_time",
-    kind: KIND.SELL, lifecycleDay: 42, priority: PRIORITY.LIFECYCLE,
+    /* Day 66. Never sell a paid visit while a free one is still owed. */
+    kind: KIND.SELL, lifecycleDay: 66, priority: PRIORITY.LIFECYCLE,
     subject: "One job, one visit, no membership",
     altSubject: "Just need one thing done",
     preheader: "A single visit, no membership required.",
@@ -416,7 +487,7 @@ const NON_MEMBER_LIFECYCLE = [
   {
     id: "nonmember_annual_value_v1",
     audience: "non_member", category: CATEGORY.ANNUAL, topic: "annual",
-    kind: KIND.SELL, lifecycleDay: 60, priority: PRIORITY.LIFECYCLE,
+    kind: KIND.SELL, lifecycleDay: 80, priority: PRIORITY.LIFECYCLE,
     requiresAnnualPricingWorking: true,
     subject: "Twelve months for the price of ten",
     altSubject: "The simplest way to save on membership",
@@ -432,7 +503,7 @@ const NON_MEMBER_LIFECYCLE = [
   {
     id: "nonmember_full_day_v1",
     audience: "non_member", category: CATEGORY.FULL_DAY, topic: "full_day",
-    kind: KIND.SELL, lifecycleDay: 80, priority: PRIORITY.LIFECYCLE,
+    kind: KIND.SELL, lifecycleDay: 95, priority: PRIORITY.LIFECYCLE,
     subject: "Some houses need a day, not a visit",
     altSubject: "One Fixter, one day, your whole list",
     preheader: "A Full Day is one Fixter for about eight hours.",
@@ -447,7 +518,7 @@ const NON_MEMBER_LIFECYCLE = [
   {
     id: "nonmember_projects_v1",
     audience: "non_member", category: CATEGORY.PROJECT, topic: "project",
-    kind: KIND.SELL, lifecycleDay: 105, priority: PRIORITY.LIFECYCLE,
+    kind: KIND.SELL, lifecycleDay: 110, priority: PRIORITY.LIFECYCLE,
     subject: "Kitchens, bathrooms, roofs and the rest",
     altSubject: "We do more than the small stuff",
     preheader: "Kitchens, bathrooms, roofing, siding and full renovations.",
@@ -565,6 +636,110 @@ const NON_MEMBER_ROTATION = [
     ctaLabel: "Ask for an estimate", ctaRoute: "projectEstimate",
   },
 ];
+
+/* ------------------------------------------------------------------ */
+/* Track B: the free visit happened and they did not join              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The warmest audience we have, and until now the one with no sequence.
+ *
+ * These people let a stranger into their house on the strength of a website.
+ * They have met a Fixter, watched the work, and decided nothing yet. At the
+ * time this was written eight customers were in that state and two of the ten
+ * who had completed a free visit had gone on to join, which is a twenty per
+ * cent conversion with no follow-up at all.
+ *
+ * Every day here counts from the visit, never from the account. Somebody who
+ * registered in March and had their visit yesterday is on day one.
+ *
+ * What these four deliberately do NOT do is repeat the completion email, the
+ * tip link or the review request. Those already go out within an hour of the
+ * Fixter leaving. The first of these is two days later for that reason.
+ */
+const POST_FREE_VISIT = [
+  {
+    id: "postfree_thanks_v1",
+    audience: "non_member", category: CATEGORY.POST_FREE_VISIT, topic: "post_free_thanks",
+    kind: KIND.SELL, trackBDay: 2, priority: PRIORITY.POST_FREE_VISIT,
+    subject: "How did the visit go?",
+    altSubject: "Your Fixter has been and gone",
+    preheader: "Thanks for trying us. Here is what membership does next.",
+    headline: "How did it go?",
+    paragraphs: [
+      ({ name }) => `Hi ${name}, thanks for having a Fixter out. We hope the job got done properly and the house is one item shorter.`,
+      "You have tried ProFixter now. If you liked having someone just handle it, membership is how you keep that kind of help available - a Fixter booked in regularly instead of found again from scratch.",
+      "No rush. Have a look and decide whenever it suits you.",
+    ],
+    ctaLabel: "See membership", ctaRoute: "membership",
+    closing: "Not ready for that? You can always book another single visit.",
+    closingLinkLabel: "Book another visit", closingLinkRoute: "book",
+  },
+  {
+    id: "postfree_whats_next_v1",
+    audience: "non_member", category: CATEGORY.POST_FREE_VISIT, topic: "post_free_next",
+    kind: KIND.SELL, trackBDay: 6, priority: PRIORITY.POST_FREE_VISIT,
+    subject: "What's next on your list?",
+    altSubject: "The rest of the list",
+    preheader: "One job got done. Most houses have a few more.",
+    headline: "What's next on your list?",
+    paragraphs: [
+      "Most houses have more than one thing waiting. The faucet gets fixed and the door still sticks.",
+      "That is the part membership is actually for. Not one emergency - the steady trickle of small things that never justify hunting for a contractor:",
+    ],
+    bullets: [
+      "The door that has never closed quite right",
+      "Shelves and mirrors still in their boxes",
+      "A faucet that drips at night",
+      "Hardware that has worked loose",
+      "The light nobody has been tall enough to change",
+    ],
+    ctaLabel: "See how membership works", ctaRoute: "membership",
+    closing: "You already know how a visit goes. Membership just means not booking each one from scratch.",
+  },
+  {
+    id: "postfree_membership_v1",
+    audience: "non_member", category: CATEGORY.POST_FREE_VISIT, topic: "post_free_membership",
+    kind: KIND.SELL, trackBDay: 14, priority: PRIORITY.POST_FREE_VISIT,
+    subject: "Keep your Fixter available",
+    altSubject: "Instead of searching for someone again",
+    preheader: "Membership from $149 a month. Labor and trip included on visits.",
+    headline: "Keep your Fixter available",
+    paragraphs: [
+      "The useful part of ProFixter is not the first visit. It is not having to find somebody the next time.",
+      "That is what membership is: scheduled visits from the same in-house team, booked in about a minute.",
+    ],
+    bullets: [
+      "Scheduled handyman visits, booked in a minute",
+      "Labor and the trip included on membership visits",
+      "In-house Fixters - licensed and insured",
+      "Plans start at $149 a month",
+    ],
+    ctaLabel: "Compare plans", ctaRoute: "plans",
+    closing: "Still only one job a year? A single visit is always there instead.",
+  },
+  {
+    id: "postfree_honest_v1",
+    audience: "non_member", category: CATEGORY.POST_FREE_VISIT, topic: "post_free_honest",
+    kind: KIND.SELL, trackBDay: 30, priority: PRIORITY.POST_FREE_VISIT,
+    subject: "When membership is worth it, and when it isn't",
+    altSubject: "The honest version",
+    preheader: "The last note about membership for a while.",
+    headline: "When it is worth it, and when it isn't",
+    paragraphs: [
+      "This is the last note about membership for a while, so here is the honest version.",
+      "If you have one job a year, book single visits. That is cheaper and we would rather you did it that way.",
+      "Membership is worth it when things keep coming up and you are tired of finding someone every time. That is the whole argument.",
+      "Either way you have used us once and you know how we work, which is the part that usually takes longest.",
+    ],
+    ctaLabel: "See membership", ctaRoute: "membership",
+    closing: "And if you just need one thing done, book a visit whenever you like.",
+    closingLinkLabel: "Book a visit", closingLinkRoute: "book",
+  },
+];
+
+/** The campaign whose copy promises the free-visit reminders will stop. */
+const FINAL_FREE_VISIT_CAMPAIGN_ID = "nonmember_free_visit_final_v1";
 
 /* ------------------------------------------------------------------ */
 /* Members                                                             */
@@ -1036,6 +1211,7 @@ const GIFT_LIBRARY = [
 const ALL_TEMPLATES = [
   ...FIRST_CONTACT,
   ...NON_MEMBER_LIFECYCLE,
+  ...POST_FREE_VISIT,
   ...NON_MEMBER_ROTATION,
   ...FIX_LIBRARY,
   ...MEMBER_ACTIVATION,
@@ -1056,6 +1232,7 @@ module.exports = {
   BOOK_ROUTES,
   BY_ID,
   CATEGORY,
+  FINAL_FREE_VISIT_CAMPAIGN_ID,
   FIRST_CONTACT,
   FIX_LIBRARY,
   FORMER_MEMBER,
@@ -1066,6 +1243,7 @@ module.exports = {
   MEMBER_USAGE,
   NON_MEMBER_LIFECYCLE,
   NON_MEMBER_ROTATION,
+  POST_FREE_VISIT,
   PRIORITY,
   audiencesOf,
   ctaFor,

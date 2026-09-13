@@ -74,6 +74,20 @@ const SEND_WINDOW = {
  */
 const FREQUENCY = {
   globalMinDays: Number(process.env.MARKETING_MIN_DAYS || 7),
+  /**
+   * The one place the global floor is relaxed, and only for the four emails
+   * that follow a completed free visit.
+   *
+   * Those land on days 2, 6, 14 and 30 from the visit, and the 2-to-6 gap is
+   * four days. Under the ordinary seven day floor the second email would be
+   * held until day nine and the sequence would drift out of step with the
+   * conversation it is having.
+   *
+   * This is a scripted sequence to somebody who met us last week, not a
+   * rotation, and it ends on its own after four messages. The floor is kept
+   * rather than removed so that nothing can ever arrive twice in a day.
+   */
+  postFreeVisitMinDays: Number(process.env.MARKETING_POST_FREE_VISIT_MIN_DAYS || 3),
   /** 27 campaigns. 27 x 14 = 378, comfortably over the 365 day reuse window. */
   nonMemberRotationDays: Number(process.env.MARKETING_NON_MEMBER_DAYS || 14),
   /** 33 campaigns. 33 x 17 = 561, with room to spare. */

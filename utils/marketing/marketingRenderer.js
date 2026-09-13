@@ -77,6 +77,20 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
   const ctaLabel = resolve(cta.label);
   const ctaUrl = routeUrl(cta.route);
   const closing = resolve(template.closing);
+
+  /*
+   * An optional second destination, under the closing line.
+   *
+   * Exists for the post-free-visit emails, where membership is the ask but
+   * "book another single visit" still has to be reachable - somebody who is
+   * not going to subscribe should not have to go and find the booking page
+   * themselves. A plain text link rather than a second button, because two
+   * buttons is two primary actions and therefore none.
+   */
+  const closingLink =
+    template.closingLinkRoute && template.closingLinkLabel
+      ? { label: resolve(template.closingLinkLabel), url: routeUrl(template.closingLinkRoute) }
+      : null;
   /*
    * An optional promotion strip. Rendered only when a template asks for one,
    * so every existing email is byte-identical to before.
@@ -153,7 +167,11 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
           <a href="${escapeHtml(ctaUrl)}" style="display:inline-block;padding:13px 22px;background:${COLORS.accent};border:1px solid ${COLORS.accent};border-radius:6px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;">${escapeHtml(ctaLabel)}</a>
           ${
             closing
-              ? `<p style="margin:18px 0 0;font-size:15px;line-height:23px;color:${COLORS.body};">${escapeHtml(closing)}</p>`
+              ? `<p style="margin:18px 0 0;font-size:15px;line-height:23px;color:${COLORS.body};">${escapeHtml(closing)}${
+                  closingLink
+                    ? ` <a href="${escapeHtml(closingLink.url)}" style="color:${COLORS.accent};">${escapeHtml(closingLink.label)}</a>.`
+                    : ""
+                }</p>`
               : ""
           }
         </td></tr>
@@ -193,6 +211,7 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
     "",
     `${ctaLabel}: ${ctaUrl}`,
     closing ? `\n${closing}` : "",
+    closingLink ? `${closingLink.label}: ${closingLink.url}` : "",
     "",
     "---",
     `${BUSINESS.name} - ${BUSINESS.addressLine}`,
