@@ -47,6 +47,7 @@ const SUITES = [
   "test_document_storage_privacy.js",
   "test_checkout_return_urls.js",
   "test_membership_map.js",
+  "test_recent_work.js",
   "test_marketing_system.js",
   "test_marketing_longterm.js",
   "test_unsubscribe_token.js",

@@ -162,6 +162,22 @@ async function seed(uploaderType, overrides = {}, publishNow = false) {
   });
 }
 
+/**
+ * A row as it looked before Fixter uploads became reviewable.
+ *
+ * No upload path produces SCHEDULED any more, but rows written by the old
+ * behaviour still exist and the worker still has to promote them correctly.
+ * Built directly so that coverage survives the policy change.
+ */
+async function makeLegacyScheduled() {
+  const photo = await seed(UPLOADER_TYPE.FIXTER);
+  await WorkPhoto.updateOne(
+    { _id: photo._id },
+    { $set: { status: STATUS.SCHEDULED, publishAt: new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS) } }
+  );
+  return WorkPhoto.findById(photo._id).lean();
+}
+
 async function run() {
   const server = await MongoMemoryServer.create();
   await mongoose.connect(server.getUri(), { dbName: "recentwork" });
@@ -336,18 +352,29 @@ async function run() {
       assert.equal(bucket.size, 3, "unpublish must not remove the images");
     });
 
-    await test("a Fixter upload is invisible while its five minutes run", async () => {
+    await test("A FIXTER UPLOAD NEVER PUBLISHES ITSELF", async () => {
+      /*
+       * This used to assert the opposite: a Fixter upload went SCHEDULED and
+       * the worker put it on the website five minutes later, with the delay
+       * acting as an undo window rather than a review.
+       *
+       * A Fixter is a contributor now, not a publisher. A photo taken inside
+       * a customer's home is exactly the thing that needs a person to look
+       * before the world does, and being trusted to do the work is not the
+       * same as being the last check on what the company publishes.
+       */
       const photo = await seed(UPLOADER_TYPE.FIXTER, { title: "Finished job" });
-      assert.equal(photo.status, STATUS.SCHEDULED);
-      const delay = new Date(photo.publishAt).getTime() - Date.now();
-      assert.ok(
-        Math.abs(delay - FIXTER_PUBLISH_DELAY_MS) < 5000,
-        `publishAt should be ~5 minutes out, got ${Math.round(delay / 1000)}s`
-      );
+      assert.equal(photo.status, STATUS.PENDING_REVIEW);
+      assert.equal(photo.publishAt, null, "there is no countdown to render");
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
 
-      /* The worker running early must not bring it forward. */
-      await runRecentWorkCycle(new Date());
+      /* Long past any old delay, and the worker still must not touch it. */
+      await runRecentWorkCycle(new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS * 10));
+      assert.equal(
+        (await WorkPhoto.findById(photo._id).lean()).status,
+        STATUS.PENDING_REVIEW,
+        "no clock may promote a contributor's photo"
+      );
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
     });
 
@@ -361,10 +388,17 @@ async function run() {
     });
 
     /* ============================================================ */
-    section("The five-minute rule");
+    section("The scheduled-publish worker (legacy rows only)");
 
-    await test("the backend publishes it once the time passes", async () => {
-      const photo = await seed(UPLOADER_TYPE.FIXTER, { title: "Auto" });
+    await test("the worker publishes a legacy scheduled row when its time passes", async () => {
+      /*
+       * Nothing creates SCHEDULED any longer - a Fixter upload now waits for a
+       * person. The worker is kept because rows written under the old rule may
+       * still be carrying a publishAt, and a promotion path that silently
+       * stopped working would strand them forever.
+       */
+      const legacy = await makeLegacyScheduled();
+      const photo = { _id: legacy._id };
       const after = new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS + 1000);
 
       const result = await runRecentWorkCycle(after);
@@ -378,9 +412,15 @@ async function run() {
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 1);
     });
 
-    await test("overlapping workers publish it exactly once", async () => {
-      await seed(UPLOADER_TYPE.FIXTER);
-      await seed(UPLOADER_TYPE.FIXTER);
+    await test("overlapping workers publish a legacy scheduled row exactly once", async () => {
+      /*
+       * SCHEDULED is no longer produced by any upload, but rows written
+       * before Fixter uploads became reviewable still carry it, so the
+       * worker's duplicate-safety is still worth proving. Built by hand for
+       * that reason rather than through a submission.
+       */
+      await makeLegacyScheduled();
+      await makeLegacyScheduled();
       const after = new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS + 1000);
 
       const results = await Promise.all([
@@ -393,7 +433,7 @@ async function run() {
       assert.equal((await call("GET", "/api/recent-work")).body.total, 2);
     });
 
-    await test("cancelling during the countdown stops it publishing", async () => {
+    await test("a deleted submission stays deleted when the worker runs", async () => {
       const photo = await seed(UPLOADER_TYPE.FIXTER);
       await service.remove(photo._id, { name: "Roman Hecha" });
 
@@ -403,12 +443,12 @@ async function run() {
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
     });
 
-    await test("an admin can send a scheduled photo to the Library instead", async () => {
+    await test("an admin can send a submission to the Library instead", async () => {
       const photo = await seed(UPLOADER_TYPE.FIXTER);
       await service.unpublish(photo._id, { name: "Taras" });
       await runRecentWorkCycle(new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS + 1000));
       const reloaded = await WorkPhoto.findById(photo._id).lean();
-      assert.equal(reloaded.status, STATUS.LIBRARY, "the timer must not resurrect it");
+      assert.equal(reloaded.status, STATUS.LIBRARY, "and no worker resurrects it");
     });
 
     /* ============================================================ */
@@ -433,13 +473,18 @@ async function run() {
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
     });
 
-    await test("a Fixter's submission enters the countdown", async () => {
+    await test("a Fixter's submission waits for approval, like a member's", async () => {
       const res = await uploadAs(
         fixterToken, [await plainPhoto()], {}, "/api/recent-work/submissions"
       );
       assert.equal(res.status, 201, JSON.stringify(res.body));
-      assert.equal(res.body.created[0].status, STATUS.SCHEDULED);
-      assert.ok(res.body.created[0].publishAt, "the countdown is server-side");
+      assert.equal(res.body.created[0].status, STATUS.PENDING_REVIEW);
+      assert.equal(res.body.created[0].publishAt, null);
+      assert.equal(
+        (await call("GET", "/api/recent-work")).body.photos.length,
+        0,
+        "and it is not on the public gallery"
+      );
     });
 
     await test("an anonymous submission is refused", async () => {
@@ -840,7 +885,11 @@ async function run() {
         "/api/recent-work/submissions"
       );
       assert.equal(res.status, 201);
-      assert.equal(res.body.created[0].status, STATUS.SCHEDULED, "the delay is not optional");
+      assert.equal(
+        res.body.created[0].status,
+        STATUS.PENDING_REVIEW,
+        "review is not optional"
+      );
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
     });
 
@@ -866,12 +915,17 @@ async function run() {
         "/api/recent-work/submissions"
       );
       const doc = await WorkPhoto.findOne({}).lean();
-      const delay = new Date(doc.publishAt).getTime() - Date.now();
-      assert.ok(delay > 4 * 60 * 1000, `publishAt was steered: ${Math.round(delay / 1000)}s`);
+      /*
+       * Stronger than it used to be. A backdated publishAt was previously
+       * refused by being overwritten with the real countdown; now there is no
+       * countdown to overwrite, so the field the worker reads is simply never
+       * populated and there is nothing for a client to aim at.
+       */
+      assert.equal(doc.publishAt, null, "publishAt was steered");
 
       /* And the worker must not treat it as due. */
       await runRecentWorkCycle(new Date());
-      assert.equal((await WorkPhoto.findById(doc._id).lean()).status, STATUS.SCHEDULED);
+      assert.equal((await WorkPhoto.findById(doc._id).lean()).status, STATUS.PENDING_REVIEW);
     });
 
     await test("an admin cannot be impersonated through the submission route", async () => {
@@ -1092,25 +1146,158 @@ async function run() {
     });
 
     /* ============================================================ */
+    section("What a contributor can see of their own");
+
+    /*
+     * The two endpoints the Customer and Fixter upload screens are built on.
+     * Neither is the security boundary - assertBookingClaim still refuses a
+     * booking the caller has no claim on whatever these return - but a picker
+     * that offered somebody else's jobs would leak the existence of work the
+     * caller has nothing to do with, which is a disclosure on its own.
+     */
+
+    await test("the job picker offers a member only their own jobs", async () => {
+      const Booking = require("../models/Booking");
+      const mine = await Booking.create({
+        bookingNumber: "29000001",
+        userId: memberUser.userId, user: memberUser._id,
+        name: "Member Person", email: "member@example.com", phone: "+16315550003",
+        address: "3 Main St", city: "Huntington", state: "NY", zip: "11743",
+        service: "Tiling", subscription: "Premium",
+        date: new Date(), status: "Completed",
+      });
+      const theirs = await Booking.create({
+        bookingNumber: "29000002",
+        userId: plainCustomer.userId, user: plainCustomer._id,
+        name: "No Plan", email: "noplan@example.com", phone: "+16315550002",
+        address: "77 Secret Lane", city: "Babylon", state: "NY", zip: "11702",
+        service: "Drywall repair", subscription: "none",
+        date: new Date(), status: "Completed",
+      });
+
+      const res = await call("GET", "/api/recent-work/my-jobs", memberToken);
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      const numbers = res.body.jobs.map((j) => j.bookingNumber);
+      assert.ok(numbers.includes("29000001"), "their own job is offered");
+      assert.ok(!numbers.includes("29000002"), "a stranger's job is not");
+
+      /* And nothing about the customer rides along to draw a dropdown. */
+      const raw = JSON.stringify(res.body);
+      for (const leak of ["Secret Lane", "3 Main St", "@example.com", "+1631555", "No Plan"]) {
+        assert.ok(!raw.includes(leak), `the job picker leaked: ${leak}`);
+      }
+      assert.deepEqual(
+        Object.keys(res.body.jobs[0]).sort(),
+        ["bookingNumber", "city", "date", "service", "status"]
+      );
+
+      await Booking.deleteMany({ _id: { $in: [mine._id, theirs._id] } });
+    });
+
+    await test("the job picker offers a Fixter only their assignments", async () => {
+      const Booking = require("../models/Booking");
+      const assigned = await Booking.create({
+        bookingNumber: "29000003",
+        userId: memberUser.userId, user: memberUser._id,
+        name: "Member Person", email: "member@example.com", phone: "+16315550003",
+        address: "3 Main St", city: "Huntington", state: "NY", zip: "11743",
+        service: "Tiling", subscription: "Premium",
+        date: new Date(), status: "Completed",
+        assignedFixterId: fixterUser._id,
+      });
+      const somebodyElses = await Booking.create({
+        bookingNumber: "29000004",
+        userId: memberUser.userId, user: memberUser._id,
+        name: "Member Person", email: "member@example.com", phone: "+16315550003",
+        address: "9 Other Rd", city: "Babylon", state: "NY", zip: "11702",
+        service: "Painting", subscription: "Premium",
+        date: new Date(), status: "Completed",
+        assignedFixterId: new mongoose.Types.ObjectId(),
+      });
+
+      const res = await call("GET", "/api/recent-work/my-jobs", fixterToken);
+      assert.equal(res.status, 200);
+      const numbers = res.body.jobs.map((j) => j.bookingNumber);
+      assert.ok(numbers.includes("29000003"), "their assignment is offered");
+      assert.ok(!numbers.includes("29000004"), "another Fixter's job is not");
+
+      await Booking.deleteMany({ _id: { $in: [assigned._id, somebodyElses._id] } });
+    });
+
+    await test("the job picker refuses anyone who may not submit at all", async () => {
+      /* A customer with no membership cannot upload, so has nothing to pick. */
+      assert.equal((await call("GET", "/api/recent-work/my-jobs", customerToken)).status, 403);
+      assert.equal((await call("GET", "/api/recent-work/my-jobs")).status, 401);
+      assert.equal((await call("GET", "/api/recent-work/my-submissions")).status, 401);
+    });
+
+    await test("a contributor sees their own submissions and nobody else's", async () => {
+      await uploadAs(memberToken, [await plainPhoto()], {}, "/api/recent-work/submissions");
+      await uploadAs(fixterToken, [await plainPhoto()], {}, "/api/recent-work/submissions");
+
+      const asMember = await call("GET", "/api/recent-work/my-submissions", memberToken);
+      const asFixter = await call("GET", "/api/recent-work/my-submissions", fixterToken);
+      assert.equal(asMember.body.submissions.length, 1);
+      assert.equal(asFixter.body.submissions.length, 1);
+      assert.notEqual(asMember.body.submissions[0].id, asFixter.body.submissions[0].id);
+
+      /*
+       * The status is shown because a contributor who uploads into silence
+       * cannot tell a submission from a lost one. The admin's working notes
+       * are not shown, because they are notes rather than correspondence.
+       */
+      assert.equal(asMember.body.submissions[0].status, STATUS.PENDING_REVIEW);
+      const raw = JSON.stringify(asMember.body);
+      for (const leak of ["internalNote", "rejectionReason", "reviewedBy", "uploadedByName"]) {
+        assert.ok(!raw.includes(leak), `own-submissions leaked ${leak}`);
+      }
+    });
+
+    await test("NOTHING A CONTRIBUTOR UPLOADS REACHES THE PUBLIC GALLERY", async () => {
+      /*
+       * The headline rule, asserted from the public endpoint rather than from
+       * the row: both contributor roles upload, and the thing the world can
+       * actually fetch stays empty until an admin acts.
+       */
+      await uploadAs(memberToken, [await plainPhoto()], {}, "/api/recent-work/submissions");
+      await uploadAs(fixterToken, [await plainPhoto()], {}, "/api/recent-work/submissions");
+      assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
+
+      /* Not after any amount of time, either. */
+      await runRecentWorkCycle(new Date(Date.now() + FIXTER_PUBLISH_DELAY_MS * 20));
+      assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 0);
+
+      /* Only a deliberate admin publish puts one there. */
+      const one = await WorkPhoto.findOne({ uploaderType: UPLOADER_TYPE.FIXTER }).lean();
+      const published = await call("POST", `/api/admin/recent-work/${one._id}/publish`, adminToken);
+      assert.equal(published.status, 200);
+      assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 1);
+    });
+
+    /* ============================================================ */
     section("Admin views");
 
     await test("the views separate pending, published and library", async () => {
       await seed(UPLOADER_TYPE.MEMBER, { title: "Pending one" });
       await seed(UPLOADER_TYPE.ADMIN, { title: "Live one" }, true);
       await seed(UPLOADER_TYPE.ADMIN, { title: "Library one" });
-      await seed(UPLOADER_TYPE.FIXTER, { title: "Counting down" });
+      await seed(UPLOADER_TYPE.FIXTER, { title: "Fixter submission" });
 
       const pending = await call("GET", "/api/admin/recent-work?view=pending", adminToken);
       const published = await call("GET", "/api/admin/recent-work?view=published", adminToken);
       const library = await call("GET", "/api/admin/recent-work?view=library", adminToken);
 
-      assert.equal(pending.body.photos.length, 1);
-      assert.equal(pending.body.photos[0].title, "Pending one");
+      /* Both contributor uploads queue for review now, member and Fixter alike. */
+      assert.equal(pending.body.photos.length, 2);
+      assert.deepEqual(
+        pending.body.photos.map((x) => x.title).sort(),
+        ["Fixter submission", "Pending one"]
+      );
       assert.equal(published.body.photos.length, 1);
       assert.equal(published.body.photos[0].title, "Live one");
       assert.equal(library.body.photos.length, 4, "library holds everything we still have");
-      assert.equal(library.body.counts.pending, 1);
-      assert.equal(library.body.counts.scheduled, 1);
+      assert.equal(library.body.counts.pending, 2);
+      assert.equal(library.body.counts.scheduled, 0, "nothing schedules itself any more");
       assert.equal(library.body.counts.published, 1);
     });
 

@@ -5,10 +5,12 @@ const crypto = require("crypto");
 const auth = require("../middleware/auth");
 const { loadAccessUser } = require("../middleware/authorize");
 const WorkPhoto = require("../models/WorkPhoto");
+const Booking = require("../models/Booking");
 const {
   CATEGORIES,
   CATEGORY_SLUGS,
   STATUS,
+  UPLOADER_TYPE,
 } = require("../utils/recentWork/workPhotoStates");
 const {
   ACCEPTED_MIME_HINT,
@@ -187,6 +189,118 @@ router.post("/submissions", auth, loadAccessUser, (req, res) => {
       return res.status(status).json({ message: error?.message || "Could not submit" });
     }
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* What a contributor may see of their own                             */
+/* ------------------------------------------------------------------ */
+
+/** How far back a job stays offerable, and how many to offer. */
+const JOB_PICKER_DAYS = 120;
+const JOB_PICKER_LIMIT = 30;
+
+/**
+ * The jobs this person may legitimately attach a photo to.
+ *
+ * EXISTS SO THE PICKER CANNOT BE A LIST OF OTHER PEOPLE'S WORK.
+ *
+ * The upload route already refuses a booking the caller has no claim on, so
+ * this is not the security boundary - assertBookingClaim is, and it runs
+ * whatever this returns. What this does is make the boundary usable: a Fixter
+ * standing in a hallway needs the three jobs they did today, not a booking
+ * number to type from memory.
+ *
+ * The scope is deliberately the same rule the upload enforces, written the same
+ * way round: a member sees bookings that are theirs, a Fixter sees bookings
+ * they were assigned. Anything else would offer a job the upload would then
+ * refuse, which is a worse experience than not offering it.
+ *
+ * Lean on purpose. The Jobs tab already has an endpoint that returns whole
+ * bookings with the customer populated, and reusing it here would ship a
+ * customer's name, email and phone to a phone on a hallway connection to draw a
+ * dropdown. This returns what a dropdown needs.
+ */
+router.get("/my-jobs", auth, loadAccessUser, async (req, res) => {
+  try {
+    const uploader = await service.resolveUploaderContext(req.accessUser, req.accessRole);
+
+    const since = new Date(Date.now() - JOB_PICKER_DAYS * 24 * 60 * 60 * 1000);
+    const scope = { date: { $gte: since } };
+
+    if (uploader.uploaderType === UPLOADER_TYPE.MEMBER) {
+      scope.$or = [{ user: req.accessUser._id }, { userId: req.accessUser.userId }];
+    } else if (uploader.uploaderType === UPLOADER_TYPE.FIXTER) {
+      scope.assignedFixterId = req.accessUser._id;
+    }
+    /* An admin is not narrowed; the admin gallery is where they normally work. */
+
+    const bookings = await Booking.find(scope)
+      .select("bookingNumber date service status city")
+      .sort({ date: -1 })
+      .limit(JOB_PICKER_LIMIT)
+      .lean();
+
+    return res.json({
+      jobs: bookings
+        .filter((b) => b.bookingNumber)
+        .map((b) => ({
+          bookingNumber: b.bookingNumber,
+          date: b.date ? new Date(b.date).toISOString() : null,
+          service: b.service || "",
+          status: b.status || "",
+          /*
+           * Town only. A picker needs enough to tell two jobs apart on the same
+           * day; the street address is not that, and this response is read by a
+           * Fixter's phone rather than by the admin screen.
+           */
+          city: b.city || "",
+        })),
+    });
+  } catch (error) {
+    const status = Number(error?.statusCode) || 500;
+    if (status >= 500) console.error("recent-work my-jobs failed:", error);
+    return res.status(status).json({ message: error?.message || "Could not load jobs" });
+  }
+});
+
+/**
+ * The photos this person submitted, and what became of them.
+ *
+ * Scoped to the caller by uploadedByUserId, so it cannot become a window onto
+ * anybody else's submissions. It exists because a contributor who uploads into
+ * silence has no way to tell a successful submission from a lost one, and the
+ * honest answer - "we have it, an admin decides" - is worth showing.
+ *
+ * Carries the public shape plus the status. Not the internal note, not the
+ * reviewer, not the rejection reason: an admin's working notes are not
+ * correspondence, and a contributor being told a human said no is the product
+ * decision, not a critique they get to read.
+ */
+router.get("/my-submissions", auth, loadAccessUser, async (req, res) => {
+  try {
+    await service.resolveUploaderContext(req.accessUser, req.accessRole);
+
+    const rows = await WorkPhoto.find({
+      uploadedByUserId: req.accessUser._id,
+      status: { $ne: STATUS.ARCHIVED },
+    })
+      .sort({ createdAt: -1 })
+      .limit(60)
+      .lean();
+
+    return res.json({
+      submissions: rows.map((photo) => ({
+        ...service.toPublicDTO(photo),
+        status: photo.status,
+        bookingNumber: photo.bookingNumber || "",
+        createdAt: photo.createdAt ? new Date(photo.createdAt).toISOString() : null,
+      })),
+    });
+  } catch (error) {
+    const status = Number(error?.statusCode) || 500;
+    if (status >= 500) console.error("recent-work my-submissions failed:", error);
+    return res.status(status).json({ message: error?.message || "Could not load submissions" });
+  }
 });
 
 module.exports = router;

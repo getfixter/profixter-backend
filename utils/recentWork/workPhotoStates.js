@@ -85,16 +85,34 @@ function isValidCategory(slug) {
 /**
  * Which status an upload starts in, by who uploaded it.
  *
- * The three rules the product is built on, expressed once:
+ * The rules the product is built on, expressed once:
  *   admin   - trusted, publishes immediately if they asked for it
- *   fixter  - trusted, but never instantly; the delay is the safety net
- *   member  - never trusted to publish; a human decides
+ *   fixter  - a contributor; an admin decides whether it goes public
+ *   member  - a contributor; an admin decides whether it goes public
+ *
+ * WHY A FIXTER NO LONGER PUBLISHES ITSELF.
+ *
+ * This used to return SCHEDULED for a Fixter, which meant the photo published
+ * on its own five minutes later and the delay was an undo window rather than a
+ * review. That was a defensible design when Fixters were the only contributors
+ * and nobody else was watching the gallery.
+ *
+ * It is not what the product asks for now: a Customer and a Fixter are both
+ * CONTRIBUTORS and the admin is the MANAGER, so nothing either of them uploads
+ * may reach the public site without somebody deciding it should. A photo taken
+ * inside a customer's home is exactly the thing that needs a human to look
+ * before the world does - the Fixter is trusted to do the work, which is not
+ * the same as being the last check on what the company publishes.
+ *
+ * SCHEDULED is deliberately left in the enum and in the transition table. No
+ * upload path creates it any more, but rows written before this change are
+ * still valid and the worker that promotes them still knows what they are.
  */
 function initialStatusFor(uploaderType, { publishNow = false } = {}) {
   if (uploaderType === UPLOADER_TYPE.ADMIN) {
     return publishNow ? STATUS.PUBLISHED : STATUS.LIBRARY;
   }
-  if (uploaderType === UPLOADER_TYPE.FIXTER) return STATUS.SCHEDULED;
+  if (uploaderType === UPLOADER_TYPE.FIXTER) return STATUS.PENDING_REVIEW;
   if (uploaderType === UPLOADER_TYPE.MEMBER) return STATUS.PENDING_REVIEW;
   throw new Error(`Unknown uploader type: ${uploaderType}`);
 }
