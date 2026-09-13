@@ -120,6 +120,20 @@ const upload = multer({
   },
 });
 
+/**
+ * The uploader's note, labelled with who wrote it.
+ *
+ * Prefixed because this lands in a field admins also use for their own notes,
+ * and a moderation screen showing an unattributed sentence is a screen where
+ * somebody eventually mistakes a customer's words for the office's.
+ */
+function noteFrom(raw, uploaderType) {
+  const text = String(raw || "").replace(/\s+/g, " ").trim().slice(0, 420);
+  if (!text) return "";
+  const who = uploaderType === UPLOADER_TYPE.MEMBER ? "Customer note" : "Fixter note";
+  return `${who}: ${text}`;
+}
+
 router.post("/submissions", auth, loadAccessUser, (req, res) => {
   upload.array("photos", MAX_FILES_PER_UPLOAD)(req, res, async (uploadError) => {
     if (uploadError) {
@@ -160,6 +174,21 @@ router.post("/submissions", auth, loadAccessUser, (req, res) => {
             fields: {
               caption: req.body.caption,
               category: req.body.category,
+              /*
+               * The uploader's own words, kept OFF the public shape.
+               *
+               * internalNote is not in toPublicDTO, so a customer describing
+               * their kitchen cannot have that description appear on the site
+               * by the act of submitting it. An admin reads it while moderating
+               * and copies it into the caption if they want it public - which
+               * is a decision somebody makes, not a side effect of a form.
+               *
+               * Never the caption directly. A caption is published copy, and a
+               * sentence typed by a member could name a person, a street or a
+               * neighbour; routing it straight there would put the only
+               * safeguard in whoever remembers to clear the field.
+               */
+              internalNote: noteFrom(req.body.note, uploader.uploaderType),
               /* The verified booking, never the string the client sent. */
               bookingId: booking?._id || null,
               bookingNumber: booking?.bookingNumber || "",

@@ -1275,6 +1275,158 @@ async function run() {
     });
 
     /* ============================================================ */
+    section("The words that come with a photo");
+
+    /*
+     * A customer sharing finished work can say what it was. Those words are
+     * the whole reason this section exists as its own thing: they arrive from
+     * the public internet, they describe somebody's home, and the one rule
+     * that matters is that nothing about them is public until an admin
+     * deliberately makes it so.
+     */
+
+    await test("a customer's note is filed as an internal note, not as a caption", async () => {
+      const res = await uploadAs(
+        memberToken,
+        [await plainPhoto()],
+        { note: "  Kitchen   sink had been leaking" + String.fromCharCode(10) + "for weeks  " },
+        "/api/recent-work/submissions"
+      );
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+
+      const doc = await WorkPhoto.findOne({}).lean();
+      /* Collapsed, trimmed, and attributed so nobody reads it as the office's. */
+      assert.equal(doc.internalNote, "Customer note: Kitchen sink had been leaking for weeks");
+      assert.equal(doc.caption, "", "the note did not become published copy");
+      assert.equal(doc.title, "", "nor a title");
+
+      /* Not even on the uploader's own receipt, which is the public shape. */
+      assert.ok(!JSON.stringify(res.body).includes("leaking"));
+    });
+
+    await test("A CUSTOMER'S NOTE IS NOT PUBLIC, INCLUDING AFTER THE PHOTO IS", async () => {
+      await uploadAs(
+        memberToken,
+        [await plainPhoto()],
+        { note: "My neighbour Karen recommended you, 14 Bayview Ave" },
+        "/api/recent-work/submissions"
+      );
+      const doc = await WorkPhoto.findOne({}).lean();
+
+      /* The admin publishes the photo and writes nothing. */
+      const published = await call("POST", `/api/admin/recent-work/${doc._id}/publish`, adminToken);
+      assert.equal(published.status, 200, JSON.stringify(published.body));
+
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos.length, 1, "the photo is public");
+      const raw = JSON.stringify(feed.body);
+      for (const leak of ["internalNote", "Karen", "Bayview", "Customer note"]) {
+        assert.ok(!raw.includes(leak), `the public feed leaked: ${leak}`);
+      }
+      assert.equal(feed.body.photos[0].caption, "", "and the caption is still empty");
+    });
+
+    await test("the admin reads the note while deciding", async () => {
+      await uploadAs(
+        memberToken, [await plainPhoto()], { note: "Replaced the vanity" }, "/api/recent-work/submissions"
+      );
+      const res = await call("GET", "/api/admin/recent-work?view=pending", adminToken);
+      assert.equal(res.status, 200);
+      assert.equal(res.body.photos.length, 1);
+      assert.match(res.body.photos[0].internalNote, /Customer note: Replaced the vanity/);
+    });
+
+    await test("the note travels with every photo in the batch", async () => {
+      const res = await uploadAs(
+        memberToken,
+        [await plainPhoto(), await plainPhoto(800, 800), await plainPhoto(600, 900)],
+        { note: "Three angles of the same shelf" },
+        "/api/recent-work/submissions"
+      );
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      const docs = await WorkPhoto.find({}).lean();
+      assert.equal(docs.length, 3);
+      assert.equal(new Set(docs.map((d) => d.batchId)).size, 1, "one batch");
+      for (const doc of docs) {
+        assert.equal(doc.internalNote, "Customer note: Three angles of the same shelf");
+        assert.equal(doc.status, STATUS.PENDING_REVIEW);
+      }
+    });
+
+    await test("a customer can share without naming a visit", async () => {
+      /*
+       * The booking is optional by design: somebody who cannot remember which
+       * visit fixed the shelf still has a photo of the shelf. What is not
+       * optional is that the submission still waits for review.
+       */
+      const res = await uploadAs(
+        memberToken, [await plainPhoto()], { note: "Not sure which visit" }, "/api/recent-work/submissions"
+      );
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      const doc = await WorkPhoto.findOne({}).lean();
+      assert.equal(doc.bookingNumber, "");
+      assert.equal(doc.bookingId || null, null);
+      assert.equal(doc.status, STATUS.PENDING_REVIEW);
+      /* Still attributable: the uploader is the customer, booking or not. */
+      assert.equal(String(doc.uploadedByUserId), String(memberUser._id));
+    });
+
+    await test("an optional booking is still checked when one is named", async () => {
+      /*
+       * Optional means the field may be empty. It does not mean the field is
+       * unchecked - the same claim is verified whether the picker offered the
+       * number or somebody typed it into the request themselves.
+       */
+      const Booking = require("../models/Booking");
+      const strangers = await Booking.create({
+        bookingNumber: "28777777",
+        userId: plainCustomer.userId, user: plainCustomer._id,
+        name: "No Plan", email: "noplan@example.com", phone: "+16315550002",
+        address: "77 Secret Lane", city: "Babylon", state: "NY", zip: "11702",
+        service: "Drywall repair", subscription: "none",
+        date: new Date(), status: "Completed",
+      });
+
+      const res = await uploadAs(
+        memberToken,
+        [await plainPhoto()],
+        { note: "Nice work", bookingNumber: "28777777" },
+        "/api/recent-work/submissions"
+      );
+      assert.equal(res.status, 403, JSON.stringify(res.body));
+      assert.equal(await WorkPhoto.countDocuments({}), 0, "the note was not stored either");
+
+      await Booking.deleteOne({ _id: strangers._id });
+    });
+
+    await test("a note longer than the field is trimmed, not refused", async () => {
+      const res = await uploadAs(
+        memberToken,
+        [await plainPhoto()],
+        { note: "x".repeat(4000) },
+        "/api/recent-work/submissions"
+      );
+      assert.equal(res.status, 201, "a long note loses its tail, not the photo");
+      const doc = await WorkPhoto.findOne({}).lean();
+      assert.ok(doc.internalNote.length <= 500, doc.internalNote.length + " chars stored");
+      assert.ok(doc.internalNote.startsWith("Customer note: "));
+    });
+
+    await test("a Fixter's note is attributed to a Fixter", async () => {
+      await uploadAs(
+        fixterToken, [await plainPhoto()], { note: "Old valve was seized" }, "/api/recent-work/submissions"
+      );
+      const doc = await WorkPhoto.findOne({}).lean();
+      assert.equal(doc.internalNote, "Fixter note: Old valve was seized");
+    });
+
+    await test("no note at all is the ordinary case", async () => {
+      const res = await uploadAs(memberToken, [await plainPhoto()], {}, "/api/recent-work/submissions");
+      assert.equal(res.status, 201);
+      assert.equal((await WorkPhoto.findOne({}).lean()).internalNote, "");
+    });
+
+    /* ============================================================ */
     section("Admin views");
 
     await test("the views separate pending, published and library", async () => {
