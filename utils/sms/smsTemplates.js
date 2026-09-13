@@ -535,9 +535,17 @@ const TEMPLATES = {
     `${BRAND}: the free first visit is still on your account. Most people start ` +
     `with the thing they walk past every day: ${SITE}/book`,
 
+  /*
+   * Warm first, membership second - but membership, because that is what
+   * Track B is for. An earlier draft sent them back to the booking page,
+   * which is the one thing this audience has already proved they can do.
+   *
+   * "handyman help", not "your Fixter": nothing guarantees the same person
+   * comes back, so the text does not imply one.
+   */
   POST_FREE_VISIT_THANKS: () =>
-    `${BRAND}: thanks for having us out. If anything else needs doing, your ` +
-    `Fixter is a booking away: ${SITE}/book`,
+    `${BRAND}: thanks for having us out. Membership keeps handyman help ` +
+    `available for whatever comes up next: ${SITE}/membership`,
 
   POST_FREE_VISIT_MEMBERSHIP: () =>
     `${BRAND}: what is next on the list? Membership keeps a Fixter booked in ` +

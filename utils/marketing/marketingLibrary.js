@@ -423,11 +423,16 @@ const NON_MEMBER_LIFECYCLE = [
     requiresFreeVisitEligible: true,
     subject: "Still unclaimed: your free first visit",
     altSubject: "The free visit has not been used",
-    preheader: "No deadline. One job, labor and trip included.",
+    preheader: "Available now. One job, labor and trip included.",
     headline: "It is still sitting there",
     paragraphs: [
       ({ name }) => `Hi ${name}, the free first visit on your account has not been used yet.`,
-      "There is no deadline on it and nothing to cancel. One job, labor and the trip included, and you are under no obligation afterwards.",
+      /*
+       * "Available now", not "no deadline". The offer is a current fact about
+       * the account, and writing it as a permanent one is a promise nobody
+       * decided to make and the product does not enforce.
+       */
+      "It is available now. One job, labor and the trip included, and you are under no obligation afterwards.",
       "We are a Long Island handyman company - in-house Fixters, licensed and insured, working across Nassau and Suffolk. The free visit is the easiest way to find out whether we are any good.",
     ],
     ctaLabel: "Book your free visit", ctaRoute: "book",
@@ -440,14 +445,20 @@ const NON_MEMBER_LIFECYCLE = [
     /* The one campaign allowed to send after the sequence has closed, because
        it is what closes it. See templateEligible. */
     finalFreeVisitReminder: true,
-    subject: "Last note about your free visit",
-    altSubject: "We will stop mentioning this",
-    preheader: "Still yours whenever you want it. This is the last reminder.",
-    headline: "Last note about the free visit",
+    subject: "Last reminder about your free visit",
+    altSubject: "The last free-visit reminder",
+    preheader: "Available now. The last reminder we will send about it.",
+    headline: "Last reminder about the free visit",
     paragraphs: [
-      "This is the last time we will bring this up.",
-      "The free first visit stays on your account whether or not you ever use it. One job, labor and the trip included, no membership required.",
-      "If something around the house has been annoying you for months, that is what it is for. If not, no harm done - we will leave you alone about it.",
+      /*
+       * The promise is narrow and has to stay narrow: this is the last
+       * REMINDER ABOUT THE FREE VISIT, not the last email we ever send. The
+       * eligibility rules enforce exactly that and no more, and the copy must
+       * not claim a silence the system is not going to keep.
+       */
+      "This is the last reminder we will send about your free first visit.",
+      "It is available now. One job, labor and the trip included, no membership required.",
+      "If something around the house has been annoying you for months, that is what it is for. If not, no harm done - we will stop bringing this one up.",
     ],
     ctaLabel: "Book your free visit", ctaRoute: "book",
     closing: "If you would rather have a Fixter coming regularly, membership starts at $149 a month. Otherwise, we will see you whenever something breaks.",
@@ -668,7 +679,7 @@ const POST_FREE_VISIT = [
     headline: "How did it go?",
     paragraphs: [
       ({ name }) => `Hi ${name}, thanks for having a Fixter out. We hope the job got done properly and the house is one item shorter.`,
-      "You have tried ProFixter now. If you liked having someone just handle it, membership is how you keep that kind of help available - a Fixter booked in regularly instead of found again from scratch.",
+      "You have tried ProFixter now. If having a Fixter handle that job made life easier, membership is how you keep that help available for the things that come up around the house.",
       "No rush. Have a look and decide whenever it suits you.",
     ],
     ctaLabel: "See membership", ctaRoute: "membership",
@@ -685,7 +696,13 @@ const POST_FREE_VISIT = [
     headline: "What's next on your list?",
     paragraphs: [
       "Most houses have more than one thing waiting. The faucet gets fixed and the door still sticks.",
-      "That is the part membership is actually for. Not one emergency - the steady trickle of small things that never justify hunting for a contractor:",
+      /*
+       * The value is the ongoing help, not the saved booking form. An earlier
+       * draft closed on "membership just means not booking each one from
+       * scratch", which sells a convenience nobody would pay $149 a month for.
+       */
+      "When they keep coming up, one visit at a time is the tiring way to do it. Membership works the other way round: scheduled handyman visits through the year, with labor and the trip included on them, and our own in-house Fixters doing the work.",
+      "The list most people recognise:",
     ],
     bullets: [
       "The door that has never closed quite right",
@@ -695,7 +712,7 @@ const POST_FREE_VISIT = [
       "The light nobody has been tall enough to change",
     ],
     ctaLabel: "See how membership works", ctaRoute: "membership",
-    closing: "You already know how a visit goes. Membership just means not booking each one from scratch.",
+    closing: "Booking a membership visit takes about a minute, and the list stops growing.",
   },
   {
     id: "postfree_membership_v1",
@@ -707,12 +724,18 @@ const POST_FREE_VISIT = [
     headline: "Keep your Fixter available",
     paragraphs: [
       "The useful part of ProFixter is not the first visit. It is not having to find somebody the next time.",
-      "That is what membership is: scheduled visits from the same in-house team, booked in about a minute.",
+      /*
+       * Deliberately not "the same team" or "your Fixter". We do not guarantee
+       * a named person on every visit, and copy that quietly promises one is a
+       * disappointment scheduled for whenever somebody is on holiday.
+       */
+      "That is what membership is - the work scheduled through the year instead of found each time it is needed:",
     ],
     bullets: [
-      "Scheduled handyman visits, booked in a minute",
+      "Scheduled handyman visits through the year",
       "Labor and the trip included on membership visits",
-      "In-house Fixters - licensed and insured",
+      "Easy booking - about a minute",
+      "In-house trained Fixters, licensed and insured",
       "Plans start at $149 a month",
     ],
     ctaLabel: "Compare plans", ctaRoute: "plans",
@@ -727,7 +750,12 @@ const POST_FREE_VISIT = [
     preheader: "The last note about membership for a while.",
     headline: "When it is worth it, and when it isn't",
     paragraphs: [
-      "This is the last note about membership for a while, so here is the honest version.",
+      /*
+       * "The last of these" - this sequence - not "the last time we contact
+       * you". They rejoin ordinary light marketing afterwards and the copy
+       * must not promise a silence that is not coming.
+       */
+      "This is the last of these membership notes, so here is the honest version.",
       "If you have one job a year, book single visits. That is cheaper and we would rather you did it that way.",
       "Membership is worth it when things keep coming up and you are tired of finding someone every time. That is the whole argument.",
       "Either way you have used us once and you know how we work, which is the part that usually takes longest.",

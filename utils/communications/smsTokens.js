@@ -356,8 +356,8 @@ const DEFINITIONS = {
   POST_FREE_VISIT_THANKS: {
     label: "After the free visit (Track B, day 3)",
     template:
-      "{{brand}}: thanks for having us out. If anything else needs doing, your " +
-      "Fixter is a booking away: {{site}}/book",
+      "{{brand}}: thanks for having us out. Membership keeps handyman help " +
+      "available for whatever comes up next: {{site}}/membership",
     tokens: () => ({}),
   },
 

@@ -888,7 +888,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "356762e5bce1748a0b6c1ca17d6a7f2137613f4285d7ead65ec6fb70ee31e29c",
+      "6d48fd10b2346a602a7936ad40397d23ccafa45b3a2c91baa35a685064e755a5",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });
