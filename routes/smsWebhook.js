@@ -5,9 +5,11 @@ const SmsMessage = require("../models/SmsMessage");
 const SmsOptOut = require("../models/SmsOptOut");
 const User = require("../models/User");
 const { toE164, maskPhone, userPhoneQuery } = require("../utils/sms/smsPhone");
-const { statusCallbackUrl } = require("../utils/sms/smsConfig");
+const { statusCallbackUrl, twilioCredentials, TIMEZONE } = require("../utils/sms/smsConfig");
 const { validateTwilioSignature, webhookUrlFor } = require("../utils/sms/twilioProvider");
 const phoneStatus = require("../utils/sms/smsPhoneStatus");
+const { optOutFor } = require("../utils/sms/smsEligibility");
+const { sendTransactionalSms } = require("../utils/sms/smsService");
 
 /**
  * Twilio's two inbound webhooks: delivery status, and replies.
@@ -264,8 +266,13 @@ router.post("/inbound", async (req, res) => {
        * channel, we did not ask for the message, and storing the text of
        * something a customer sent to a number we told them not to converse on
        * would be collecting data we have no use for.
+       *
+       * It does not create a conversation, reach a technician, touch GHL, or
+       * get read as an instruction about a booking. It gets one answer telling
+       * the sender where a person actually is.
        */
       console.log(JSON.stringify({ event: "sms_inbound_ignored", from: maskPhone(from) }));
+      await replyThatNobodyIsReading(from, req.body);
     }
   } catch (error) {
     console.error(
@@ -279,6 +286,81 @@ router.post("/inbound", async (req, res) => {
 
   return emptyTwiml(res);
 });
+
+/**
+ * Answer, once, that nobody is reading this number.
+ *
+ * LOOP PROTECTION IS THE HARD PART, AND IT IS DURABLE ON PURPOSE.
+ *
+ * The failure mode is not theoretical. Two automated systems that each answer
+ * every inbound message will talk to each other until somebody notices the
+ * bill, and an in-memory guard does not survive the deploy, the second
+ * instance, or the retried webhook. So the guard is the unique index on
+ * SmsMessage.dedupeKey, which is the same mechanism every other message uses
+ * and the only one that holds across processes.
+ *
+ * Four separate things have to be true before a reply is attempted:
+ *
+ *   1. The sender is not our own number. A carrier loop or a misconfigured
+ *      console that reflects our traffic back at us dies here, before any
+ *      database work.
+ *   2. The number is not opted out. Somebody who sent STOP gets silence; a
+ *      helpful explanation would be a message they told us not to send.
+ *   3. The key `inbound_info:<number>:<date>` is free. One reply per number
+ *      per calendar day, so a duplicate webhook delivery, a retried delivery
+ *      of the same MessageSid, and a machine texting us hourly all collapse
+ *      onto a key that is already taken.
+ *   4. Everything the normal pipeline demands - SMS_ENABLED above all, which
+ *      is off, which is why this currently records `simulated` and sends
+ *      nothing.
+ *
+ * Compliance keywords never reach here: STOP, START and HELP are handled and
+ * returned before this is called, and Twilio answers those itself.
+ */
+async function replyThatNobodyIsReading(from, body = {}) {
+  const ourNumber = toE164(twilioCredentials().phoneNumber);
+  if (ourNumber && from === ourNumber) {
+    console.log(JSON.stringify({ event: "sms_inbound_self_loop_ignored" }));
+    return;
+  }
+
+  const optOut = await optOutFor(from);
+  if (optOut) {
+    console.log(
+      JSON.stringify({ event: "sms_inbound_reply_skipped", reason: "opted_out", from: maskPhone(from) })
+    );
+    return;
+  }
+
+  /*
+   * New York date, not UTC. The window a customer experiences as "today" is
+   * the one they are living in, and a UTC rollover at 8pm local would hand
+   * somebody a second copy in the same evening.
+   */
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+  const result = await sendTransactionalSms({
+    notificationType: "INBOUND_INFO_REPLY",
+    dedupeKey: `inbound_info:${from}:${day}`,
+    phone: from,
+    vars: {},
+    source: "smsInboundWebhook",
+  });
+
+  console.log(
+    JSON.stringify({
+      event: "sms_inbound_reply",
+      from: maskPhone(from),
+      status: result?.status || "unknown",
+      inboundSid: String(body?.MessageSid || body?.SmsSid || "").slice(0, 40),
+    })
+  );
+}
 
 /**
  * Record a STOP.
@@ -387,3 +469,10 @@ module.exports.applyOptIn = applyOptIn;
 module.exports.applyOptOut = applyOptOut;
 module.exports.normalizeKeyword = normalizeKeyword;
 module.exports.STATUS_MAP = STATUS_MAP;
+/*
+ * Exported so the loop protection can be tested across repeated calls and a
+ * module reload. Driving this directly is the honest way to test it: the route
+ * itself requires a valid Twilio signature, and forging one to reach the
+ * handler would be exercising a system we do not ship.
+ */
+module.exports.replyThatNobodyIsReading = replyThatNobodyIsReading;

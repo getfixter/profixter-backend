@@ -16,6 +16,7 @@ const { toE164 } = require("../utils/sms/smsPhone");
 // The eligibility layer's own reading of an opt-out row, reused rather than
 // reimplemented so the account screen and the send path cannot disagree.
 const { optOutFor } = require("../utils/sms/smsEligibility");
+const smsNotify = require("../utils/sms/smsNotifications");
 
 async function subscriptionBlocksDestructiveAction(subscription, source) {
   if (!subscription) return false;
@@ -272,9 +273,52 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
       }
     }
 
+    /*
+     * Was service SMS actually off before this request?
+     *
+     * Read BEFORE the write, because after it the answer is always yes. Only a
+     * genuine transition earns the number introduction: somebody who already
+     * had service texts on and is toggling marketing, or who saves the same
+     * form twice, has not just started receiving texts and does not need to be
+     * told where they come from.
+     */
+    const serviceWasOff = me.smsPreferences?.transactionalEnabled !== true;
+
     await User.updateOne({ _id: me._id }, { $set: update });
 
     const fresh = await User.findById(me._id).select("phone smsPreferences");
+
+    /*
+     * THE ONE-TIME NUMBER INTRODUCTION.
+     *
+     * Gated on the explicit tick that just happened, and on nothing else.
+     * Being a member does not trigger it. Having a phone number does not
+     * trigger it. Marketing consent does not trigger it - the condition below
+     * reads transactionalEnabled from the freshly-written record and requires
+     * it to be literally true.
+     *
+     * Registration does not reach this route at all, so a new customer who
+     * ticks the box during sign-up gets ACCOUNT_CREATED and is not also told
+     * about the number in a second text a moment later.
+     *
+     * Best-effort. The preference change is the thing the customer asked for
+     * and it has already been saved; a texting problem must not turn their
+     * successful save into an error, and with SMS_ENABLED off this records a
+     * simulated row and returns.
+     */
+    if (serviceWasOff && fresh?.smsPreferences?.transactionalEnabled === true) {
+      try {
+        await smsNotify.notifySmsNumberIntroduction(fresh, "account_settings");
+      } catch (introError) {
+        console.error(
+          JSON.stringify({
+            event: "sms_number_introduction_failed",
+            userId: String(me._id),
+            error: String(introError?.message || "").slice(0, 200),
+          })
+        );
+      }
+    }
     console.log(
       JSON.stringify({
         event: "sms_preference_changed",

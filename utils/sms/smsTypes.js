@@ -181,6 +181,37 @@ const SMS_TYPES = {
     description: "A membership payment failed and needs attention.",
   },
 
+  /* --------------------------- The number itself ------------------------ */
+  /**
+   * The one-off answer to somebody who texted an unmonitored number.
+   *
+   * Time-critical on purpose. Every other non-urgent transactional type waits
+   * for the daytime window, but this one is a REPLY - somebody has just texted
+   * us and is waiting. Arriving eleven hours later, out of context, would be
+   * worse than not arriving at all, and the whole content of the message is
+   * "nobody is reading this, call the office instead".
+   */
+  INBOUND_INFO_REPLY: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: true,
+    description:
+      "One automatic reply telling somebody this number is unmonitored and where to call instead.",
+  },
+
+  /**
+   * Said once, when a customer first switches service texts on.
+   *
+   * Introduces 631-888-6340 so the first appointment reminder does not arrive
+   * from a number nobody recognises, and sets the expectation - before anyone
+   * tries - that it takes neither calls nor replies.
+   */
+  SMS_NUMBER_INTRODUCTION: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description:
+      "One-time introduction of the ProFixter sending number, after an explicit service-SMS opt-in.",
+  },
+
   /* ----------------------------- Marketing ----------------------------- */
   KITCHEN_BATH_MARKETING: {
     channelClass: MARKETING,

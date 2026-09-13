@@ -492,6 +492,43 @@ const TEMPLATES = {
     `${BRAND}: we could not process your membership payment. ` +
     `Please update your card to keep your visits active: ${SITE}/account`,
 
+  /* --------------------------- The number itself ------------------------ */
+  /*
+   * THE TWO NUMBERS DO DIFFERENT JOBS AND BOTH BODIES SAY SO.
+   *
+   * 631-888-6340 is a carrier-registered sending number. It is automated: no
+   * inbox, no technician, no queue, no voicemail. 631-599-1363 is the office
+   * line a person answers. Somebody who texts or calls the sending number and
+   * gets silence concludes ProFixter ignores its customers, so both of these
+   * say plainly which number is which and where a human is.
+   *
+   * Neither body carries a link, on purpose. A message whose subject is "this
+   * channel is automated" should not also be asking for a tap.
+   */
+  INBOUND_INFO_REPLY: () =>
+    `${BRAND}: This number is used only for automated notifications and is ` +
+    `not monitored for replies. For assistance, call ${SUPPORT_PHONE}. ` +
+    `${OPT_OUT_LINE}`,
+
+  /*
+   * Sent once, at the moment somebody switches service texts on themselves.
+   *
+   * TIGHTENED TO ONE SEGMENT, DELIBERATELY.
+   *
+   * The wording this was drafted from ran to 261 characters and two segments.
+   * Every other body in this file is one segment - a rule this repo enforces
+   * by test rather than by intention - and an introduction is the worst
+   * possible place to be the exception: it is sent to every customer who ever
+   * turns texts on, forever, so its cost is paid more often than any other
+   * message here. Nothing was dropped to get inside the limit. The sending
+   * number, the fact that it is automated, that it takes neither calls nor
+   * replies, where a person is, and how to stop are all still here.
+   */
+  SMS_NUMBER_INTRODUCTION: () =>
+    `${BRAND}: Text updates are on. They come from 631-888-6340, an ` +
+    `automated number that takes no calls or replies. Help: ${SUPPORT_PHONE}. ` +
+    `${OPT_OUT_LINE}`,
+
   /* ----------------------------- Marketing ----------------------------- */
   /*
    * Approved marketing copy, tightened on final review to fit ONE segment.

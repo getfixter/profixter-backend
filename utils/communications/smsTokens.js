@@ -314,6 +314,24 @@ const DEFINITIONS = {
     tokens: () => ({}),
   },
 
+  /* --------------------------- The number itself ------------------------ */
+  INBOUND_INFO_REPLY: {
+    label: "Reply to an unmonitored inbound text",
+    template:
+      "{{brand}}: This number is used only for automated notifications and is " +
+      "not monitored for replies. For assistance, call {{supportPhone}}. " +
+      "Reply STOP to opt out.",
+    tokens: () => ({}),
+  },
+  SMS_NUMBER_INTRODUCTION: {
+    label: "Introducing the texting number",
+    template:
+      "{{brand}}: Text updates are on. They come from 631-888-6340, an " +
+      "automated number that takes no calls or replies. Help: {{supportPhone}}. " +
+      "Reply STOP to opt out.",
+    tokens: () => ({}),
+  },
+
   /* ----------------------------- Marketing ----------------------------- */
   KITCHEN_BATH_MARKETING: {
     label: "Kitchen & bath promotion",

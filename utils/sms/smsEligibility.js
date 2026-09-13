@@ -189,10 +189,40 @@ async function checkEligibility({
    * design a real consent step for the recipient first, and this refusal is
    * what will make them.
    */
+  /*
+   * THE ONE MESSAGE WHOSE CONSENT BASIS IS THE CUSTOMER'S OWN INBOUND TEXT.
+   *
+   * Everything else here refuses a number with no affirmative consent on file,
+   * and that rule is the whole 30923 fix - it must not be softened. This type
+   * is not an exception to it so much as a different question.
+   *
+   * Somebody has just texted 631-888-6340. They chose to, the message is
+   * sitting in our webhook log, and the number they texted is automated: no
+   * inbox, no technician, nobody reading it. The options are to answer once
+   * saying exactly that, or to say nothing and let them conclude ProFixter
+   * ignores its customers. A single informational reply to a message the
+   * recipient themselves sent is the recognised shape for this, and the
+   * evidence for it is stronger than a checkbox: they initiated it.
+   *
+   * What this does NOT bypass, and the order matters:
+   *   - SmsOptOut, checked below. A STOP still wins, and a customer who has
+   *     opted out gets silence rather than a lecture about phone numbers.
+   *   - SMS_ENABLED, checked in the service and again in the provider.
+   *   - Undeliverable-number suppression and the retry cap.
+   *   - The once-per-number-per-day dedupe key the webhook builds, which is
+   *     what stops two automated systems talking to each other forever.
+   *
+   * It is deliberately ONE notification type, matched exactly. A list would
+   * invite additions.
+   */
+  const isInboundReply = notificationType === "INBOUND_INFO_REPLY";
+
   if (user) {
-    const account = accountAllows(user, notificationType);
-    if (!account.eligible) return account;
-  } else {
+    if (!isInboundReply) {
+      const account = accountAllows(user, notificationType);
+      if (!account.eligible) return account;
+    }
+  } else if (!isInboundReply) {
     return no(isMarketing(notificationType) ? "marketing_requires_account" : "transactional_requires_account");
   }
 

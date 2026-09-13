@@ -528,7 +528,24 @@ test("no transactional message is padded with marketing", () => {
    * is a compliance disclosure, not marketing, so it is exempted by name rather
    * than by loosening the rule for every transactional message.
    */
-  const DISCLOSURE_EXEMPT = new Set(["ACCOUNT_CREATED"]);
+  /*
+   * Two more join it, on the same reasoning rather than by loosening the rule.
+   *
+   * INBOUND_INFO_REPLY goes to somebody who has just texted a number we hold
+   * no consent record for. It is frequently the only message that number will
+   * ever receive from us, which makes it an initial message in the strictest
+   * sense, and omitting the opt-out from it would be the one place carriers
+   * would genuinely object.
+   *
+   * SMS_NUMBER_INTRODUCTION is by definition the first message after an
+   * opt-in - that is the entire trigger - so it is the same case as
+   * ACCOUNT_CREATED, arriving through a different door.
+   */
+  const DISCLOSURE_EXEMPT = new Set([
+    "ACCOUNT_CREATED",
+    "INBOUND_INFO_REPLY",
+    "SMS_NUMBER_INTRODUCTION",
+  ]);
   for (const type of types.typesOfClass("transactional")) {
     if (DISCLOSURE_EXEMPT.has(type)) continue;
     const body = templates.renderSms(type, {

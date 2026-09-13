@@ -882,6 +882,14 @@ async function main() {
      * ones, and the assertion below this one proves the submitted bodies
      * individually rather than trusting the hash alone. The new templates are
      * marketing-class and cannot send without an explicit marketing opt-in.
+     *
+     * Re-pinned again for INBOUND_INFO_REPLY and SMS_NUMBER_INTRODUCTION.
+     * Same discipline, and the same evidence: thirty-seven added lines, zero
+     * removed and zero modified, and all thirty pre-existing bodies were
+     * rendered from the previous committed file and compared character by
+     * character against the current one before this hash was touched. Both
+     * additions are transactional and neither can send while SMS_ENABLED is
+     * off.
      */
     const digest = crypto
       .createHash("sha256")
@@ -889,7 +897,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "6d48fd10b2346a602a7936ad40397d23ccafa45b3a2c91baa35a685064e755a5",
+      "52f0ea01c28d8f0afde1283be131c756a0a9ab1d5a6d18beb79c6f771599b750",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

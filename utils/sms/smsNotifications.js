@@ -235,6 +235,53 @@ async function notifyAccountCreated(user, source = "auth") {
 }
 
 /**
+ * Introduce the sending number, once, to somebody who just asked for texts.
+ *
+ * WHY THIS EXISTS AT ALL
+ *
+ * The first native message a customer receives will be an appointment
+ * reminder from 631-888-6340 - a number they have never seen, that is not the
+ * number on the website, arriving about a visit they booked weeks ago. That
+ * reads like a scam to a careful person and like nothing at all to everyone
+ * else. This says whose number it is before it starts being used.
+ *
+ * WHY IT IS NOT SENT AT REGISTRATION
+ *
+ * Somebody who ticks the box during sign-up already gets ACCOUNT_CREATED,
+ * which is a welcome message arriving from the same number in the same
+ * minute. Two texts in a row, one welcoming them and one explaining the
+ * number that just welcomed them, is worse than either alone. So the caller in
+ * routes/users passes the account-settings path only; registration is left to
+ * ACCOUNT_CREATED.
+ *
+ * ONCE PER ACCOUNT, AND NEVER RETROSPECTIVELY
+ *
+ * The dedupe key is the user, with no date in it, so the second, third and
+ * hundredth time somebody toggles service texts off and on they are not told
+ * again.
+ *
+ * That same key is what makes this safe to ship with SMS_ENABLED off. Called
+ * while sending is disabled, the pipeline writes a `simulated` row - and that
+ * row OWNS THE KEY. Nothing re-scans it, nothing retries it (the sweep reads
+ * only `retry_scheduled`), and a later attempt for the same account collides
+ * with it and stops. Turning the master switch on therefore cannot produce a
+ * fan-out of introductions to everybody who opted in beforehand, because there
+ * is no queue to flush and no mechanism that looks backwards.
+ */
+async function notifySmsNumberIntroduction(user, source = "account_settings") {
+  return attempt("sms_number_introduction", async () =>
+    sendTransactionalSms({
+      notificationType: "SMS_NUMBER_INTRODUCTION",
+      dedupeKey: dedupe.userKey("SMS_NUMBER_INTRODUCTION", user),
+      user,
+      phone: user?.phone,
+      vars: {},
+      source,
+    })
+  );
+}
+
+/**
  * The account password changed.
  *
  * Keyed with the timestamp, because unlike registration this genuinely recurs:
@@ -397,5 +444,6 @@ module.exports = {
   notifyMembershipStarted,
   notifyPasswordChanged,
   notifyPaymentFailed,
+  notifySmsNumberIntroduction,
   typeForBooking,
 };

@@ -258,6 +258,14 @@ app.use("/api/gifts", require("./routes/gifts"));
 // START would un-silence somebody who genuinely opted out.
 app.use("/api/sms/webhook", require("./routes/smsWebhook"));
 
+// The same reasoning for voice. 631-888-6340 appears in every appointment
+// reminder, so people ring it; without an answer Twilio returns a carrier
+// error and the customer concludes nobody is home. This answers, points at the
+// office line, and hangs up. It never rings a person, never records and never
+// takes a message - see routes/voiceWebhook for the full list of what it
+// deliberately does not do.
+app.use("/api/voice/webhook", require("./routes/voiceWebhook"));
+
 
 
 /* ================= Weekly nudge CRON ================= */
