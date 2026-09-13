@@ -71,6 +71,67 @@ function readText(file) {
     .replace(/\s+/g, " ");
 }
 
+/**
+ * Source with comments removed, for asserting on STRUCTURE.
+ *
+ * Index arithmetic over raw source is fooled by prose. This file's first
+ * attempt at the fieldset assertions failed because the component explains, in
+ * a comment, that the consent panel used to sit after "</form>" - and
+ * indexOf("</form>") duly found the sentence rather than the tag. Comments
+ * describe the code; they are not the code, and structural questions must be
+ * asked of the markup alone.
+ */
+function readMarkup(file) {
+  return readSource(file)
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/**
+ * The character ranges covered by each {step === N ? ... : null} branch.
+ *
+ * Anything rendered inside one of these only exists on that step. The phone
+ * input and the consent checkboxes must all be outside every one of them, or
+ * they vanish from the first paint and from the server-rendered HTML - which
+ * is exactly how the opt-in form ended up with consent checkboxes and no phone
+ * field to attach them to.
+ *
+ * The branches do not nest, so each one runs to the next ") : null}".
+ */
+function stepBranchRanges(markup) {
+  const ranges = [];
+  const opener = /\{step === [0-9] \?/g;
+  let m;
+  while ((m = opener.exec(markup))) {
+    /*
+     * Brace matching, not "the next ) : null}".
+     *
+     * Every inner conditional - {fieldErrors.phone ? (...) : null} - ends with
+     * the same nine characters, so searching for the nearest one closes the
+     * step branch at its first child and reports everything after it as
+     * top-level. Counting braces from the opener finds the real end.
+     */
+    let depth = 0;
+    let end = -1;
+    for (let i = m.index; i < markup.length; i += 1) {
+      if (markup[i] === "{") depth += 1;
+      else if (markup[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    if (end > -1) ranges.push([m.index, end]);
+  }
+  return ranges;
+}
+
+function insideAnyStepBranch(markup, index) {
+  return stepBranchRanges(markup).some(([a, b]) => index > a && index < b);
+}
+
 let passed = 0;
 const failures = [];
 const skipped = [];
@@ -151,19 +212,120 @@ async function main() {
     }
   });
 
+  await frontendTest("the phone field and both checkboxes share one form and one fieldset", () => {
+    /*
+     * TWILIO'S REMAINING ERROR, PINNED.
+     *
+     * "Your opt-in form doesn't have a phone number field connected to SMS
+     * consent." It was right twice over: the phone input lived inside
+     * {step === 3} so it did not exist at first paint, and the consent panel
+     * sat after </form> so checkbox.form was null and the two controls never
+     * shared a form at any step.
+     *
+     * Both halves are structural, so both are asserted structurally: the
+     * fieldset opens before the phone input, both checkboxes are inside it,
+     * and the whole thing closes before </form>.
+     */
+    const src = readMarkup(P.signup);
+
+    const formOpen = src.indexOf("<form");
+    const formClose = src.indexOf("</form>");
+    const fieldsetOpen = src.indexOf("<fieldset");
+    const fieldsetClose = src.indexOf("</fieldset>");
+    const phone = src.indexOf('id="phone"');
+    const service = src.indexOf('id="sms-service-consent"');
+    const marketing = src.indexOf('id="sms-marketing-consent"');
+
+    assert.ok(fieldsetOpen > -1, "the grouping fieldset must exist");
+    assert.ok(formOpen < fieldsetOpen && fieldsetClose < formClose, "the fieldset must be inside the form");
+    for (const [name, at] of [["phone", phone], ["service checkbox", service], ["marketing checkbox", marketing]]) {
+      assert.ok(at > fieldsetOpen && at < fieldsetClose, `${name} must be inside the fieldset`);
+    }
+    assert.ok(/<legend/.test(src), "the fieldset needs a legend naming the group");
+  });
+
+  await frontendTest("the phone field is outside every step branch", () => {
+    /*
+     * If it ever moves back inside a {step === n} branch it disappears from
+     * the server-rendered HTML, and an automated opt-in check sees consent
+     * checkboxes with no phone field again.
+     */
+    const src = readMarkup(P.signup);
+    const phone = src.indexOf('id="phone"');
+    assert.ok(phone > -1, "the phone input must exist");
+    assert.ok(
+      !insideAnyStepBranch(src, phone),
+      "the phone input must not be inside a {step === N} branch - it has to render on the first paint"
+    );
+  });
+
+  await frontendTest("there is exactly one phone input on the page", () => {
+    /*
+     * One field, so the number consented for and the number on the account
+     * are the same number by construction rather than by synchronisation.
+     */
+    const src = readSource(P.signup);
+    assert.strictEqual(
+      (src.match(/id="phone"/g) || []).length,
+      1,
+      "a second phone input would make the consented number ambiguous"
+    );
+    assert.strictEqual((src.match(/type="tel"/g) || []).length, 1);
+  });
+
+  await frontendTest("each consent names the number it applies to", () => {
+    const text = readText(P.signup);
+    assert.ok(
+      /Text me about my ProFixter visits at the mobile number above/i.test(text),
+      "service consent must tie itself to the field above it"
+    );
+    assert.ok(
+      /Text me occasional ProFixter offers at the mobile number above/i.test(text),
+      "marketing consent must tie itself to the field above it"
+    );
+  });
+
+  await frontendTest("the phone field says entering it is not an opt-in", () => {
+    const text = readText(P.signup);
+    assert.ok(
+      /Entering it does not sign you up for text messages/i.test(text),
+      "a required field grouped with consent boxes must disclaim consent explicitly"
+    );
+    assert.ok(/Required for your account/i.test(text), "and must say why it is required");
+  });
+
+  await frontendTest("the Terms checkbox stays outside the SMS fieldset", () => {
+    const src = readMarkup(P.signup);
+    const terms = src.indexOf('id="agree-terms"');
+    const fieldsetOpen = src.indexOf("<fieldset");
+    const fieldsetClose = src.indexOf("</fieldset>");
+    assert.ok(terms > -1, "the required Terms box must exist");
+    assert.ok(
+      terms < fieldsetOpen || terms > fieldsetClose,
+      "Terms acceptance must not be grouped with the SMS consents"
+    );
+  });
+
   await frontendTest("the SMS panel is outside the step form", () => {
     /*
      * The 30896 fix. If this panel ever moves back inside a `step === n`
      * branch, the reviewer stops being able to see the SMS choices without
      * inventing an address, a name, a phone number and an email.
      */
-    const src = readSource(P.signup);
-    const panelStart = src.indexOf('aria-labelledby="sms-consent-heading"');
-    const lastStepGate = src.lastIndexOf("{step === 4 ?");
-    assert.ok(panelStart > -1, "the SMS panel must exist");
+    const src = readMarkup(P.signup);
+    for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
+      const at = src.indexOf(`id="${id}"`);
+      assert.ok(at > -1, `${id} must exist`);
+      assert.ok(
+        !insideAnyStepBranch(src, at),
+        `${id} must not be inside a {step === N} branch`
+      );
+    }
+    /* And the required Terms box SHOULD be inside one - step 4. */
+    const terms = src.indexOf('id="agree-terms"');
     assert.ok(
-      panelStart > lastStepGate,
-      "the SMS panel must sit after every step branch, not inside one"
+      insideAnyStepBranch(src, terms),
+      "the Terms checkbox belongs to step 4, separate from the always-visible SMS group"
     );
   });
 
