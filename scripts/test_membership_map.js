@@ -97,7 +97,15 @@ async function main() {
       userId: `U${seq}${now}`.slice(0, 12),
       subscriptionType: "basic",
       addressId: new mongoose.Types.ObjectId(),
-      addressSnapshot: { line1: "1 Test St", city: "Lindenhurst", state: "NY", zip: ZIP },
+      /*
+       * A different street line per call, because each makeSubscription() is
+       * meant to be a different home. It used to be a fixed string, which
+       * stopped mattering the moment the map began deduplicating by property
+       * rather than by address record: six fixtures at "1 Test St" are six
+       * grants at ONE house, and the map is right to draw one pin for them.
+       * Tests that deliberately want one home pass their own snapshot.
+       */
+      addressSnapshot: { line1: `${seq} Test St`, city: "Lindenhurst", state: "NY", zip: ZIP },
       billingCycle: "monthly",
       startDate: new Date(now - 30 * DAY),
       latestPaymentDate: new Date(now - 30 * DAY),
@@ -401,11 +409,89 @@ async function main() {
     assert.strictEqual((await points()).length, 0);
   });
 
+  await test("ONE HOME IS ONE PIN EVEN UNDER TWO ADDRESS RECORDS", async () => {
+    /*
+     * The production case, and the reason the dedupe key is the place rather
+     * than the paperwork.
+     *
+     * A paying member and a gifted membership at the same house, saved by two
+     * different people, the street line typed identically apart from the case
+     * of one word. Two address records, two ids - and, before this, two pins
+     * for one home on a map that tells the public every pin is one home.
+     */
+    await reset();
+    const snapshot = { line1: "14 Bayview Avenue", city: "Lindenhurst", state: "NY", zip: ZIP };
+    await makeSubscription({
+      addressId: new mongoose.Types.ObjectId(),
+      addressSnapshot: snapshot,
+    });
+
+    const now = Date.now();
+    await GiftMembership.create({
+      giftNumber: "G" + now + "dup",
+      purchaser: new mongoose.Types.ObjectId(),
+      recipient: new mongoose.Types.ObjectId(),
+      recipientEmail: "gifted@example.com",
+      plan: "basic",
+      durationMonths: 2,
+      status: "claimed",
+      startAt: new Date(now - DAY),
+      endAt: new Date(now + 40 * DAY),
+      /* A second address record for the same house, typed in lower case. */
+      addressId: new mongoose.Types.ObjectId(),
+      addressSnapshot: { ...snapshot, line1: "14 bayview avenue" },
+      amountPaidCents: 29800,
+    });
+
+    assert.strictEqual((await points()).length, 1, "one home drew two pins");
+  });
+
+  await test("the same street number in two different towns is two homes", async () => {
+    /*
+     * The error in the other direction, which would be worse: a key loose
+     * enough to merge two real homes loses a member from the map entirely.
+     * The ZIP is part of the key for exactly this reason.
+     */
+    await reset();
+    await makeSubscription({
+      addressSnapshot: { line1: "14 Bayview Avenue", city: "Lindenhurst", state: "NY", zip: ZIP },
+    });
+    await makeSubscription({
+      addressSnapshot: { line1: "14 Bayview Avenue", city: "Babylon", state: "NY", zip: ZIP_B },
+    });
+    assert.strictEqual((await points()).length, 2, "two homes were merged into one pin");
+  });
+
+  await test("two homes on one street stay two pins", async () => {
+    /* Normalisation must not reach past punctuation and case. */
+    await reset();
+    await makeSubscription({
+      addressSnapshot: { line1: "14 Bayview Avenue", city: "Lindenhurst", state: "NY", zip: ZIP },
+    });
+    await makeSubscription({
+      addressSnapshot: { line1: "16 Bayview Avenue", city: "Lindenhurst", state: "NY", zip: ZIP },
+    });
+    assert.strictEqual((await points()).length, 2);
+  });
+
+  await test("a record with no readable street line still gets its pin", async () => {
+    /*
+     * The fallback chain. An unusable line must not silently drop somebody off
+     * the map - it falls back to the address id, exactly as it did before.
+     */
+    await reset();
+    await makeSubscription({ addressSnapshot: { line1: "", city: "Lindenhurst", state: "NY", zip: ZIP } });
+    await makeSubscription({ addressSnapshot: { line1: "   ", city: "Lindenhurst", state: "NY", zip: ZIP } });
+    assert.strictEqual((await points()).length, 2, "a blank street line cost somebody their pin");
+  });
+
   await test("paid cover and a gift on one address produce ONE pin", async () => {
     await reset();
     const addressId = new mongoose.Types.ObjectId();
     const now = Date.now();
-    await makeSubscription({ addressId, subscriptionType: "plus" });
+    /* One address record AND one street line: the same house twice over. */
+    const shared = { line1: "1 Test St", city: "Lindenhurst", state: "NY", zip: ZIP };
+    await makeSubscription({ addressId, subscriptionType: "plus", addressSnapshot: shared });
     await GiftMembership.create({
       giftNumber: `G${now}d`,
       purchaser: new mongoose.Types.ObjectId(),
@@ -417,7 +503,7 @@ async function main() {
       startAt: new Date(now - DAY),
       endAt: new Date(now + 40 * DAY),
       addressId,
-      addressSnapshot: { line1: "1 Test St", city: "Lindenhurst", state: "NY", zip: ZIP },
+      addressSnapshot: shared,
       amountPaidCents: 99800,
     });
     const rows = await points();

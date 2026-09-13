@@ -20,6 +20,12 @@ const { MAP_BOUNDS, VIEWBOX, project } = require("./projection");
  *
  * WHAT LEAVES THIS MODULE
  *
+ * ONE HOME, ONE PIN.
+ *
+ * Memberships are deduplicated by physical property rather than by address
+ * record, so a house holding two active grants - a paid membership and a
+ * gift, say - is one pin and not two. See propertyKeyOf.
+ *
  * A list of {x, y}. No name, no address, no ZIP, no coordinates, no user, no
  * subscription, no gift, no id of any kind, no count of anything - and, since
  * V3, no membership tier either. The ids and plans that exist in this file are
@@ -44,6 +50,35 @@ const { MAP_BOUNDS, VIEWBOX, project } = require("./projection");
  * publish, which is an eligibility rule rather than a display one.
  */
 const PLANS = ["basic", "plus", "premium", "elite"];
+
+/**
+ * One physical home, as a string.
+ *
+ * WHY NOT THE ADDRESS ID.
+ *
+ * The dedupe key used to be the address record, which is right until one
+ * home exists in the address book twice. In production it did: a paying
+ * member and a gifted membership at the same house, saved by two different
+ * people, the street line typed identically apart from the case of one word.
+ * Two address records, two keys, two pins - for a map that now tells the
+ * public every pin is one home.
+ *
+ * So the key is the place rather than the paperwork: street line and ZIP,
+ * lowercased, punctuation and repeated spaces collapsed. Deliberately mild.
+ * It is not trying to be an address parser - no abbreviation expansion, no
+ * unit stripping - because over-normalising here merges two homes into one
+ * pin, and a missing pin is a worse error than a repeated one. Anything it
+ * cannot read falls back to the address id, then to the person and ZIP,
+ * exactly as before.
+ */
+function propertyKeyOf(snapshot, zip) {
+  const line = String(snapshot?.line1 || snapshot?.address || "")
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return line && zip ? `home:${line}|${zip}` : "";
+}
 
 /**
  * How long a built map is reused.
@@ -99,7 +134,9 @@ async function activeMemberships({ now = new Date() } = {}) {
     const zip = zipOf(sub.addressSnapshot);
     if (!plan || !zip) continue;
 
-    const key = sub.addressId ? `addr:${sub.addressId}` : `user:${sub.user}:${zip}`;
+    const key =
+      propertyKeyOf(sub.addressSnapshot, zip) ||
+      (sub.addressId ? `addr:${sub.addressId}` : `user:${sub.user}:${zip}`);
     if (claimed.has(key)) continue;
     claimed.set(key, true);
     out.push({ zip, plan, seed: `sub:${sub._id}` });
@@ -120,7 +157,14 @@ async function activeMemberships({ now = new Date() } = {}) {
     const zip = zipOf(gift.addressSnapshot);
     if (!plan || !zip) continue;
 
-    const key = gift.addressId ? `addr:${gift.addressId}` : `user:${gift.recipient}:${zip}`;
+    /*
+     * Subscriptions are collected first, so where a home holds both a paid
+     * membership and a gift the paid one keeps the pin - and keeps its
+     * position, since the seed that places it is unchanged.
+     */
+    const key =
+      propertyKeyOf(gift.addressSnapshot, zip) ||
+      (gift.addressId ? `addr:${gift.addressId}` : `user:${gift.recipient}:${zip}`);
     if (claimed.has(key)) continue;
     claimed.set(key, true);
     out.push({ zip, plan, seed: `gift:${gift._id}` });
