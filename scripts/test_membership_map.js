@@ -249,6 +249,101 @@ async function main() {
     assert.strictEqual((await points()).length, 0);
   });
 
+  await test("ONE ACTIVE MEMBER IN A CROWD OF NON-MEMBERS PRODUCES ONE PIN", async () => {
+    /*
+     * The claim the public copy now makes, tested from the other direction.
+     *
+     * The two tests above assert zero against an empty database, which proves
+     * less than it looks: an implementation that pinned every Booking would
+     * also pass them. So this one fills the same ZIP with every category the
+     * map must ignore - a registered non-member, somebody whose free first
+     * visit we completed, a paid one-time visit, a project-only customer, a
+     * cancelled former member and an expired one - puts exactly one live
+     * membership among them, and expects exactly one pin.
+     *
+     * If the map ever starts meaning "homes where ProFixter has worked", this
+     * is the test that fails.
+     */
+    await reset();
+    const Booking = require("../models/Booking");
+    const User = require("../models/User");
+    const now = Date.now();
+    const made = [];
+
+    /* A registered account that never bought anything. */
+    const registered = await User.create({
+      userId: `R${now}`.slice(0, 12),
+      name: "Registered Only", email: `reg${now}@example.invalid`,
+      password: "x", phone: "+16315550401",
+      addresses: [{ line1: "2 Test St", city: "Lindenhurst", state: "NY", zip: ZIP }],
+    });
+    made.push(registered);
+
+    /* Completed work at a home, of every non-membership kind. */
+    const bookings = [
+      { isFreeFirstVisit: true, service: "Labor Only", status: "Completed", completedAt: new Date(now - 10 * DAY) },
+      { accessType: "one_time", service: "TV mounting", status: "Completed", completedAt: new Date(now - 5 * DAY) },
+      { bookingType: "full_day_visit", service: "Full Day", status: "Completed", completedAt: new Date(now - 2 * DAY) },
+    ];
+    let n = 0;
+    for (const extra of bookings) {
+      n += 1;
+      made.push(
+        await Booking.create({
+          bookingNumber: `${now}${n}`.slice(-8),
+          userId: registered.userId, user: registered._id,
+          name: "Registered Only", email: registered.email, phone: "+16315550401",
+          address: "2 Test St", city: "Lindenhurst", state: "NY", zip: ZIP,
+          subscription: "none", date: new Date(now - 10 * DAY),
+          ...extra,
+        })
+      );
+    }
+
+    /* A project-only customer: an estimate lead, never a membership. */
+    const EstimateLead = require("../models/EstimateLead");
+    made.push(
+      await EstimateLead.create({
+        service: "kitchen",
+        name: "Project Only",
+        phone: "+16315550402",
+        email: `proj${now}@example.invalid`,
+        address: `3 Test St, Lindenhurst, NY ${ZIP}`,
+      })
+    );
+
+    /* A former member, and one whose period simply ran out. */
+    await makeSubscription({ status: "canceled", cancellationDate: new Date(now - 20 * DAY) });
+    await makeSubscription({ currentPeriodEnd: new Date(now - DAY) });
+
+    assert.strictEqual((await points()).length, 0, "something other than a membership drew a pin");
+
+    /* Now one real member, in the same ZIP as all of the above. */
+    await makeSubscription();
+    assert.strictEqual((await points()).length, 1, "the live membership should be the only pin");
+
+    await Booking.deleteMany({ user: registered._id });
+    await User.deleteOne({ _id: registered._id });
+    await EstimateLead.deleteMany({ email: `proj${now}@example.invalid` });
+  });
+
+  await test("a membership that ends loses its pin without anything being written", async () => {
+    /*
+     * "Disappears when the membership ends" has to hold for the ending nobody
+     * records: a period that elapses. No webhook fires, no field is updated,
+     * and the row still says status active - only the clock moved.
+     */
+    await reset();
+    const sub = await makeSubscription();
+    assert.strictEqual((await points()).length, 1);
+
+    await Subscription.updateOne(
+      { _id: sub._id },
+      { $set: { currentPeriodEnd: new Date(Date.now() - 1000), accessStatus: "active", status: "active" } }
+    );
+    assert.strictEqual((await points()).length, 0, "an elapsed membership kept its pin");
+  });
+
   await test("an unclaimed gift is not a membership", async () => {
     await reset();
     await GiftMembership.create({
