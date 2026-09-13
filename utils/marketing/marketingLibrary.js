@@ -674,7 +674,7 @@ const POST_FREE_VISIT = [
     audience: "non_member", category: CATEGORY.POST_FREE_VISIT, topic: "post_free_thanks",
     kind: KIND.SELL, trackBDay: 2, priority: PRIORITY.POST_FREE_VISIT,
     subject: "How did the visit go?",
-    altSubject: "Your Fixter has been and gone",
+    altSubject: "Thanks for trying ProFixter",
     preheader: "Thanks for trying us. Here is what membership does next.",
     headline: "How did it go?",
     paragraphs: [
@@ -700,8 +700,15 @@ const POST_FREE_VISIT = [
        * The value is the ongoing help, not the saved booking form. An earlier
        * draft closed on "membership just means not booking each one from
        * scratch", which sells a convenience nobody would pay $149 a month for.
+       *
+       * And the comparison is between two things we sell, so it is written as
+       * a question of which fits rather than as a complaint about one of them.
+       * A draft that called booking single visits "the tiring way to do it"
+       * was running down the One-Time Visit to sell the membership, which is
+       * an odd thing to do to a product of our own - and to the customer who
+       * just used one.
        */
-      "When they keep coming up, one visit at a time is the tiring way to do it. Membership works the other way round: scheduled handyman visits through the year, with labor and the trip included on them, and our own in-house Fixters doing the work.",
+      "When little jobs keep coming up, membership can make more sense than arranging help separately each time. Scheduled handyman visits through the year, with labor and the trip included on them, and our own in-house Fixters doing the work.",
       "The list most people recognise:",
     ],
     bullets: [
