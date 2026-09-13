@@ -433,7 +433,15 @@ function toPublicDTO(photo) {
     category: photo.category || "general-handyman",
     location: photo.publicLocation || "",
     featured: Boolean(photo.featured),
-    publishedAt: photo.publishedAt ? new Date(photo.publishedAt).toISOString() : null,
+    /*
+     * No publishedAt, and no other date.
+     *
+     * Nothing public rendered it, and a date beside a photograph of
+     * somebody's kitchen answers a question nobody asked while quietly
+     * dating the gallery: a visitor who sees "March" on the newest picture
+     * has learned something about how often we post, not about the work.
+     * The timestamps stay on the row for the admin and for auditing.
+     */
     thumbUrl: photo.thumb?.url || "",
     imageUrl: photo.display?.url || "",
     fullUrl: photo.full?.url || "",
@@ -446,6 +454,8 @@ function toPublicDTO(photo) {
 function toAdminDTO(photo) {
   return {
     ...toPublicDTO(photo),
+    /* Carried here rather than in the public shape, where it is nobody's business. */
+    publishedAt: photo.publishedAt ? new Date(photo.publishedAt).toISOString() : null,
     status: photo.status,
     uploaderType: photo.uploaderType,
     uploadedByName: photo.uploadedByName || "",

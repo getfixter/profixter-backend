@@ -308,9 +308,10 @@ async function run() {
       assert.equal(res.body.photos.length, 1);
       const dto = res.body.photos[0];
 
+      /* No publishedAt, and no other timestamp: the public shape carries no date. */
       const allowed = [
         "id", "title", "caption", "category", "location", "featured",
-        "publishedAt", "thumbUrl", "imageUrl", "fullUrl", "width", "height",
+        "thumbUrl", "imageUrl", "fullUrl", "width", "height",
       ].sort();
       assert.deepEqual(Object.keys(dto).sort(), allowed, "exact public key set");
 
@@ -781,7 +782,7 @@ async function run() {
       assert.deepEqual(
         Object.keys(dto).sort(),
         ["caption", "category", "featured", "fullUrl", "height", "id", "imageUrl",
-         "location", "publishedAt", "thumbUrl", "title", "width"].sort()
+         "location", "thumbUrl", "title", "width"].sort()
       );
       /* Every URL the public is handed must resolve to a real stored object. */
       for (const url of [dto.thumbUrl, dto.imageUrl, dto.fullUrl]) {
@@ -1272,6 +1273,120 @@ async function run() {
       const published = await call("POST", `/api/admin/recent-work/${one._id}/publish`, adminToken);
       assert.equal(published.status, 200);
       assert.equal((await call("GET", "/api/recent-work")).body.photos.length, 1);
+    });
+
+    /* ============================================================ */
+    section("What the public is allowed to read");
+
+    /*
+     * One field reaches a visitor: the caption an admin wrote or approved.
+     * Everything else with words in it - the submitter's note, the admin's own
+     * note, the title of a booking, a date - either stays on the row or is not
+     * on the row at all. These tests are the fence.
+     */
+
+    await test("an approved caption is public; the note it came from is not", async () => {
+      /* The whole workflow in one test: sent with a note, captioned by an
+         admin, published - and only the admin's words come out. */
+      await uploadAs(
+        memberToken,
+        [await plainPhoto()],
+        { note: "My neighbour Karen said you were good, 14 Bayview Ave" },
+        "/api/recent-work/submissions"
+      );
+      const row = await WorkPhoto.findOne({}).lean();
+
+      const edited = await call("PATCH", `/api/admin/recent-work/${row._id}`, adminToken, {
+        caption: "Mounted a 65-inch TV and concealed the wiring.",
+      });
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      await call("POST", `/api/admin/recent-work/${row._id}/publish`, adminToken);
+
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos.length, 1);
+      assert.equal(feed.body.photos[0].caption, "Mounted a 65-inch TV and concealed the wiring.");
+
+      const raw = JSON.stringify(feed.body);
+      for (const leak of ["Karen", "Bayview", "Customer note", "internalNote"]) {
+        assert.ok(!raw.includes(leak), `the caption dragged along: ${leak}`);
+      }
+
+      /* And the note is still on the row, where the admin can read it. */
+      const after = await WorkPhoto.findById(row._id).lean();
+      assert.match(after.internalNote, /Karen/);
+    });
+
+    await test("a published photo with no caption is published with no words", async () => {
+      const photo = await seed(UPLOADER_TYPE.ADMIN, { caption: "", title: "" }, true);
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos.length, 1);
+      assert.equal(feed.body.photos[0].caption, "", "an empty caption, not a substitute");
+      assert.equal(feed.body.photos[0].id, String(photo._id));
+    });
+
+    await test("A NOTE NEVER BECOMES A CAPTION BY ITSELF", async () => {
+      /*
+       * The rule the whole feature rests on. A member writes something, an
+       * admin publishes the photograph and writes nothing: the photograph goes
+       * up and the member's sentence does not.
+       */
+      await uploadAs(
+        memberToken, [await plainPhoto()], { note: "Kitchen looks brand new" }, "/api/recent-work/submissions"
+      );
+      const row = await WorkPhoto.findOne({}).lean();
+      await call("POST", `/api/admin/recent-work/${row._id}/publish`, adminToken);
+
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos[0].caption, "");
+      assert.ok(!JSON.stringify(feed.body).includes("Kitchen looks brand new"));
+    });
+
+    await test("a Fixter's note does not become a caption either", async () => {
+      await uploadAs(
+        fixterToken, [await plainPhoto()], { note: "Old valve was seized" }, "/api/recent-work/submissions"
+      );
+      const row = await WorkPhoto.findOne({}).lean();
+      await call("POST", `/api/admin/recent-work/${row._id}/publish`, adminToken);
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos[0].caption, "");
+      assert.ok(!JSON.stringify(feed.body).includes("seized"));
+    });
+
+    await test("an admin's own internal note is not public either", async () => {
+      await seed(UPLOADER_TYPE.ADMIN, {
+        caption: "Replaced a leaking shut-off valve.",
+        internalNote: "Customer haggled, do not feature",
+      }, true);
+      const feed = await call("GET", "/api/recent-work");
+      assert.equal(feed.body.photos[0].caption, "Replaced a leaking shut-off valve.");
+      assert.ok(!JSON.stringify(feed.body).includes("haggled"));
+    });
+
+    await test("NO DATE REACHES THE PUBLIC FEED", async () => {
+      await seed(UPLOADER_TYPE.ADMIN, { caption: "Hung a ceiling fan." }, true);
+      const feed = await call("GET", "/api/recent-work");
+      const dto = feed.body.photos[0];
+
+      for (const key of Object.keys(dto)) {
+        assert.ok(
+          !/at$|date|time/i.test(key),
+          "the public shape carries a date-shaped key: " + key,
+        );
+      }
+      /* Not by name and not by value: no ISO timestamp anywhere in the body. */
+      const raw = JSON.stringify(feed.body);
+      assert.ok(
+        !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw),
+        "an ISO timestamp reached the public feed"
+      );
+    });
+
+    await test("the admin still has the dates the public lost", async () => {
+      const photo = await seed(UPLOADER_TYPE.ADMIN, { title: "Dated" }, true);
+      const res = await call("GET", "/api/admin/recent-work?view=published", adminToken);
+      const dto = res.body.photos.find((p) => p.id === String(photo._id));
+      assert.ok(dto.publishedAt, "publishedAt is still on the admin shape");
+      assert.ok(dto.createdAt, "so is createdAt");
     });
 
     /* ============================================================ */
