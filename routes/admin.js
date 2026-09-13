@@ -64,13 +64,6 @@ const mail = require("../utils/emailService");
 const Request = require("../models/Request");
 const EstimateLead = require("../models/EstimateLead");
 const {
-  createOrUpdateContact,
-  updateContactFields,
-  formatBookingDateTime,
-  addTag,
-  removeTag,
-} = require("../utils/ghlContact");
-const {
   stripe,
   normalizePlanType,
   normalizeStripeStatus,
@@ -1580,19 +1573,9 @@ router.put(
             status: { $in: ["active", "trialing"] },
           }).lean();
 
-          if (!stillHasAnyActiveSubscription) {
-            const contactId = await createOrUpdateContact({
-              name: user.name,
-              email: user.email,
-              phone: user.phone,
-            });
-
-            if (contactId) {
-              await removeTag(contactId, "subscription_purchased");
-            }
-          }
+          void stillHasAnyActiveSubscription;
         } catch (e) {
-          console.log("GHL subscription cancel automation error:", e.message);
+          console.log("Subscription cancel post-processing error:", e.message);
         }
 
         return respond("Address plan canceled", {
@@ -1747,20 +1730,6 @@ router.put(
         );
       }
 
-      try {
-        const contactId = await createOrUpdateContact({
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-        });
-
-        if (contactId) {
-          await addTag(contactId, "subscription_purchased");
-        }
-      } catch (e) {
-        console.log("GHL subscription add automation error:", e.message);
-      }
-
       return respond("Address plan updated", {
         action: "Plan Changed",
         entityType: "Subscription",
@@ -1876,159 +1845,6 @@ router.put(
   }
 );
 
-// ✅ ONE-TIME: remove subscription_purchased from users with NO active subscription
-// POST /api/admin/ghl/subscription-tags/cleanup
-router.post("/ghl/subscription-tags/cleanup", auth, onlyAdmin, async (_req, res) => {
-  try {
-    const users = await User.find({
-      phone: { $exists: true, $ne: "" },
-    }).select("_id name email phone userId subscription stripeCustomerId");
-
-    let scanned = 0;
-    let noPhone = 0;
-    let noContact = 0;
-    let removed = 0;
-    let repairedFromStripe = 0;
-    const errors = [];
-
-    for (const user of users) {
-      scanned++;
-
-      if (!user.phone) {
-        noPhone++;
-        continue;
-      }
-
-      const subscriptions = await Subscription.find({ user: user._id });
-      const selectedSubscription = selectCurrentSubscription(subscriptions);
-      let hasActiveAccess =
-        selectedSubscription && subscriptionGrantsAccess(selectedSubscription);
-
-      if (!hasActiveAccess && user.stripeCustomerId) {
-        try {
-          const repair = await syncActiveStripeSubscriptionForUser(user, {
-            source: "ghl_subscription_tag_cleanup",
-          });
-          hasActiveAccess =
-            repair.selectedAfter && subscriptionGrantsAccess(repair.selectedAfter);
-          if (hasActiveAccess) repairedFromStripe++;
-        } catch (repairError) {
-          errors.push({
-            userId: user.userId || "",
-            email: user.email || "",
-            phone: user.phone || "",
-            error: `Stripe subscription repair failed before GHL cleanup: ${repairError.message}`,
-          });
-          continue;
-        }
-      }
-
-      if (hasActiveAccess) {
-        continue;
-      }
-
-      try {
-        const contactId = await createOrUpdateContact({
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-        });
-
-        if (!contactId) {
-          noContact++;
-          continue;
-        }
-
-        const ok = await removeTag(contactId, "subscription_purchased");
-        if (ok) removed++;
-      } catch (e) {
-        errors.push({
-          userId: user.userId || "",
-          email: user.email || "",
-          phone: user.phone || "",
-          error: e.message,
-        });
-      }
-    }
-
-    return res.json({
-      message: "GHL subscription tag cleanup finished",
-      scanned,
-      removed,
-      repairedFromStripe,
-      noPhone,
-      noContact,
-      errors,
-    });
-  } catch (err) {
-    console.error("❌ GHL subscription tag cleanup error:", err.message);
-    return res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-});
-
-// ✅ ONE-TIME: sync all DB users into GHL contacts
-router.post("/ghl/sync-all-users", auth, onlyAdmin, async (_req, res) => {
-  try {
-    const users = await User.find({}).select("_id userId name email phone");
-
-    let scanned = 0;
-    let skippedNoPhone = 0;
-    let synced = 0;
-    const errors = [];
-
-    for (const user of users) {
-      scanned++;
-
-      if (!user.phone || !String(user.phone).trim()) {
-        skippedNoPhone++;
-        continue;
-      }
-
-      try {
-        const contactId = await createOrUpdateContact({
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-        });
-
-        if (contactId) {
-          synced++;
-        } else {
-          errors.push({
-            userId: user.userId || "",
-            email: user.email || "",
-            phone: user.phone || "",
-            error: "No contactId returned from GHL",
-          });
-        }
-      } catch (e) {
-        errors.push({
-          userId: user.userId || "",
-          email: user.email || "",
-          phone: user.phone || "",
-          error: e.message,
-        });
-      }
-    }
-
-    return res.json({
-      message: "GHL full sync finished",
-      scanned,
-      synced,
-      skippedNoPhone,
-      errors,
-    });
-  } catch (err) {
-    console.error("❌ GHL full sync error:", err.message);
-    return res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-});
 /* ───────────────── BOOKINGS ───────────────── */
 
 // ✅ GET All Bookings
@@ -2540,59 +2356,6 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
           },
         }
       );
-    }
-
-    // GHL SMS automation hooks
-    try {
-      const normalizedStatus = String(status || "").toLowerCase();
-      const u = await User.findOne({ userId: booking.userId });
-
-      const contactId = await createOrUpdateContact({
-        name: booking.name || u?.name,
-        email: booking.email || u?.email,
-        phone: booking.phone || u?.phone,
-      });
-
-      if (normalizedStatus === "confirmed") {
-        const pretty = formatBookingDateTime(booking.date);
-
-        await updateContactFields(contactId, [
-          {
-            key: "booking_datetime_pretty",
-            value: pretty,
-          },
-        ]);
-
-        await addTag(contactId, "booking_confirmed");
-      }
-
-      if (normalizedStatus === "completed") {
-        const pretty = formatBookingDateTime(booking.date);
-
-        await updateContactFields(contactId, [
-          {
-            key: "booking_datetime_pretty",
-            value: pretty,
-          },
-        ]);
-
-        await addTag(contactId, "booking_completed");
-      }
-
-      if (normalizedStatus === "canceled") {
-        const pretty = formatBookingDateTime(booking.date);
-
-        await updateContactFields(contactId, [
-          {
-            key: "booking_datetime_pretty",
-            value: pretty,
-          },
-        ]);
-
-        await addTag(contactId, "booking_cancelled");
-      }
-    } catch (e) {
-      console.log("GHL booking status automation error:", e.message);
     }
 
     // Free capacity if newly canceled

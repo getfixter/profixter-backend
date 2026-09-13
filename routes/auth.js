@@ -5,8 +5,6 @@ const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const RepAttribution = require("../models/RepAttribution");
 const { normalizeEmail, normalizePhone, normalizePhoneE164 } = require("../utils/identity");
-const { syncGhlConversion } = require("../utils/ghlSync");
-const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
 const {
@@ -240,15 +238,25 @@ async function markLeadRegistered(user) {
 
     await match.save();
 
-    try {
-      await syncGhlConversion({
-        repAttributionId: match._id,
-        event: "registered",
-      });
-    } catch (syncErr) {
-      console.error("❌ GHL registered sync failed:", syncErr.message);
-    }
-
+    /*
+     * The conversion is recorded HERE, in ProFixter, and nowhere else.
+     *
+     * This used to also push the conversion back into GoHighLevel, moving an
+     * opportunity through a pipeline. That is gone: a registered ProFixter
+     * customer no longer touches GHL for any reason, including attribution.
+     *
+     * Nothing about rep tracking is lost. The RepAttribution record above is
+     * the source of truth and is saved before this point - status, timestamps
+     * and commission are all computed and persisted in our own database. The
+     * GHL half was only ever a mirror, and it had never once succeeded: every
+     * one of the 31,180 attribution records still has a null ghlOpportunityId,
+     * because the opportunity lookup always threw and the error was caught and
+     * logged. Removing it changes no numbers.
+     *
+     * The lead record in GHL is left exactly as it is. A prospect who later
+     * becomes a customer keeps their history over there; we simply stop
+     * writing to it.
+     */
     console.log("✅ Lead marked as registered:", {
       id: String(match._id),
       email: match.emailRaw,
@@ -387,23 +395,18 @@ router.post("/register", async (req, res) => {
     await user.save();
     await markLeadRegistered(user);
 
-    // Sync customer into GHL in background
-    (async () => {
-      try {
-        const contactId = await createOrUpdateContact({
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-        });
-
-        await addTag(contactId, "website_registered");
-
-        console.log("✅ GHL contact synced:", contactId);
-      } catch (err) {
-        console.error("❌ GHL sync failed:", err.message);
-      }
-    })();
-
+    /*
+     * A NEW CUSTOMER IS NOT COPIED INTO GOHIGHLEVEL ANY MORE.
+     *
+     * This block used to create a GHL contact from the name, email and phone
+     * somebody had just typed into ProFixter, then tag it website_registered -
+     * which is what made GHL send the welcome text. Registered customers now
+     * live in ProFixter's database and are reached by ProFixter's own email
+     * and, once it is switched on, ProFixter's own Twilio number.
+     *
+     * GHL keeps doing the one job it is genuinely good at: independent cold
+     * leads and prospects that have nothing to do with an account here.
+     */
     try {
       await mail.sendTx(
         "welcome",

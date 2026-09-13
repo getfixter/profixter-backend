@@ -14,14 +14,7 @@ const {
   evaluate24HourReminder,
   evaluate60MinuteReminder,
   evaluateFixterCloseReminder,
-  evaluateTagRetry,
 } = require("../utils/bookingReminderPolicy");
-const {
-  createOrUpdateContact,
-  updateContactFields,
-  formatBookingDateTime,
-  addTag,
-} = require("../utils/ghlContact");
 /*
  * The native SMS passes below have referenced these three since they were
  * written, but the requires were never added, so every cycle ended in
@@ -62,7 +55,6 @@ const REMINDERS = {
   "24h": {
     label: "24h",
     templateKey: "booking_reminder_24h",
-    ghlTag: "reminder_24h",
     smsKind: "24h",
     smsType: "BOOKING_REMINDER_24H",
     leadMs: REMINDER_24H_LEAD_MS,
@@ -73,9 +65,6 @@ const REMINDERS = {
     attemptsField: "reminder24hAttempts",
     lastErrorField: "reminder24hLastError",
     messageIdField: "reminder24hMessageId",
-    tagField: "reminder24hTagAt",
-    tagAttemptsField: "reminder24hTagAttempts",
-    tagErrorField: "reminder24hTagError",
     evaluate: evaluate24HourReminder,
     /*
      * Selection bounds. The upper bound is "due", the lower bound is "still
@@ -100,7 +89,6 @@ const REMINDERS = {
   "60m": {
     label: "60m",
     templateKey: "booking_reminder_60m",
-    ghlTag: "reminder_60m",
     smsKind: "60m",
     smsType: "BOOKING_REMINDER_60M",
     leadMs: REMINDER_60M_LEAD_MS,
@@ -111,9 +99,6 @@ const REMINDERS = {
     attemptsField: "reminder60mAttempts",
     lastErrorField: "reminder60mLastError",
     messageIdField: "reminder60mMessageId",
-    tagField: "reminder60mTagAt",
-    tagAttemptsField: "reminder60mTagAttempts",
-    tagErrorField: "reminder60mTagError",
     evaluate: evaluate60MinuteReminder,
     dateRange: (now) => ({
       $gte: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS),
@@ -196,125 +181,19 @@ async function sendReminderEmail({ templateKey, booking, vars }) {
   });
 }
 
-async function sendReminderSmsTag({ booking, tag }) {
-  const user = await User.findOne({ userId: booking.userId }).lean();
-  const contactId = await createOrUpdateContact({
-    name: booking.name || user?.name,
-    email: booking.email || user?.email,
-    phone: booking.phone || user?.phone,
-  });
-  if (!contactId) {
-    throw new Error(`Could not sync GHL contact for booking ${booking._id}`);
-  }
-  const pretty = formatBookingDateTime(booking.date);
-  const updated = await updateContactFields(contactId, [
-    { key: "booking_datetime_pretty", value: pretty },
-  ]);
-  if (!updated) {
-    throw new Error(`Failed updating GHL fields for booking ${booking._id}`);
-  }
-  if (!(await addTag(contactId, tag))) {
-    throw new Error(`Failed adding GHL tag ${tag} for booking ${booking._id}`);
-  }
-}
-
-/**
- * Apply the CRM tag that triggers the SMS, and record that channel separately.
+/*
+ * The GHL tag helpers used to live here: sendReminderSmsTag, applyReminderTag
+ * and the tag-only retry sweep that chased failures on the next cycle.
  *
- * Returns rather than throws: the email has already been delivered by the time
- * this runs, and an exception here would roll the caller into a retry that
- * resends it. A failure is recorded and left for the tag-only sweep.
- */
-async function applyReminderTag(config, booking, stats) {
-  /*
-   * Claim by writing the completion field up front, then undo it if the call
-   * fails. Only one worker can win that conditional update, so four EB
-   * instances racing the same booking produce one tag and therefore one SMS.
-   * Incrementing a counter first and then calling out would let every worker
-   * through, which is exactly what the concurrency test caught.
-   *
-   * The residual risk is a crash between the claim and the CRM call, which
-   * leaves the tag recorded but unsent. The email has already gone by then, and
-   * an unsent text is a smaller harm than a duplicated one, so this errs that
-   * way deliberately.
-   */
-  const claim = await Booking.updateOne(
-    { _id: booking._id, [config.tagField]: null },
-    {
-      $set: { [config.tagField]: new Date() },
-      $inc: { [config.tagAttemptsField]: 1 },
-    }
-  );
-  if (claim.modifiedCount !== 1) return false;
-
-  try {
-    await sendReminderSmsTag({ booking, tag: config.ghlTag });
-    await Booking.updateOne(
-      { _id: booking._id },
-      { $set: { [config.tagErrorField]: "" } }
-    );
-    stats.tagged += 1;
-    console.log(
-      JSON.stringify({
-        event: "reminder_tag_applied",
-        reminder: config.label,
-        tag: config.ghlTag,
-        ...bookingLogShape(booking),
-      })
-    );
-    return true;
-  } catch (error) {
-    // Release the claim so a later cycle retries the tag, without touching the
-    // email, which has already been delivered.
-    await Booking.updateOne(
-      { _id: booking._id },
-      {
-        $set: {
-          [config.tagField]: null,
-          [config.tagErrorField]: String(error?.message || "").slice(0, 300),
-        },
-      }
-    );
-    stats.tagFailed += 1;
-    console.warn(
-      JSON.stringify({
-        event: "reminder_tag_failed",
-        reminder: config.label,
-        tag: config.ghlTag,
-        ...bookingLogShape(booking),
-        error: errorDetails(error),
-      })
-    );
-    return false;
-  }
-}
-
-/**
- * Retry the SMS tag for reminders whose email already went out.
+ * They are gone with the rest of the operational GoHighLevel integration. A
+ * reminder now leaves ProFixter twice and only twice - once by email, once by
+ * our own Twilio number - and neither of those needs a CRM tag to happen.
  *
- * This is the pass that makes the two channels genuinely independent. Without
- * it, a CRM outage would mean the customer got the email and never the text,
- * with nothing in the system that could put that right.
+ * The reminder*TagAt / TagAttempts / TagError fields are deliberately left on
+ * the Booking schema for now. Nothing reads or writes them any more, and
+ * dropping columns that thousands of historical documents still carry is a
+ * migration with no benefit attached to it.
  */
-async function retryPendingTags(config, now, stats) {
-  const candidates = await Booking.find({
-    [config.sentField]: { $ne: null },
-    [config.tagField]: null,
-    date: { $gt: new Date(now.getTime() - REMINDER_60M_GRACE_AFTER_START_MS) },
-    [config.tagAttemptsField]: { $lt: REMINDER_MAX_ATTEMPTS },
-  })
-    .select(SELECT_FIELDS + ` ${config.tagField} ${config.tagAttemptsField}`)
-    .limit(50)
-    .lean();
-
-  for (const booking of candidates) {
-    const verdict = evaluateTagRetry(booking, config.label, now);
-    if (!verdict.eligible) continue;
-    await applyReminderTag(config, booking, stats);
-    await sleep(80);
-  }
-}
-
 
 /**
  * The native reminder text.
@@ -545,10 +424,6 @@ async function processReminder(kind, now, stats) {
         })
       );
 
-      // The tag is what makes the SMS go out, so it is tracked in its own
-      // fields. Failing it must never undo or repeat the email; the tag-only
-      // sweep below retries it on the next cycle.
-      await applyReminderTag(config, booking, stats);
       await sleep(80);
     } catch (error) {
       // Release the lock so the next cycle retries, and keep the incremented
@@ -576,7 +451,6 @@ async function processReminder(kind, now, stats) {
   }
 
   await markAbandoned(config, now, stats);
-  await retryPendingTags(config, now, stats);
   await retryPendingSms(config, now, stats);
 }
 

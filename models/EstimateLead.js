@@ -75,9 +75,14 @@ const EstimateLeadSchema = new mongoose.Schema(
       default: "new",
     },
 
-    // ── Future GHL integration ─────────────────────────────────────────────
-    ghlContactId: { type: String, default: null },
-    ghlSyncedAt:  { type: Date,   default: null },
+    /*
+     * The "future GHL integration" placeholders are gone.
+     *
+     * They were declared and never written by any code path, and that future
+     * has now been decided against: registered customers and their activity
+     * stay in ProFixter. Three EstimateLead documents exist and none ever
+     * carried a value here.
+     */
   },
   { timestamps: true }
 );

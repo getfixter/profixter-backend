@@ -122,13 +122,6 @@ const upload = multer({
   },
 });
 
-const {
-  createOrUpdateContact,
-  updateContactFields,
-  formatBookingDateTime,
-  addTag,
-} = require("../utils/ghlContact");
-
 const safeName = (name) =>
   name
     .normalize("NFKD")
@@ -598,28 +591,6 @@ async function cancelOrDelete(req, res) {
           actorPosition: "",
         },
       });
-    }
-
-    // GHL SMS automation hooks
-    try {
-      const contactId = await createOrUpdateContact({
-        name: booking.name || me?.name,
-        email: booking.email || me?.email,
-        phone: booking.phone || me?.phone,
-      });
-
-      const pretty = formatBookingDateTime(booking.date);
-
-      await updateContactFields(contactId, [
-        {
-          key: "booking_datetime_pretty",
-          value: pretty,
-        },
-      ]);
-
-      await addTag(contactId, "booking_cancelled");
-    } catch (e) {
-      console.log("GHL booking_cancelled error:", e.message);
     }
 
     // emails on cancel (best effort)
@@ -1980,28 +1951,6 @@ router.post(
         } catch (e) {
           console.error("attachBookingToClaim failed:", e.message);
         }
-      }
-
-      // GHL SMS automation hooks
-      try {
-        const contactId = await createOrUpdateContact({
-          name: me.name,
-          email: me.email,
-          phone: me.phone,
-        });
-
-        const pretty = formatBookingDateTime(booking.date);
-
-        await updateContactFields(contactId, [
-          {
-            key: "booking_datetime_pretty",
-            value: pretty,
-          },
-        ]);
-
-        await addTag(contactId, "booking_created");
-      } catch (e) {
-        console.log("GHL booking_created error:", e.message);
       }
 
       // emails (best effort)

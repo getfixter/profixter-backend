@@ -33,10 +33,8 @@ const {
   isFixterTipCheckoutSession,
   tipRecordFromCheckoutSession,
 } = require("../utils/fixterTips");
-const { syncGhlConversion } = require("../utils/ghlSync");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
-const { createOrUpdateContact, addTag } = require("../utils/ghlContact");
 const {
   cancelBookingWithReservation,
   promoteHeldReservationForBooking,
@@ -231,14 +229,15 @@ async function markLeadSubscribed({ user, subscription, plan, billingCycle, valu
 
     await match.save();
 
-    try {
-      await syncGhlConversion({
-        repAttributionId: match._id,
-        event: "subscribed",
-      });
-    } catch (syncErr) {
-      console.error("GHL subscribed sync failed:", syncErr.message);
-    }
+    /*
+     * The subscription conversion stops here, in ProFixter's database.
+     *
+     * commissionAmount, subscriptionValue and the status transition are all
+     * computed and saved above. What used to follow was a push of that same
+     * fact into a GoHighLevel opportunity - a mirror that never worked (no
+     * attribution record has ever held a ghlOpportunityId) and that a
+     * registered customer should not be generating in the first place.
+     */
   } catch (error) {
     console.error("markLeadSubscribed failed:", error.message);
   }
@@ -1047,19 +1046,6 @@ async function handleOneTimeCheckoutCompleted(session) {
     await entitlement.save();
   }
 
-  try {
-    const contactId = await createOrUpdateContact({
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-    });
-    if (contactId) {
-      await addTag(contactId, "one_time_visit_paid");
-    }
-  } catch (error) {
-    console.error("One-time GHL sync failed:", error.message);
-  }
-
   await sendOneTimePaymentEmails({ booking, user, entitlement, session });
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
@@ -1313,17 +1299,6 @@ async function handleFullDayCheckoutCompleted(session) {
   if (entitlement) {
     applyOneTimePaymentSuccessToEntitlement(entitlement, session, booking._id);
     await entitlement.save();
-  }
-
-  try {
-    const contactId = await createOrUpdateContact({
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-    });
-    if (contactId) await addTag(contactId, "full_day_visit_paid");
-  } catch (error) {
-    console.error("Full Day GHL sync failed:", error.message);
   }
 
   await sendFullDayPaidEmails({ booking, user, entitlement, session });
@@ -1659,19 +1634,6 @@ async function handleCheckoutCompleted(session, eventId) {
     billingCycle,
     value,
   });
-
-  try {
-    const contactId = await createOrUpdateContact({
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-    });
-    if (contactId) {
-      await addTag(contactId, "subscription_purchased");
-    }
-  } catch (error) {
-    console.error("Stripe purchase GHL sync failed:", error.message);
-  }
 
   const prevLP = user.lastPurchase || {};
   const confirmationToken = crypto.randomUUID();
