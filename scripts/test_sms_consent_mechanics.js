@@ -125,6 +125,7 @@ async function main() {
   const User = require("../models/User");
   const SmsOptOut = require("../models/SmsOptOut");
   const { checkEligibility, accountAllows } = require("../utils/sms/smsEligibility");
+  const { consentResetForPhoneChange } = require("../utils/sms/consentOnPhoneChange");
   const smsTypes = require("../utils/sms/smsTypes");
   const smsConfig = require("../utils/sms/smsConfig");
   const webhook = require("../routes/smsWebhook");
@@ -1012,6 +1013,133 @@ async function main() {
     assert.ok(
       adminSrc.includes('router.get("/users/:id/sms-consent"'),
       "the read-only consent view is missing"
+    );
+  });
+
+  /* ================================================================== */
+  section("Changing the phone number does not carry consent to it");
+
+  await test("a genuinely different number clears both consents", () => {
+    const verdict = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "+16315550199",
+      smsPreferences: { transactionalEnabled: true, marketingEnabled: true },
+    });
+    assert.strictEqual(verdict.reset, true);
+    assert.strictEqual(verdict.clearedTransactional, true);
+    assert.strictEqual(verdict.clearedMarketing, true);
+    assert.deepStrictEqual(Object.keys(verdict.unset).sort(), [
+      "smsPreferences.marketingEnabled",
+      "smsPreferences.transactionalEnabled",
+    ]);
+  });
+
+  await test("reformatting the SAME number destroys nothing", () => {
+    /*
+     * The case that matters most in practice. An admin tidying "(631) 555-0147"
+     * into "+16315550147" has not moved the customer anywhere, and a rule that
+     * unsubscribed them for it would be worse than the bug it replaced.
+     */
+    for (const written of ["(631) 555-0147", "631-555-0147", "631.555.0147", " 6315550147 ", "+1 631 555 0147"]) {
+      const verdict = consentResetForPhoneChange({
+        previousPhone: "+16315550147",
+        nextPhone: written,
+        smsPreferences: { transactionalEnabled: true, marketingEnabled: true },
+      });
+      assert.strictEqual(verdict.reset, false, `${written} should normalise to the same number`);
+      assert.deepStrictEqual(verdict.unset, {});
+    }
+  });
+
+  await test("only the consent that was actually held is reported cleared", () => {
+    const serviceOnly = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "+16315550199",
+      smsPreferences: { transactionalEnabled: true },
+    });
+    assert.strictEqual(serviceOnly.reset, true);
+    assert.strictEqual(serviceOnly.clearedTransactional, true);
+    assert.strictEqual(serviceOnly.clearedMarketing, false);
+
+    const marketingOnly = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "+16315550199",
+      smsPreferences: { marketingEnabled: true },
+    });
+    assert.strictEqual(marketingOnly.reset, true);
+    assert.strictEqual(marketingOnly.clearedTransactional, false);
+    assert.strictEqual(marketingOnly.clearedMarketing, true);
+  });
+
+  await test("an account holding no consent is left completely alone", () => {
+    for (const prefs of [
+      {},
+      { transactionalEnabled: false, marketingEnabled: false },
+      { transactionalEnabled: undefined },
+      null,
+    ]) {
+      const verdict = consentResetForPhoneChange({
+        previousPhone: "+16315550147",
+        nextPhone: "+16315550199",
+        smsPreferences: prefs,
+      });
+      assert.strictEqual(verdict.reset, false);
+      assert.deepStrictEqual(verdict.unset, {});
+    }
+  });
+
+  await test("clearing the number entirely counts as a change", () => {
+    const verdict = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "",
+      smsPreferences: { transactionalEnabled: true },
+    });
+    assert.strictEqual(verdict.reset, true);
+  });
+
+  await test("it unsets rather than setting false - the new number was never asked", () => {
+    /*
+     * false means a person switched it off; absent means nobody put the
+     * question to them. For a number that has just arrived, absent is the true
+     * one, and the difference is what keeps "worth asking" separable from
+     * "already said no".
+     */
+    const verdict = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "+16315550199",
+      smsPreferences: { transactionalEnabled: true, marketingEnabled: true },
+    });
+    for (const value of Object.values(verdict.unset)) {
+      assert.strictEqual(value, "", "an $unset payload uses empty-string values");
+    }
+  });
+
+  await test("the timestamps and sources are never touched", () => {
+    const verdict = consentResetForPhoneChange({
+      previousPhone: "+16315550147",
+      nextPhone: "+16315550199",
+      smsPreferences: { transactionalEnabled: true, marketingEnabled: true },
+    });
+    const touched = Object.keys(verdict.unset).join(" ");
+    for (const field of [
+      "transactionalConsentAt",
+      "transactionalConsentSource",
+      "marketingConsentAt",
+      "marketingConsentSource",
+    ]) {
+      assert.ok(!touched.includes(field), `${field} is evidence and must survive the reset`);
+    }
+  });
+
+  await test("the admin route actually applies it", () => {
+    const source = readSource(path.join(__dirname, "..", "routes", "admin.js"));
+    assert.ok(
+      source.includes("consentResetForPhoneChange"),
+      "the admin user-update route must consult the rule, not reimplement it"
+    );
+    assert.ok(
+      /\$unset\s*=\s*unsetOnPhoneChange|write\.\$unset/.test(source),
+      "the verdict has to reach the database write"
     );
   });
 

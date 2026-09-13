@@ -7,7 +7,8 @@ const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const smsNotify = require("../utils/sms/smsNotifications");
 const { optOutFor } = require("../utils/sms/smsEligibility");
-const { toE164 } = require("../utils/sms/smsPhone");
+const { toE164, maskPhone } = require("../utils/sms/smsPhone");
+const { consentResetForPhoneChange } = require("../utils/sms/consentOnPhoneChange");
 const { normalizePhoneE164 } = require("../utils/identity");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
@@ -1364,15 +1365,68 @@ router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
     const existing = await User.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ message: "User not found" });
 
+    /*
+     * CONSENT DOES NOT TRAVEL WITH THE ACCOUNT. IT BELONGS TO THE NUMBER.
+     *
+     * A customer ticked "text me about my visits" about the handset in their
+     * hand. Move the account to a different number and that tick is evidence
+     * about a phone we are no longer dialling: the new number never agreed to
+     * anything, and nobody at that number was asked. Leaving the flags set
+     * would make it eligible purely because its predecessor consented, which is
+     * the same defect as inferring consent from a phone field - the thing the
+     * A2P 30923 work existed to remove - only harder to spot, because the
+     * record still looks like a real opt-in.
+     *
+     * So a genuine change of number clears both eligibility flags.
+     *
+     * FORMATTING IS NOT A CHANGE. "(631) 555-0147" and "631-555-0147" and
+     * "+16315550147" are one number, and an admin tidying up how it is written
+     * must not silently unsubscribe somebody. The comparison is therefore made
+     * on the normalised E.164 on both sides, never on the raw strings.
+     *
+     * The timestamps and sources are deliberately left alone. They are the
+     * historical evidence that this account did consent, when, and through
+     * which surface; that remains true and is worth keeping. What changes is
+     * eligibility, and it is unset rather than set false because the honest
+     * description of the new number is "never asked", not "asked and declined"
+     * - the model keeps those two states distinguishable on purpose.
+     */
+    let unsetOnPhoneChange = {};
+    if (updates.phone !== undefined) {
+      const verdict = consentResetForPhoneChange({
+        previousPhone: existing.phone,
+        nextPhone: updates.phone,
+        smsPreferences: existing.smsPreferences,
+      });
+      unsetOnPhoneChange = verdict.unset;
+      if (verdict.reset) {
+        console.log(
+          JSON.stringify({
+            event: "sms_consent_reset_phone_changed",
+            userId: String(existing._id),
+            from: maskPhone(verdict.previous),
+            to: maskPhone(verdict.next),
+            clearedTransactional: verdict.clearedTransactional,
+            clearedMarketing: verdict.clearedMarketing,
+          })
+        );
+      }
+    }
+
     const nextUser = { ...existing, ...updates };
-    await User.updateOne(
-      { _id: existing._id },
-      { $set: { ...updates, search: buildUserSearchFields(nextUser) } },
-      { runValidators: false }
-    );
+    const write = { $set: { ...updates, search: buildUserSearchFields(nextUser) } };
+    if (Object.keys(unsetOnPhoneChange).length) write.$unset = unsetOnPhoneChange;
+
+    await User.updateOne({ _id: existing._id }, write, { runValidators: false });
 
     const user = await User.findById(existing._id).select("-password").lean();
-    res.json({ message: "User updated", user });
+    res.json({
+      message: Object.keys(unsetOnPhoneChange).length
+        ? "User updated. SMS consent was cleared because the phone number changed."
+        : "User updated",
+      smsConsentReset: Object.keys(unsetOnPhoneChange).length > 0,
+      user,
+    });
   } catch (err) {
     console.error("❌ Edit user error:", err);
     res.status(500).json({ message: "Server error" });
