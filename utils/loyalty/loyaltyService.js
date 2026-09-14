@@ -2,7 +2,6 @@ const GiftMembership = require("../../models/GiftMembership");
 const LoyaltyGrant = require("../../models/LoyaltyGrant");
 const Subscription = require("../../models/Subscription");
 const User = require("../../models/User");
-const mail = require("../emailService");
 const { getFullDayVisitSettings } = require("../fullDayVisitSettings");
 const {
   ensureVisitEntitlementIndexesOnce,
@@ -19,7 +18,7 @@ const {
 } = require("./loyaltyRules");
 const { recordCycle, seedGiftCycles, trackState, reverseCycleByInvoice } = require("./loyaltyLedger");
 const { evaluateMilestones, verifyFreeMonth } = require("./loyaltyRewards");
-const { describeReward, planLabel } = require("./loyaltyProgress");
+const { congratulate } = require("./loyaltyNotify");
 
 /**
  * The one entry point the Stripe webhook calls.
@@ -126,58 +125,6 @@ async function seedFromGiftsIfFirstCycle({ user, subscription, periodStart, env 
     });
   }
   return seeded;
-}
-
-/** Tell the customer, once per grant, and never at the cost of the webhook. */
-async function notifyGrant({ user, subscription, grant }) {
-  if (!grant || grant.notifiedAt) return;
-  if (["failed"].includes(grant.status)) return;
-
-  const described = describeReward({
-    kind: grant.rewardKind,
-    rewardPlan: grant.rewardPlan,
-    cycles: grant.cycles,
-  });
-
-  try {
-    await mail.sendTx(
-      "loyalty_benefit_unlocked",
-      user.email,
-      {
-        name: user.name || String(user.email || "").split("@")[0],
-        rewardHeadline: described?.headline || "Your Loyalty Benefit",
-        rewardDetail: described?.detail || "",
-        plan: planLabel(subscription.subscriptionType),
-        address: subscription.addressSnapshot
-          ? `${subscription.addressSnapshot.line1}, ${subscription.addressSnapshot.city}, ${subscription.addressSnapshot.state}`
-          : null,
-        throughDate: grant.effectiveUntil
-          ? mail.formatNYCTime(new Date(grant.effectiveUntil).toISOString())
-          : null,
-        milestone: grant.milestone,
-      },
-      {
-        bccAdmin: false,
-        logContext: {
-          userId: user._id,
-          customerName: user.name || "",
-          customerEmail: user.email,
-          recipientName: user.name || "",
-          recipientEmail: user.email,
-          emailType: "billing",
-          source: "loyaltyBenefits",
-        },
-      }
-    );
-    grant.notifiedAt = new Date();
-    await grant.save();
-  } catch (error) {
-    // A mail failure must not cost the customer the benefit they earned.
-    log("warn", "loyalty_benefit_email_failed", {
-      loyaltyGrantId: String(grant._id),
-      message: error?.message,
-    });
-  }
 }
 
 /**
@@ -298,7 +245,7 @@ async function recordRenewal({ invoice, stripeSubscription, env = process.env })
     });
 
     for (const grant of grants) {
-      await notifyGrant({ user, subscription, grant });
+      await congratulate({ grant, user, subscription });
     }
 
     return cycle;
@@ -354,7 +301,6 @@ async function grantsNeedingReview() {
 
 module.exports = {
   grantsNeedingReview,
-  notifyGrant,
   recordRenewal,
   reverseFromCharge,
   reverseRenewal,

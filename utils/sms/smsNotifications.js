@@ -366,6 +366,53 @@ async function notifyMembershipCancelled(subscription, user = null, source = "st
  * This is the ONLY payment-related text. There is deliberately no notice of a
  * successful renewal, an upcoming charge or a card about to be billed.
  */
+/**
+ * Which congratulation a grant earns.
+ *
+ * Derived from the grant itself rather than passed in, so the text sent and the
+ * benefit granted cannot disagree about what was won.
+ */
+const LOYALTY_TYPE = {
+  "tier_upgrade:3": "LOYALTY_UPGRADE_UNLOCKED_3",
+  "tier_upgrade:6": "LOYALTY_UPGRADE_UNLOCKED_6",
+  "loyalty_full_day:3": "LOYALTY_FULL_DAY_UNLOCKED_3",
+  "loyalty_full_day:6": "LOYALTY_FULL_DAY_UNLOCKED_6",
+  "free_month:12": "LOYALTY_FREE_MONTH_UNLOCKED",
+};
+
+function loyaltyTypeFor(grant) {
+  return LOYALTY_TYPE[`${grant?.rewardKind}:${grant?.milestone}`] || null;
+}
+
+/**
+ * A Loyalty Benefit was granted.
+ *
+ * Only ever called after the grant exists and succeeded, so nobody is
+ * congratulated for a benefit they do not hold. The key is the grant, which is
+ * already unique per milestone per property per unbroken run of membership, so
+ * a webhook retry, a second EB instance and a later retry of a failed send all
+ * collide on one message.
+ *
+ * Best-effort like every other trigger here: a text that cannot be sent must
+ * never be able to unwind a reward.
+ */
+async function notifyLoyaltyRewardUnlocked(grant, user = null, vars = {}, source = "loyaltyBenefits") {
+  return attempt("loyalty_reward_unlocked", async () => {
+    const notificationType = loyaltyTypeFor(grant);
+    if (!notificationType) {
+      return { ok: false, status: "skipped", reason: "unknown_loyalty_reward" };
+    }
+    return sendTransactionalSms({
+      notificationType,
+      dedupeKey: dedupe.loyaltyGrantKey(notificationType, grant),
+      user,
+      phone: user?.phone,
+      vars,
+      source,
+    });
+  });
+}
+
 async function notifyPaymentFailed(
   { invoiceId, subscription = null, user = null, source = "stripeWebhook" } = {}
 ) {
@@ -392,6 +439,7 @@ module.exports = {
   notifyBookingReminder,
   notifyBookingRescheduled,
   notifyFixterAssignment,
+  notifyLoyaltyRewardUnlocked,
   notifyMembershipCancellationScheduled,
   notifyMembershipCancelled,
   notifyMembershipChanged,

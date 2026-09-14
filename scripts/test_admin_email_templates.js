@@ -3,7 +3,7 @@
  *
  * THE ONE PROPERTY EVERYTHING ELSE DEPENDS ON
  *
- * With no override stored, all 37 registered templates must render exactly as
+ * With no override stored, all 41 registered templates must render exactly as
  * they did before this feature existed. Phase 2 adds an editor; it must not
  * change a single customer email merely by making one editable. That is
  * asserted first, byte for byte, against a snapshot taken from the code
@@ -97,7 +97,7 @@ async function main() {
     GOLDEN[key] = TEMPLATES[key](SAMPLE_EMAIL_VARS);
   }
 
-  await test("all 37 registered templates render byte-identically with no override", () => {
+  await test("all 41 registered templates render byte-identically with no override", () => {
     overrides.primeForTest({}, {});
     let compared = 0;
     for (const key of Object.keys(TEMPLATES)) {
@@ -106,7 +106,7 @@ async function main() {
       assert.strictEqual(now.html, GOLDEN[key].html, `${key} html`);
       compared += 1;
     }
-    assert.strictEqual(compared, 37);
+    assert.strictEqual(compared, 41);
   });
 
   await test("the override module is inert until something is saved", () => {

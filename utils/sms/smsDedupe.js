@@ -123,6 +123,19 @@ function invoiceKey(notificationType, invoiceId) {
   return `${part(notificationType)}:invoice_${part(invoiceId || "unknown")}`;
 }
 
+/**
+ * The key for a Loyalty congratulation.
+ *
+ * Scoped to the GRANT, which is already unique per milestone per property per
+ * unbroken run of membership — so the thing the customer is being congratulated
+ * about and the thing that stops them being congratulated twice are the same
+ * object. Nothing about the message is in the key, because a grant only ever
+ * produces one kind of good news.
+ */
+function loyaltyGrantKey(notificationType, grant) {
+  return `${part(notificationType)}:loyalty_grant_${part(grant?._id || grant?.id || "unknown")}`;
+}
+
 /** The key for an account-level notification. One per account, per event. */
 function userKey(notificationType, user, extra = "") {
   const id = part(user?._id || user?.id || user?.userId || "unknown");
@@ -150,6 +163,7 @@ module.exports = {
   bookingKey,
   campaignKey,
   invoiceKey,
+  loyaltyGrantKey,
   occurrenceOf,
   subscriptionKey,
   userKey,

@@ -179,20 +179,56 @@ const EMAIL_DEFINITIONS = {
 
   /* -------------------------- Loyalty Benefits ------------------------ */
   /*
-   * The reward headline is protected because without it the email says a
-   * benefit was unlocked without saying which one, and the whole value of the
-   * message is the specific thing they got.
+   * One entry per reward, matching the five templates.
+   *
+   * The plan name and the date are protected on the upgrades because an edit
+   * that dropped either would leave a customer told they have "complimentary
+   * benefits" without knowing which, or for how long. The Full Day protects its
+   * use-by date for the same reason, and the free month protects the renewal it
+   * applies to.
    */
-  loyalty_benefit_unlocked: {
-    label: "Loyalty Benefit unlocked",
-    preheader: "Your membership just unlocked a benefit.",
-    protectedTokens: ["rewardHeadline", "accountButton"],
+  loyalty_upgrade_month_3: {
+    label: "Loyalty: 3-month upgrade unlocked",
+    preheader: "Three months a member. Here's your first Loyalty Benefit.",
+    protectedTokens: ["rewardPlan", "accountButton"],
     tokens: (v) => ({
       ...membershipTokens(v),
-      rewardHeadline: String(v.rewardHeadline || ""),
-      rewardDetail: String(v.rewardDetail || ""),
+      rewardPlan: String(v.rewardPlan || ""),
+      currentPlan: String(v.currentPlan || ""),
       throughDate: when(v.throughDate),
-      milestone: String(v.milestone || ""),
+    }),
+  },
+  loyalty_upgrade_month_6: {
+    label: "Loyalty: 6-month upgrade unlocked",
+    preheader: "Six months a member. Your next benefit is twice the size.",
+    protectedTokens: ["rewardPlan", "accountButton"],
+    tokens: (v) => ({
+      ...membershipTokens(v),
+      rewardPlan: String(v.rewardPlan || ""),
+      currentPlan: String(v.currentPlan || ""),
+      throughDate: when(v.throughDate),
+    }),
+  },
+  loyalty_full_day_month_3: {
+    label: "Loyalty: extra Full Day unlocked",
+    preheader: "A whole extra day at your home, on top of your Elite benefits.",
+    protectedTokens: ["accountButton"],
+    tokens: (v) => ({ ...membershipTokens(v), useByDate: when(v.useByDate) }),
+  },
+  loyalty_full_day_month_6: {
+    label: "Loyalty: second extra Full Day unlocked",
+    preheader: "Your second extra Full Day, on top of your Elite benefits.",
+    protectedTokens: ["accountButton"],
+    tokens: (v) => ({ ...membershipTokens(v), useByDate: when(v.useByDate) }),
+  },
+  loyalty_free_month: {
+    label: "Loyalty: free month unlocked",
+    preheader: "A full year with Profixter. Your next renewal is free.",
+    protectedTokens: ["accountButton"],
+    tokens: (v) => ({
+      ...membershipTokens(v),
+      renewalDate: when(v.renewalDate),
+      currentPlan: String(v.currentPlan || ""),
     }),
   },
   loyalty_benefit_expiring: {

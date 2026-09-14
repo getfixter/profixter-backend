@@ -806,6 +806,248 @@ async function run() {
     );
   });
 
+  console.log("\n--- congratulations: once per channel, never before the benefit");
+
+  const notify = require("../utils/loyalty/loyaltyNotify");
+  const mail = require("../utils/emailService");
+  const smsNotify = require("../utils/sms/smsNotifications");
+
+  /** Swap the two senders for counters, and put them back afterwards. */
+  async function withSenders(behaviour, fn) {
+    const realMail = mail.sendTx;
+    const realSms = smsNotify.notifyLoyaltyRewardUnlocked;
+    const calls = { emails: [], texts: [] };
+
+    mail.sendTx = async (template, to, vars) => {
+      calls.emails.push({ template, to, vars });
+      if (behaviour.emailThrows) throw new Error("mail provider down");
+      return { ok: true };
+    };
+    smsNotify.notifyLoyaltyRewardUnlocked = async (grant, user, vars) => {
+      calls.texts.push({ grant, user, vars });
+      if (behaviour.smsErrors) return { ok: false, status: "error", reason: "twilio_timeout" };
+      if (behaviour.smsRefused) return { ok: false, status: "skipped", reason: "not_opted_in" };
+      return { ok: true, status: "sent" };
+    };
+
+    try {
+      await fn(calls);
+    } finally {
+      mail.sendTx = realMail;
+      smsNotify.notifyLoyaltyRewardUnlocked = realSms;
+    }
+    return calls;
+  }
+
+  async function grantFor(user, sub, overrides = {}) {
+    return LoyaltyGrant.create({
+      user: user._id,
+      userId: user.userId,
+      addressId: sub.addressId,
+      generation: 1,
+      milestone: 3,
+      rewardKind: "tier_upgrade",
+      rewardPlan: "plus",
+      cycles: 1,
+      status: "granted",
+      effectiveFrom: new Date(),
+      effectiveUntil: new Date(Date.now() + 30 * DAY),
+      grantedAt: new Date(),
+      ...overrides,
+    });
+  }
+
+  await test("a granted reward sends one email and one text", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    const calls = await withSenders({}, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    assert.equal(calls.emails.length, 1);
+    assert.equal(calls.texts.length, 1);
+    assert.equal(calls.emails[0].template, "loyalty_upgrade_month_3");
+    assert.equal(calls.emails[0].vars.rewardPlan, "Plus", "the plan comes from the grant");
+
+    const after = await LoyaltyGrant.findById(grant._id);
+    assert.ok(after.emailNotifiedAt, "email stamped");
+    assert.ok(after.smsNotifiedAt, "sms stamped");
+  });
+
+  await test("a webhook retry congratulates nobody twice", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    const calls = await withSenders({}, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+      await notify.congratulate({ grant, user, subscription: sub });
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    assert.equal(calls.emails.length, 1, "one email, not three");
+    assert.equal(calls.texts.length, 1, "one text, not three");
+  });
+
+  await test("two EB instances racing produce one of each", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    const calls = await withSenders({}, async () => {
+      await Promise.all(
+        Array.from({ length: 4 }, () => notify.congratulate({ grant, user, subscription: sub }))
+      );
+    });
+
+    assert.equal(calls.emails.length, 1);
+    assert.equal(calls.texts.length, 1);
+  });
+
+  /*
+   * The requirement in one test: a failed text must be retryable WITHOUT the
+   * email going out a second time.
+   */
+  await test("SMS failing leaves only SMS to retry - the email does not repeat", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    const first = await withSenders({ smsErrors: true }, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+    assert.equal(first.emails.length, 1, "email went");
+    assert.equal(first.texts.length, 1, "text attempted");
+
+    const mid = await LoyaltyGrant.findById(grant._id);
+    assert.ok(mid.emailNotifiedAt, "email stays stamped");
+    assert.equal(mid.smsNotifiedAt, null, "the failed text is released for retry");
+
+    const second = await withSenders({}, async () => {
+      await notify.congratulate({ grant: mid, user, subscription: sub });
+    });
+    assert.equal(second.emails.length, 0, "*** the email must NOT be sent again ***");
+    assert.equal(second.texts.length, 1, "only the text is retried");
+
+    const end = await LoyaltyGrant.findById(grant._id);
+    assert.ok(end.smsNotifiedAt, "and now it is stamped");
+  });
+
+  await test("email failing leaves only email to retry", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    await withSenders({ emailThrows: true }, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    const mid = await LoyaltyGrant.findById(grant._id);
+    assert.equal(mid.emailNotifiedAt, null, "released for retry");
+    assert.ok(mid.smsNotifiedAt, "the text still went and stays stamped");
+
+    const second = await withSenders({}, async () => {
+      await notify.congratulate({ grant: mid, user, subscription: sub });
+    });
+    assert.equal(second.emails.length, 1, "only the email is retried");
+    assert.equal(second.texts.length, 0, "*** the text must NOT be sent again ***");
+  });
+
+  /* A refusal is a decision, not a fault. Retrying it nightly would be noise. */
+  await test("a customer who has not opted in is not retried forever", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    await withSenders({ smsRefused: true }, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    const after = await LoyaltyGrant.findById(grant._id);
+    assert.ok(after.smsNotifiedAt, "a clean refusal keeps the stamp");
+  });
+
+  await test("a failed grant is never congratulated", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub, { status: "failed", failureReason: "test" });
+
+    const calls = await withSenders({}, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+    assert.equal(calls.emails.length, 0);
+    assert.equal(calls.texts.length, 0);
+  });
+
+  await test("the Full Day message carries the real use-by date", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "elite" });
+    const grant = await grantFor(user, sub, {
+      rewardKind: "loyalty_full_day",
+      rewardPlan: null,
+      cycles: null,
+    });
+    const expiresAt = new Date(Date.now() + 90 * DAY);
+    const entitlement = await VisitEntitlement.create({
+      user: user._id,
+      userId: user.userId,
+      addressId: sub.addressId,
+      kind: "full_day_visit",
+      source: "loyalty_benefit",
+      status: "paid",
+      priceCents: 0,
+      loyaltyGrantId: grant._id,
+      expiresAt,
+    });
+    grant.visitEntitlementId = entitlement._id;
+    await grant.save();
+
+    const calls = await withSenders({}, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    assert.equal(calls.emails[0].template, "loyalty_full_day_month_3");
+    assert.ok(calls.emails[0].vars.useByDate, "a real date, read off the entitlement");
+    assert.match(calls.emails[0].vars.useByDate, /\w/);
+  });
+
+  await test("the free-month message carries the renewal it applies to", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub, {
+      milestone: 12,
+      rewardKind: "free_month",
+      rewardPlan: null,
+      cycles: null,
+      effectiveUntil: null,
+    });
+
+    const calls = await withSenders({}, async () => {
+      await notify.congratulate({ grant, user, subscription: sub });
+    });
+
+    assert.equal(calls.emails[0].template, "loyalty_free_month");
+    assert.ok(calls.emails[0].vars.renewalDate, "the date comes from the billing period");
+    assert.equal(calls.emails[0].vars.currentPlan, "Basic");
+  });
+
+  await test("a notification failure never unwinds the reward", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await grantFor(user, sub);
+
+    await withSenders({ emailThrows: true, smsErrors: true }, async () => {
+      const result = await notify.congratulate({ grant, user, subscription: sub });
+      assert.ok(result, "it returns rather than throwing");
+    });
+
+    const after = await LoyaltyGrant.findById(grant._id);
+    assert.equal(after.status, "granted", "the benefit is untouched");
+    assert.equal(after.rewardPlan, "plus");
+  });
+
   console.log("\n--- multi-property members stay separate");
 
   await test("two properties earn independently", async () => {

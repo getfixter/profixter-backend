@@ -459,6 +459,66 @@ const TEMPLATES = {
     );
   },
 
+  /* -------------------------- Loyalty Benefits -------------------------- */
+  /*
+   * NO EMOJI HERE, AND IT IS NOT AN OVERSIGHT.
+   *
+   * One emoji anywhere in a body forces the whole message out of GSM-7 into
+   * UCS-2, which cuts a segment from 160 characters to 70. Every one of these
+   * would become two or three segments, and the celebration would cost triple
+   * to send. The same reason the arrival window above uses an ASCII hyphen
+   * rather than an en dash. The emails carry the warmth; these carry the news.
+   *
+   * All five stay inside one segment. The plan name and the dates come from the
+   * grant, so a text can never name a benefit the account does not hold.
+   */
+  LOYALTY_UPGRADE_UNLOCKED_3: ({ rewardPlan }) => {
+    const plan = clean(rewardPlan, 12) || "upgraded";
+    return (
+      `${BRAND}: you've unlocked complimentary ${plan} benefits for your next ` +
+      `membership month, at no extra cost. Already active. ${SITE}/account`
+    );
+  },
+
+  /* Two is the reward. It leads the sentence so it cannot be skimmed past. */
+  LOYALTY_UPGRADE_UNLOCKED_6: ({ rewardPlan }) => {
+    const plan = clean(rewardPlan, 12) || "upgraded";
+    return (
+      `${BRAND}: 2 months of complimentary ${plan} benefits are yours, at no ` +
+      `extra cost. Already active - nothing to do. ${SITE}/account`
+    );
+  },
+
+  /*
+   * "On top of the one Elite includes" is the whole message. Without it an
+   * Elite member reads this as a description of what they already had.
+   */
+  LOYALTY_FULL_DAY_UNLOCKED_3: ({ useByDate }) => {
+    const by = clean(useByDate, 16);
+    return (
+      `${BRAND}: you've earned an extra Full Day, on top of the one Elite ` +
+      `includes each month.${by ? ` Use it by ${by}.` : ""} ${SITE}/account`
+    );
+  },
+
+  LOYALTY_FULL_DAY_UNLOCKED_6: ({ useByDate }) => {
+    const by = clean(useByDate, 16);
+    return (
+      `${BRAND}: your second extra Full Day is yours, on top of the one Elite ` +
+      `includes each month.${by ? ` Use it by ${by}.` : ""} ${SITE}/account`
+    );
+  },
+
+  /* Never "coupon", never a code. A figure and a date, and nothing to do. */
+  LOYALTY_FREE_MONTH_UNLOCKED: ({ renewalDate }) => {
+    const on = clean(renewalDate, 16);
+    return (
+      `${BRAND}: a full year with us, so your next month is on us. Your ` +
+      `${on ? `${on} ` : "next "}renewal will be $0, automatically. ` +
+      `Nothing to do. ${SITE}/account`
+    );
+  },
+
   MEMBERSHIP_CHANGED: ({ planLabel, billingCycle }) => {
     const plan = clean(planLabel, 24);
     const cycle = clean(billingCycle, 12);

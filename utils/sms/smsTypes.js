@@ -181,6 +181,44 @@ const SMS_TYPES = {
     description: "A membership payment failed and needs attention.",
   },
 
+  /* -------------------------- Loyalty Benefits -------------------------- */
+  /*
+   * Transactional, and that is not a convenient label.
+   *
+   * These announce a change to what the customer's account is entitled to,
+   * which has already happened, on a benefit they earned by paying us. Nothing
+   * is being sold and there is no call to buy. Marketing consent is a separate
+   * switch and none of these read it.
+   *
+   * Not time-critical: a benefit that lasts a month or ninety days can wait for
+   * the daytime window rather than arriving at 3am.
+   */
+  LOYALTY_UPGRADE_UNLOCKED_3: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Three loyalty months earned one month of the plan above theirs.",
+  },
+  LOYALTY_UPGRADE_UNLOCKED_6: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Six loyalty months earned two months of the plan above theirs.",
+  },
+  LOYALTY_FULL_DAY_UNLOCKED_3: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Three loyalty months earned an Elite member an extra Full Day.",
+  },
+  LOYALTY_FULL_DAY_UNLOCKED_6: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Six loyalty months earned an Elite member a second extra Full Day.",
+  },
+  LOYALTY_FREE_MONTH_UNLOCKED: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Twelve loyalty months earned a free membership month.",
+  },
+
   /* --------------------------- The number itself ------------------------ */
   /**
    * The one-off answer to somebody who texted an unmonitored number.

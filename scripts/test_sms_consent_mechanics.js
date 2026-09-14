@@ -1002,6 +1002,19 @@ async function main() {
      * character against the current one before this hash was touched. Both
      * additions are transactional and neither can send while SMS_ENABLED is
      * off.
+     *
+     * Re-pinned once more for the five Loyalty Benefit congratulations, and
+     * this time SMS_ENABLED is true in production, so the discipline mattered
+     * more rather than less. The owner read and approved every one of the five
+     * bodies before they were written.
+     *
+     * The evidence, gathered rather than assumed: the committed file was
+     * rendered alongside the working copy with identical sample vars, across
+     * all thirty-one pre-existing types and every visit kind, and compared
+     * character by character. Thirty-one before, thirty-six after, five added,
+     * NONE removed and NONE modified. All five additions are transactional and
+     * none can reach a customer who has not affirmatively opted in to service
+     * texts.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1009,7 +1022,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "e2b78dc1bed601c237764e28b4e348dbf2f33c045fdb24ba31b4d701e24515a1",
+      "a50f4a864d5cd3e21bec548c8b250392d919c1bfcb571465267a09c3e213d8ba",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

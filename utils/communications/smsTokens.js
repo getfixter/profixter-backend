@@ -287,6 +287,65 @@ const DEFINITIONS = {
     },
   },
 
+  /*
+   * Loyalty congratulations, mirrored for the Admin editor.
+   *
+   * Each template here must render byte-identically to the code default in
+   * smsTemplates, which a test proves — so the words an admin edits are
+   * demonstrably the words a customer receives. The conditional fragments
+   * (a use-by date, a renewal date) are pre-composed in tokens() rather than
+   * expressed in the template, because the token language has no conditionals
+   * and a missing date must not leave a dangling sentence.
+   */
+  LOYALTY_UPGRADE_UNLOCKED_3: {
+    label: "Loyalty: 3-month upgrade unlocked",
+    template:
+      "{{brand}}: you've unlocked complimentary {{rewardPlan}} benefits for your next " +
+      "membership month, at no extra cost. Already active. {{site}}/account",
+    tokens: ({ rewardPlan }) => ({ rewardPlan: clean(rewardPlan, 12) || "upgraded" }),
+  },
+
+  LOYALTY_UPGRADE_UNLOCKED_6: {
+    label: "Loyalty: 6-month upgrade unlocked",
+    template:
+      "{{brand}}: 2 months of complimentary {{rewardPlan}} benefits are yours, at no " +
+      "extra cost. Already active - nothing to do. {{site}}/account",
+    tokens: ({ rewardPlan }) => ({ rewardPlan: clean(rewardPlan, 12) || "upgraded" }),
+  },
+
+  LOYALTY_FULL_DAY_UNLOCKED_3: {
+    label: "Loyalty: extra Full Day unlocked",
+    template:
+      "{{brand}}: you've earned an extra Full Day, on top of the one Elite " +
+      "includes each month.{{useBySentence}} {{site}}/account",
+    tokens: ({ useByDate }) => {
+      const by = clean(useByDate, 16);
+      return { useBySentence: by ? ` Use it by ${by}.` : "" };
+    },
+  },
+
+  LOYALTY_FULL_DAY_UNLOCKED_6: {
+    label: "Loyalty: second extra Full Day unlocked",
+    template:
+      "{{brand}}: your second extra Full Day is yours, on top of the one Elite " +
+      "includes each month.{{useBySentence}} {{site}}/account",
+    tokens: ({ useByDate }) => {
+      const by = clean(useByDate, 16);
+      return { useBySentence: by ? ` Use it by ${by}.` : "" };
+    },
+  },
+
+  LOYALTY_FREE_MONTH_UNLOCKED: {
+    label: "Loyalty: free month unlocked",
+    template:
+      "{{brand}}: a full year with us, so your next month is on us. Your " +
+      "{{renewalPrefix}}renewal will be $0, automatically. Nothing to do. {{site}}/account",
+    tokens: ({ renewalDate }) => {
+      const on = clean(renewalDate, 16);
+      return { renewalPrefix: on ? `${on} ` : "next " };
+    },
+  },
+
   MEMBERSHIP_CANCELLATION_SCHEDULED: {
     label: "Membership cancellation scheduled",
     template:
@@ -528,6 +587,10 @@ const SAMPLE_VARS = Object.keys(DEFINITIONS).reduce((acc, type) => {
     planLabel: "Premium",
     billingCycle: "monthly",
     accessUntil: new Date("2026-04-01T12:00:00.000Z"),
+    /* Loyalty sample data, so the Admin preview shows a real-looking reward. */
+    rewardPlan: "Premium",
+    useByDate: "Dec 13",
+    renewalDate: "Oct 14",
     body: "",
   };
   return acc;

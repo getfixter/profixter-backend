@@ -7,6 +7,7 @@ const VisitEntitlement = require("../models/VisitEntitlement");
 const mail = require("../utils/emailService");
 const { loyaltyActive } = require("../utils/loyalty/loyaltyConfig");
 const { describeReward } = require("../utils/loyalty/loyaltyProgress");
+const { congratulate } = require("../utils/loyalty/loyaltyNotify");
 
 /**
  * "Your Loyalty Benefit ends soon."
@@ -174,18 +175,57 @@ async function remindExpiringFullDays(now = new Date()) {
   return { considered: entitlements.length, sent };
 }
 
+/**
+ * Congratulations that never made it out.
+ *
+ * The send happens inline when the reward is granted, so this only ever finds
+ * the ones a transient failure left behind — a mail provider blip, a Twilio
+ * timeout. Each channel carries its own stamp, so a grant whose email went and
+ * whose text did not gets only the text retried; congratulate() re-claims per
+ * channel and the one already stamped is skipped.
+ *
+ * Bounded to a week. A congratulation a fortnight late is worse than none, and
+ * an unbounded sweep would keep re-reading every grant the programme ever made.
+ */
+async function retryMissedCongratulations(now = new Date()) {
+  const since = new Date(now.getTime() - 7 * DAY_MS);
+  const pending = await LoyaltyGrant.find({
+    grantedAt: { $gte: since },
+    status: { $ne: "failed" },
+    $or: [{ emailNotifiedAt: null }, { smsNotifiedAt: null }],
+  })
+    .limit(BATCH_LIMIT)
+    .lean();
+
+  let retried = 0;
+  for (const grant of pending) {
+    const user = await User.findById(grant.user);
+    if (!user) continue;
+    const subscription = await Subscription.findOne({
+      user: grant.user,
+      addressId: grant.addressId,
+    }).sort({ currentPeriodStart: -1, updatedAt: -1 });
+
+    const result = await congratulate({ grant, user, subscription });
+    if (result?.email?.sent || result?.sms?.sent) retried += 1;
+  }
+  return { considered: pending.length, retried };
+}
+
 async function runLoyaltyReminders(now = new Date()) {
   if (!loyaltyActive()) return { skipped: "program_inactive" };
 
   const upgrades = await remindExpiringUpgrades(now);
   const days = await remindExpiringFullDays(now);
+  const missed = await retryMissedCongratulations(now);
   const summary = {
     upgradesConsidered: upgrades.considered,
     upgradesSent: upgrades.sent,
     fullDaysConsidered: days.considered,
     fullDaysSent: days.sent,
+    congratulationsRetried: missed.retried,
   };
-  if (summary.upgradesSent || summary.fullDaysSent) {
+  if (summary.upgradesSent || summary.fullDaysSent || summary.congratulationsRetried) {
     log("info", "loyalty_reminders_completed", summary);
   }
   return summary;
@@ -217,6 +257,7 @@ module.exports = {
   TIER_UPGRADE_NOTICE_DAYS,
   remindExpiringFullDays,
   remindExpiringUpgrades,
+  retryMissedCongratulations,
   runLoyaltyReminders,
   startLoyaltyReminders,
 };

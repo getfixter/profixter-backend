@@ -474,48 +474,169 @@ function createCustomerEmailTemplates({
     },
 
     /*
-     * A Loyalty Benefit has been unlocked.
+     * THE FIVE CONGRATULATIONS, ONE PER REWARD.
      *
-     * The headline is the reward itself, not the milestone that produced it: a
-     * customer cares that they have two months of complimentary Premium, not
-     * that they completed cycle six. The plan they pay for is stated plainly in
-     * the same breath, because the single most likely worry on reading this is
-     * "have you changed what I am being charged".
+     * Deliberately five templates rather than one with a variable in it. They
+     * are five different pieces of good news — a first benefit, a doubled one,
+     * an extra day, a second extra day, and a free month — and a single
+     * template could only have said the shallowest thing true of all five.
+     * Five also means each can be edited on its own from the Admin catalogue.
+     *
+     * What every one of them has in common: the reward is stated before
+     * anything else, the plan the customer PAYS for is named as unchanged
+     * (because "have you put my price up" is the first worry on reading the
+     * word upgrade), and nothing describes the mechanics. No milestones, no
+     * cycles, no coupons.
+     *
+     * Every date and plan name is passed in from the grant. Nothing here is
+     * hardcoded, so an email can never disagree with the benefit it announces.
      */
-    loyalty_benefit_unlocked: ({
+
+    /** Three months: the first benefit, one membership month of the tier above. */
+    loyalty_upgrade_month_3: ({
       name = "there",
-      rewardHeadline,
-      rewardDetail,
-      plan,
+      rewardPlan,
+      currentPlan,
       address,
       throughDate,
-      milestone,
     }) => {
       const rows = [
-        { label: "Your benefit", value: rewardHeadline || "" },
-        { label: "Your plan", value: plan ? `${plan} — unchanged` : "" },
+        { label: "Your benefit", value: `1 month of complimentary ${rewardPlan} benefits` },
+        { label: "Your plan", value: currentPlan ? `${currentPlan} — unchanged` : "" },
         { label: "Address", value: address || "" },
         ...(throughDate ? [{ label: "Available through", value: throughDate }] : []),
       ].filter((row) => row.value);
 
       return email({
-        subject: `Unlocked: ${rewardHeadline || "your Loyalty Benefit"}`,
-        preheader: `${milestone || 3} months of membership just unlocked a benefit.`,
+        subject: `You've unlocked complimentary ${rewardPlan} benefits`,
+        preheader: "Three months a member. Here's your first Loyalty Benefit.",
         content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">${safe(rewardHeadline)}</h1>
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Complimentary ${safe(rewardPlan)} benefits are yours</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">You have been a Profixter member for ${safe(
-            milestone || 3
-          )} months, and that has unlocked your next Loyalty Benefit.</p>
-          ${rewardDetail ? `<p style="margin:0 0 16px;">${safe(rewardDetail)}</p>` : ""}
+          <p style="margin:0 0 16px;">You've been a Profixter member for three months &mdash; thank you. That's unlocked your first Loyalty Benefit.</p>
+          <p style="margin:0 0 16px;">For your next membership month, you get everything ${safe(rewardPlan)} includes. Your own plan and your price stay exactly the same.</p>
           ${detailCard(rows)}
-          <p style="margin:0;">There is nothing to claim and nothing to do. It is already on your account.</p>
+          <p style="margin:0;">There's nothing to claim and nothing to do. It's already on your account.</p>
           ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
-        text: `${greeting(name)}\n\n${rewardHeadline}\n\nYou have been a Profixter member for ${
-          milestone || 3
-        } months, and that has unlocked your next Loyalty Benefit.${
-          rewardDetail ? `\n\n${rewardDetail}` : ""
-        }\n\n${textDetails(rows)}\n\nThere is nothing to claim. It is already on your account.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nComplimentary ${rewardPlan} benefits are yours.\n\nYou've been a Profixter member for three months - thank you. That's unlocked your first Loyalty Benefit.\n\nFor your next membership month, you get everything ${rewardPlan} includes. Your own plan and your price stay exactly the same.\n\n${textDetails(rows)}\n\nThere's nothing to claim and nothing to do. It's already on your account.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /** Six months: the same benefit, doubled. Two is the whole point. */
+    loyalty_upgrade_month_6: ({
+      name = "there",
+      rewardPlan,
+      currentPlan,
+      address,
+      throughDate,
+    }) => {
+      const rows = [
+        { label: "Your benefit", value: `2 months of complimentary ${rewardPlan} benefits` },
+        { label: "Your plan", value: currentPlan ? `${currentPlan} — unchanged` : "" },
+        { label: "Address", value: address || "" },
+        ...(throughDate ? [{ label: "Available through", value: throughDate }] : []),
+      ].filter((row) => row.value);
+
+      return email({
+        subject: `Two months of complimentary ${rewardPlan} benefits are yours`,
+        preheader: "Six months a member. Your next benefit is twice the size.",
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Two months of complimentary ${safe(rewardPlan)} benefits</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">Six months with Profixter. Your next Loyalty Benefit is double your last one.</p>
+          <p style="margin:0 0 16px;">For your next <strong>two</strong> membership months, you get everything ${safe(rewardPlan)} includes &mdash; at no extra cost, with your own plan and price unchanged.</p>
+          ${detailCard(rows)}
+          <p style="margin:0;">Already active. Nothing to claim, nothing to do.</p>
+          ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
+        text: `${greeting(name)}\n\nTwo months of complimentary ${rewardPlan} benefits.\n\nSix months with Profixter. Your next Loyalty Benefit is double your last one.\n\nFor your next TWO membership months, you get everything ${rewardPlan} includes - at no extra cost, with your own plan and price unchanged.\n\n${textDetails(rows)}\n\nAlready active. Nothing to claim, nothing to do.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /*
+     * Elite at three months: an extra Full Day.
+     *
+     * "On top of the one Elite already includes" is the load-bearing sentence.
+     * Without it an Elite member reads this as being told about the Full Day
+     * they already knew they had, and the reward lands as nothing.
+     *
+     * Deliberately does NOT invite them to pick any date they like. A Full Day
+     * takes a technician off the calendar entirely, so promising open
+     * scheduling is a promise the business cannot keep.
+     */
+    loyalty_full_day_month_3: ({ name = "there", useByDate, address }) => {
+      const rows = [
+        { label: "Your benefit", value: "1 extra Full Day" },
+        { label: "In addition to", value: "your monthly Elite Full Day" },
+        ...(useByDate ? [{ label: "Use by", value: useByDate }] : []),
+        { label: "Address", value: address || "" },
+      ].filter((row) => row.value);
+
+      return email({
+        subject: "You've earned an extra Full Day",
+        preheader: "A whole extra day at your home, on top of your Elite benefits.",
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">An extra Full Day is yours</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">Three months a member, and you've earned a Full Day on top of the one your Elite membership already includes each month.</p>
+          <p style="margin:0 0 16px;">That's a whole extra day of work at your home, at no charge. Your extra Full Day is now available through your membership.</p>
+          ${detailCard(rows)}
+          <p style="margin:0;">There's nothing to claim. It's already on your account.</p>
+          ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
+        text: `${greeting(name)}\n\nAn extra Full Day is yours.\n\nThree months a member, and you've earned a Full Day on top of the one your Elite membership already includes each month.\n\nThat's a whole extra day of work at your home, at no charge. Your extra Full Day is now available through your membership.\n\n${textDetails(rows)}\n\nThere's nothing to claim. It's already on your account.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /** Elite at six months: the second one, and it says so. */
+    loyalty_full_day_month_6: ({ name = "there", useByDate, address }) => {
+      const rows = [
+        { label: "Your benefit", value: "1 extra Full Day" },
+        { label: "In addition to", value: "your monthly Elite Full Day" },
+        ...(useByDate ? [{ label: "Use by", value: useByDate }] : []),
+        { label: "Address", value: address || "" },
+      ].filter((row) => row.value);
+
+      return email({
+        subject: "Your second extra Full Day is yours",
+        preheader: "Your second extra Full Day, on top of your Elite benefits.",
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your second extra Full Day</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">Six months a member &mdash; and that's another Full Day earned, again on top of the one Elite includes every month.</p>
+          <p style="margin:0 0 16px;">A whole extra day at your home, at no charge. Your extra Full Day is now available through your membership.</p>
+          ${detailCard(rows)}
+          <p style="margin:0;">There's nothing to claim. It's already on your account.</p>
+          ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
+        text: `${greeting(name)}\n\nYour second extra Full Day.\n\nSix months a member - and that's another Full Day earned, again on top of the one Elite includes every month.\n\nA whole extra day at your home, at no charge. Your extra Full Day is now available through your membership.\n\n${textDetails(rows)}\n\nThere's nothing to claim. It's already on your account.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /*
+     * Twelve months: the free month, and the biggest thing the programme gives.
+     *
+     * Never the word coupon, never a code, never anything to enter. The
+     * customer is told the figure their renewal will come to and that
+     * everything afterwards is unchanged, because the second thought after
+     * "a free month" is "and then what happens".
+     */
+    loyalty_free_month: ({ name = "there", renewalDate, currentPlan }) => {
+      const rows = [
+        { label: "Your benefit", value: "One free month" },
+        ...(renewalDate ? [{ label: "Applies to", value: `your ${renewalDate} renewal` }] : []),
+        { label: "Your plan", value: currentPlan ? `${currentPlan} — unchanged` : "" },
+      ].filter((row) => row.value);
+
+      return email({
+        subject: "Your next month is on us",
+        preheader: "A full year with Profixter. Your next renewal is free.",
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your next month is on us</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">You've been a Profixter member for a full year. Thank you for staying with us.</p>
+          <p style="margin:0 0 16px;">Your next membership month is free. Your ${safe(renewalDate || "next")} renewal will come to $0, and after that everything carries on exactly as normal.</p>
+          ${detailCard(rows)}
+          <p style="margin:0;">It's already applied to your account. There's nothing to enter and nothing to do.</p>
+          ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
+        text: `${greeting(name)}\n\nYour next month is on us.\n\nYou've been a Profixter member for a full year. Thank you for staying with us.\n\nYour next membership month is free. Your ${renewalDate || "next"} renewal will come to $0, and after that everything carries on exactly as normal.\n\n${textDetails(rows)}\n\nIt's already applied to your account. There's nothing to enter and nothing to do.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
       });
     },
 

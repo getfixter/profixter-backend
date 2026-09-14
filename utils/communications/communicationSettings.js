@@ -199,6 +199,39 @@ const SMS_SETTINGS = {
     appliesTo: "Existing members",
     schedule: "Immediately, on the Stripe event.",
   },
+  LOYALTY_UPGRADE_UNLOCKED_3: {
+    trigger: "Three loyalty months earn one month of the plan above theirs.",
+    event: "congratulate() after the LoyaltyGrant is written",
+    appliesTo: "Monthly members on Basic, Plus or Premium",
+    schedule: "Immediately, once the reward actually exists.",
+    notes: "Keyed on the grant, so a webhook retry cannot congratulate twice.",
+  },
+  LOYALTY_UPGRADE_UNLOCKED_6: {
+    trigger: "Six loyalty months earn two months of the plan above theirs.",
+    event: "congratulate() after the LoyaltyGrant is written",
+    appliesTo: "Monthly members on Basic, Plus or Premium",
+    schedule: "Immediately, once the reward actually exists.",
+  },
+  LOYALTY_FULL_DAY_UNLOCKED_3: {
+    trigger: "Three loyalty months earn an Elite member an extra Full Day.",
+    event: "congratulate() after the LoyaltyGrant is written",
+    appliesTo: "Elite members",
+    schedule: "Immediately, once the entitlement exists.",
+    notes: "Says the day is EXTRA; without that an Elite member reads it as the one they already had.",
+  },
+  LOYALTY_FULL_DAY_UNLOCKED_6: {
+    trigger: "Six loyalty months earn an Elite member a second extra Full Day.",
+    event: "congratulate() after the LoyaltyGrant is written",
+    appliesTo: "Elite members",
+    schedule: "Immediately, once the entitlement exists.",
+  },
+  LOYALTY_FREE_MONTH_UNLOCKED: {
+    trigger: "Twelve loyalty months earn a free membership month.",
+    event: "congratulate() after the free-month discount is applied",
+    appliesTo: "Monthly members",
+    schedule: "Immediately, once the discount is on the subscription.",
+    notes: "Never calls it a coupon and never asks for a code; there is nothing to enter.",
+  },
   MEMBERSHIP_CANCELLATION_SCHEDULED: {
     trigger: "A member cancels and access continues to the period end.",
     event: "notifyMembershipCancellationScheduled",
@@ -360,9 +393,29 @@ const EMAIL_SETTINGS = {
     appliesTo: "Members who cancel",
   },
   payment_failed: { label: "Payment failed", trigger: "A membership payment fails.", appliesTo: "Members" },
-  loyalty_benefit_unlocked: {
-    label: "Loyalty Benefit unlocked",
-    trigger: "A member completes 3, 6 or 12 loyalty months.",
+  loyalty_upgrade_month_3: {
+    label: "Loyalty: 3-month upgrade unlocked",
+    trigger: "A member completes 3 loyalty months on Basic, Plus or Premium.",
+    appliesTo: "Monthly members",
+  },
+  loyalty_upgrade_month_6: {
+    label: "Loyalty: 6-month upgrade unlocked",
+    trigger: "A member completes 6 loyalty months on Basic, Plus or Premium.",
+    appliesTo: "Monthly members",
+  },
+  loyalty_full_day_month_3: {
+    label: "Loyalty: extra Full Day unlocked",
+    trigger: "An Elite member completes 3 loyalty months.",
+    appliesTo: "Elite members",
+  },
+  loyalty_full_day_month_6: {
+    label: "Loyalty: second extra Full Day unlocked",
+    trigger: "An Elite member completes 6 loyalty months.",
+    appliesTo: "Elite members",
+  },
+  loyalty_free_month: {
+    label: "Loyalty: free month unlocked",
+    trigger: "A member completes 12 loyalty months.",
     appliesTo: "Monthly members",
   },
   loyalty_benefit_expiring: {

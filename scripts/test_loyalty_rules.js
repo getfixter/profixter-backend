@@ -42,6 +42,11 @@ const {
 } = require("../utils/loyalty/loyaltyRules");
 const { describeReward, previewReward } = require("../utils/loyalty/loyaltyProgress");
 const { existingDiscountArgs } = require("../utils/loyalty/loyaltyRewards");
+const { templateFor } = require("../utils/loyalty/loyaltyNotify");
+const { TEMPLATES } = require("../utils/emailService");
+const { TEMPLATES: SMS_TEMPLATES } = require("../utils/sms/smsTemplates");
+const { SMS_TYPES } = require("../utils/sms/smsTypes");
+const dedupe = require("../utils/sms/smsDedupe");
 
 const DAY = 24 * 60 * 60 * 1000;
 let passed = 0;
@@ -744,6 +749,220 @@ function testCopy() {
 /* Configuration                                                              */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* Congratulations                                                            */
+/* ========================================================================== */
+
+function testCongratulationRouting() {
+  section("every reward has its own congratulation, and only its own");
+
+  const cases = [
+    ["tier_upgrade", 3, "loyalty_upgrade_month_3", "LOYALTY_UPGRADE_UNLOCKED_3"],
+    ["tier_upgrade", 6, "loyalty_upgrade_month_6", "LOYALTY_UPGRADE_UNLOCKED_6"],
+    ["loyalty_full_day", 3, "loyalty_full_day_month_3", "LOYALTY_FULL_DAY_UNLOCKED_3"],
+    ["loyalty_full_day", 6, "loyalty_full_day_month_6", "LOYALTY_FULL_DAY_UNLOCKED_6"],
+    ["free_month", 12, "loyalty_free_month", "LOYALTY_FREE_MONTH_UNLOCKED"],
+  ];
+
+  check("all five rewards route to their own email template", () => {
+    for (const [rewardKind, milestone, template] of cases) {
+      assert.equal(templateFor({ rewardKind, milestone }), template, `${rewardKind}:${milestone}`);
+    }
+  });
+
+  check("all five rewards have their own SMS body", () => {
+    for (const [, , , smsType] of cases) {
+      assert.equal(typeof SMS_TEMPLATES[smsType], "function", smsType);
+    }
+  });
+
+  check("all five SMS types are registered as transactional", () => {
+    for (const [, , , smsType] of cases) {
+      assert.ok(SMS_TYPES[smsType], `${smsType} is not a known type`);
+      assert.equal(SMS_TYPES[smsType].channelClass, "transactional", smsType);
+    }
+  });
+
+  /*
+   * A reward shape nobody has defined a message for must produce silence, not
+   * a half-written congratulation. Year two is exactly that case.
+   */
+  check("an unknown reward shape sends nothing", () => {
+    assert.equal(templateFor({ rewardKind: "tier_upgrade", milestone: 12 }), null);
+    assert.equal(templateFor({ rewardKind: "free_month", milestone: 3 }), null);
+    assert.equal(templateFor({}), null);
+  });
+
+  check("the congratulation is keyed on the grant, so it cannot repeat", () => {
+    const grant = { _id: "grant123" };
+    const key = dedupe.loyaltyGrantKey("LOYALTY_FREE_MONTH_UNLOCKED", grant);
+    assert.equal(key, "LOYALTY_FREE_MONTH_UNLOCKED:loyalty_grant_grant123");
+    assert.equal(dedupe.loyaltyGrantKey("LOYALTY_FREE_MONTH_UNLOCKED", grant), key, "stable");
+    assert.notEqual(key, dedupe.loyaltyGrantKey("LOYALTY_FREE_MONTH_UNLOCKED", { _id: "grant999" }));
+  });
+}
+
+function testSmsCopy() {
+  section("the texts say the approved thing, and stay in one segment");
+
+  const render = (type, vars) => SMS_TEMPLATES[type](vars);
+
+  check("the 3-month text names the plan and says no extra cost", () => {
+    const body = render("LOYALTY_UPGRADE_UNLOCKED_3", { rewardPlan: "Plus" });
+    assert.match(body, /complimentary Plus benefits/);
+    assert.match(body, /no extra cost/);
+    assert.match(body, /Already active/);
+  });
+
+  check("the 6-month text leads with TWO months", () => {
+    const body = render("LOYALTY_UPGRADE_UNLOCKED_6", { rewardPlan: "Premium" });
+    assert.match(body, /2 months of complimentary Premium benefits/);
+  });
+
+  check("both Full Day texts say the day is EXTRA and on top of Elite's", () => {
+    for (const type of ["LOYALTY_FULL_DAY_UNLOCKED_3", "LOYALTY_FULL_DAY_UNLOCKED_6"]) {
+      const body = render(type, { useByDate: "Dec 13" });
+      assert.match(body, /extra Full Day/);
+      assert.match(body, /on top of the one Elite includes/);
+      assert.match(body, /Use it by Dec 13/);
+    }
+  });
+
+  check("the 6-month Full Day text says SECOND, as approved", () => {
+    assert.match(render("LOYALTY_FULL_DAY_UNLOCKED_6", {}), /your second extra Full Day/i);
+    assert.doesNotMatch(render("LOYALTY_FULL_DAY_UNLOCKED_6", {}), /another Full Day/i);
+  });
+
+  check("a missing use-by date leaves no dangling sentence", () => {
+    const body = render("LOYALTY_FULL_DAY_UNLOCKED_3", {});
+    assert.doesNotMatch(body, /Use it by\s*\./);
+    assert.doesNotMatch(body, /\s{2,}/, "no double spaces where the date would have been");
+  });
+
+  check("the free-month text never says coupon or code", () => {
+    const body = render("LOYALTY_FREE_MONTH_UNLOCKED", { renewalDate: "Oct 14" });
+    assert.match(body, /your next month is on us/i);
+    assert.match(body, /Oct 14 renewal will be \$0/);
+    assert.doesNotMatch(body, /coupon|promo|code|discount/i);
+  });
+
+  /*
+   * ONE EMOJI COSTS A SEGMENT. Anything outside GSM-7 forces the whole body to
+   * UCS-2, cutting 160 characters to 70 and roughly tripling what these cost to
+   * send. The owner's draft used an emoji; this is why the final copy does not.
+   */
+  check("no Loyalty text leaves GSM-7", () => {
+    const GSM7 =
+      "@£$¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?" +
+      "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà" +
+      "\n\r\f^{}\\[~]|€";
+    for (const [type] of Object.entries(SMS_TEMPLATES)) {
+      if (!type.startsWith("LOYALTY_")) continue;
+      const body = SMS_TEMPLATES[type]({
+        rewardPlan: "Premium",
+        useByDate: "Dec 13",
+        renewalDate: "Oct 14",
+      });
+      const bad = [...body].filter((ch) => !GSM7.includes(ch));
+      assert.deepEqual(bad, [], `${type} contains non-GSM-7: ${bad.join(" ")}`);
+    }
+  });
+
+  check("every Loyalty text fits one segment", () => {
+    for (const type of Object.keys(SMS_TEMPLATES)) {
+      if (!type.startsWith("LOYALTY_")) continue;
+      const body = SMS_TEMPLATES[type]({
+        rewardPlan: "Premium",
+        useByDate: "Dec 13",
+        renewalDate: "Oct 14",
+      });
+      assert.ok(body.length <= 160, `${type} is ${body.length} chars: ${body}`);
+    }
+  });
+
+  check("every Loyalty text carries the account link", () => {
+    for (const type of Object.keys(SMS_TEMPLATES)) {
+      if (!type.startsWith("LOYALTY_")) continue;
+      assert.match(SMS_TEMPLATES[type]({}), /profixter\.com\/account/);
+    }
+  });
+}
+
+function testEmailCopy() {
+  section("the emails say the approved thing");
+
+  const render = (key, vars) => TEMPLATES[key]({ name: "Sam", ...vars });
+
+  check("no Loyalty subject line carries an emoji, as approved", () => {
+    for (const key of Object.keys(templateFor.EMAIL_TEMPLATE || {})) void key;
+    for (const key of [
+      "loyalty_upgrade_month_3",
+      "loyalty_upgrade_month_6",
+      "loyalty_full_day_month_3",
+      "loyalty_full_day_month_6",
+      "loyalty_free_month",
+    ]) {
+      const { subject } = render(key, { rewardPlan: "Plus", currentPlan: "Basic" });
+      assert.doesNotMatch(subject, /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u, `${key}: ${subject}`);
+    }
+  });
+
+  check("the upgrade emails state the paid plan is unchanged", () => {
+    for (const key of ["loyalty_upgrade_month_3", "loyalty_upgrade_month_6"]) {
+      const { html } = render(key, { rewardPlan: "Premium", currentPlan: "Plus" });
+      assert.match(html, /unchanged/);
+      assert.match(html, /Premium/);
+    }
+  });
+
+  check("the 6-month email makes two months prominent", () => {
+    const { subject, html } = render("loyalty_upgrade_month_6", { rewardPlan: "Elite" });
+    assert.match(subject, /^Two months of complimentary Elite benefits are yours$/);
+    assert.match(html, /<strong>two<\/strong>/);
+  });
+
+  check("the Full Day emails do not promise open scheduling, as approved", () => {
+    for (const key of ["loyalty_full_day_month_3", "loyalty_full_day_month_6"]) {
+      const { html, text } = render(key, { useByDate: "December 13, 2026" });
+      assert.doesNotMatch(`${html} ${text}`, /whenever suits you/i);
+      assert.match(html, /now available through your membership/);
+      assert.match(html, /on top of the one/);
+      assert.match(html, /December 13, 2026/);
+    }
+  });
+
+  check("the 6-month Full Day email says SECOND, as approved", () => {
+    const { subject, html } = render("loyalty_full_day_month_6", {});
+    assert.match(subject, /second extra Full Day/);
+    assert.match(html, /Your second extra Full Day/);
+  });
+
+  check("the free-month email uses the approved opening and never says coupon", () => {
+    const { subject, html } = render("loyalty_free_month", {
+      renewalDate: "October 14, 2026",
+      currentPlan: "Basic",
+    });
+    assert.equal(subject, "Your next month is on us");
+    assert.match(html, /You've been a Profixter member for a full year\. Thank you for staying with us\./);
+    assert.doesNotMatch(html, /A full year looking after your home together/);
+    assert.doesNotMatch(html, /coupon|promo code/i);
+    assert.match(html, /October 14, 2026 renewal will come to \$0/);
+    assert.match(html, /nothing to enter and nothing to do/);
+  });
+
+  check("every Loyalty email links to the account", () => {
+    for (const key of [
+      "loyalty_upgrade_month_3",
+      "loyalty_upgrade_month_6",
+      "loyalty_full_day_month_3",
+      "loyalty_full_day_month_6",
+      "loyalty_free_month",
+    ]) {
+      assert.match(render(key, { rewardPlan: "Plus" }).html, /profixter\.com\/account\?tab=plan/);
+    }
+  });
+}
+
 function testConfig() {
   section("the switches behave as documented");
 
@@ -771,6 +990,9 @@ function main() {
   testEffectivePlan();
   testDiscountPreservation();
   testCopy();
+  testCongratulationRouting();
+  testSmsCopy();
+  testEmailCopy();
   testConfig();
   console.log(`\nLoyalty rules: ${passed} passed, 0 failed.`);
 }

@@ -111,7 +111,23 @@ const LoyaltyGrantSchema = new mongoose.Schema(
     needsReview: { type: Boolean, default: false, index: true },
 
     grantedAt: { type: Date, required: true, default: Date.now },
-    notifiedAt: { type: Date, default: null },
+
+    /*
+     * Congratulations, tracked PER CHANNEL.
+     *
+     * One stamp for both would mean a failed text could only be retried by
+     * re-sending the email, and a succeeded email could only be recorded by
+     * claiming the text had gone too. Two stamps let each channel be claimed,
+     * retried and reported on its own — which is the whole requirement, and it
+     * costs one extra field.
+     *
+     * Each is claimed with a conditional update BEFORE its send, so two EB
+     * instances cannot both congratulate the same person, and released again if
+     * the send fails so the daily sweep can try once more.
+     */
+    emailNotifiedAt: { type: Date, default: null },
+    smsNotifiedAt: { type: Date, default: null },
+
     expiryNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
