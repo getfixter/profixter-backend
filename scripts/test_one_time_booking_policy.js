@@ -194,10 +194,18 @@ async function callOneTimeCheckout(slot) {
 }
 
 function assertSourcePolicy() {
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "routes", "bookings.js"),
-    "utf8"
-  );
+  /*
+   * Line endings normalised before matching.
+   *
+   * The patterns below span lines, and a Windows checkout stores CRLF — so on a
+   * developer machine this whole function threw "membership booking source not
+   * found" and every assertion after it silently never ran. It passed in CI
+   * only because the Linux checkout happens to be LF. A test that cannot run
+   * where the code is written is not protecting anything.
+   */
+  const source = fs
+    .readFileSync(path.join(__dirname, "..", "routes", "bookings.js"), "utf8")
+    .replace(/\r\n/g, "\n");
   const oneTimeStart = source.indexOf('"/one-time/checkout"');
   const membershipStart = source.indexOf('router.post(\n  "/"');
   assert(oneTimeStart > 0, "one-time checkout source not found");
@@ -221,10 +229,29 @@ function assertSourcePolicy() {
     /if \(bookingLimit > 0 && activeCount >= bookingLimit\)/,
     "Subscription active-booking limit guard was changed or removed"
   );
+  /*
+   * The customer-facing refusal. Pinned on the MEANING rather than the exact
+   * sentence: the guard above already proves the rule is intact, so what this
+   * has to catch is the message going missing or quietly turning back into
+   * allowance language. It names a visit already booked and says the next one
+   * can follow, and it must never say "per month".
+   */
   assert.match(
     membershipSection,
-    /This address allows 1 active booking at a time/,
-    "Subscription active-booking limit copy was changed or removed"
+    /You already have a visit booked for this address/,
+    "Subscription booking-limit copy was changed or removed"
+  );
+  /*
+   * Scoped to the two message strings, not the surrounding file — the comment
+   * above them explains the allowance trap in order to warn against it, and a
+   * broader scan would flag the warning as the offence.
+   */
+  const refusalStrings = (membershipSection.match(/"You already have [^"]*"/g) || []).join(" ");
+  assert.ok(refusalStrings, "the booking refusal messages were not found");
+  assert.doesNotMatch(
+    refusalStrings,
+    /visits? per month|monthly (visit )?(limit|allowance)|active booking/i,
+    "the booking refusal must not describe membership as a monthly allowance"
   );
 }
 

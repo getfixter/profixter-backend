@@ -1897,12 +1897,21 @@ router.post(
         (booking) => !isTerminalBookingStatus(booking.status)
       ).length;
 
+      /*
+       * The refusal a customer actually reads.
+       *
+       * The rule is unchanged; only the words are. It used to talk about
+       * "active bookings at a time", which customers consistently heard as a
+       * monthly allowance being used up — so the message now says what is
+       * actually true (a visit is already booked) and what happens next (book
+       * again once it is done). The internal vocabulary above is untouched.
+       */
       if (bookingLimit > 0 && activeCount >= bookingLimit) {
         return res.status(400).json({
           message:
             bookingLimit === 1
-              ? "This address allows 1 active booking at a time. Please complete/cancel the active booking for this address to schedule another."
-              : "This address allows 2 active bookings at a time. Please complete/cancel an active booking for this address to schedule another.",
+              ? "You already have a visit booked for this address. Once it's completed you can book the next one."
+              : "You already have two visits booked for this address. Once one of them is completed you can book the next one.",
         });
       }
 

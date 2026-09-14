@@ -45,7 +45,7 @@ module.exports = {
       "Membership is better for homeowners who expect to need help more than once.",
       "Members can request ongoing handyman help without paying $99 every visit.",
       "Membership offers better long-term value, more service flexibility, and plan-dependent benefits such as priority scheduling, rush visit benefits, and project discounts.",
-      "Membership booking requests are limited by appointment capacity and active booking rules, not by a hard monthly visit limit.",
+      "Membership is not a set number of visits per month. Members book as often as they need; each plan simply sets how many visits can be booked at the same time (Basic 1, Plus/Premium/Elite up to 2). Scheduling still depends on availability.",
       "After cancellation, Membership remains active through the end of the current billing period.",
       "A failed or unpaid payment can pause Membership access until resolved.",
       "Members may receive discounts on larger projects.",
@@ -56,7 +56,7 @@ module.exports = {
       "Plus - $249/mo",
       "Premium - $349/mo; often positioned as the stronger plan for priority-oriented homeowners.",
       "Elite - $499/mo",
-      "All plans serve Nassau and Suffolk County only and are subject to appointment availability and active booking rules.",
+      "All plans serve Nassau and Suffolk County only, and scheduling is subject to availability and to how many visits the plan allows booked at the same time.",
     ],
 
     renovation: [
