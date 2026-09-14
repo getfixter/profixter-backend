@@ -1015,6 +1015,12 @@ async function main() {
      * NONE removed and NONE modified. All five additions are transactional and
      * none can reach a customer who has not affirmatively opted in to service
      * texts.
+     *
+     * Adjusted once within that same change, before release: the three Loyalty
+     * bodies carrying a date were switched from a pre-formatted string to the
+     * raw instant, because a production render showed the email's long date
+     * being truncated into "Sun, Oct 4 at 9:". Only the five new bodies moved;
+     * the thirty-one older ones were re-compared and are still identical.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1022,7 +1028,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "a50f4a864d5cd3e21bec548c8b250392d919c1bfcb571465267a09c3e213d8ba",
+      "6d12e712929498bd45198cf370c3b2e42de340b914459760fbf6f34e1e78bec3",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

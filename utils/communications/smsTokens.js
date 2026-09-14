@@ -318,8 +318,8 @@ const DEFINITIONS = {
     template:
       "{{brand}}: you've earned an extra Full Day, on top of the one Elite " +
       "includes each month.{{useBySentence}} {{site}}/account",
-    tokens: ({ useByDate }) => {
-      const by = clean(useByDate, 16);
+    tokens: ({ useByAt }) => {
+      const by = formatDateOnly(useByAt);
       return { useBySentence: by ? ` Use it by ${by}.` : "" };
     },
   },
@@ -329,8 +329,8 @@ const DEFINITIONS = {
     template:
       "{{brand}}: your second extra Full Day is yours, on top of the one Elite " +
       "includes each month.{{useBySentence}} {{site}}/account",
-    tokens: ({ useByDate }) => {
-      const by = clean(useByDate, 16);
+    tokens: ({ useByAt }) => {
+      const by = formatDateOnly(useByAt);
       return { useBySentence: by ? ` Use it by ${by}.` : "" };
     },
   },
@@ -340,8 +340,8 @@ const DEFINITIONS = {
     template:
       "{{brand}}: a full year with us, so your next month is on us. Your " +
       "{{renewalPrefix}}renewal will be $0, automatically. Nothing to do. {{site}}/account",
-    tokens: ({ renewalDate }) => {
-      const on = clean(renewalDate, 16);
+    tokens: ({ renewalAt }) => {
+      const on = formatDateOnly(renewalAt);
       return { renewalPrefix: on ? `${on} ` : "next " };
     },
   },
@@ -589,8 +589,8 @@ const SAMPLE_VARS = Object.keys(DEFINITIONS).reduce((acc, type) => {
     accessUntil: new Date("2026-04-01T12:00:00.000Z"),
     /* Loyalty sample data, so the Admin preview shows a real-looking reward. */
     rewardPlan: "Premium",
-    useByDate: "Dec 13",
-    renewalDate: "Oct 14",
+    useByAt: new Date("2026-12-13T12:00:00.000Z"),
+    renewalAt: new Date("2026-10-14T12:00:00.000Z"),
     body: "",
   };
   return acc;

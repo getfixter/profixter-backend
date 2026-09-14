@@ -99,14 +99,21 @@ async function buildVars({ grant, user, subscription }) {
     const entitlement = grant.visitEntitlementId
       ? await VisitEntitlement.findById(grant.visitEntitlementId).lean()
       : null;
-    return { ...base, useByDate: formatDate(entitlement?.expiresAt) };
+    /*
+     * Both forms, because the two channels want different ones. The email
+     * reads "Sunday, October 4, 2026 at 9:00 AM EDT"; a text wants "Sun, Oct 4"
+     * and formats the raw instant itself.
+     */
+    return {
+      ...base,
+      useByDate: formatDate(entitlement?.expiresAt),
+      useByAt: entitlement?.expiresAt || null,
+    };
   }
 
   // The free month lands on the renewal that closes the current period.
-  return {
-    ...base,
-    renewalDate: formatDate(subscription?.currentPeriodEnd || subscription?.nextPaymentDate),
-  };
+  const renewalAt = subscription?.currentPeriodEnd || subscription?.nextPaymentDate || null;
+  return { ...base, renewalDate: formatDate(renewalAt), renewalAt };
 }
 
 async function sendEmail({ grant, user, vars, template }) {

@@ -471,6 +471,13 @@ const TEMPLATES = {
    *
    * All five stay inside one segment. The plan name and the dates come from the
    * grant, so a text can never name a benefit the account does not hold.
+   *
+   * The dates arrive RAW and are formatted here, not handed over pre-rendered.
+   * The email wants "Sunday, October 4, 2026 at 9:00 AM EDT"; a text wants
+   * "Sun, Oct 4". Sharing one formatted string between the two meant the SMS
+   * truncating the email's version mid-word - a renewal date that read
+   * "Sun, Oct 4 at 9:" went out of this function before a production render
+   * caught it.
    */
   LOYALTY_UPGRADE_UNLOCKED_3: ({ rewardPlan }) => {
     const plan = clean(rewardPlan, 12) || "upgraded";
@@ -493,16 +500,16 @@ const TEMPLATES = {
    * "On top of the one Elite includes" is the whole message. Without it an
    * Elite member reads this as a description of what they already had.
    */
-  LOYALTY_FULL_DAY_UNLOCKED_3: ({ useByDate }) => {
-    const by = clean(useByDate, 16);
+  LOYALTY_FULL_DAY_UNLOCKED_3: ({ useByAt }) => {
+    const by = formatDateOnly(useByAt);
     return (
       `${BRAND}: you've earned an extra Full Day, on top of the one Elite ` +
       `includes each month.${by ? ` Use it by ${by}.` : ""} ${SITE}/account`
     );
   },
 
-  LOYALTY_FULL_DAY_UNLOCKED_6: ({ useByDate }) => {
-    const by = clean(useByDate, 16);
+  LOYALTY_FULL_DAY_UNLOCKED_6: ({ useByAt }) => {
+    const by = formatDateOnly(useByAt);
     return (
       `${BRAND}: your second extra Full Day is yours, on top of the one Elite ` +
       `includes each month.${by ? ` Use it by ${by}.` : ""} ${SITE}/account`
@@ -510,8 +517,8 @@ const TEMPLATES = {
   },
 
   /* Never "coupon", never a code. A figure and a date, and nothing to do. */
-  LOYALTY_FREE_MONTH_UNLOCKED: ({ renewalDate }) => {
-    const on = clean(renewalDate, 16);
+  LOYALTY_FREE_MONTH_UNLOCKED: ({ renewalAt }) => {
+    const on = formatDateOnly(renewalAt);
     return (
       `${BRAND}: a full year with us, so your next month is on us. Your ` +
       `${on ? `${on} ` : "next "}renewal will be $0, automatically. ` +

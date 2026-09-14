@@ -821,10 +821,10 @@ function testSmsCopy() {
 
   check("both Full Day texts say the day is EXTRA and on top of Elite's", () => {
     for (const type of ["LOYALTY_FULL_DAY_UNLOCKED_3", "LOYALTY_FULL_DAY_UNLOCKED_6"]) {
-      const body = render(type, { useByDate: "Dec 13" });
+      const body = render(type, { useByAt: new Date("2026-12-13T17:00:00.000Z") });
       assert.match(body, /extra Full Day/);
       assert.match(body, /on top of the one Elite includes/);
-      assert.match(body, /Use it by Dec 13/);
+      assert.match(body, /Use it by Sun, Dec 13/, "short form, not the email's long one");
     }
   });
 
@@ -840,9 +840,9 @@ function testSmsCopy() {
   });
 
   check("the free-month text never says coupon or code", () => {
-    const body = render("LOYALTY_FREE_MONTH_UNLOCKED", { renewalDate: "Oct 14" });
+    const body = render("LOYALTY_FREE_MONTH_UNLOCKED", { renewalAt: new Date("2026-10-14T17:00:00.000Z") });
     assert.match(body, /your next month is on us/i);
-    assert.match(body, /Oct 14 renewal will be \$0/);
+    assert.match(body, /Wed, Oct 14 renewal will be \$0/);
     assert.doesNotMatch(body, /coupon|promo|code|discount/i);
   });
 
