@@ -142,6 +142,38 @@ const UserSchema = new mongoose.Schema(
      * None of this overrides SmsOptOut. A STOP from the handset wins over every
      * preference recorded here.
      */
+    /**
+     * A record that this account predates the current consent system.
+     *
+     * ADMINISTRATIVE PROVENANCE. NOT CONSENT. THE DISTINCTION IS THE POINT.
+     *
+     * 157 people registered under the previous flow, whose required checkbox
+     * read "I agree to the Terms of Service and Privacy Policy" and said
+     * nothing about messaging. Service SMS was never put to them as a question
+     * - it was permitted by the absence of an opt-out, which is the exact
+     * arrangement a carrier rejected as forced consent.
+     *
+     * So these fields say what is true and only what is true: this account
+     * existed before we started asking properly. They do NOT say the customer
+     * agreed to anything, and nothing in smsEligibility reads them. A test
+     * asserts that: marking an account legacy leaves it exactly as ineligible
+     * for SMS as it was a moment earlier.
+     *
+     * What they are FOR is answering, later and honestly, "who are the people
+     * we have never asked?" - which is the list you would need to run a
+     * proper re-consent campaign, and which is otherwise indistinguishable
+     * from "people who declined".
+     */
+    legacyRegisteredUser: { type: Boolean, default: undefined },
+    legacyCommunicationStateSource: { type: String, default: "" },
+    legacyCommunicationStateMigratedAt: { type: Date, default: null },
+    /*
+     * A snapshot of createdAt taken at migration time. Duplicated on purpose:
+     * the provenance record should be able to answer "what was the evidence"
+     * without depending on another field staying untouched.
+     */
+    legacyRegisteredAt: { type: Date, default: null },
+
     smsPreferences: {
       transactionalEnabled: { type: Boolean, default: undefined },
       marketingEnabled: { type: Boolean, default: undefined },

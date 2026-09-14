@@ -1154,6 +1154,81 @@ async function main() {
   });
 
   /* ================================================================== */
+  section("The legacy marker is provenance, not permission");
+
+  await test("marking an account legacy grants no service SMS", async () => {
+    /*
+     * THE WHOLE POINT OF THE MARKER IS THAT IT DOES NOTHING.
+     *
+     * 156 accounts predate the current consent system. Recording that fact is
+     * useful - it is the difference between "never asked" and "declined" - but
+     * it is not a thing the customer did, and the moment it starts granting
+     * anything it becomes exactly the inferred consent that got the campaign
+     * rejected.
+     */
+    const { user } = await makeUser({
+      legacyRegisteredUser: true,
+      legacyCommunicationStateSource: "pre_current_consent_registration",
+      legacyCommunicationStateMigratedAt: new Date(),
+      legacyRegisteredAt: new Date("2025-11-01"),
+    });
+    const verdict = accountAllows(user, "BOOKING_CONFIRMED");
+    assert.strictEqual(verdict.eligible, false);
+    assert.strictEqual(verdict.reason, "transactional_not_opted_in");
+  });
+
+  await test("marking an account legacy grants no marketing SMS", async () => {
+    const { user } = await makeUser({
+      legacyRegisteredUser: true,
+      legacyCommunicationStateSource: "pre_current_consent_registration",
+    });
+    const verdict = accountAllows(user, "SEASONAL_MARKETING");
+    assert.strictEqual(verdict.eligible, false);
+    assert.strictEqual(verdict.reason, "marketing_not_opted_in");
+  });
+
+  await test("the legacy fields are invisible to the eligibility rules", () => {
+    /*
+     * Structural rather than behavioural: if smsEligibility never mentions the
+     * fields, no future edit can accidentally start reading one as consent.
+     */
+    const src = readSource(path.join(__dirname, "..", "utils", "sms", "smsEligibility.js"));
+    for (const field of [
+      "legacyRegisteredUser",
+      "legacyCommunicationStateSource",
+      "legacyCommunicationStateMigratedAt",
+      "legacyRegisteredAt",
+    ]) {
+      assert.ok(!src.includes(field), `smsEligibility reads ${field}; it must not`);
+    }
+  });
+
+  await test("the migration never writes a consent field", () => {
+    const src = readSource(
+      path.join(__dirname, "migrate_legacy_communication_state.js")
+    );
+    const writes = src.slice(src.indexOf("const set = {"), src.indexOf("const result = await users.updateOne"));
+    for (const forbidden of [
+      "transactionalEnabled",
+      "marketingEnabled",
+      "transactionalConsentAt",
+      "marketingConsentAt",
+      "transactionalConsentSource",
+      "marketingConsentSource",
+      "signup_web_form",
+    ]) {
+      assert.ok(!writes.includes(forbidden), `the migration writes ${forbidden}; it must not`);
+    }
+  });
+
+  await test("the migration leaves a customer's own later choice alone", () => {
+    const src = readSource(path.join(__dirname, "migrate_legacy_communication_state.js"));
+    for (const guard of ["optedOutAt", "later choice: opted out", "later choice: gave real consent"]) {
+      assert.ok(src.includes(guard), `the migration is missing the guard: ${guard}`);
+    }
+  });
+
+  /* ================================================================== */
   section("The switches are still off");
   /* ================================================================== */
 
