@@ -396,6 +396,13 @@ async function main() {
         state: "NY",
         zip: "11743",
         county: "Suffolk",
+        /*
+         * Service consent is supplied by default because registration now
+         * requires it. These cases are about MARKETING, and without this every
+         * one of them would fail at the door for an unrelated reason. A case
+         * that wants to prove the requirement itself overrides this via extra.
+         */
+        smsTransactionalConsent: true,
         ...extra,
       }),
     });

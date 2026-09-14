@@ -245,20 +245,27 @@ async function main() {
     }
   });
 
-  await frontendTest("neither SMS choice takes part in validation", () => {
+  await frontendTest("marketing takes no part in validation; service now does", () => {
     /*
      * THE COMPLIANCE CLAIM RESTS ON THIS CASE.
      *
-     * A checkbox that is labelled optional but read by a validator is not
-     * optional. No validator on the page may mention either state.
+     * A checkbox labelled optional but read by a validator is not optional.
+     * Service SMS is now deliberately required and a validator reads it; the
+     * promotional box must never join it, because bundling marketing into the
+     * condition of having an account is a different and larger problem than
+     * requiring service texts.
      */
     const validators = signup.match(/const validate\w+Step = \(\) => \{[\s\S]*?\n  \};/g) || [];
     assert.ok(validators.length >= 4, "expected the four step validators to be found");
-    for (const validator of validators) {
-      for (const state of ["smsTransactionalConsent", "smsMarketingConsent"]) {
-        assert.ok(!validator.includes(state), `a validator reads ${state}`);
-      }
-    }
+    const joined = validators.join("\n");
+    assert.ok(
+      !joined.includes("smsMarketingConsent"),
+      "a validator reads smsMarketingConsent; marketing must stay optional"
+    );
+    assert.ok(
+      joined.includes("smsTransactionalConsent"),
+      "service SMS is required, so a validator must enforce it"
+    );
   });
 
   await frontendTest("the choices are visible without creating an account", () => {
@@ -279,12 +286,19 @@ async function main() {
     }
   });
 
-  await frontendTest("the page says in words that SMS is not required", () => {
+  await frontendTest("the page says which texts are required and which are not", () => {
     assert.ok(
-      /without agreeing to receive text messages/i.test(signup),
-      "the page must state plainly that an account can be created without SMS"
+      /Service texts are required to create an account/i.test(signup),
+      "the page must state plainly that service texts are required"
     );
-    assert.ok(/Text messages &mdash; optional/i.test(signup), "the panel heading must say optional");
+    assert.ok(
+      /offers are optional and[\s\S]{0,60}separate/i.test(signup),
+      "and that promotional texts are not"
+    );
+    assert.ok(
+      !/Text messages &mdash; optional/i.test(signup),
+      "the old blanket 'optional' heading is misleading above a required box"
+    );
   });
 
   await frontendTest("the required CTIA disclosures sit with the service checkbox", () => {
@@ -318,14 +332,30 @@ async function main() {
   section("Registering with both boxes left alone");
   /* ================================================================== */
 
-  await test("registration succeeds with no SMS consent at all", async () => {
+  await test("registration is REFUSED without service SMS consent", async () => {
+    /*
+     * The product decision that replaced the old rule. Service texts are now a
+     * condition of having an account, and the SERVER is what enforces it - a
+     * form validator is bypassed by anyone posting to this endpoint directly.
+     */
     const { res, json } = await registerVia(registration());
+    assert.strictEqual(res.status, 400, `expected 400, got ${res.status}`);
+    assert.strictEqual(json.code, "SERVICE_SMS_CONSENT_REQUIRED");
+  });
+
+  await test("marketing consent cannot stand in for service consent", async () => {
+    const { res } = await registerVia(registration({ smsMarketingConsent: true }));
+    assert.strictEqual(res.status, 400, "the two are independent in both directions");
+  });
+
+  await test("registration succeeds once service SMS is ticked", async () => {
+    const { res, json } = await registerVia(registration({ smsTransactionalConsent: true }));
     assert.strictEqual(res.status, 201, `expected 201, got ${res.status}`);
     assert.ok(json.token, "a usable account must come back");
   });
 
-  await test("declining SMS writes no consent of any kind", async () => {
-    const body = registration();
+  await test("declining marketing writes no marketing consent", async () => {
+    const body = registration({ smsTransactionalConsent: true });
     await registerVia(body);
     const row = await User.findOne({ email: body.email.toLowerCase() }).lean();
     const prefs = row.smsPreferences || {};
@@ -333,14 +363,16 @@ async function main() {
      * Nothing is written rather than false, so "never asked" stays
      * distinguishable from "said no" forever. Both are refused at send time.
      */
-    assert.notStrictEqual(prefs.transactionalEnabled, true);
-    assert.notStrictEqual(prefs.marketingEnabled, true);
-    assert.ok(!prefs.transactionalConsentAt, "no consent timestamp may be invented");
-    assert.ok(!prefs.transactionalConsentSource, "no consent source may be invented");
+    assert.strictEqual(prefs.transactionalEnabled, true, "the required tick was given");
+    assert.ok(prefs.transactionalConsentAt, "a real consent timestamp is recorded");
+    assert.strictEqual(prefs.transactionalConsentSource, "signup_web_form");
+    assert.notStrictEqual(prefs.marketingEnabled, true, "marketing was not ticked");
+    assert.ok(!prefs.marketingConsentAt, "no marketing timestamp may be invented");
+    assert.ok(!prefs.marketingConsentSource, "no marketing source may be invented");
   });
 
-  await test("a declined signup can still be used - nothing is degraded", async () => {
-    const body = registration();
+  await test("a marketing-declined signup can still be used - nothing is degraded", async () => {
+    const body = registration({ smsTransactionalConsent: true });
     const { json } = await registerVia(body);
     const row = await User.findOne({ email: body.email.toLowerCase() }).lean();
     assert.strictEqual(row.isActive, true, "the account must be active");
@@ -364,13 +396,25 @@ async function main() {
     assert.notStrictEqual(prefs.marketingEnabled, true, "one tick is not two");
   });
 
-  await test("ticking marketing records marketing and nothing else", async () => {
-    const body = registration({ smsMarketingConsent: true });
+  await test("ticking marketing records marketing on its own terms", async () => {
+    /*
+     * Service consent is supplied too, because without it the request is now
+     * refused and there would be no account to inspect. The point of the case
+     * survives intact: marketing is recorded only because its own box was
+     * ticked, and it carries its own timestamp and source rather than
+     * inheriting the service one.
+     */
+    const body = registration({ smsTransactionalConsent: true, smsMarketingConsent: true });
     await registerVia(body);
     const prefs = (await User.findOne({ email: body.email.toLowerCase() }).lean()).smsPreferences;
     assert.strictEqual(prefs.marketingEnabled, true);
     assert.strictEqual(prefs.marketingConsentSource, "signup_web_form");
-    assert.notStrictEqual(prefs.transactionalEnabled, true, "marketing must not imply service");
+    assert.ok(prefs.marketingConsentAt, "marketing carries its own timestamp");
+    assert.notStrictEqual(
+      prefs.marketingConsentAt,
+      undefined,
+      "marketing evidence is recorded separately from service evidence"
+    );
   });
 
   await test("a truthy string is not consent", async () => {
@@ -379,16 +423,29 @@ async function main() {
      * under any looser comparison. The route tests against the literal boolean.
      */
     for (const value of ["true", "false", 1, "1", "yes", {}]) {
-      const body = registration({ smsTransactionalConsent: value, smsMarketingConsent: value });
+      /*
+       * Doubly proven now: a truthy non-boolean does not satisfy the REQUIRED
+       * service consent - the request is refused outright - and it cannot
+       * become marketing consent on a request that is otherwise valid.
+       */
+      const refused = await registerVia(
+        registration({ smsTransactionalConsent: value, smsMarketingConsent: value })
+      );
+      assert.strictEqual(
+        refused.res.status,
+        400,
+        `${JSON.stringify(value)} must not satisfy the required service consent`
+      );
+
+      const body = registration({ smsTransactionalConsent: true, smsMarketingConsent: value });
       await registerVia(body);
       const prefs =
         (await User.findOne({ email: body.email.toLowerCase() }).lean()).smsPreferences || {};
       assert.notStrictEqual(
-        prefs.transactionalEnabled,
+        prefs.marketingEnabled,
         true,
-        `${JSON.stringify(value)} must not become service consent`
+        `${JSON.stringify(value)} must not become marketing consent`
       );
-      assert.notStrictEqual(prefs.marketingEnabled, true);
     }
   });
 
@@ -995,12 +1052,12 @@ async function main() {
       path.join(FRONTEND, "app", "communication-consent", "page.tsx")
     ).replace(/\s+/g, " ");
     assert.ok(
-      /Text messages are never required/i.test(consent),
-      "the consent page must say SMS is never required"
+      /Service texts are part of having an account/i.test(consent),
+      "the consent page must describe service texts as required to register"
     );
     assert.ok(
-      /Service texts require their own opt-in/i.test(consent),
-      "the consent page must say service texts need their own opt-in"
+      /Marketing texts require a second, separate opt-in/i.test(consent),
+      "marketing must still be described as its own separate opt-in"
     );
     assert.ok(
       !/By creating an account, booking a service, or requesting a quote[^.]*you consent to receive communications/i.test(

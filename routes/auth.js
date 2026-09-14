@@ -322,6 +322,32 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    /*
+     * SERVICE SMS IS NOW A CONDITION OF REGISTRATION, ENFORCED HERE.
+     *
+     * Enforced on the server because a checkbox is a suggestion: the browser
+     * form can be bypassed by anyone willing to POST this endpoint directly,
+     * and an account created that way would otherwise be texted on the
+     * strength of a tick nobody made. The frontend blocks the button; this
+     * blocks the request.
+     *
+     * Still compared against the literal boolean. A string is always truthy,
+     * and "false" arriving as consent is precisely the bug that would enrol
+     * somebody in texting they never agreed to - required or not, the tick has
+     * to be a real tick.
+     *
+     * MARKETING IS DELIBERATELY NOT CHECKED HERE and must never be added to
+     * this condition. It stays optional, independent, and absent unless the
+     * customer ticks its own box.
+     */
+    if (req.body?.smsTransactionalConsent !== true) {
+      return res.status(400).json({
+        message:
+          "Please agree to receive ProFixter service text messages to create your account.",
+        code: "SERVICE_SMS_CONSENT_REQUIRED",
+      });
+    }
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
       return res.status(400).json({ message: "Invalid email format" });

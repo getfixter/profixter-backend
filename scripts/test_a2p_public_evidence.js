@@ -556,14 +556,25 @@ async function main() {
     }
   });
 
-  await frontendTest("it states both choices are optional and default off", () => {
+  await frontendTest("it states which choice is required and which is not", () => {
+    /*
+     * Converted when service SMS became a condition of registration. The
+     * evidence page must now describe that accurately - a reviewer comparing
+     * it against the live form is the entire reason this page exists, and a
+     * page claiming "optional" above a required checkbox would be worse than
+     * no page at all.
+     */
     const src = readText(P.evidence);
-    assert.ok(/Service SMS is optional/i.test(src));
+    assert.ok(
+      /Service SMS is required to create a ProFixter account/i.test(src),
+      "the page must say service texts are required"
+    );
     assert.ok(/Marketing SMS is separately optional/i.test(src));
-    assert.ok(/unchecked by default/i.test(src));
-    for (const phrase of [/required to register/i, /required to book/i, /required to purchase/i]) {
-      assert.ok(phrase.test(src), `missing "neither is ${phrase}"`);
-    }
+    assert.ok(/unchecked by default/i.test(src), "neither box may be pre-ticked");
+    assert.ok(
+      /never pre-ticked/i.test(src),
+      "required must still mean the customer performs the tick"
+    );
   });
 
   await frontendTest("it links all four public documents", () => {

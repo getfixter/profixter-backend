@@ -174,6 +174,42 @@ const UserSchema = new mongoose.Schema(
      */
     legacyRegisteredAt: { type: Date, default: null },
 
+    /**
+     * WHY this account's communication state is what it is.
+     *
+     * Admin needs to tell five situations apart that all look like a boolean
+     * on a screen, and the boolean cannot say which it is:
+     *
+     *   current_web_consent          they ticked today's box themselves
+     *   historical_legacy_migration  carried over from the old registration
+     *   customer_opt_out             they turned it off
+     *   admin_suppression            we turned it off for them
+     *   carrier_stop                 they texted STOP to the handset
+     *
+     * It is DESCRIPTIVE. smsEligibility does not read it, and must not start:
+     * the booleans and the SmsOptOut row remain the only things that decide
+     * whether a message may go. This field exists so a person looking at a
+     * customer can answer "why", which is otherwise unanswerable.
+     */
+    communicationStateBasis: { type: String, default: "" },
+
+    /**
+     * The provenance of a legacy consent migration, kept apart from the
+     * consent record itself.
+     *
+     * migratedAt is when WE ran the migration. It is deliberately not written
+     * into transactionalConsentAt, which holds the customer's original
+     * registration date - the actual historical act. Conflating the two would
+     * make every legacy account look like it consented on the afternoon
+     * somebody ran a script.
+     */
+    legacyConsentMigration: {
+      version: { type: String, default: "" },
+      migratedAt: { type: Date, default: null },
+      basis: { type: String, default: "" },
+      historicalRegisteredAt: { type: Date, default: null },
+    },
+
     smsPreferences: {
       transactionalEnabled: { type: Boolean, default: undefined },
       marketingEnabled: { type: Boolean, default: undefined },

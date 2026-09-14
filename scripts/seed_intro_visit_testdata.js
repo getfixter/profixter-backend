@@ -62,6 +62,20 @@ async function main() {
     Booking.deleteMany({ email: /@fvftest\.local$/ }),
   ]);
 
+  // Release slot reservations left behind by previous runs, otherwise repeated
+  // test runs slowly exhaust the calendar and bookings start failing.
+  const collections = await mongoose.connection.db.listCollections().toArray();
+  for (const name of [
+    "bookingslotreservations",
+    "reservationtimebuckets",
+    "reservationcapacitybuckets",
+    "slotcounters",
+  ]) {
+    if (collections.some((c) => c.name === name)) {
+      await mongoose.connection.db.collection(name).deleteMany({});
+    }
+  }
+
   const password = await bcrypt.hash("TestPass123!", 10);
 
   /* --- Calendar config so availability can load --- */
