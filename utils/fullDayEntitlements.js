@@ -32,20 +32,172 @@ function toDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** The Elite subscription covering this address, if there is a live one. */
+/**
+ * The subscription giving this address Elite benefits, if there is a live one.
+ *
+ * "Giving Elite benefits" rather than "being Elite", because a Premium member
+ * part-way through a Loyalty tier upgrade is entitled to everything Elite
+ * includes, and the included Full Day is the largest part of that. Asking the
+ * effective-plan seam rather than reading subscriptionType is what makes the
+ * reward mean what it says.
+ *
+ * The per-period unique index still holds: a temporarily-Elite member gets one
+ * included Full Day for the period, exactly like a paying Elite member, and it
+ * lapses with the upgrade because this function stops answering.
+ */
 async function activeEliteSubscription({ user, addressId, now = new Date() }) {
   if (!user?._id || !addressId) return null;
   const subscriptions = await Subscription.find({
     user: user._id,
     addressId,
-    subscriptionType: "elite",
     status: { $in: ["active", "trialing"] },
   }).sort({ currentPeriodStart: -1, updatedAt: -1 });
-  return (
-    subscriptions.find((subscription) =>
-      subscriptionGrantsAccess(subscription, { now })
-    ) || null
+
+  const live = subscriptions.filter((subscription) =>
+    subscriptionGrantsAccess(subscription, { now })
   );
+
+  const paidElite = live.find(
+    (subscription) => String(subscription.subscriptionType || "").toLowerCase() === "elite"
+  );
+  if (paidElite) return paidElite;
+
+  const { effectivePlanForSubscription } = require("./loyalty/effectivePlan");
+  for (const subscription of live) {
+    const effective = await effectivePlanForSubscription(subscription, { now });
+    if (effective.plan === "elite") return subscription;
+  }
+  return null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Loyalty Full Days                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Extra Full Days earned by staying a member.
+ *
+ * The mirror image of the included one. An included Full Day exists as an
+ * absence — no record for this period means one is available — whereas these are
+ * granted up front and exist as records, so "how many do I have" is a count of
+ * rows rather than the lack of one. Keeping them in the same collection means
+ * booking, cancelling and reporting all read one shape; keeping them on a
+ * different source means neither can ever be mistaken for the other.
+ *
+ * Ordered oldest first so the one closest to expiring is spent first, which is
+ * what a customer would want and what avoids a day quietly lapsing beside a
+ * fresher one.
+ */
+async function availableLoyaltyFullDays({ user, addressId, now = new Date() }) {
+  if (!user?._id || !addressId) return [];
+  return VisitEntitlement.find({
+    user: user._id,
+    addressId,
+    kind: "full_day_visit",
+    source: "loyalty_benefit",
+    status: "paid",
+    $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+  })
+    .sort({ expiresAt: 1, createdAt: 1 })
+    .lean();
+}
+
+/**
+ * Whether an Elite Loyalty Full Day can be used here, right now.
+ *
+ * Requires live membership at the address as well as an unexpired entitlement.
+ * A Loyalty Full Day is a benefit of BEING a member, so it stops being usable
+ * when the membership genuinely ends — but the record is never deleted, because
+ * somebody asking what happened to their reward deserves an answer.
+ */
+async function loyaltyFullDayState({ user, addressId, now = new Date() }) {
+  const covered = await Subscription.findOne({
+    user: user._id,
+    addressId,
+    status: { $in: ["active", "trialing"] },
+  }).sort({ currentPeriodStart: -1, updatedAt: -1 });
+
+  const membershipLive = !!covered && subscriptionGrantsAccess(covered, { now });
+  const entitlements = membershipLive
+    ? await availableLoyaltyFullDays({ user, addressId, now })
+    : [];
+
+  return {
+    available: entitlements.length,
+    next: entitlements[0] || null,
+    entitlements,
+    membershipLive,
+  };
+}
+
+/**
+ * Spend one Loyalty Full Day, at the moment the booking is confirmed.
+ *
+ * Conditional on the row still being `paid`, so two simultaneous requests
+ * produce one consumption and one clean refusal rather than two bookings against
+ * one entitlement — the same guarantee the unique index gives the included day,
+ * achieved here with an atomic update because the row already exists.
+ */
+async function consumeLoyaltyFullDay({ entitlementId, user = null, now = new Date() }) {
+  /*
+   * The owner is part of the query when the caller can supply one.
+   *
+   * Belt and braces: every current call site resolves the entitlement from the
+   * signed-in customer's own state, so an id belonging to somebody else cannot
+   * reach here today. This makes that a property of the query rather than of
+   * the caller, so a future caller that passes an id straight from a request
+   * cannot spend another customer's Full Day.
+   */
+  const filter = { _id: entitlementId, source: "loyalty_benefit", status: "paid" };
+  if (user?._id) filter.user = user._id;
+
+  const consumed = await VisitEntitlement.findOneAndUpdate(
+    filter,
+    { $set: { status: "consumed", consumedAt: now } },
+    { new: true }
+  );
+  if (!consumed) {
+    throw serviceError(
+      "LOYALTY_FULL_DAY_UNAVAILABLE",
+      "That Loyalty Full Day has already been used."
+    );
+  }
+  return consumed;
+}
+
+/**
+ * Hand a Loyalty Full Day back when its booking is cancelled in time.
+ *
+ * Returns it to `paid` rather than `canceled`, because for a loyalty day the
+ * record IS the entitlement — cancelling the row would destroy the benefit
+ * rather than release it. The original expiry is untouched: a cancellation does
+ * not buy more time.
+ */
+async function restoreLoyaltyFullDay({ booking, now = new Date() }) {
+  if (!booking?.entitlementId) return { restored: false, reason: "no_entitlement_on_booking" };
+
+  const entitlement = await VisitEntitlement.findById(booking.entitlementId);
+  if (!entitlement || entitlement.source !== "loyalty_benefit") {
+    return { restored: false, reason: "not_loyalty_entitlement" };
+  }
+
+  const scheduled = toDate(booking?.scheduledStart || booking?.date);
+  if (!scheduled) return { restored: false, reason: "no_scheduled_date" };
+  if (scheduled.getTime() <= now.getTime()) {
+    return { restored: false, reason: "day_already_started" };
+  }
+  if (entitlement.expiresAt && new Date(entitlement.expiresAt).getTime() <= now.getTime()) {
+    return { restored: false, reason: "loyalty_full_day_expired" };
+  }
+
+  const restored = await VisitEntitlement.findOneAndUpdate(
+    { _id: entitlement._id, status: "consumed" },
+    { $set: { status: "paid", consumedAt: null } },
+    { new: true }
+  );
+  return restored
+    ? { restored: true, reason: "", entitlement: restored }
+    : { restored: false, reason: "not_consumed" };
 }
 
 /**
@@ -231,10 +383,14 @@ module.exports = {
   INCLUDED_ELITE_FULL_DAYS_PER_PERIOD,
   LIVE_STATUSES,
   activeEliteSubscription,
+  availableLoyaltyFullDays,
   canRestoreIncludedFullDay,
   consumeIncludedFullDay,
+  consumeLoyaltyFullDay,
   findIncludedEntitlement,
   includedFullDayState,
+  loyaltyFullDayState,
   restoreIncludedFullDay,
+  restoreLoyaltyFullDay,
   subscriptionPeriod,
 };

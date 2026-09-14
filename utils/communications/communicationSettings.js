@@ -360,6 +360,16 @@ const EMAIL_SETTINGS = {
     appliesTo: "Members who cancel",
   },
   payment_failed: { label: "Payment failed", trigger: "A membership payment fails.", appliesTo: "Members" },
+  loyalty_benefit_unlocked: {
+    label: "Loyalty Benefit unlocked",
+    trigger: "A member completes 3, 6 or 12 loyalty months.",
+    appliesTo: "Monthly members",
+  },
+  loyalty_benefit_expiring: {
+    label: "Loyalty Benefit ending soon",
+    trigger: "A temporary Loyalty Benefit is about to end.",
+    appliesTo: "Monthly members",
+  },
   password_otp: { label: "Password reset code", trigger: "A password reset is requested.", appliesTo: "All accounts" },
   password_changed: { label: "Password changed", trigger: "An account password changes.", appliesTo: "All accounts" },
   nudge_subscribe: { label: "Membership nudge", trigger: "Non-subscriber nurture.", appliesTo: "Non-members", channelClass: "marketing" },

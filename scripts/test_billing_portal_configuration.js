@@ -113,11 +113,30 @@ test("upgrades are invoiced with proration", () => {
   assert.strictEqual(su.proration_behavior, "always_invoice");
 });
 
-test("cancellation behaviour is unchanged", () => {
+/*
+ * Cancellation belongs to ProFixter's own flow, not to the Stripe portal.
+ *
+ * The portal cannot show a member what their Loyalty progress is worth, so a
+ * cancellation reachable through it skips the one screen that might change
+ * their mind — with facts, not a discount. Cancelling is still one tap in the
+ * account area and still takes effect the same way.
+ */
+test("cancellation is not offered through the Stripe portal", () => {
   const cancel = params.features.subscription_cancel;
-  assert.strictEqual(cancel.enabled, true);
-  assert.strictEqual(cancel.mode, "at_period_end");
-  assert.strictEqual(cancel.proration_behavior, "none");
+  assert.strictEqual(cancel.enabled, false);
+});
+
+/*
+ * Turning cancellation off must not have cost members anything else. Each of
+ * these is a thing the portal is genuinely better at than we are, and all of
+ * them stay self-serve.
+ */
+test("everything else in the portal still works", () => {
+  const features = params.features;
+  assert.strictEqual(features.payment_method_update.enabled, true, "cards");
+  assert.strictEqual(features.invoice_history.enabled, true, "receipts");
+  assert.strictEqual(features.customer_update.enabled, true, "contact details");
+  assert.strictEqual(features.subscription_update.enabled, true, "plan changes");
 });
 
 test("the portal keeps working when no configuration is pinned", () => {

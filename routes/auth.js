@@ -12,6 +12,7 @@ const {
 } = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
+const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const {
   findCustomerByEmail,
@@ -126,6 +127,46 @@ async function buildPerAddressCoverage(user) {
   }
 
   /*
+   * A Loyalty tier upgrade raises the plan this map reports, without anything
+   * having changed in Stripe.
+   *
+   * This is the point of the whole entitlement layer. The customer keeps paying
+   * for the plan they bought — subscriptionType is never written — but every
+   * screen built on this map now describes the plan they are actually being
+   * treated as having, which is what makes "complimentary Premium benefits"
+   * mean something rather than being a line in an email.
+   *
+   * paidPlan is carried alongside so the account screen can say "complimentary
+   * Premium through 14 October" rather than claiming they bought Premium.
+   *
+   * One query for the whole customer, and a failure degrades to the paid plan
+   * rather than costing anybody their sign-in — coverage is rebuilt on every
+   * /me, so one degraded request recovers by itself.
+   */
+  try {
+    const paidPlanByAddress = new Map(
+      Object.entries(map)
+        .filter(([, entry]) => entry.source === "subscription")
+        .map(([key, entry]) => [key, entry.plan])
+    );
+
+    if (paidPlanByAddress.size) {
+      const effective = await effectivePlansForUser({ user: user._id, paidPlanByAddress });
+      for (const [key, resolved] of effective) {
+        if (!map[key] || resolved.source !== "loyalty") continue;
+        map[key] = {
+          ...map[key],
+          plan: resolved.plan,
+          paidPlan: resolved.paidPlan,
+          loyaltyUpgrade: { plan: resolved.plan, until: resolved.until },
+        };
+      }
+    }
+  } catch (err) {
+    console.error("buildPerAddressCoverage: loyalty lookup failed:", err);
+  }
+
+  /*
    * Gifts fill only the addresses paid cover has not already claimed.
    *
    * Ordered second so a paying member resolves exactly as before and their
@@ -173,6 +214,13 @@ function toAddressDTOWithCoverage(a, coverageMap) {
      * offering to manage a payment should ask first.
      */
     coverageSource: c.active ? c.source || "subscription" : null,
+    /*
+     * The plan they PAY for, when Loyalty is temporarily giving them a higher
+     * one. Null the rest of the time, so the common case is unchanged and the
+     * UI can tell "you are Premium" from "we are treating you as Premium".
+     */
+    paidPlan: c.paidPlan || null,
+    loyaltyUpgrade: c.loyaltyUpgrade || null,
   };
 }
 

@@ -473,6 +473,87 @@ function createCustomerEmailTemplates({
       });
     },
 
+    /*
+     * A Loyalty Benefit has been unlocked.
+     *
+     * The headline is the reward itself, not the milestone that produced it: a
+     * customer cares that they have two months of complimentary Premium, not
+     * that they completed cycle six. The plan they pay for is stated plainly in
+     * the same breath, because the single most likely worry on reading this is
+     * "have you changed what I am being charged".
+     */
+    loyalty_benefit_unlocked: ({
+      name = "there",
+      rewardHeadline,
+      rewardDetail,
+      plan,
+      address,
+      throughDate,
+      milestone,
+    }) => {
+      const rows = [
+        { label: "Your benefit", value: rewardHeadline || "" },
+        { label: "Your plan", value: plan ? `${plan} — unchanged` : "" },
+        { label: "Address", value: address || "" },
+        ...(throughDate ? [{ label: "Available through", value: throughDate }] : []),
+      ].filter((row) => row.value);
+
+      return email({
+        subject: `Unlocked: ${rewardHeadline || "your Loyalty Benefit"}`,
+        preheader: `${milestone || 3} months of membership just unlocked a benefit.`,
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">${safe(rewardHeadline)}</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">You have been a Profixter member for ${safe(
+            milestone || 3
+          )} months, and that has unlocked your next Loyalty Benefit.</p>
+          ${rewardDetail ? `<p style="margin:0 0 16px;">${safe(rewardDetail)}</p>` : ""}
+          ${detailCard(rows)}
+          <p style="margin:0;">There is nothing to claim and nothing to do. It is already on your account.</p>
+          ${button(`${ACCOUNT_URL}?tab=plan`, "See your Loyalty Benefits")}`,
+        text: `${greeting(name)}\n\n${rewardHeadline}\n\nYou have been a Profixter member for ${
+          milestone || 3
+        } months, and that has unlocked your next Loyalty Benefit.${
+          rewardDetail ? `\n\n${rewardDetail}` : ""
+        }\n\n${textDetails(rows)}\n\nThere is nothing to claim. It is already on your account.\n\nSee your Loyalty Benefits: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /*
+     * A temporary benefit is running out.
+     *
+     * Sent once, a week ahead, and only for benefits that can actually be used
+     * up — there is no point telling somebody their complimentary month is
+     * ending if there was nothing to book. The call to action is to book,
+     * because that is the only thing that converts the benefit into value.
+     */
+    loyalty_benefit_expiring: ({
+      name = "there",
+      rewardHeadline,
+      endsOn,
+      address,
+    }) => {
+      const rows = [
+        { label: "Your benefit", value: rewardHeadline || "" },
+        { label: "Ends", value: endsOn || "" },
+        { label: "Address", value: address || "" },
+      ].filter((row) => row.value);
+
+      return email({
+        subject: "Your Loyalty Benefit ends soon",
+        preheader: `${rewardHeadline || "Your Loyalty Benefit"} is available for a little longer.`,
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Still time to use this</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">Your Loyalty Benefit is available for a little longer. If there is something on your list, now is a good time to book it.</p>
+          ${detailCard(rows)}
+          ${button(urls.schedule, "Book a visit")}`,
+        text: `${greeting(name)}\n\nYour Loyalty Benefit is available for a little longer. If there is something on your list, now is a good time to book it.\n\n${textDetails(
+          rows
+        )}\n\nBook a visit: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
     payment_failed: ({ name = "there", plan, amount, billingDate }) => {
       const rows = [
         { label: "Plan", value: plan || "" },

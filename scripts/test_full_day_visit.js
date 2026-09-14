@@ -142,11 +142,16 @@ async function testEntitlementSchema() {
   assert.deepEqual(schema.path("source").enumValues, [
     "purchase",
     "membership_benefit",
+    "loyalty_benefit",
   ]);
   // Every entitlement written before Full Day existed has to keep reading as a
   // purchase without being touched.
   assert.equal(schema.path("source").defaultValue, "purchase");
   assert.equal(schema.path("periodStart").defaultValue, null);
+  // Loyalty Full Days are additive and carry no period, so they sit outside the
+  // per-period index entirely and have their own guard instead.
+  assert.equal(schema.path("loyaltyGrantId").defaultValue, null);
+  assert.equal(schema.path("expiresAt").defaultValue, null);
 
   const index = schema
     .indexes()

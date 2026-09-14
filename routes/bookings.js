@@ -82,9 +82,13 @@ const {
 } = require("../utils/fullDayVisitService");
 const {
   consumeIncludedFullDay,
+  consumeLoyaltyFullDay,
   includedFullDayState,
+  loyaltyFullDayState,
+  restoreLoyaltyFullDay,
   restoreIncludedFullDay,
 } = require("../utils/fullDayEntitlements");
+const { effectivePlanForSubscription } = require("../utils/loyalty/effectivePlan");
 const {
   uploadAppointmentPhotos,
   storeAppointmentImages,
@@ -189,6 +193,35 @@ const hhmmInTZ = (d, tz) =>
     minute: "2-digit",
     hour12: false,
   }).format(d);
+
+/**
+ * The plan to gate booking on, and how many appointments it allows.
+ *
+ * Reads the effective plan rather than subscriptionType, so a member part-way
+ * through a Loyalty tier upgrade gets the capacity the higher plan allows while
+ * still paying for their own. That is the only plan-driven entitlement the
+ * booking system enforces today, and routing it through the same seam as
+ * everything else means a benefit added to a plan later is inherited by the
+ * loyalty reward without this feature being touched.
+ *
+ * Falls back to the paid plan if the loyalty lookup fails: booking must never
+ * depend on it.
+ */
+async function resolvePlanCapacity(activeSub) {
+  const paidPlan = String(activeSub?.subscriptionType || "").toLowerCase();
+  if (!activeSub) return { plan: "", paidPlan: "", bookingLimit: 0, loyaltyUpgrade: null };
+
+  const effective = await effectivePlanForSubscription(activeSub);
+  const plan = effective.plan || paidPlan;
+
+  return {
+    plan,
+    paidPlan,
+    bookingLimit: plan === "basic" ? 1 : plan ? 2 : 0,
+    loyaltyUpgrade:
+      effective.source === "loyalty" ? { plan: effective.plan, until: effective.until } : null,
+  };
+}
 
 async function resolveBookingSubscription(user, address, options = {}) {
   const hasAnyAddressSubs = await Subscription.exists({
@@ -302,10 +335,11 @@ router.get("/next", auth, async (req, res) => {
     });
     const activeSub = access.subscription;
 
-    let plan = String(activeSub?.subscriptionType || "").toLowerCase();
+    const capacity = await resolvePlanCapacity(activeSub);
+    let plan = capacity.plan;
     let hasSubscription = !!activeSub;
 
-    let bookingLimit = plan === "basic" ? 1 : plan ? 2 : 0;
+    let bookingLimit = capacity.bookingLimit;
     let freeFirstVisitAvailable = false;
     let introVisitStatus = null;
     let introVisitServiceable = false;
@@ -523,7 +557,19 @@ async function cancelOrDelete(req, res) {
     let fullDayRestore = null;
     if (isFullDay) {
       try {
+        /*
+         * Whichever kind of free day this booking spent, give that one back.
+         * Each helper refuses a booking that is not its own, so calling both is
+         * safe and neither can return the wrong benefit. They also end
+         * differently on purpose: an included day is released by ending the
+         * record's life, because the record IS the consumption, while a Loyalty
+         * day goes back to `paid`, because there the record IS the benefit and
+         * cancelling it would destroy what the member earned.
+         */
         fullDayRestore = await restoreIncludedFullDay({ booking });
+        if (!fullDayRestore?.restored) {
+          fullDayRestore = await restoreLoyaltyFullDay({ booking });
+        }
       } catch (error) {
         console.error("Full Day entitlement restore failed:", error.message);
       }
@@ -1212,6 +1258,7 @@ router.get("/full-day/eligibility", auth, async (req, res) => {
       });
     }
     const state = await includedFullDayState({ user: me, addressId: subdoc._id });
+    const loyalty = await loyaltyFullDayState({ user: me, addressId: subdoc._id });
     return res.json({
       addressId: String(subdoc._id),
       includedAvailable: state.entitled && !state.used,
@@ -1220,6 +1267,17 @@ router.get("/full-day/eligibility", auth, async (req, res) => {
       periodStart: state.periodStart,
       periodEnd: state.periodEnd,
       reason: state.reason,
+      /*
+       * Loyalty Full Days are reported separately from the included one, and
+       * deliberately so: they are extra, they do not reset with the billing
+       * period, and they carry their own expiry. Folding them into
+       * includedAvailable would make an Elite member who has used this period's
+       * Full Day look as though they had not.
+       */
+      loyaltyAvailable: loyalty.available,
+      loyaltyExpiresAt: loyalty.next?.expiresAt || null,
+      /* Either source means the customer pays nothing for this day. */
+      freeDayAvailable: (state.entitled && !state.used) || loyalty.available > 0,
     });
   } catch (error) {
     console.error("Full Day eligibility error:", error.message);
@@ -1279,7 +1337,28 @@ router.post(
       }
 
       const state = await includedFullDayState({ user: me, addressId: subdoc._id });
-      if (!state.entitled) {
+      const loyalty = await loyaltyFullDayState({ user: me, addressId: subdoc._id });
+
+      /*
+       * Two ways to have a Full Day at no charge, and the included one is spent
+       * first.
+       *
+       * That order matters to the customer. The included day resets every
+       * billing period and is lost if unused; a Loyalty day was earned, lives
+       * for ninety days and can wait. Spending the perishable one first is what
+       * a member would choose if they were asked, so they are not asked.
+       */
+      const useIncluded = state.entitled && !state.used;
+      const useLoyalty = !useIncluded && loyalty.available > 0;
+
+      if (!useIncluded && !useLoyalty) {
+        if (state.entitled && state.used) {
+          return res.status(409).json({
+            code: "FULL_DAY_BENEFIT_ALREADY_USED",
+            message:
+              "You have already used your included Full Day for this billing period. You can book another for $499.",
+          });
+        }
         return res.status(403).json({
           code:
             state.reason === "no_billing_period"
@@ -1291,32 +1370,27 @@ router.post(
               : "A Full Day is included with Elite. Choose the $499 Full Day instead.",
         });
       }
-      if (state.used) {
-        return res.status(409).json({
-          code: "FULL_DAY_BENEFIT_ALREADY_USED",
-          message:
-            "You have already used your included Full Day for this billing period. You can book another for $499.",
-        });
-      }
 
       // Fail before spending anything if the day is already gone.
       await assertFullDayBookable({ date });
       await ensureVisitEntitlementIndexesOnce();
 
-      entitlement = await consumeIncludedFullDay({
-        user: me,
-        addressId: subdoc._id,
-        addressSnapshot: {
-          line1: subdoc.line1 || "",
-          city: subdoc.city || "",
-          state: subdoc.state || "",
-          zip: subdoc.zip || "",
-          county: subdoc.county || "",
-        },
-        periodStart: state.periodStart,
-        periodEnd: state.periodEnd,
-        durationMinutes: settings.approximateHours * 60,
-      });
+      entitlement = useIncluded
+        ? await consumeIncludedFullDay({
+            user: me,
+            addressId: subdoc._id,
+            addressSnapshot: {
+              line1: subdoc.line1 || "",
+              city: subdoc.city || "",
+              state: subdoc.state || "",
+              zip: subdoc.zip || "",
+              county: subdoc.county || "",
+            },
+            periodStart: state.periodStart,
+            periodEnd: state.periodEnd,
+            durationMinutes: settings.approximateHours * 60,
+          })
+        : await consumeLoyaltyFullDay({ entitlementId: loyalty.next._id, user: me });
 
       const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
       const uploadResult = await uploadBookingImages({
@@ -1385,13 +1459,34 @@ router.post(
         scheduledStart: booking.scheduledStart,
         scheduledEnd: booking.scheduledEnd,
         included: true,
+        /*
+         * Which benefit paid for this day. Both cost the customer nothing, so
+         * `included` stays true for either, but a confirmation screen that says
+         * "your included Full Day" when they actually spent a Loyalty one would
+         * leave them thinking they still had the other.
+         */
+        source: useLoyalty ? "loyalty_benefit" : "membership_benefit",
       });
     } catch (error) {
       console.error("Full Day booking error:", error.stack || error.message);
       try {
         if (!booking && entitlement?._id) {
-          // The benefit was taken but the day was not. Give it straight back.
-          entitlement.status = "canceled";
+          /*
+           * The benefit was taken but the day was not. Give it straight back —
+           * and the two kinds are given back in OPPOSITE directions, because
+           * the record means opposite things.
+           *
+           * An included Full Day is recognised by the ABSENCE of a record, so
+           * ending this record's life is what releases it. A Loyalty Full Day
+           * is the record, so "canceled" would destroy the benefit the member
+           * earned rather than return it; it goes back to `paid`, which is
+           * where it started.
+           */
+          if (entitlement.source === "loyalty_benefit") {
+            entitlement.status = "paid";
+          } else {
+            entitlement.status = "canceled";
+          }
           entitlement.consumedAt = null;
           await entitlement.save();
         }
@@ -1704,8 +1799,9 @@ router.post(
 
       let usingFreeFirstVisit = false;
 
-      let plan = String(activeSub?.subscriptionType || "").toLowerCase();
-      let bookingLimit = plan === "basic" ? 1 : plan ? 2 : 0;
+      const capacity = await resolvePlanCapacity(activeSub);
+      let plan = capacity.plan;
+      let bookingLimit = capacity.bookingLimit;
 
       if (access.staleSubscription) {
         return res.status(403).json({
