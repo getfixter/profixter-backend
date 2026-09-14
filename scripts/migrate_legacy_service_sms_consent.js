@@ -9,12 +9,15 @@
  * with that position.
  *
  * It does NOT claim they ticked today's checkbox. The source is written as
- * legacy_registration_migration, never signup_web_form, and the consent
- * timestamp is their ORIGINAL REGISTRATION DATE rather than the afternoon
- * somebody ran this. When we ran it is recorded separately, in
- * legacyConsentMigration.migratedAt, because those are two different facts and
- * flattening them would make every legacy account look like it consented at
- * the same instant.
+ * legacy_registration_migration, never signup_web_form.
+ *
+ * Nor does it back-date the consent to their sign-up. transactionalConsentAt
+ * means "when they consented", and they did not consent when they registered -
+ * the old required checkbox covered the Terms and the Privacy Policy and said
+ * nothing about messaging. So that field records when this permission actually
+ * came into being, which is now, and the registration date is preserved
+ * separately in legacyRegisteredAt and legacyConsentMigration.
+ * historicalRegisteredAt, described as what it is: the account's origin.
  *
  * MARKETING IS NOT TOUCHED. Not by inference from service consent, not at all.
  * A promotional text still requires its own box, ticked by the person.
@@ -125,9 +128,20 @@ async function main() {
   let written = 0;
   for (const user of eligible) {
     /*
-     * The customer's own registration date is the consent timestamp. Where an
-     * account somehow has none, the migration timestamp is used and the
-     * provenance record says so rather than passing it off as historical.
+     * transactionalConsentAt IS THE MIGRATION DATE, NOT THE REGISTRATION DATE.
+     *
+     * The schema calls that field "when and how they consented - evidence, not
+     * decoration", and these customers did not consent when they registered:
+     * the old required checkbox covered the Terms and the Privacy Policy and
+     * said nothing about messaging. Back-dating it to their sign-up would put
+     * a consent date in the record for a day on which no consent happened,
+     * which is the one thing this migration must not do.
+     *
+     * So the field records when this permission actually came into being - now,
+     * by migration - and the source beside it says that is what happened. The
+     * registration date is preserved, twice and separately, in legacyRegisteredAt
+     * and in legacyConsentMigration.historicalRegisteredAt, where it is
+     * described as what it is: the account's origin, not an act of consent.
      */
     const historical = user.createdAt || user.legacyRegisteredAt || null;
     await users.updateOne(
@@ -135,7 +149,7 @@ async function main() {
       {
         $set: {
           "smsPreferences.transactionalEnabled": true,
-          "smsPreferences.transactionalConsentAt": historical || migratedAt,
+          "smsPreferences.transactionalConsentAt": migratedAt,
           "smsPreferences.transactionalConsentSource": CONSENT_SOURCE,
           communicationStateBasis: BASIS,
           legacyConsentMigration: {

@@ -13,8 +13,8 @@
  * changes nothing.
  *
  * It also proves the two provenance properties that keep the record honest -
- * the consent timestamp is the customer's ORIGINAL registration date, not the
- * afternoon the script ran, and the source never claims to be today's web form.
+ * the consent date is not back-dated to a sign-up on which no consent
+ * happened, and the source never claims to be today's web form.
  */
 const assert = require("assert");
 const mongoose = require("mongoose");
@@ -128,12 +128,28 @@ async function main() {
     assert.strictEqual(row.smsPreferences.transactionalEnabled, true);
   });
 
-  await test("the consent timestamp is the ORIGINAL registration date", async () => {
+  await test("the consent date is the migration, NOT back-dated to registration", async () => {
+    /*
+     * The field means "when they consented". These customers did not consent
+     * when they registered - the old checkbox covered Terms and Privacy only -
+     * so back-dating it would put a consent date on a day no consent happened.
+     * The registration date is preserved separately instead.
+     */
     const row = await reload(plain);
-    assert.strictEqual(
+    assert.notStrictEqual(
       new Date(row.smsPreferences.transactionalConsentAt).toISOString(),
       REGISTERED_ON.toISOString(),
-      "the migration's own run time must never masquerade as the consent date"
+      "a consent date must not be invented for the day they signed up"
+    );
+    assert.strictEqual(
+      new Date(row.smsPreferences.transactionalConsentAt).toISOString(),
+      new Date(row.legacyConsentMigration.migratedAt).toISOString(),
+      "it is the moment this permission actually came into being"
+    );
+    assert.strictEqual(
+      new Date(row.legacyRegisteredAt).toISOString(),
+      REGISTERED_ON.toISOString(),
+      "and the registration date survives, described as what it is"
     );
   });
 
@@ -150,7 +166,7 @@ async function main() {
     assert.notStrictEqual(
       new Date(row.legacyConsentMigration.migratedAt).toISOString(),
       REGISTERED_ON.toISOString(),
-      "the run time and the consent date are different facts"
+      "the run time and the registration date are different facts"
     );
     assert.strictEqual(
       new Date(row.legacyConsentMigration.historicalRegisteredAt).toISOString(),
