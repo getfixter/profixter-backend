@@ -5,6 +5,7 @@ const Subscription = require("../../models/Subscription");
 const User = require("../../models/User");
 
 const { BATCH, smsMarketingEnabled } = require("./smsConfig");
+const { marketingSmsLaunchState } = require("../marketing/smsMarketingLaunch");
 const dedupe = require("./smsDedupe");
 const { newYorkParts } = require("./smsEligibility");
 const { sendMarketingSms } = require("./smsService");
@@ -327,6 +328,21 @@ async function runSmsCampaignSweep({
   CampaignModel = SmsCampaign,
   ...dependencies
 } = {}) {
+  /*
+   * The approved launch instant, checked before anything else is read.
+   *
+   * Returning early here means no audience is selected, no campaign row is
+   * touched and nothing is written while marketing is still closed - so when
+   * the instant passes there is no backlog to release. The state is logged
+   * every sweep so the transition is provable after the fact without anybody
+   * having been awake for it.
+   */
+  const launch = marketingSmsLaunchState(now);
+  if (!launch.launched) {
+    console.log(JSON.stringify({ event: "sms_marketing_gate", ...launch }));
+    return { ran: false, reason: "before_marketing_launch", campaigns: [], launch };
+  }
+
   if (!smsMarketingEnabled()) {
     return { ran: false, reason: "marketing_channel_disabled", campaigns: [] };
   }

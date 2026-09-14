@@ -1,6 +1,5 @@
 /**
- * The unmonitored number: what it does when somebody texts or rings it, and
- * the one time it introduces itself.
+ * The unmonitored number: what it does when somebody texts or rings it.
  *
  * 631-888-6340 sends appointment reminders and nothing else. People will text
  * it back and people will ring it, because it is the number on the message in
@@ -15,10 +14,10 @@
  * tests below prove it holds across repeated deliveries rather than within one
  * process.
  *
- * The second theme is the launch blast. When SMS_ENABLED eventually becomes
- * true, nothing historical may wake up: not the fifty rows already in the
- * database, not an introduction for every customer who opted in early, not a
- * queue that has been quietly filling. Those cases are at the end.
+ * The second theme is the launch blast. When SMS_ENABLED becomes true, nothing
+ * historical may wake up: not the rows already in the database, not a queue
+ * that has been quietly filling, not anything that was due while sending was
+ * off. Those cases are at the end.
  */
 const assert = require("assert");
 const express = require("express");
@@ -64,7 +63,6 @@ async function main() {
   const { checkEligibility } = require("../utils/sms/smsEligibility");
   const { runSmsRetrySweep } = require("../utils/sms/smsService");
   const voiceRoute = require("../routes/voiceWebhook");
-  const smsNotify = require("../utils/sms/smsNotifications");
 
   await SmsMessage.init();
   await SmsOptOut.init();
@@ -323,101 +321,7 @@ async function main() {
   });
 
   /* ==================================================================== */
-  section("The one-time number introduction");
-
-  await test("an explicit service opt-in sends it exactly once", async () => {
-    const { user, token } = await makeUser({ phone: "+16315557020" });
-    const res = await prefsPut(token, { transactionalEnabled: true });
-    assert.strictEqual(res.status, 200);
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 1);
-  });
-
-  await test("toggling off and on again does not send it twice", async () => {
-    const { user, token } = await makeUser({ phone: "+16315557021" });
-    await prefsPut(token, { transactionalEnabled: true });
-    await prefsPut(token, { transactionalEnabled: false });
-    await prefsPut(token, { transactionalEnabled: true });
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 1, "once per account, forever");
-  });
-
-  await test("marketing consent alone cannot trigger it", async () => {
-    const { user, token } = await makeUser({ phone: "+16315557022" });
-    await prefsPut(token, { marketingEnabled: true });
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 0);
-  });
-
-  await test("being a member cannot trigger it", async () => {
-    const { user } = await makeUser({ phone: "+16315557023", subscriptionType: "premium" });
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 0, "membership is not consent and never has been");
-  });
-
-  await test("having a phone number cannot trigger it", async () => {
-    const { user } = await makeUser({ phone: "+16315557024" });
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 0);
-  });
-
-  await test("it requires transactionalEnabled === true at send time", async () => {
-    const { user } = await makeUser({
-      phone: "+16315557025",
-      smsPreferences: { transactionalEnabled: false },
-    });
-    const verdict = await checkEligibility({
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-      user,
-      phone: user.phone,
-    });
-    assert.strictEqual(verdict.eligible, false);
-    assert.strictEqual(verdict.reason, "transactional_disabled_by_user");
-  });
-
-  await test("registration does not also send it - ACCOUNT_CREATED stands alone", () => {
-    /*
-     * The trigger lives in the account-settings route only. If it were moved
-     * into registration a new customer would receive a welcome and an
-     * explanation of the number that just welcomed them, seconds apart.
-     */
-    const fs = require("fs");
-    const path = require("path");
-    const auth = fs.readFileSync(path.join(__dirname, "..", "routes", "auth.js"), "utf8");
-    assert.ok(
-      !auth.includes("notifySmsNumberIntroduction"),
-      "registration must not send the introduction"
-    );
-    const users = fs.readFileSync(path.join(__dirname, "..", "routes", "users.js"), "utf8");
-    assert.ok(users.includes("notifySmsNumberIntroduction"), "the account-settings path must send it");
-  });
-
-  /* ==================================================================== */
   section("Enabling SMS_ENABLED cannot blast anybody");
-
-  await test("the introduction recorded while disabled is simulated and owns its key", async () => {
-    const rows = await SmsMessage.find({ notificationType: "SMS_NUMBER_INTRODUCTION" }).lean();
-    assert.ok(rows.length > 0);
-    for (const row of rows) {
-      assert.strictEqual(row.status, "simulated");
-      assert.ok(row.dedupeKey, "the key is what prevents a later replay");
-    }
-  });
 
   await test("the retry sweep ignores simulated and suppressed rows entirely", async () => {
     const before = await SmsMessage.countDocuments({ status: { $in: ["sent", "delivered"] } });
@@ -450,21 +354,6 @@ async function main() {
     );
   });
 
-  await test("re-running the introduction for an existing opt-in does not resend", async () => {
-    /* Exactly what a well-meaning "catch everyone up" script would attempt. */
-    const user = await User.findOne({ phone: "+16315557020" });
-    process.env.SMS_ENABLED = "true";
-    try {
-      await smsNotify.notifySmsNumberIntroduction(user, "manual_backfill_attempt");
-    } finally {
-      delete process.env.SMS_ENABLED;
-    }
-    const n = await SmsMessage.countDocuments({
-      user: user._id,
-      notificationType: "SMS_NUMBER_INTRODUCTION",
-    });
-    assert.strictEqual(n, 1, "a backfill must collide with the existing key, not create a send");
-  });
 
   await test("no scheduler scans for un-sent introductions", () => {
     const fs = require("fs");
@@ -473,7 +362,7 @@ async function main() {
       const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
       assert.ok(
         !src.includes("SMS_NUMBER_INTRODUCTION"),
-        `${file} must not look for introductions to catch up`
+        `${file} must not reference a feature that no longer exists`
       );
       assert.ok(
         !src.includes("INBOUND_INFO_REPLY"),
@@ -483,7 +372,7 @@ async function main() {
   });
 
   await test("both new types are transactional and neither is marketing", () => {
-    for (const type of ["INBOUND_INFO_REPLY", "SMS_NUMBER_INTRODUCTION"]) {
+    for (const type of ["INBOUND_INFO_REPLY"]) {
       assert.strictEqual(smsTypes.channelClassOf(type), "transactional");
       assert.strictEqual(smsTypes.isMarketing(type), false);
     }

@@ -510,25 +510,6 @@ const TEMPLATES = {
     `not monitored for replies. For assistance, call ${SUPPORT_PHONE}. ` +
     `${OPT_OUT_LINE}`,
 
-  /*
-   * Sent once, at the moment somebody switches service texts on themselves.
-   *
-   * TIGHTENED TO ONE SEGMENT, DELIBERATELY.
-   *
-   * The wording this was drafted from ran to 261 characters and two segments.
-   * Every other body in this file is one segment - a rule this repo enforces
-   * by test rather than by intention - and an introduction is the worst
-   * possible place to be the exception: it is sent to every customer who ever
-   * turns texts on, forever, so its cost is paid more often than any other
-   * message here. Nothing was dropped to get inside the limit. The sending
-   * number, the fact that it is automated, that it takes neither calls nor
-   * replies, where a person is, and how to stop are all still here.
-   */
-  SMS_NUMBER_INTRODUCTION: () =>
-    `${BRAND}: Text updates are on. They come from 631-888-6340, an ` +
-    `automated number that takes no calls or replies. Help: ${SUPPORT_PHONE}. ` +
-    `${OPT_OUT_LINE}`,
-
   /* ----------------------------- Marketing ----------------------------- */
   /*
    * Approved marketing copy, tightened on final review to fit ONE segment.

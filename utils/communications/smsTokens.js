@@ -323,14 +323,7 @@ const DEFINITIONS = {
       "Reply STOP to opt out.",
     tokens: () => ({}),
   },
-  SMS_NUMBER_INTRODUCTION: {
-    label: "Introducing the texting number",
-    template:
-      "{{brand}}: Text updates are on. They come from 631-888-6340, an " +
-      "automated number that takes no calls or replies. Help: {{supportPhone}}. " +
-      "Reply STOP to opt out.",
-    tokens: () => ({}),
-  },
+
 
   /* ----------------------------- Marketing ----------------------------- */
   KITCHEN_BATH_MARKETING: {

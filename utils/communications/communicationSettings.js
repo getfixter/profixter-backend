@@ -235,16 +235,7 @@ const SMS_SETTINGS = {
       "place of the compliance keywords - those are handled and returned before this runs.",
   },
 
-  SMS_NUMBER_INTRODUCTION: {
-    trigger: "A customer switches Service Texts ON in account settings.",
-    event: "routes/users.js PUT /me/sms-preferences -> notifySmsNumberIntroduction",
-    appliesTo: "Accounts whose transactionalEnabled has just become true. Nobody else.",
-    schedule: "Immediately, once per account, forever.",
-    notes:
-      "Not sent at registration: a new customer already receives ACCOUNT_CREATED from the same " +
-      "number in the same minute, and two texts explaining each other is worse than either. " +
-      "Membership, a phone number and marketing consent are all irrelevant to this trigger.",
-  },
+
 
   KITCHEN_BATH_MARKETING: {
     trigger: "The hourly marketing campaign sweep selects an audience.",

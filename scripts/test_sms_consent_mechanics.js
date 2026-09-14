@@ -883,7 +883,9 @@ async function main() {
      * individually rather than trusting the hash alone. The new templates are
      * marketing-class and cannot send without an explicit marketing opt-in.
      *
-     * Re-pinned again for INBOUND_INFO_REPLY and SMS_NUMBER_INTRODUCTION.
+     * Re-pinned again for INBOUND_INFO_REPLY, and once more when
+     * SMS_NUMBER_INTRODUCTION was deleted outright - the owner decided against
+     * a launch announcement, so the body was removed rather than disabled.
      * Same discipline, and the same evidence: thirty-seven added lines, zero
      * removed and zero modified, and all thirty pre-existing bodies were
      * rendered from the previous committed file and compared character by
@@ -897,7 +899,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "52f0ea01c28d8f0afde1283be131c756a0a9ab1d5a6d18beb79c6f771599b750",
+      "e2b78dc1bed601c237764e28b4e348dbf2f33c045fdb24ba31b4d701e24515a1",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

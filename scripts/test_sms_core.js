@@ -537,15 +537,8 @@ test("no transactional message is padded with marketing", () => {
    * sense, and omitting the opt-out from it would be the one place carriers
    * would genuinely object.
    *
-   * SMS_NUMBER_INTRODUCTION is by definition the first message after an
-   * opt-in - that is the entire trigger - so it is the same case as
-   * ACCOUNT_CREATED, arriving through a different door.
    */
-  const DISCLOSURE_EXEMPT = new Set([
-    "ACCOUNT_CREATED",
-    "INBOUND_INFO_REPLY",
-    "SMS_NUMBER_INTRODUCTION",
-  ]);
+  const DISCLOSURE_EXEMPT = new Set(["ACCOUNT_CREATED", "INBOUND_INFO_REPLY"]);
   for (const type of types.typesOfClass("transactional")) {
     if (DISCLOSURE_EXEMPT.has(type)) continue;
     const body = templates.renderSms(type, {

@@ -1,4 +1,5 @@
 const SmsOptOut = require("../../models/SmsOptOut");
+const { marketingSmsLaunched } = require("../marketing/smsMarketingLaunch");
 const SmsPhoneStatus = require("../../models/SmsPhoneStatus");
 const { QUIET_HOURS, TIMEZONE, smsMarketingEnabled } = require("./smsConfig");
 const { isMarketing, isTimeCritical, isKnownType } = require("./smsTypes");
@@ -228,6 +229,18 @@ async function checkEligibility({
 
   if (isMarketing(notificationType) && !smsMarketingEnabled()) {
     return no("marketing_channel_disabled");
+  }
+
+  /*
+   * The launch instant, enforced here as well as in the campaign sweep.
+   *
+   * The sweep is the only thing that sends marketing today, so this is
+   * belt-and-braces - but a future caller that reaches sendMarketingSms
+   * directly would otherwise walk straight past the gate, and "we only call it
+   * from one place" is the kind of thing that stops being true quietly.
+   */
+  if (isMarketing(notificationType) && !marketingSmsLaunched(now)) {
+    return no("before_marketing_launch");
   }
 
   const optOut = await optOutFor(e164, OptOutModel);
