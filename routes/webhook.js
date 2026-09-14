@@ -18,6 +18,10 @@ const {
   isGiftSession,
 } = require("../utils/gifts/giftWebhook");
 const {
+  recordRenewal: recordLoyaltyRenewal,
+  reverseFromCharge: reverseLoyaltyFromCharge,
+} = require("../utils/loyalty/loyaltyService");
+const {
   sendGiftPurchaseEmails,
   sendGiftPurchasedAdminNotice,
 } = require("../utils/gifts/giftEmails");
@@ -1933,6 +1937,30 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
   return subscription;
 }
 
+/**
+ * A disputed charge, traced back to the membership month it paid for.
+ *
+ * A Dispute carries a charge id, not an invoice, so the charge has to be read
+ * to find out what it settled. Anything that was not a membership renewal finds
+ * no loyalty row and does nothing — which is how tips, gift purchases and
+ * project invoices stay out of this entirely.
+ */
+async function handleLoyaltyDispute(dispute) {
+  const chargeId = typeof dispute?.charge === "string" ? dispute.charge : dispute?.charge?.id;
+  if (!chargeId) return null;
+
+  try {
+    const charge = await stripe.charges.retrieve(String(chargeId));
+    return await reverseLoyaltyFromCharge({ charge, reason: "charge_disputed" });
+  } catch (error) {
+    logWebhook("warn", "loyalty_dispute_lookup_failed", {
+      chargeId: String(chargeId),
+      message: error?.message || "charge lookup failed",
+    });
+    return null;
+  }
+}
+
 async function handleInvoicePaid(invoice) {
   if (!invoice?.subscription) return;
 
@@ -1947,6 +1975,21 @@ async function handleInvoicePaid(invoice) {
   subscription.latestInvoiceId = invoice.id || subscription.latestInvoiceId || null;
   subscription.latestInvoiceStatus = invoice.status || subscription.latestInvoiceStatus || null;
   await subscription.save();
+
+  /*
+   * Loyalty Benefits, after the subscription is in step with Stripe.
+   *
+   * Ordered last on purpose. The plan, period and status this renewal is
+   * counted against all come from the record we have just synced, so counting
+   * before the sync would stamp the month with whatever the plan used to be.
+   *
+   * recordRenewal decides for itself whether this invoice is a renewal at all —
+   * it ignores signups, upgrade prorations and annual memberships — and it never
+   * throws, so a loyalty problem can never turn a processed payment into a 500
+   * that makes Stripe retry it.
+   */
+  await recordLoyaltyRenewal({ invoice, stripeSubscription });
+
   return subscription;
 }
 
@@ -2313,6 +2356,29 @@ module.exports = async (req, res) => {
          * is using; see utils/gifts/giftWebhook for why that is deliberate.
          */
         await handleGiftRefund(event.data.object);
+        /*
+         * Then Loyalty, which stops counting a membership month whose money
+         * came back. Finds nothing unless the charge settled a membership
+         * renewal invoice, so tips, gifts and project invoices pass straight
+         * through. The reward already given is deliberately left alone.
+         */
+        await reverseLoyaltyFromCharge({
+          charge: event.data.object,
+          reason: "charge_refunded",
+        });
+        break;
+
+      /*
+       * A chargeback. Previously unhandled, and Loyalty is the reason it has to
+       * be: a member who disputes their eleventh month and wins has not paid for
+       * it, and a month nobody paid for must not carry them to a reward.
+       *
+       * Deliberately narrow — it reverses the loyalty month and nothing else.
+       * Revoking access on a dispute we may intend to contest is a decision for
+       * a person, exactly as it is for gift refunds.
+       */
+      case "charge.dispute.created":
+        await handleLoyaltyDispute(event.data.object);
         break;
 
       case "checkout.session.expired":

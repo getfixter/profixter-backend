@@ -1,3 +1,5 @@
+const { retentionOfferEnabled } = require("./loyalty/loyaltyConfig");
+
 const NOT_AVAILABLE = "Not Available";
 const RETENTION_COUPON_ENV = "STRIPE_RETENTION_COUPON_ID";
 
@@ -46,6 +48,7 @@ function buildRetentionOfferDebug({
   return {
     route: "POST /api/subscriptions/manage/address/:addressId/retention-offer",
     apiResponseReason: reason || null,
+    offerEnabled: retentionOfferEnabled(env),
     couponEnvPresent: hasRetentionCoupon(env),
     subscriptionId: hasSubscription && subscription._id ? String(subscription._id) : null,
     addressId:
@@ -72,6 +75,19 @@ function buildRetentionOfferDebug({
 function evaluateRetentionOfferDisplay(subscription = {}, env = process.env) {
   const offer = retentionOffer(subscription);
 
+  /*
+   * The discount is now the SECOND cancellation screen, behind Loyalty
+   * progress, and this is the switch that retires it.
+   *
+   * Kept as a switch rather than deleted because nobody yet knows what the
+   * offer has been worth — scripts/measure_retention_offer.js answers that from
+   * data we already hold. Setting RETENTION_OFFER_ENABLED=false removes it
+   * everywhere, with no deploy and no second redesign.
+   */
+  if (!retentionOfferEnabled(env)) {
+    return { eligible: false, reason: "retention_offer_disabled" };
+  }
+
   if (!hasRetentionCoupon(env)) {
     return { eligible: false, reason: "coupon_env_missing" };
   }
@@ -93,6 +109,12 @@ function evaluateRetentionOfferDisplay(subscription = {}, env = process.env) {
 
 function evaluateRetentionOfferAcceptance(subscription = {}, env = process.env) {
   const offer = retentionOffer(subscription);
+
+  // Checked on acceptance as well as display, so an offer already on somebody's
+  // screen when the switch is thrown cannot still be redeemed.
+  if (!retentionOfferEnabled(env)) {
+    return { eligible: false, reason: "retention_offer_disabled" };
+  }
 
   if (!hasRetentionCoupon(env)) {
     return { eligible: false, reason: "coupon_env_missing" };

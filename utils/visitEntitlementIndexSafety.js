@@ -29,6 +29,7 @@ const STRIPE_ID_INDEXES = [
 ];
 
 const MEMBERSHIP_BENEFIT_INDEX_NAME = "one_membership_benefit_per_period";
+const LOYALTY_GRANT_INDEX_NAME = "one_entitlement_per_loyalty_grant";
 
 /*
  * Additive only, and deliberately kept apart from the Stripe specs above.
@@ -56,6 +57,24 @@ const ADDITIVE_INDEXES = [
         source: "membership_benefit",
         periodStart: { $type: "date" },
         status: { $in: ["pending_payment", "paid", "consumed"] },
+      },
+    },
+  },
+  /*
+   * One Full Day per Loyalty grant.
+   *
+   * Also additive, and safe on the same terms: the partial filter requires
+   * loyaltyGrantId to be an ObjectId, and no entitlement written before Loyalty
+   * Benefits existed has one. Every historical document is outside the index,
+   * so nothing needs migrating and nothing can be orphaned.
+   */
+  {
+    keys: { loyaltyGrantId: 1 },
+    options: {
+      unique: true,
+      name: LOYALTY_GRANT_INDEX_NAME,
+      partialFilterExpression: {
+        loyaltyGrantId: { $type: "objectId" },
       },
     },
   },
@@ -179,7 +198,9 @@ async function ensureVisitEntitlementIndexes({
         error.message = [
           error.message,
           `VisitEntitlement could not create ${spec.options.name}.`,
-          "A customer already holds more than one membership-benefit entitlement for the same billing period; repair the duplicates before this index can exist.",
+          spec.options.name === LOYALTY_GRANT_INDEX_NAME
+            ? "A Loyalty grant already has more than one Full Day entitlement; repair the duplicates before this index can exist."
+            : "A customer already holds more than one membership-benefit entitlement for the same billing period; repair the duplicates before this index can exist.",
         ].join(" ");
       }
       throw error;
@@ -210,6 +231,7 @@ function ensureVisitEntitlementIndexesOnce(options = {}) {
 module.exports = {
   ADDITIVE_INDEXES,
   CHECKOUT_SESSION_INDEX_NAME,
+  LOYALTY_GRANT_INDEX_NAME,
   MEMBERSHIP_BENEFIT_INDEX_NAME,
   PAYMENT_INTENT_INDEX_NAME,
   STRIPE_ID_INDEXES,

@@ -3,7 +3,9 @@ const crypto = require("node:crypto");
 const mongoose = require("mongoose");
 const VisitEntitlement = require("../models/VisitEntitlement");
 const {
+  ADDITIVE_INDEXES,
   CHECKOUT_SESSION_INDEX_NAME,
+  LOYALTY_GRANT_INDEX_NAME,
   MEMBERSHIP_BENEFIT_INDEX_NAME,
   PAYMENT_INTENT_INDEX_NAME,
   STRIPE_ID_INDEXES,
@@ -123,11 +125,20 @@ async function testStaleIndexRepair() {
     CHECKOUT_SESSION_INDEX_NAME,
     "stripePaymentIntentId_1",
   ].sort());
-  // Two repaired Stripe indexes plus the additive membership-benefit index,
-  // which is only ever created and is never part of the dropped set.
-  assert.equal(collection.state.created.length, 3);
+  // Two repaired Stripe indexes plus every additive index. The additive ones
+  // are only ever created and are never part of the dropped set.
+  assert.equal(collection.state.created.length, 2 + ADDITIVE_INDEXES.length);
   assert.equal(result.dropped.includes(MEMBERSHIP_BENEFIT_INDEX_NAME), false);
   assert.equal(result.created.includes(MEMBERSHIP_BENEFIT_INDEX_NAME), true);
+
+  /*
+   * The Loyalty Full Day guard. The per-period index cannot protect it — that
+   * one's partial filter is pinned to source "membership_benefit" — so a
+   * loyalty entitlement needs its own unique key or two concurrent grants would
+   * both succeed.
+   */
+  assert.equal(result.dropped.includes(LOYALTY_GRANT_INDEX_NAME), false);
+  assert.equal(result.created.includes(LOYALTY_GRANT_INDEX_NAME), true);
 
   const repaired = await collection.indexes();
   for (const spec of STRIPE_ID_INDEXES) {

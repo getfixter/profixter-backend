@@ -177,6 +177,35 @@ const EMAIL_DEFINITIONS = {
     tokens: membershipTokens,
   },
 
+  /* -------------------------- Loyalty Benefits ------------------------ */
+  /*
+   * The reward headline is protected because without it the email says a
+   * benefit was unlocked without saying which one, and the whole value of the
+   * message is the specific thing they got.
+   */
+  loyalty_benefit_unlocked: {
+    label: "Loyalty Benefit unlocked",
+    preheader: "Your membership just unlocked a benefit.",
+    protectedTokens: ["rewardHeadline", "accountButton"],
+    tokens: (v) => ({
+      ...membershipTokens(v),
+      rewardHeadline: String(v.rewardHeadline || ""),
+      rewardDetail: String(v.rewardDetail || ""),
+      throughDate: when(v.throughDate),
+      milestone: String(v.milestone || ""),
+    }),
+  },
+  loyalty_benefit_expiring: {
+    label: "Loyalty Benefit ending soon",
+    preheader: "Your Loyalty Benefit is available for a little longer.",
+    protectedTokens: ["rewardHeadline"],
+    tokens: (v) => ({
+      ...membershipTokens(v),
+      rewardHeadline: String(v.rewardHeadline || ""),
+      endsOn: when(v.endsOn),
+    }),
+  },
+
   /* ----------------------------- Nurture ----------------------------- */
   nudge_subscribe: { label: "Membership nudge", channelClass: "marketing", preheader: "Home help, handled.", tokens: membershipTokens },
   nurture_1: { label: "Nurture 1", channelClass: "marketing", preheader: "We are here when you need us.", tokens: () => ({}) },

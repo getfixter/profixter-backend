@@ -22,6 +22,7 @@ const {
 const { startSmsJobs } = require("./jobs/smsJobs");
 const { startOverrideRefresh } = require("./utils/communications/templateOverrides");
 const { startGiftLifecycle } = require("./jobs/giftLifecycle");
+const { startLoyaltyReminders } = require("./jobs/loyaltyReminders");
 const { startRecentWorkPublisher } = require("./jobs/recentWorkPublisher");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
@@ -609,6 +610,17 @@ startMarketingEmails();
  * exactly how a customer would end up with two of everything.
  */
 startSmsJobs();
+
+/*
+ * Loyalty Benefits reminders.
+ *
+ * Registered unconditionally and gated internally on LOYALTY_ENABLED, like
+ * marketing and SMS above. It sends email and nothing else — no benefit is
+ * granted, expired or revoked here, because expiry is a date comparison made
+ * wherever the question is asked. A missed run costs a reminder, never a
+ * benefit.
+ */
+startLoyaltyReminders();
 
 /*
  * Keep admin-edited message wording warm in memory.

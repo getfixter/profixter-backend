@@ -35,6 +35,9 @@ const {
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 const {
+  loyaltyStatusForSubscription,
+} = require("../utils/loyalty/loyaltyProgress");
+const {
   applyRetentionCouponToStripe,
   buildRetentionAcceptedAdminSections,
   calculateRetentionDiscountCents,
@@ -452,6 +455,47 @@ router.patch("/manage/address/:addressId", auth, async (req, res) => {
           ? "STRIPE_UPGRADE_PAYMENT_INCOMPLETE"
           : "SUBSCRIPTION_PLAN_CHANGE_FAILED",
     });
+  }
+});
+
+/**
+ * One property's Loyalty Benefits, for the account screen and the cancellation
+ * screen alike.
+ *
+ * Both surfaces call this, so neither can describe the reward differently from
+ * the other — the words are composed on the server for exactly that reason.
+ * Answers for every shape of member, including the ones with nothing yet: an
+ * annual member gets the annual framing, a member who joined yesterday gets a
+ * meter at zero with a real date on it.
+ */
+router.get("/loyalty/address/:addressId", auth, async (req, res) => {
+  try {
+    const { addressId } = req.params;
+    if (!mongoose.isValidObjectId(addressId)) {
+      return res.status(400).json({ message: "Invalid addressId" });
+    }
+
+    const { user, address } = await getOwnedAddress(req.user.id, addressId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!address) return res.status(404).json({ message: "Address not found" });
+
+    /*
+     * The stored record, without a Stripe round trip. This is a read for a
+     * screen, and it runs on every account view — verifying against Stripe here
+     * would add a network call to a page load to tell the customer something the
+     * webhook has already written down.
+     */
+    const subscription = await getOwnedSubscriptionForAddress({
+      userId: user._id,
+      addressId: address._id,
+      statuses: ["active", "trialing", "past_due", "unpaid"],
+    });
+
+    const status = await loyaltyStatusForSubscription({ user, subscription });
+    return res.json({ loyalty: status });
+  } catch (err) {
+    console.error("GET /subscriptions/loyalty/address error:", err);
+    return res.status(500).json({ message: "Unable to load Loyalty Benefits right now" });
   }
 });
 

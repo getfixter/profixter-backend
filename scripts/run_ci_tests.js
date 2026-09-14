@@ -66,6 +66,7 @@ const SUITES = [
   "test_a2p_public_evidence.js",
   "test_admin_communications.js",
   "test_admin_email_templates.js",
+  "test_loyalty_rules.js",
   "test_gift_membership.js",
   "test_gift_membership_tax.js",
   "test_gift_digital_experience.js",
@@ -73,6 +74,7 @@ const SUITES = [
 
 /**
  * Suites intentionally NOT run in CI, and why:
+ *   test_loyalty_integration.js     boots an in-memory MongoDB binary
  *   test_intro_visit_flows_live.js   needs a live MongoDB
  *   test_booking_reminders_integration.js  boots an in-memory MongoDB binary
  *   test_marketing_engine_integration.js   boots an in-memory MongoDB binary

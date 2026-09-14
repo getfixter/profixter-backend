@@ -72,14 +72,52 @@ const VisitEntitlementSchema = new mongoose.Schema(
      * the default and every historical document reads correctly without being
      * touched. "membership_benefit" is the Elite Full Day included with the
      * plan: no payment, granted once per billing period.
+     *
+     * "loyalty_benefit" is an EXTRA Full Day earned by staying a member, and it
+     * works the opposite way round from the included one. The included benefit
+     * is recognised by its ABSENCE — no record for this period means one is
+     * available, and writing the record is what spends it. A loyalty day is
+     * recognised by its PRESENCE: the record is granted up front and carries the
+     * day until it is used or expires.
+     *
+     * The two cannot be confused, because findIncludedEntitlement filters on
+     * source "membership_benefit" and never sees a loyalty row. That is what
+     * makes the loyalty day genuinely additive: an Elite member holding one
+     * still has their ordinary included Full Day, untouched.
      */
     source: {
       type: String,
-      enum: ["purchase", "membership_benefit"],
+      enum: ["purchase", "membership_benefit", "loyalty_benefit"],
       default: "purchase",
       required: true,
       index: true,
     },
+
+    /*
+     * The Loyalty Benefit that produced this entitlement.
+     *
+     * Also the duplicate defence. The per-period index below cannot protect a
+     * loyalty day — its partial filter requires source "membership_benefit" —
+     * so a loyalty row carries its own unique key instead. One grant, one Full
+     * Day, however many times the webhook is delivered.
+     */
+    loyaltyGrantId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LoyaltyGrant",
+      default: null,
+      index: true,
+    },
+
+    /*
+     * When an unused loyalty day stops being usable.
+     *
+     * Ninety days from grant. Deliberately a date rather than a status a job
+     * has to set, on the same reasoning as gift access: a sweep that does not
+     * run must never be able to hand somebody a benefit that should have
+     * lapsed, nor take one away that should not have. Null for everything else,
+     * which has no expiry.
+     */
+    expiresAt: { type: Date, default: null, index: true },
 
     /*
      * The billing period this benefit belongs to, copied from the subscription
@@ -150,6 +188,28 @@ VisitEntitlementSchema.index(
       periodStart: { $type: "date" },
       status: { $in: ["pending_payment", "paid", "consumed"] },
     },
+  }
+);
+
+/*
+ * One Full Day per Loyalty grant.
+ *
+ * The index above cannot do this job: its partial filter is pinned to
+ * source "membership_benefit" and a loyalty row falls outside it entirely, so
+ * without this two concurrent grants would both succeed and an Elite member
+ * would hold two Full Days from one milestone.
+ *
+ * Partial on the grant id, so the many nulls on every purchased and included
+ * entitlement do not collide with each other. Unlike the per-period index this
+ * one deliberately ignores status: a consumed or expired loyalty day must still
+ * block its grant from producing a second, because the grant was already spent.
+ */
+VisitEntitlementSchema.index(
+  { loyaltyGrantId: 1 },
+  {
+    unique: true,
+    name: "one_entitlement_per_loyalty_grant",
+    partialFilterExpression: { loyaltyGrantId: { $type: "objectId" } },
   }
 );
 

@@ -62,15 +62,24 @@ function buildPortalConfigurationParams() {
       },
       invoice_history: { enabled: true },
       payment_method_update: { enabled: true },
-      subscription_cancel: {
-        enabled: true,
-        mode: "at_period_end",
-        proration_behavior: "none",
-        cancellation_reason: {
-          enabled: true,
-          options: ["too_expensive", "switched_service", "unused", "other"],
-        },
-      },
+      /*
+       * Cancellation does not happen here. It happens in ProFixter's own flow.
+       *
+       * NOT a dark pattern, and the distinction matters. Cancelling is one tap
+       * in the account area, takes effect immediately as a scheduled end, needs
+       * no phone call and no email — it is the same self-serve cancellation it
+       * has always been, at a different address.
+       *
+       * What the portal cannot do is tell somebody what they are walking away
+       * from. A member eighteen days from two complimentary months of Premium
+       * deserves to know that before they decide, and Stripe has no way to know
+       * it. Leaving this enabled meant the single most important retention
+       * moment in the product was reachable through a door that could not speak.
+       *
+       * Everything else the portal is good at stays on: cards, invoices,
+       * receipts, contact details and plan changes are all still self-serve.
+       */
+      subscription_cancel: { enabled: false },
       subscription_update: {
         enabled: true,
         default_allowed_updates: ["price"],
