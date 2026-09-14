@@ -55,14 +55,32 @@ function existingDiscountArgs(stripeSubscription) {
   const args = [];
   const ids = [];
   const repeating = [];
+  const unresolved = [];
 
   for (const entry of raw) {
     if (!entry) continue;
+
+    /*
+     * A bare discount id, which is what Stripe actually returns in the
+     * `discounts` array unless it is expanded. There is no way to tell from
+     * "di_1ABC" whether it is a coupon or a promotion code, so it cannot be
+     * listed back — and silently dropping it would delete a member's discount.
+     * Reported instead, so the caller can expand and retry rather than guess.
+     */
+    if (typeof entry === "string") {
+      unresolved.push(entry);
+      continue;
+    }
+
     const discount = entry.discount || entry;
     const promotionCodeId = idOf(discount.promotion_code);
     const couponId = idOf(discount.coupon);
     const key = promotionCodeId || couponId;
-    if (!key || seen.has(key)) continue;
+    if (!key) {
+      if (discount.id) unresolved.push(discount.id);
+      continue;
+    }
+    if (seen.has(key)) continue;
     seen.add(key);
     ids.push(key);
 
@@ -71,10 +89,33 @@ function existingDiscountArgs(stripeSubscription) {
   }
 
   const fullyDiscounted = raw.some(
-    (entry) => Number((entry?.discount || entry)?.coupon?.percent_off) === 100
+    (entry) =>
+      entry &&
+      typeof entry !== "string" &&
+      Number((entry.discount || entry)?.coupon?.percent_off) === 100
   );
 
-  return { args, ids, repeating, fullyDiscounted };
+  return { args, ids, repeating, unresolved, fullyDiscounted };
+}
+
+/**
+ * The same subscription, with its discounts readable.
+ *
+ * Stripe returns `discounts` as bare ids unless asked otherwise, and the
+ * retrieve the webhook path uses does not ask. Today the legacy `discount`
+ * object still carries the answer, so nothing is lost — but that field is on its
+ * way out, and the day it stops being populated a member's promotion code would
+ * be deleted by the very code written to preserve it. One extra call, only when
+ * an id could not be read, removes that whole future.
+ */
+async function withReadableDiscounts(stripeSubscription, stripeClient = stripe) {
+  const first = existingDiscountArgs(stripeSubscription);
+  if (!first.unresolved.length) return { subscription: stripeSubscription, parsed: first };
+
+  const expanded = await stripeClient.subscriptions.retrieve(String(stripeSubscription.id), {
+    expand: ["discounts"],
+  });
+  return { subscription: expanded, parsed: existingDiscountArgs(expanded) };
 }
 
 /**
@@ -91,10 +132,23 @@ function existingDiscountArgs(stripeSubscription) {
  * grant, so a retry reuses the same coupon rather than minting a second one.
  */
 async function applyFreeMonthCoupon({ grant, stripeSubscription, stripeClient = stripe }) {
-  const existing = existingDiscountArgs(stripeSubscription);
+  const { parsed: existing } = await withReadableDiscounts(stripeSubscription, stripeClient);
 
   if (existing.fullyDiscounted) {
     return { ok: false, reason: "already_fully_discounted", priorDiscountIds: existing.ids };
+  }
+
+  /*
+   * A discount we still cannot read after expanding. Refusing costs the member
+   * a flagged record and a human deciding; proceeding would overwrite something
+   * of theirs we could not name. Fail towards the reversible mistake.
+   */
+  if (existing.unresolved.length) {
+    return {
+      ok: false,
+      reason: `unreadable_existing_discount (${existing.unresolved.join(", ")})`,
+      priorDiscountIds: existing.ids,
+    };
   }
 
   const coupon = await stripeClient.coupons.create(
@@ -550,5 +604,6 @@ module.exports = {
   issueLoyaltyFullDay,
   issueMilestone,
   nonRenewalInvoiceSince,
+  withReadableDiscounts,
   verifyFreeMonth,
 };

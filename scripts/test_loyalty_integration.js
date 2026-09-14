@@ -700,6 +700,79 @@ async function run() {
     assert.equal(after.needsReview, true);
   });
 
+  /*
+   * Live Stripe returns `discounts` as bare ids unless expanded, and the
+   * webhook path does not expand them. The coupon apply must notice and fetch
+   * the readable version rather than overwrite something it could not name.
+   */
+  await test("an unexpanded discount is resolved before anything is written", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await pendingFreeMonth(user, sub);
+
+    let retrievedWithExpand = null;
+    let sentDiscounts = null;
+    const stripeClient = {
+      subscriptions: {
+        retrieve: async (_id, params) => {
+          retrievedWithExpand = params?.expand || null;
+          return {
+            id: sub.stripeSubscriptionId,
+            discounts: [{ id: "di_1ABC", promotion_code: "promo_theirs", coupon: { id: "co_theirs" } }],
+          };
+        },
+        update: async (_id, params) => {
+          sentDiscounts = params.discounts;
+          return {};
+        },
+      },
+      coupons: { create: async () => ({ id: "co_loyalty" }) },
+    };
+
+    const result = await rewards.applyFreeMonthCoupon({
+      grant,
+      stripeSubscription: { id: sub.stripeSubscriptionId, discounts: ["di_1ABC"] },
+      stripeClient,
+    });
+
+    assert.deepEqual(retrievedWithExpand, ["discounts"], "it expanded rather than guessed");
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      sentDiscounts,
+      [{ promotion_code: "promo_theirs" }, { coupon: "co_loyalty" }],
+      "their promotion code survived"
+    );
+  });
+
+  await test("a discount that stays unreadable refuses the write", async () => {
+    const user = await makeUser();
+    const sub = await makeSubscription(user, { plan: "basic" });
+    const grant = await pendingFreeMonth(user, sub);
+
+    let updated = false;
+    const stripeClient = {
+      subscriptions: {
+        // Even expanded, still just an id — so we must not overwrite it.
+        retrieve: async () => ({ id: sub.stripeSubscriptionId, discounts: ["di_1ABC"] }),
+        update: async () => {
+          updated = true;
+          return {};
+        },
+      },
+      coupons: { create: async () => ({ id: "co_loyalty" }) },
+    };
+
+    const result = await rewards.applyFreeMonthCoupon({
+      grant,
+      stripeSubscription: { id: sub.stripeSubscriptionId, discounts: ["di_1ABC"] },
+      stripeClient,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /unreadable_existing_discount/);
+    assert.equal(updated, false, "nothing was written over a discount we could not name");
+  });
+
   await test("a member's existing promotion code is preserved, not replaced", async () => {
     const user = await makeUser();
     const sub = await makeSubscription(user, { plan: "basic" });

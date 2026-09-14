@@ -642,6 +642,38 @@ function testDiscountPreservation() {
     });
     assert.equal(result.fullyDiscounted, true);
   });
+
+  /*
+   * What live Stripe actually returns. `discounts` comes back as bare ids
+   * unless expanded, and "di_1ABC" says nothing about whether it is a coupon or
+   * a promotion code — so it cannot be listed back. Silently skipping it would
+   * DELETE a member's discount, which is the exact failure this whole function
+   * exists to prevent. It has to be reported so the caller expands and retries.
+   */
+  check("a bare discount id is reported, never silently skipped", () => {
+    const result = existingDiscountArgs({ discounts: ["di_1ABC"] });
+    assert.deepEqual(result.unresolved, ["di_1ABC"]);
+    assert.deepEqual(result.args, [], "and it is NOT invented as a coupon id");
+  });
+
+  check("an expanded discount leaves nothing unresolved", () => {
+    const result = existingDiscountArgs({
+      discounts: [{ id: "di_1ABC", coupon: { id: "co_real", duration: "once" } }],
+    });
+    assert.deepEqual(result.unresolved, []);
+    assert.deepEqual(result.args, [{ coupon: "co_real" }]);
+  });
+
+  check("an object with no coupon or promotion code is reported too", () => {
+    const result = existingDiscountArgs({ discounts: [{ id: "di_odd" }] });
+    assert.deepEqual(result.unresolved, ["di_odd"]);
+  });
+
+  check("a plain subscription still resolves cleanly", () => {
+    const result = existingDiscountArgs({});
+    assert.deepEqual(result.unresolved, []);
+    assert.deepEqual(result.args, []);
+  });
 }
 
 /* ========================================================================== */
