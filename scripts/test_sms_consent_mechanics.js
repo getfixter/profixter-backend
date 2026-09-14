@@ -268,50 +268,103 @@ async function main() {
     );
   });
 
-  await frontendTest("the choices are visible without creating an account", () => {
+  await frontendTest("the two choices are separate controls, asked once", () => {
     /*
-     * Signup is a four-step wizard and the boxes used to be on step 4, which
-     * meant a reviewer opening the page saw an address form and no sign that
-     * texting was optional or even offered. The panel now renders outside the
-     * step-gated form, so it is on screen at step 1.
+     * These boxes have now been in three places. They started on step 4, moved
+     * to an always-visible panel to answer a Twilio opt-in check, and the owner
+     * has moved them back to the final step because the panel had turned the
+     * whole four-step registration into a compliance form.
+     *
+     * What has to hold in all three arrangements, and is what this checks:
+     * there are exactly two of them, they are separate controls rather than one
+     * bundled box, and each appears once. Where they sit is asserted in
+     * test_a2p_public_evidence.js, which owns the layout question.
      */
-    const panel = signup.indexOf('aria-labelledby="sms-consent-heading"');
-    assert.ok(panel > 0, "the always-visible consent panel is gone");
-    assert.ok(
-      panel > signup.indexOf("</form>"),
-      "the consent panel must sit outside the step form so every step renders it"
-    );
     for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
-      assert.ok(signup.indexOf(`id="${id}"`) > panel, `${id} must live inside the panel`);
+      assert.strictEqual(
+        (signup.match(new RegExp(`id="${id}"`, "g")) || []).length,
+        1,
+        `${id} must appear exactly once`
+      );
     }
+    assert.ok(
+      signup.indexOf('id="sms-service-consent"') !== signup.indexOf('id="sms-marketing-consent"'),
+      "the two consents must be two controls, never one"
+    );
   });
 
-  await frontendTest("the page says which texts are required and which are not", () => {
+  await frontendTest("the markup knows which texts are required, even though the page no longer prints it", () => {
+    /*
+     * This has moved twice. It was a sentence in the disclosure paragraph -
+     * "Service texts are required to create an account; offers are optional
+     * and separate" - then one word beside each label, and is now in neither
+     * place: the final step shows two names and two boxes and nothing else.
+     *
+     * Where it went is the point of this case. The distinction still exists in
+     * the source, still reaches a screen reader, and is still enforced at
+     * submit by both ends. What it must never become is a form where the two
+     * boxes are indistinguishable to the code as well as to the eye.
+     */
     assert.ok(
-      /Service texts are required to create an account/i.test(signup),
-      "the page must state plainly that service texts are required"
+      /requirement="Required"/.test(signup) && /requirement="Optional"/.test(signup),
+      "each box must carry its own status in the markup"
     );
     assert.ok(
-      /offers are optional and[\s\S]{0,60}separate/i.test(signup),
-      "and that promotional texts are not"
+      /label="Service text messages"[\s\S]{0,400}?requirement="Required"/.test(signup),
+      "the required one must be the service box"
+    );
+    assert.ok(
+      /label="Offers &(amp;)? promotions"[\s\S]{0,400}?requirement="Optional"/.test(signup),
+      "marketing must never be the required one"
     );
     assert.ok(
       !/Text messages &mdash; optional/i.test(signup),
       "the old blanket 'optional' heading is misleading above a required box"
     );
+    /*
+     * And the inline failure names the service box alone. A shared message
+     * would read as though declining offers had blocked the account.
+     */
+    assert.ok(
+      /Service texts are required to create your account\./.test(signup),
+      "the submit-time error must name service texts specifically"
+    );
   });
 
-  await frontendTest("the required CTIA disclosures sit with the service checkbox", () => {
-    const panel = signup.slice(signup.indexOf('aria-labelledby="sms-consent-heading"'));
+  await frontendTest("the required CTIA disclosures are one tap from the checkbox", () => {
+    /*
+     * THIS IS A WEAKER GUARANTEE THAN IT WAS, ON PURPOSE, AND THE DIFFERENCE
+     * IS WORTH STATING RATHER THAN QUIETLY RELAXING.
+     *
+     * These five disclosures used to be printed underneath the checkboxes, at
+     * the point of consent, which is where CTIA's guidance puts them. The
+     * owner removed that paragraph as part of simplifying registration, so
+     * they are now on /communication-consent, reached by the checkbox label,
+     * which is itself the link.
+     *
+     * So the test follows them: they must all still exist, the label must
+     * still be a working link to the page that holds them, and if that link
+     * ever stops being a link this fails.
+     */
+    const consent = readSource(path.join(FRONTEND, "app", "communication-consent", "page.tsx"));
     for (const phrase of [
-      "(631) 888-6340",
+      "888-6340",
       "Message frequency varies",
       "Message and data rates may apply",
-      "Reply STOP",
-      "HELP for help",
+      "STOP",
+      "HELP",
     ]) {
-      assert.ok(panel.includes(phrase), `the consent panel is missing: ${phrase}`);
+      assert.ok(consent.includes(phrase), `the consent page is missing: ${phrase}`);
     }
+    const rows = signup.slice(signup.indexOf("function ConsentRow("));
+    assert.ok(
+      /<a\b[\s\S]{0,200}href=\{href\}/.test(rows),
+      "the consent label must be an anchor, or the disclosures are unreachable from the form"
+    );
+    assert.ok(
+      (signup.match(/href="\/communication-consent/g) || []).length >= 2,
+      "both labels must link to the page carrying the disclosures"
+    );
   });
 
   await frontendTest("the old forced-consent sentence is gone", () => {

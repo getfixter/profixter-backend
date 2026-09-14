@@ -88,19 +88,19 @@ function readMarkup(file) {
 }
 
 /**
- * The character ranges covered by each {step === N ? ... : null} branch.
+ * The character ranges covered by each {step === N ? ... : null} branch, each
+ * tagged with the step it belongs to.
  *
- * Anything rendered inside one of these only exists on that step. The phone
- * input and the consent checkboxes must all be outside every one of them, or
- * they vanish from the first paint and from the server-rendered HTML - which
- * is exactly how the opt-in form ended up with consent checkboxes and no phone
- * field to attach them to.
+ * Anything rendered inside one of these only exists on that step, which is the
+ * whole point of the checks below: the owner's design puts the mobile number
+ * and both consent boxes on the final step and nowhere earlier, and these
+ * ranges are how a test can tell "step 4" from "step 1" in a source file.
  *
- * The branches do not nest, so each one runs to the next ") : null}".
+ * The branches do not nest, so each one runs to its own matching brace.
  */
 function stepBranchRanges(markup) {
   const ranges = [];
-  const opener = /\{step === [0-9] \?/g;
+  const opener = /\{step === ([0-9]) \?/g;
   let m;
   while ((m = opener.exec(markup))) {
     /*
@@ -123,13 +123,24 @@ function stepBranchRanges(markup) {
         }
       }
     }
-    if (end > -1) ranges.push([m.index, end]);
+    if (end > -1) ranges.push([m.index, end, Number(m[1])]);
   }
   return ranges;
 }
 
 function insideAnyStepBranch(markup, index) {
   return stepBranchRanges(markup).some(([a, b]) => index > a && index < b);
+}
+
+/** Which step renders the thing at this index, or null if it renders on all of them. */
+function stepOf(markup, index) {
+  const hit = stepBranchRanges(markup).find(([a, b]) => index > a && index < b);
+  return hit ? hit[2] : null;
+}
+
+/** The last step of the wizard, read from the source rather than hard-coded. */
+function finalStep(markup) {
+  return Math.max(...stepBranchRanges(markup).map(([, , n]) => n));
 }
 
 let passed = 0;
@@ -200,16 +211,24 @@ async function main() {
   /* ==================================================================== */
   section("The opt-in page carries the documents it has to carry");
 
-  await frontendTest("all three legal links are in the always-visible SMS panel", () => {
+  await frontendTest("every document the opt-in has to carry is linked from the form", () => {
+    /*
+     * These used to be three links in a disclosure paragraph under the boxes.
+     * The owner removed that paragraph deliberately - the registration form
+     * was reading as a compliance document - and the route to the SMS terms is
+     * now the checkbox label itself, which is a link.
+     *
+     * So the requirement is unchanged and only the carrier moved: all three
+     * documents must still be reachable without leaving the page guessing.
+     */
     const src = readSource(P.signup);
-    const panel = src.slice(src.indexOf('aria-labelledby="sms-consent-heading"'));
-    assert.ok(panel.length > 0, "the SMS consent panel must exist");
-    for (const href of ["/terms", "/privacy", "/communication-consent"]) {
-      assert.ok(
-        panel.includes(`href="${href}"`),
-        `${href} must be linked from the SMS panel, which is on screen at step 1`
-      );
+    for (const href of ["/terms", "/privacy"]) {
+      assert.ok(src.includes(`href="${href}"`), `${href} must be linked from the sign-up form`);
     }
+    assert.ok(
+      (src.match(/href="\/communication-consent/g) || []).length >= 2,
+      "each consent label must be a link to the SMS terms, which is how they are now reached"
+    );
   });
 
   await frontendTest("the phone field and both checkboxes share one form and one fieldset", () => {
@@ -244,19 +263,29 @@ async function main() {
     assert.ok(/<legend/.test(src), "the fieldset needs a legend naming the group");
   });
 
-  await frontendTest("the phone field is outside every step branch", () => {
+  await frontendTest("the phone field is on the same step as the consent that refers to it", () => {
     /*
-     * If it ever moves back inside a {step === n} branch it disappears from
-     * the server-rendered HTML, and an automated opt-in check sees consent
-     * checkboxes with no phone field again.
+     * Twilio's campaign check rejected an earlier version of this page for
+     * having "no phone number field connected to SMS consent", and the fix was
+     * to put the number and the boxes in one fieldset inside one form.
+     *
+     * The owner has since moved consent to the final step, which gives up the
+     * part of that fix that made the boxes visible at first paint. What must
+     * NOT also be given up is the connection itself: wherever the boxes are,
+     * the number is on that same screen, or a reviewer reaching the consent
+     * step sees two checkboxes with nothing to attach them to.
      */
     const src = readMarkup(P.signup);
     const phone = src.indexOf('id="phone"');
     assert.ok(phone > -1, "the phone input must exist");
-    assert.ok(
-      !insideAnyStepBranch(src, phone),
-      "the phone input must not be inside a {step === N} branch - it has to render on the first paint"
-    );
+    const phoneStep = stepOf(src, phone);
+    for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
+      assert.strictEqual(
+        stepOf(src, src.indexOf(`id="${id}"`)),
+        phoneStep,
+        `${id} and the phone field must render on the same step`
+      );
+    }
   });
 
   await frontendTest("there is exactly one phone input on the page", () => {
@@ -273,25 +302,84 @@ async function main() {
     assert.strictEqual((src.match(/type="tel"/g) || []).length, 1);
   });
 
-  await frontendTest("each consent names the number it applies to", () => {
+  await frontendTest("the form distinguishes the two categories, and marks the right one required", () => {
+    /*
+     * The labels have been through two rounds of simplification. They were
+     * full sentences quoting the campaign - "Text me about my ProFixter visits
+     * at the mobile number above" - then two short names with the words
+     * Required and Optional printed beside them, and are now the two names
+     * alone, each a link to the document that explains it.
+     *
+     * SO THE REQUIREMENT IS NO LONGER PRINTED ON THE FORM. It is carried in
+     * the markup instead - the prop below, and the aria-required it drives -
+     * and enforced when the customer presses Finish, by this form and again by
+     * routes/auth.js. That is a deliberate product decision, and this case is
+     * what stops it drifting into the opposite arrangement: the two categories
+     * must stay distinguishable, and the REQUIRED one must stay the service
+     * one.
+     */
     const text = readText(P.signup);
+    assert.ok(/Service text messages/i.test(text), "the service category must be named");
+    assert.ok(/Offers &amp; promotions|Offers & promotions/i.test(text), "the marketing category must be named");
+    const src = readSource(P.signup);
     assert.ok(
-      /Text me about my ProFixter visits at the mobile number above/i.test(text),
-      "service consent must tie itself to the field above it"
+      /requirement="Required"/.test(src) && /requirement="Optional"/.test(src),
+      "one box must be marked Required and the other Optional in the markup"
     );
     assert.ok(
-      /Text me occasional ProFixter offers at the mobile number above/i.test(text),
-      "marketing consent must tie itself to the field above it"
+      /aria-required=\{requirement === "Required"\}/.test(src),
+      "with the word gone from the page, the control must still say so to assistive technology"
+    );
+    /*
+     * Scoped to the <input> itself, with comments stripped first.
+     *
+     * Two earlier attempts at this case failed on prose rather than on code:
+     * one searched the span between the two checkboxes and matched the inline
+     * error message, and one matched the comment beside the prop explaining
+     * why the word is required-ness rather than a required attribute. Both
+     * were the test reading English and reporting it as markup.
+     */
+    const markup = readMarkup(P.signup);
+    const rowStart = markup.indexOf("function ConsentRow(");
+    const rowInput = markup.slice(rowStart, markup.indexOf("</label>", rowStart));
+    assert.ok(
+      !/\srequired(\s|=|\/|>)/.test(rowInput),
+      "the HTML required attribute would hand the failure to the browser and bypass the inline message"
+    );
+    assert.ok(
+      /label="Service text messages"[\s\S]{0,400}?requirement="Required"/.test(src),
+      "the REQUIRED one must be the service box, never the marketing box"
+    );
+    assert.ok(
+      /label="Offers &(amp;)? promotions"[\s\S]{0,400}?requirement="Optional"/.test(src),
+      "marketing must be the optional one - requiring it is error 30923"
     );
   });
 
-  await frontendTest("the phone field says entering it is not an opt-in", () => {
-    const text = readText(P.signup);
+  await frontendTest("reading what a consent means does not give that consent", () => {
+    /*
+     * The label is the link now, and that is a trap worth a test.
+     *
+     * Anything inside a <label> forwards its clicks to the control, so an
+     * anchor nested in the label would tick the box on the way to the page
+     * explaining what the box does - consent recorded by a customer who was
+     * trying to find out what they were agreeing to. In ConsentRow the label
+     * wraps the tick target alone and the anchor is its sibling.
+     */
+    const src = readSource(P.signup);
+    const row = src.slice(src.indexOf("function ConsentRow("), src.indexOf("export default function SignUpPage"));
+    assert.ok(row.length > 0, "ConsentRow must exist");
+    const labelClose = row.indexOf("</label>");
+    const anchor = row.indexOf("<a");
+    assert.ok(labelClose > -1 && anchor > -1, "the row needs both a label and a link");
     assert.ok(
-      /Entering it does not sign you up for text messages/i.test(text),
-      "a required field grouped with consent boxes must disclaim consent explicitly"
+      anchor > labelClose,
+      "the consent link must sit OUTSIDE the label, or following it silently ticks the box"
     );
-    assert.ok(/Required for your account/i.test(text), "and must say why it is required");
+    assert.ok(
+      /target="_blank"/.test(row) && /rel="noopener noreferrer"/.test(row),
+      "the link must open in a new tab so a part-filled registration survives being read"
+    );
   });
 
   await frontendTest("the Terms checkbox stays outside the SMS fieldset", () => {
@@ -306,27 +394,22 @@ async function main() {
     );
   });
 
-  await frontendTest("the SMS panel is outside the step form", () => {
+  await frontendTest("consent is asked for on the final step and on no earlier one", () => {
     /*
-     * The 30896 fix. If this panel ever moves back inside a `step === n`
-     * branch, the reviewer stops being able to see the SMS choices without
-     * inventing an address, a name, a phone number and an email.
+     * The owner's design, stated as a test: nobody is asked about text
+     * messages while they are still typing an address. Consent is the last
+     * thing before the account is created.
+     *
+     * This is the check that fails if a consent control is ever dropped back
+     * onto an earlier step for convenience.
      */
     const src = readMarkup(P.signup);
-    for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
+    const last = finalStep(src);
+    for (const id of ["sms-service-consent", "sms-marketing-consent", "agree-terms"]) {
       const at = src.indexOf(`id="${id}"`);
       assert.ok(at > -1, `${id} must exist`);
-      assert.ok(
-        !insideAnyStepBranch(src, at),
-        `${id} must not be inside a {step === N} branch`
-      );
+      assert.strictEqual(stepOf(src, at), last, `${id} must be on the final step, step ${last}`);
     }
-    /* And the required Terms box SHOULD be inside one - step 4. */
-    const terms = src.indexOf('id="agree-terms"');
-    assert.ok(
-      insideAnyStepBranch(src, terms),
-      "the Terms checkbox belongs to step 4, separate from the always-visible SMS group"
-    );
   });
 
   await frontendTest("both SMS boxes still start unchecked and neither is required", () => {
@@ -375,13 +458,55 @@ async function main() {
   });
 
   await frontendTest("the sending number and the support number are distinguished", () => {
-    const src = readSource(P.signup);
+    /*
+     * WHERE THIS MOVED, AND WHY IT IS WORTH KNOWING.
+     *
+     * These two numbers, the frequency and rates disclosures, and STOP/HELP
+     * used to appear in a paragraph beneath the sign-up checkboxes. The owner
+     * removed that paragraph: the registration form had become a compliance
+     * document, and this was most of it.
+     *
+     * They now live on /communication-consent, which is what both checkbox
+     * labels link to. That is a deliberate product decision and not an
+     * erosion - but it does mean the disclosures are one tap from the point of
+     * consent rather than on it, so this test follows them there and holds
+     * them to the same standard.
+     */
+    const src = readSource(P.consent);
     assert.ok(src.includes("888-6340"), "the sending number must be named");
     assert.ok(src.includes("599-1363"), "the customer-service number must be named");
     assert.ok(
       /sent from|Texts are sent from/i.test(src),
       "the page must say which number the texts come FROM"
     );
+  });
+
+  await frontendTest("the consent labels link to the disclosures that left the form", () => {
+    /*
+     * The link is now the only route from the point of consent to the
+     * frequency, rates, STOP and HELP language, so it has to actually arrive
+     * somewhere that carries it.
+     */
+    const consent = readSource(P.consent);
+    for (const [what, pattern] of [
+      ["message frequency", /frequency var/i],
+      ["message and data rates", /message and data rates may apply/i],
+      ["STOP", /\bSTOP\b/],
+      ["HELP", /\bHELP\b/],
+    ]) {
+      assert.ok(pattern.test(consent), `${what} must appear on the page the labels link to`);
+    }
+    const signup = readSource(P.signup);
+    for (const anchor of ["#service-texts", "#marketing"]) {
+      assert.ok(
+        signup.includes(`/communication-consent${anchor}`),
+        `a label must deep-link to ${anchor} rather than the top of a long document`
+      );
+      assert.ok(
+        consent.includes(`id="${anchor.slice(1)}"`),
+        `${anchor} must exist on the consent page, or the label lands nowhere`
+      );
+    }
   });
 
   /* ==================================================================== */
