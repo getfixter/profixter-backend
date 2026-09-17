@@ -43,6 +43,13 @@ const {
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 const {
+  MEMBER_VISIT_LEAD_ERROR_CODE,
+  bookingYMD,
+  earliestMemberVisitYMD,
+  isBeforeEarliestMemberVisit,
+  memberVisitLeadMessage,
+} = require("../utils/bookingLeadTime");
+const {
   cancelBookingWithReservation,
   createBookingWithReservation,
   isTerminalBookingStatus,
@@ -1809,6 +1816,33 @@ router.post(
             "Your membership could not be verified as active. Please update billing or contact support before booking.",
           code: "SUBSCRIPTION_ACCESS_INACTIVE",
         });
+      }
+
+      /*
+       * THE SEVEN-DAY RULE, AND THE ONLY PLACE IT IS ENFORCED.
+       *
+       * Members book regular visits at least seven calendar days out. It is
+       * checked here, on the server, against the date the customer actually
+       * asked for — because until now the lead time existed only in what the
+       * calendar chose to display, and a direct POST to this endpoint would
+       * happily take tomorrow. A rule the API does not check is a suggestion.
+       *
+       * `activeSub` is the discriminator and it is exactly the right one: the
+       * branch below is the First Visit Free path, which keeps the company
+       * template's own lead time. One-Time Visits and Full Days have their own
+       * endpoints and are untouched. So is anything an administrator books —
+       * this route is the customer's.
+       */
+      if (activeSub) {
+        const requestedYMD = bookingYMD(bookingDate);
+        if (isBeforeEarliestMemberVisit(requestedYMD)) {
+          const earliest = earliestMemberVisitYMD();
+          return res.status(400).json({
+            code: MEMBER_VISIT_LEAD_ERROR_CODE,
+            message: memberVisitLeadMessage(),
+            earliestBookableDate: earliest,
+          });
+        }
       }
 
       if (!activeSub) {

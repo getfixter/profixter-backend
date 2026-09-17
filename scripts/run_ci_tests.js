@@ -30,6 +30,7 @@ const SUITES = [
   "test_executed_document.js",
   "test_intro_visit_eligibility.js",
   "test_one_time_booking_policy.js",
+  "test_member_visit_lead_time.js",
   "test_one_time_visit_payment_flow.js",
   "test_customer_booking_cutover.js",
   "test_booking_cutover_routes.js",

@@ -14,6 +14,7 @@ const {
 } = require("./slotReservationService");
 
 const TIMEZONE = "America/New_York";
+const { earliestMemberVisitYMD } = require("./bookingLeadTime");
 
 function slotOverlap(reservation, slotStart, slotEnd) {
   return (
@@ -260,6 +261,14 @@ async function customerCalendarConfig() {
     slotStepMinutes: template.slotMinutes,
     visitDurationMinutes: 90,
     minLeadDays: Math.ceil(Number(template.minLeadMinutes || 0) / 1440),
+    /*
+     * The first date this customer can be offered — a date, and nothing else.
+     *
+     * The rule that produced it stays on the server. The client needs the
+     * answer so its calendar agrees with the API; it does not need, and must
+     * not be told, the policy behind it.
+     */
+    earliestBookableDate: earliestMemberVisitYMD(),
     maxAdvanceDays: template.maxAdvanceDays,
     closedWeekdays,
     overrides: {},

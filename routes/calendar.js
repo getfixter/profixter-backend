@@ -12,6 +12,7 @@ const {
   reservationEngineEnabled,
 } = require("../utils/customerCalendarService");
 const { hoursForDate } = require("../utils/legacyCalendarSlots");
+const { earliestMemberVisitYMD } = require("../utils/bookingLeadTime");
 
 /* ---------------- helpers ---------------- */
 function disableLiveAvailabilityCache(res) {
@@ -110,6 +111,16 @@ router.get("/config", async (_req, res) => {
       timezone: cfg.timezone || "America/New_York",
       slotMinutes: cfg.slotMinutes || 60,
       minLeadDays: Number.isFinite(cfg.minLeadDays) ? cfg.minLeadDays : 2,
+      /*
+       * The first date this customer can actually be offered.
+       *
+       * A date and nothing else. No rule, no number, no reason — the calendar
+       * uses it the way it uses every other availability answer, and there is
+       * nothing here for a curious customer or an integration to deduce the
+       * seven-day policy from. `memberVisitMinLeadDays: 7` was in this payload
+       * for one draft and published the whole rule in a single public field.
+       */
+      earliestBookableDate: earliestMemberVisitYMD(),
       closedWeekdays: cfg.closedWeekdays || [],
       overrides: overridesObj, // safe plain object
       holidays: cfg.holidays || [],
