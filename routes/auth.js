@@ -11,6 +11,7 @@ const {
   sendAdminLeadNotification,
 } = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
+const { buildSignupAddress } = require("../utils/addressVerification");
 const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
@@ -318,7 +319,7 @@ async function markLeadRegistered(user) {
 /* ───────── Register (REQUIRED address) ───────── */
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password, phone, address, city, state, zip, county } = req.body;
+    const { name, email, password, phone, address, city, state, zip } = req.body;
 
     /*
      * The two SMS ticks, each read as the customer actually left it.
@@ -363,12 +364,39 @@ router.post("/register", async (req, res) => {
 
 
     const cleanEmail = String(email || "").trim().toLowerCase();
-    if (![name, cleanEmail, password, phone, address, city, state, zip, county].every(Boolean)) {
+    if (![name, cleanEmail, password, phone, address, city, state, zip].every(Boolean)) {
       return res.status(400).json({
         message:
-          "All fields are required: name, email, password, phone, address, city, state, zip, county",
+          "All fields are required: name, email, password, phone, address, city, state, zip",
       });
     }
+
+    /*
+     * COUNTY IS NO LONGER ASKED FOR, AND NO LONGER ACCEPTED.
+     *
+     * It used to be a required field on this endpoint, filled by a <select> the
+     * customer had to get right and pre-filled by a browser-side rule that read
+     * ZIP prefixes 115/117/118/119 as Nassau or Suffolk. serviceArea.js refuses
+     * to match ZIPs by range for exactly that reason — Long Island ZIPs
+     * interleave with Queens — so the form was deriving a county by a method
+     * the backend considers unsafe, and then the backend was storing it.
+     *
+     * Now the ZIP is the only geographic input, and everything else is derived
+     * from the allowlist. A body that still sends `county` is ignored rather
+     * than rejected, so the previous version of the form keeps working while it
+     * is still in anybody's browser tab.
+     */
+    const built = buildSignupAddress({ ...req.body, line1: address });
+    if (!built.ok) {
+      return res.status(400).json({
+        message:
+          built.field === "zip"
+            ? "That ZIP code does not look right. Please check the address."
+            : "Please enter a complete address.",
+        field: built.field,
+      });
+    }
+    const signupAddress = built.address;
 
     /*
      * SERVICE SMS IS NOW A CONDITION OF REGISTRATION, ENFORCED HERE.
@@ -423,11 +451,11 @@ router.post("/register", async (req, res) => {
       isActive: true,
       mustChangePassword: false,
 
-      address: String(address).trim(),
-      city: String(city).trim(),
-      state: String(state || "NY").trim(),
-      zip: String(zip).trim(),
-      county: String(county || "").trim(),
+      address: signupAddress.line1,
+      city: signupAddress.city,
+      state: signupAddress.state,
+      zip: signupAddress.zip,
+      county: signupAddress.county,
 
       addresses: [],
       defaultAddressId: null,
@@ -456,14 +484,7 @@ router.post("/register", async (req, res) => {
       smsPreferences: smsConsentRecord(),
     });
 
-    user.addresses.push({
-      label: "Primary",
-      line1: String(address).trim(),
-      city: String(city).trim(),
-      state: String(state || "NY").trim(),
-      zip: String(zip).trim(),
-      county: String(county || "").trim(),
-    });
+    user.addresses.push(signupAddress);
     user.defaultAddressId = user.addresses[0]._id;
 
     await user.save();

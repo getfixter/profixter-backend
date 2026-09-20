@@ -17,6 +17,7 @@ const SUITES = [
   // First: nothing below is worth running if the app cannot even be loaded.
   "test_module_load.js",
   "test_service_area.js",
+  "test_signup_address.js",
   "test_change_order_totals.js",
   "test_project_financials.js",
   "test_document_dates.js",

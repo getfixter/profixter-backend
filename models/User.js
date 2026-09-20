@@ -10,6 +10,25 @@ const AddressSchema = new mongoose.Schema(
     zip: { type: String, required: true },
     county: { type: String, default: "" },
 
+    /*
+     * What the address lookup gave us, when the address came from one.
+     *
+     * All three are optional and absent on every address created before signup
+     * started searching instead of asking for five fields, so nothing reads
+     * them without a fallback. They are stored because they are free at the
+     * point of collection and expensive to obtain later: placeId is a stable
+     * handle for re-resolving the property, and the coordinates are a real
+     * position rather than the ZIP centroid the membership map has to settle
+     * for today.
+     *
+     * Coordinates are only ever written after being tested against their own
+     * ZIP's polygon — see utils/addressVerification. Nothing about eligibility
+     * reads them; that is still the ZIP allowlist's job.
+     */
+    placeId: { type: String, default: "" },
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
     // First Visit Free acquisition state, tracked per property.
     // Deliberately independent of the Booking lifecycle so cancel/delete/cleanup
     // can never reset a consumed offer. Absent on existing addresses; derived
