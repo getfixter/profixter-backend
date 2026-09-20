@@ -394,22 +394,49 @@ async function main() {
     );
   });
 
-  await frontendTest("consent is asked for on the final step and on no earlier one", () => {
+  await frontendTest("nobody is asked about texts while they are typing an address", () => {
     /*
-     * The owner's design, stated as a test: nobody is asked about text
-     * messages while they are still typing an address. Consent is the last
-     * thing before the account is created.
+     * WHAT THIS USED TO SAY, AND WHY IT CHANGED.
      *
-     * This is the check that fails if a consent control is ever dropped back
-     * onto an earlier step for convenience.
+     * It used to require both SMS boxes on the FINAL step, on the reasoning
+     * that consent is the last thing before the account is created. The owner
+     * has since moved them onto the step that asks how to reach the customer -
+     * "How can we reach you?", email and phone together - because a question
+     * about texting somebody belongs beside the number the texts would go to,
+     * not two screens away from it.
+     *
+     * That is a change of placement, not of protection. Everything Twilio
+     * actually rejected this campaign for is asserted elsewhere in this file
+     * and is untouched: the boxes are real, they start unchecked, neither
+     * carries the HTML `required` attribute, each links to its own explanation,
+     * they share one fieldset with the phone number inside one form, and
+     * absence is still never consent on the server.
+     *
+     * What survives here is the part that was always about the customer rather
+     * than the reviewer: a stranger who has typed nothing yet is not met with a
+     * compliance form. The first step asks for an address and asks for nothing
+     * else.
      */
     const src = readMarkup(P.signup);
-    const last = finalStep(src);
-    for (const id of ["sms-service-consent", "sms-marketing-consent", "agree-terms"]) {
+    const SMS_CONTROLS = ["sms-service-consent", "sms-marketing-consent"];
+
+    for (const id of SMS_CONTROLS) {
       const at = src.indexOf(`id="${id}"`);
       assert.ok(at > -1, `${id} must exist`);
-      assert.strictEqual(stepOf(src, at), last, `${id} must be on the final step, step ${last}`);
+      const step = stepOf(src, at);
+      assert.ok(step !== null, `${id} must render inside a step branch, not on every step`);
+      assert.ok(step > 1, `${id} must not be on the first step - it was on step ${step}`);
     }
+
+    /*
+     * Terms stays last, with the button that creates the account. Agreeing to
+     * the Terms of Service is the act of creating the account, so it belongs on
+     * the screen where that happens.
+     */
+    const last = finalStep(src);
+    const terms = src.indexOf('id="agree-terms"');
+    assert.ok(terms > -1, "agree-terms must exist");
+    assert.strictEqual(stepOf(src, terms), last, `agree-terms must be on the final step, step ${last}`);
   });
 
   await frontendTest("both SMS boxes still start unchecked and neither is required", () => {
@@ -450,7 +477,17 @@ async function main() {
       .slice(start, end)
       .replace(/\/\*[\s\S]*?\*\//g, " ")
       .replace(/className="[^"]*"/g, " ");
-    assert.ok(/Terms of Service and Privacy Policy/.test(box));
+    /*
+     * Both documents named, checked separately.
+     *
+     * This was one contiguous match on "Terms of Service and Privacy Policy",
+     * which only held while the sentence was a plain string. The two documents
+     * are now linked inside the sentence, so between them the source carries a
+     * </Link>, an {" "} and an <a href>. What matters is unchanged: this box
+     * names the Terms and the Privacy Policy, and names nothing else.
+     */
+    assert.ok(/Terms of Service/.test(box), "the Terms box must name the Terms of Service");
+    assert.ok(/Privacy Policy/.test(box), "the Terms box must name the Privacy Policy");
     assert.ok(
       !/\btext\b|\bsms\b|\bmessage\b/i.test(box),
       "bundling SMS consent into the required box is error 30923"
