@@ -34,6 +34,8 @@ const FRONTEND_PRESENT = fs.existsSync(SIGNUP_PAGE);
 const P = {
   signup: SIGNUP_PAGE,
   signupLayout: path.join(FRONTEND, "app", "(auth)", "signup", "layout.tsx"),
+  authLayout: path.join(FRONTEND, "app", "(auth)", "layout.tsx"),
+  accountLayout: path.join(FRONTEND, "app", "account", "layout.tsx"),
   robots: path.join(FRONTEND, "app", "robots.ts"),
   seo: path.join(FRONTEND, "lib", "seo.ts"),
   architecture: path.join(FRONTEND, "lib", "site-architecture.ts"),
@@ -179,16 +181,51 @@ async function main() {
 
   await frontendTest("robots.txt no longer tells crawlers to skip /signup", () => {
     const src = readSource(P.robots);
-    const disallowBlock = src.slice(src.indexOf("disallow"), src.indexOf("sitemap"));
+    /*
+     * The ARRAY, not a slice of the file.
+     *
+     * This used to read everything between the first "disallow" and the first
+     * "sitemap" in the source, which meant a comment mentioning either word
+     * silently redefined what the test was looking at - and a comment did
+     * exactly that. Parse the literal instead, so the assertion is about the
+     * rules and not about the prose around them.
+     */
+    const literal = src.slice(src.indexOf("disallow: ["));
+    const rules = literal
+      .slice(0, literal.indexOf("]"))
+      .split(",")
+      .map((line) => (line.match(/"([^"]+)"/) || [])[1])
+      .filter(Boolean);
+
+    assert.ok(rules.length > 0, "could not parse the disallow list");
     assert.ok(
-      !/"\/signup"/.test(disallowBlock),
-      'Disallow: /signup would stop a vetting crawler fetching the page where consent is collected'
+      !rules.includes("/signup"),
+      "Disallow: /signup would stop a vetting crawler fetching the page where consent is collected"
     );
-    /* The private surfaces must stay shut. */
-    for (const stillBlocked of ["/admin", "/account", "/api"]) {
+
+    /*
+     * The genuinely internal surfaces stay shut. /account is deliberately NOT
+     * in this list any more: it is kept out of the index by noindex, which is
+     * asserted below, and Disallow was preventing Google from ever reading
+     * that noindex - so the page could still be listed while Search Console
+     * reported it as blocked. What protects the data there is a session, not a
+     * robots rule. /admin and /api have no such header and stay blocked.
+     */
+    for (const stillBlocked of ["/admin", "/api"]) {
+      assert.ok(rules.includes(stillBlocked), `${stillBlocked} must remain disallowed`);
+    }
+  });
+
+  await frontendTest("the pages taken out of robots.txt are held back by noindex instead", () => {
+    for (const layout of [P.authLayout, P.accountLayout]) {
+      const src = readSource(layout);
       assert.ok(
-        disallowBlock.includes(`"${stillBlocked}"`),
-        `${stillBlocked} must remain disallowed`
+        /robots:\s*\{[^}]*index:\s*false/s.test(src),
+        `${layout} must declare index: false, since robots.txt no longer blocks it`
+      );
+      assert.ok(
+        /follow:\s*false/.test(src),
+        `${layout} must declare follow: false`
       );
     }
   });
