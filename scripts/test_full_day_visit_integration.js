@@ -391,6 +391,126 @@ async function run() {
       assert.equal((await VisitEntitlement.findById(entitlement._id)).status, "paid");
     });
 
+    console.log("\nAnnual Elite: twelve membership months, one Full Day each");
+
+    /*
+     * The real end-to-end proof of the annual fix, run against the actual
+     * unique index rather than a stub. An annual subscription is ONE Stripe
+     * period of twelve months; the member must be able to take a Full Day in
+     * each of those months, and never two in the same one.
+     */
+    const ANNUAL_START = new Date("2026-08-12T04:00:00.000Z");
+    const ANNUAL_END = new Date("2027-08-12T04:00:00.000Z");
+
+    async function makeAnnualEliteMember() {
+      const made = await makeEliteMember();
+      await Subscription.updateMany(
+        { user: made.user._id },
+        {
+          $set: {
+            currentPeriodStart: ANNUAL_START,
+            currentPeriodEnd: ANNUAL_END,
+            nextPaymentDate: ANNUAL_END,
+          },
+        }
+      );
+      return made;
+    }
+
+    await test("an annual Elite member takes one Full Day in every month of the year", async () => {
+      await reset();
+      const { user, addressId } = await makeAnnualEliteMember();
+      const windows = new Set();
+
+      for (let month = 0; month < 12; month += 1) {
+        const now = new Date(Date.UTC(2026, 7 + month, 20, 12, 0, 0));
+        const state = await includedFullDayState({ user, addressId, now });
+        assert.equal(state.entitled, true, "month " + month + ": entitled");
+        assert.equal(state.used, false, "month " + month + ": a fresh day is available");
+        assert.equal(state.remaining, 1, "month " + month + ": exactly one");
+        windows.add(state.periodStart.toISOString());
+
+        await consumeIncludedFullDay({
+          user,
+          addressId,
+          periodStart: state.periodStart,
+          periodEnd: state.periodEnd,
+          durationMinutes: 480,
+          now,
+        });
+
+        const after = await includedFullDayState({ user, addressId, now });
+        assert.equal(after.used, true, "month " + month + ": spent");
+        assert.equal(after.remaining, 0, "month " + month + ": not spendable twice");
+      }
+
+      assert.equal(windows.size, 12, "twelve distinct membership months");
+      const granted = await VisitEntitlement.countDocuments({
+        user: user._id,
+        addressId,
+        source: "membership_benefit",
+      });
+      assert.equal(granted, 12, "twelve included Full Days across the annual year");
+    });
+
+    await test("the index still refuses a second Full Day inside one membership month", async () => {
+      await reset();
+      const { user, addressId } = await makeAnnualEliteMember();
+      const now = new Date("2026-10-05T12:00:00Z");
+      const state = await includedFullDayState({ user, addressId, now });
+
+      await consumeIncludedFullDay({
+        user,
+        addressId,
+        periodStart: state.periodStart,
+        periodEnd: state.periodEnd,
+        durationMinutes: 480,
+        now,
+      });
+
+      // The membership month running from the 12th to the 12th, so this is one
+      // hour before the anniversary and still the same month.
+      const again = new Date("2026-10-12T03:00:00Z");
+      const second = await includedFullDayState({ user, addressId, now: again });
+      assert.equal(second.used, true, "an hour before the anniversary, still the same month");
+      assert.equal(second.periodStart.toISOString(), state.periodStart.toISOString());
+      await assert.rejects(
+        consumeIncludedFullDay({
+          user,
+          addressId,
+          periodStart: second.periodStart,
+          periodEnd: second.periodEnd,
+          durationMinutes: 480,
+          now: again,
+        }),
+        (error) => error.code === "FULL_DAY_BENEFIT_ALREADY_USED",
+        "a second Full Day in one membership month is refused"
+      );
+
+      // Two hours later the anniversary has passed and the next month opens.
+      const nextMonth = await includedFullDayState({
+        user,
+        addressId,
+        now: new Date("2026-10-12T05:00:00Z"),
+      });
+      assert.equal(nextMonth.used, false, "the anniversary brings a fresh Full Day");
+      assert.equal(nextMonth.remaining, 1);
+    });
+
+    await test("an unused month does not carry over or stockpile", async () => {
+      await reset();
+      const { user, addressId } = await makeAnnualEliteMember();
+
+      // Skip four months entirely, then look.
+      const later = new Date("2026-12-20T12:00:00Z");
+      const state = await includedFullDayState({ user, addressId, now: later });
+      assert.equal(state.remaining, 1, "still exactly one, never four");
+      assert(
+        state.periodEnd - state.periodStart < 32 * 24 * 3600 * 1000,
+        "the window is a month, not everything that was missed"
+      );
+    });
+
     console.log("\nSelling the day: legacy calendar");
 
     await test("a free day is offered and a taken day is not", async () => {

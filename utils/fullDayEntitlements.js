@@ -3,12 +3,19 @@ const VisitEntitlement = require("../models/VisitEntitlement");
 const { subscriptionGrantsAccess } = require("./subscriptionManagement");
 
 /**
- * The Full Day that comes with Elite: one per billing period, per address.
+ * The Full Day that comes with Elite: one per membership month, per address.
  *
- * "Per billing period" is meant literally. The period is copied off the
- * subscription, not computed from a calendar month, because a member billed on
- * the 12th does not experience months and would otherwise get two Full Days in
- * some months and none in others depending on where their renewal fell.
+ * "Membership month" is meant literally, and is anchored to the subscription
+ * rather than the calendar: a member billed on the 12th does not experience
+ * calendar months, and would otherwise get two Full Days in some months and
+ * none in others depending on where their renewal fell. So months are counted
+ * forward from the start of the billing period - see entitlementPeriod.
+ *
+ * For a monthly member the membership month and the billing period are the same
+ * thing, which is why this used to read the billing period directly. Annual
+ * billing broke that equivalence: an annual member buys twelve months of Elite
+ * and pays for them once, so their one Stripe period covers twelve Full Days,
+ * one of which becomes available at each monthly anniversary.
  *
  * The benefit is stored as an ordinary VisitEntitlement so it lands in the same
  * place as a bought one and everything downstream reads one shape. What marks
@@ -214,6 +221,86 @@ function subscriptionPeriod(subscription) {
   return { periodStart, periodEnd };
 }
 
+/**
+ * The same calendar day, `count` months on, in UTC.
+ *
+ * Clamped the way a person would clamp it: one month after the 31st of January
+ * is the 28th of February, not the 3rd of March. Done by moving to the 1st
+ * before changing the month, because setUTCMonth on a 31st silently overflows
+ * into the following month and would hand somebody their Full Day a few days
+ * early every single time February came round. Time of day is preserved, so an
+ * anniversary keeps the hour Stripe stamped on it.
+ */
+function addMonths(date, count) {
+  const result = new Date(date.getTime());
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() + count);
+  const daysInTargetMonth = new Date(
+    Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)
+  ).getUTCDate();
+  result.setUTCDate(Math.min(day, daysInTargetMonth));
+  return result;
+}
+
+/**
+ * The window one included Full Day belongs to: a MEMBERSHIP MONTH.
+ *
+ * Elite includes a Full Day every month. That is a property of the membership,
+ * not of the invoice, and an annual member is buying twelve months of Elite -
+ * they have simply paid for them in one go. Attributing the benefit to the
+ * Stripe billing period made the two identical for a monthly member and
+ * catastrophically different for an annual one, who got a single Full Day for
+ * the entire year.
+ *
+ * So the period is sliced into anniversary months counted forward from the
+ * start of the billing period. A monthly subscription has exactly one such
+ * month and comes back completely unchanged - see the guard below. An annual
+ * subscription comes back as whichever of its twelve months contains `now`.
+ *
+ * Nothing accumulates. The entitlement is an ABSENCE, not a grant: a member who
+ * does not use February's Full Day has no February row, and in March the lookup
+ * asks about March. There is nothing to carry forward and nothing to stockpile,
+ * which is the existing rule and stays the rule.
+ */
+function entitlementPeriod(subscription, { now = new Date() } = {}) {
+  const period = subscriptionPeriod(subscription);
+  if (!period) return null;
+
+  const { periodStart, periodEnd } = period;
+
+  /*
+   * Only genuinely long periods are sliced.
+   *
+   * A monthly billing period can never reach two months, so this guard means
+   * monthly members take the original path and get byte-identical behaviour -
+   * including the irregular periods that proration, plan changes and trials
+   * produce, none of which should ever be chopped into pieces. Annual periods
+   * are twelve months and always clear it.
+   */
+  if (periodEnd <= addMonths(periodStart, 2)) return period;
+
+  // Which membership month contains `now`. Seeded from the calendar-month gap,
+  // then corrected, because day-of-month clamping makes the seed approximate.
+  let index =
+    (now.getUTCFullYear() - periodStart.getUTCFullYear()) * 12 +
+    (now.getUTCMonth() - periodStart.getUTCMonth());
+  if (!Number.isFinite(index) || index < 0) index = 0;
+  while (index > 0 && addMonths(periodStart, index) > now) index -= 1;
+  while (addMonths(periodStart, index + 1) <= now) index += 1;
+  // A subscription Stripe has not re-stamped yet can leave `now` past the end.
+  // Staying inside the final month is right; falling back to the whole year
+  // would re-open a window the member may already have spent.
+  while (index > 0 && addMonths(periodStart, index) >= periodEnd) index -= 1;
+
+  const monthStart = addMonths(periodStart, index);
+  const nextAnniversary = addMonths(periodStart, index + 1);
+  return {
+    periodStart: monthStart,
+    periodEnd: nextAnniversary > periodEnd ? periodEnd : nextAnniversary,
+  };
+}
+
 async function findIncludedEntitlement({ user, addressId, periodStart }) {
   return VisitEntitlement.findOne({
     user: user._id,
@@ -243,7 +330,7 @@ async function includedFullDayState({ user, addressId, now = new Date() }) {
       reason: "not_elite",
     };
   }
-  const period = subscriptionPeriod(subscription);
+  const period = entitlementPeriod(subscription, { now });
   if (!period) {
     return {
       entitled: false,
@@ -313,7 +400,7 @@ async function consumeIncludedFullDay({
     if (error?.code === 11000) {
       throw serviceError(
         "FULL_DAY_BENEFIT_ALREADY_USED",
-        "Your included Full Day for this billing period has already been used."
+        "Your included Full Day for this month has already been used."
       );
     }
     throw error;
@@ -387,6 +474,7 @@ module.exports = {
   canRestoreIncludedFullDay,
   consumeIncludedFullDay,
   consumeLoyaltyFullDay,
+  entitlementPeriod,
   findIncludedEntitlement,
   includedFullDayState,
   loyaltyFullDayState,

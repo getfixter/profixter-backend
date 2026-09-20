@@ -20,6 +20,7 @@ const {
 } = require("../utils/visitEntitlementIndexSafety");
 const {
   canRestoreIncludedFullDay,
+  entitlementPeriod,
   subscriptionPeriod,
 } = require("../utils/fullDayEntitlements");
 const {
@@ -201,6 +202,130 @@ function testSubscriptionPeriod() {
   assert.equal(period.periodStart.toISOString(), "2026-08-12T04:00:00.000Z");
   assert.equal(period.periodEnd.toISOString(), "2026-09-12T04:00:00.000Z");
   console.log("PASS");
+}
+
+const sub = (start, end) => ({
+  currentPeriodStart: new Date(start),
+  currentPeriodEnd: new Date(end),
+});
+const iso = (d) => d.toISOString();
+
+/*
+ * The whole point of the guard in entitlementPeriod: a monthly member must come
+ * back through the new code with exactly what the old code gave them. Every
+ * shape Stripe actually produces for a monthly plan is here, including the ones
+ * that are not a tidy month - proration, a short first period, a month that ends
+ * on a shorter month's last day.
+ */
+function testMonthlyEliteIsUnchanged() {
+  section("monthly Elite: the membership month IS the billing period, untouched");
+
+  const cases = [
+    ["2026-08-12T04:00:00Z", "2026-09-12T04:00:00Z", "2026-08-20T00:00:00Z", "an ordinary month"],
+    ["2026-01-31T04:00:00Z", "2026-02-28T04:00:00Z", "2026-02-10T00:00:00Z", "Jan 31 -> Feb 28"],
+    ["2026-08-12T04:00:00Z", "2026-08-19T04:00:00Z", "2026-08-15T00:00:00Z", "a short prorated period"],
+    ["2026-08-12T04:00:00Z", "2026-09-28T04:00:00Z", "2026-09-20T00:00:00Z", "a long irregular period"],
+  ];
+
+  for (const [start, end, now, label] of cases) {
+    const raw = subscriptionPeriod(sub(start, end));
+    const sliced = entitlementPeriod(sub(start, end), { now: new Date(now) });
+    assert.equal(iso(sliced.periodStart), iso(raw.periodStart), `${label}: start unchanged`);
+    assert.equal(iso(sliced.periodEnd), iso(raw.periodEnd), `${label}: end unchanged`);
+  }
+
+  assert.equal(entitlementPeriod(null), null, "no subscription is still no period");
+  assert.equal(
+    entitlementPeriod(sub("2026-08-12T04:00:00Z", "2026-08-12T04:00:00Z")),
+    null,
+    "a zero-length period is still not a period"
+  );
+  console.log("PASS");
+}
+
+/*
+ * The bug this whole change exists to fix. One annual subscription, twelve
+ * distinct membership months, and therefore twelve Full Days over the year -
+ * one at a time, never banked.
+ */
+function testAnnualEliteGetsAMonthEachMonth() {
+  section("annual Elite: one Full Day each membership month, not one a year");
+
+  const annual = sub("2026-08-12T04:00:00Z", "2027-08-12T04:00:00Z");
+  const starts = new Set();
+
+  for (let month = 0; month < 12; month += 1) {
+    // Mid-month, so the answer cannot be an artefact of landing on a boundary.
+    const now = new Date(Date.UTC(2026, 7 + month, 20, 12, 0, 0));
+    const period = entitlementPeriod(annual, { now });
+    starts.add(iso(period.periodStart));
+    assert(period.periodStart <= now, `month ${month}: period contains now (start)`);
+    assert(period.periodEnd > now, `month ${month}: period contains now (end)`);
+    assert(
+      period.periodEnd - period.periodStart < 32 * 24 * 3600 * 1000,
+      `month ${month}: a membership month is a month, not a year`
+    );
+  }
+
+  assert.equal(starts.size, 12, "twelve distinct periods means twelve Full Days");
+
+  // The old behaviour, stated as the thing that must NOT happen any more.
+  const raw = subscriptionPeriod(annual);
+  const first = entitlementPeriod(annual, { now: new Date("2026-08-20T00:00:00Z") });
+  assert.notEqual(
+    iso(first.periodEnd),
+    iso(raw.periodEnd),
+    "an annual member no longer gets one entitlement window for the whole year"
+  );
+
+  // Nothing accumulates: skipping months does not hand back a wider window.
+  const skipped = entitlementPeriod(annual, { now: new Date("2027-03-20T00:00:00Z") });
+  assert(
+    skipped.periodEnd - skipped.periodStart < 32 * 24 * 3600 * 1000,
+    "unused months do not widen or stockpile the next one"
+  );
+  console.log("PASS");
+}
+
+function testMembershipMonthBoundaries() {
+  section("membership month boundaries land on the anniversary, not the calendar");
+
+  const annual = sub("2026-08-12T04:00:00Z", "2027-08-12T04:00:00Z");
+
+  // The instant the second month opens, and the instant before it.
+  const justBefore = entitlementPeriod(annual, { now: new Date("2026-09-12T03:59:59Z") });
+  const exactly = entitlementPeriod(annual, { now: new Date("2026-09-12T04:00:00Z") });
+  assert.equal(iso(justBefore.periodStart), "2026-08-12T04:00:00.000Z", "still month 1");
+  assert.equal(iso(exactly.periodStart), "2026-09-12T04:00:00.000Z", "month 2 opens on the hour");
+  assert.equal(iso(justBefore.periodEnd), iso(exactly.periodStart), "no gap between months");
+
+  // A 31st anniversary clamps to short months instead of overflowing.
+  const from31 = sub("2026-12-31T04:00:00Z", "2027-12-31T04:00:00Z");
+  const february = entitlementPeriod(from31, { now: new Date("2027-03-01T00:00:00Z") });
+  assert.equal(
+    iso(february.periodStart),
+    "2027-02-28T04:00:00.000Z",
+    "one month after Dec 31 -> Jan 31 -> Feb 28, never Mar 3"
+  );
+
+  // The final month is clamped to the subscription end, not past it.
+  const last = entitlementPeriod(annual, { now: new Date("2027-08-01T00:00:00Z") });
+  assert.equal(iso(last.periodEnd), "2027-08-12T04:00:00.000Z", "final month ends with the period");
+
+  // Clock skew either side of the period stays inside a real month.
+  const before = entitlementPeriod(annual, { now: new Date("2026-08-01T00:00:00Z") });
+  assert.equal(iso(before.periodStart), "2026-08-12T04:00:00.000Z", "before the start: first month");
+  const after = entitlementPeriod(annual, { now: new Date("2027-10-01T00:00:00Z") });
+  assert(after.periodStart < raw2End(annual), "past the end: stays in the final month");
+  assert(
+    after.periodEnd - after.periodStart < 32 * 24 * 3600 * 1000,
+    "past the end: never falls back to the whole year"
+  );
+  console.log("PASS");
+}
+
+function raw2End(subscription) {
+  return subscriptionPeriod(subscription).periodEnd;
 }
 
 function testRestoreRules() {
@@ -586,6 +711,9 @@ async function run() {
   await testReservationModelAcceptsAFullDay();
   await testEntitlementSchema();
   testSubscriptionPeriod();
+  testMonthlyEliteIsUnchanged();
+  testAnnualEliteGetsAMonthEachMonth();
+  testMembershipMonthBoundaries();
   testRestoreRules();
   testWorkdaySpan();
   testLegacyDay();
