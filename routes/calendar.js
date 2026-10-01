@@ -6,6 +6,7 @@ const CalendarConfig = require("../models/CalendarConfig");
 const Booking = require("../models/Booking");
 const SlotCounter = require("../models/SlotCounter");
 const {
+  applyMemberVisitLeadTime,
   customerCalendarConfig,
   customerDayAvailability,
   customerMonthAvailability,
@@ -15,6 +16,17 @@ const { hoursForDate } = require("../utils/legacyCalendarSlots");
 const { earliestMemberVisitYMD } = require("../utils/bookingLeadTime");
 
 /* ---------------- helpers ---------------- */
+
+/*
+ * `?visit=membership` — the calendar is offering a regular membership visit.
+ *
+ * Those are booked at least seven calendar days out (utils/bookingLeadTime.js),
+ * and the availability has to agree with the booking route that enforces it.
+ * The other products that read these endpoints keep their own lead time, so
+ * the flag is opt-in. It changes what is displayed, never what is permitted.
+ */
+const isMemberVisitRequest = (req) =>
+  String(req.query.visit || "").trim().toLowerCase() === "membership";
 function disableLiveAvailabilityCache(res) {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate");
   res.set("Pragma", "no-cache");
@@ -143,9 +155,12 @@ router.get("/slots", async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ message: "Missing or invalid date (YYYY-MM-DD)" });
     }
+    const memberVisit = isMemberVisitRequest(req);
     if (reservationEngineEnabled()) {
-      return res.json(await customerDayAvailability({ date }));
+      return res.json(await customerDayAvailability({ date, memberVisit }));
     }
+    const respond = (day) =>
+      res.json(memberVisit ? applyMemberVisitLeadTime(day) : day);
 
     const cfg = await getCfg();
     const tz = cfg.timezone || "America/New_York";
@@ -159,12 +174,14 @@ router.get("/slots", async (req, res) => {
     const diffDays = Math.round((targetLocal - todayLocal) / (1000 * 60 * 60 * 24));
     const minLead = Number(cfg.minLeadDays || 0);
     if (diffDays >= 0 && diffDays < minLead) {
-      return res.json({ date, slots: [], taken: {}, capacityPerSlot: maxCap });
+      return respond({ date, slots: [], candidateSlots: [], taken: {}, capacityPerSlot: maxCap });
     }
 
     // base hours
     let hours = hoursForDate(cfg, date);
-    if (!hours.length) return res.json({ date, slots: [], taken: {}, capacityPerSlot: maxCap });
+    if (!hours.length) {
+      return respond({ date, slots: [], candidateSlots: [], taken: {}, capacityPerSlot: maxCap });
+    }
 
     // filter past times if same day
     const todayYMD = ymdInTZ(new Date(), tz);
@@ -196,8 +213,12 @@ router.get("/slots", async (req, res) => {
     }
 
     // Expose remaining capacity while keeping "full" ones visible as disabled in UI
-    const slots = hours.filter((h) => (taken[h] || 0) < maxCap);
-    res.json({ date, slots, taken, capacityPerSlot: maxCap });
+    const candidateSlots = hours.map((h) => ({
+      time: h,
+      available: (taken[h] || 0) < maxCap,
+    }));
+    const slots = candidateSlots.filter((s) => s.available).map((s) => s.time);
+    respond({ date, slots, candidateSlots, taken, capacityPerSlot: maxCap });
   } catch (e) {
     console.error("slots error:", e?.stack || e?.message || e);
     res.status(500).json({ message: "Failed to load slots" });
@@ -216,6 +237,7 @@ router.get("/month", async (req, res) => {
     return res.json(
       await customerMonthAvailability({
         month: String(req.query.month || ""),
+        memberVisit: isMemberVisitRequest(req),
       })
     );
   } catch (error) {

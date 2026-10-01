@@ -14,7 +14,41 @@ const {
 } = require("./slotReservationService");
 
 const TIMEZONE = "America/New_York";
-const { earliestMemberVisitYMD } = require("./bookingLeadTime");
+const {
+  earliestMemberVisitYMD,
+  isBeforeEarliestMemberVisit,
+} = require("./bookingLeadTime");
+
+/**
+ * A DAY AS A MEMBER VISIT SEES IT.
+ *
+ * The booking route refuses a regular membership visit before
+ * `earliestMemberVisitYMD()`. Availability has to give the same answer, or the
+ * calendar offers — and auto-selects — a slot the API will then turn down. So
+ * this asks the very same function the route asks, and when the date is too
+ * soon it closes the whole day: no bookable time, every candidate unavailable.
+ *
+ * The availability endpoints are shared with First Visit Free and One-Time
+ * Visits, which keep the template's own lead time, so this only runs when the
+ * caller says it is pricing a member visit. That is a presentation choice, not
+ * a permission: the booking route decides membership for itself and enforces
+ * the rule whatever the calendar was told.
+ */
+function applyMemberVisitLeadTime(day, now = new Date()) {
+  if (!isBeforeEarliestMemberVisit(day.date, now)) return day;
+  const closed = {
+    ...day,
+    available: false,
+    availableSlotCount: 0,
+    slots: [],
+    candidateSlots: (day.candidateSlots || []).map((slot) => ({
+      time: slot.time,
+      available: false,
+    })),
+  };
+  if ("closed" in day) closed.closed = true;
+  return closed;
+}
 
 function slotOverlap(reservation, slotStart, slotEnd) {
   return (
@@ -37,11 +71,24 @@ async function activeReservationsForRange(
   return rows.filter((entry) => reservationBlocksAvailability(entry, now));
 }
 
-function customerDayFromShadow({ date, day, reservations, now = new Date() }) {
+function customerDayFromShadow({
+  date,
+  day,
+  reservations,
+  now = new Date(),
+  memberVisit = false,
+}) {
   const timezone = day.timezone || TIMEZONE;
   const taken = {};
   const remaining = {};
   const slots = [];
+  /*
+   * Every time the day's schedule offers, booked or not, in schedule order.
+   * `slots` stays the bookable subset it has always been, so existing readers
+   * are untouched; this exists so a calendar can show a booked 8:00 as booked
+   * rather than pretend the day never had one.
+   */
+  const candidateSlots = [];
 
   for (const slot of day.slots) {
     const slotStart = moment.tz(
@@ -73,10 +120,12 @@ function customerDayFromShadow({ date, day, reservations, now = new Date() }) {
     );
     taken[slot.time] = used;
     remaining[slot.time] = realRemaining;
-    if (slot.open && realRemaining > 0) slots.push(slot.time);
+    const bookable = Boolean(slot.open && realRemaining > 0);
+    candidateSlots.push({ time: slot.time, available: bookable });
+    if (bookable) slots.push(slot.time);
   }
 
-  return {
+  const result = {
     date,
     timezone,
     engine: "reservation",
@@ -84,6 +133,7 @@ function customerDayFromShadow({ date, day, reservations, now = new Date() }) {
     available: slots.length > 0,
     availableSlotCount: slots.length,
     slots,
+    candidateSlots,
     taken,
     remaining,
     capacityPerSlot: Math.max(
@@ -92,11 +142,13 @@ function customerDayFromShadow({ date, day, reservations, now = new Date() }) {
     ),
     closed: slots.length === 0,
   };
+  return memberVisit ? applyMemberVisitLeadTime(result, now) : result;
 }
 
 async function customerDayAvailability({
   date,
   now = new Date(),
+  memberVisit = false,
   dependencies = {},
 }) {
   const calculateAvailability =
@@ -115,12 +167,13 @@ async function customerDayAvailability({
     dayStart.clone().add(1, "day").toDate(),
     ReservationModel
   );
-  return customerDayFromShadow({ date, day, reservations, now });
+  return customerDayFromShadow({ date, day, reservations, now, memberVisit });
 }
 
 async function customerMonthAvailability({
   month,
   now = new Date(),
+  memberVisit = false,
   dependencies = {},
 }) {
   if (!/^\d{4}-\d{2}$/.test(String(month || ""))) {
@@ -173,6 +226,7 @@ async function customerMonthAvailability({
       day: shadowDay,
       reservations,
       now,
+      memberVisit,
     });
     days.push({
       date,
@@ -181,6 +235,7 @@ async function customerMonthAvailability({
       open: detail.slots.length > 0,
       slotCount: detail.slots.length,
       slots: detail.slots,
+      candidateSlots: detail.candidateSlots,
       taken: detail.taken,
       remaining: detail.remaining,
       capacityPerSlot: detail.capacityPerSlot,
@@ -280,6 +335,7 @@ async function customerCalendarConfig() {
 }
 
 module.exports = {
+  applyMemberVisitLeadTime,
   customerCalendarConfig,
   customerDayAvailability,
   customerDayFromShadow,
