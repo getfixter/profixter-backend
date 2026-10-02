@@ -51,6 +51,7 @@ const SUITES = [
   "test_checkout_return_urls.js",
   "test_membership_map.js",
   "test_recent_work.js",
+  "test_event_display.js",
   "test_marketing_system.js",
   "test_free_visit_lifecycle.js",
   "test_marketing_longterm.js",

@@ -225,6 +225,8 @@ app.use("/api/admin/sms", require("./routes/adminSms"));
 app.use("/api/admin/communications", require("./routes/adminCommunications"));
 app.use("/api/admin/recent-work", require("./routes/adminRecentWork"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
+// Admin-only booth display: approved booking photos, never booking details.
+app.use("/api/admin/event-display", require("./routes/adminEventDisplay"));
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin/marketing", require("./routes/adminMarketing"));
 app.use("/api/admin", require("./routes/admin"));
