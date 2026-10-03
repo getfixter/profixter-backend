@@ -28,6 +28,7 @@ const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const mail = require("../utils/emailService");
 const { deletePublicObjects, putPublicObject } = require("../utils/s3");
+const { libraryLabel, readLibraryReference } = require("../utils/bookingLibrary");
 const {
   MAX_PHOTO_BYTES,
   MAX_PHOTOS,
@@ -820,8 +821,17 @@ router.post(
       if (!note || String(note).trim().split(/\s+/).filter(Boolean).length < 3) {
         return res.status(400).json({ message: "Describe the task in at least a few words." });
       }
-      if (!req.files?.length) {
-        return res.status(400).json({ message: "Add at least one photo so our team can prepare." });
+      const library = readLibraryReference(req.body);
+      if (!library.ok) {
+        return res.status(library.status).json({ message: library.message, code: library.code });
+      }
+      // A real photo is best; the closest Profixter example is an accepted
+      // stand-in so a customer without a photo to hand can still book.
+      if (!req.files?.length && !library.key) {
+        return res.status(400).json({
+          message: "Add a photo, or choose the closest Profixter example.",
+          code: "PHOTO_REQUIRED",
+        });
       }
 
       const scope = validateOneTimeTask(oneTimeSettings, selectedTask, note);
@@ -940,6 +950,7 @@ router.post(
         isFreeFirstVisit: false,
         note: String(note || "").trim(),
         images: uploadResult.images,
+        libraryReference: library.key,
         status: "Pending",
       };
 
@@ -1342,6 +1353,11 @@ router.post(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
         return res.status(400).json({ message: "Please choose a date." });
       }
+      // Photos are optional for a Full Day; a Profixter example, if chosen, is kept.
+      const library = readLibraryReference(req.body);
+      if (!library.ok) {
+        return res.status(library.status).json({ message: library.message, code: library.code });
+      }
 
       const state = await includedFullDayState({ user: me, addressId: subdoc._id });
       const loyalty = await loyaltyFullDayState({ user: me, addressId: subdoc._id });
@@ -1435,6 +1451,7 @@ router.post(
           isFreeFirstVisit: false,
           note: String(note || "").trim(),
           images: uploadResult.images,
+          libraryReference: library.key,
           status: "Pending",
         },
       });
@@ -1574,6 +1591,11 @@ router.post(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
         return res.status(400).json({ message: "Please choose a date." });
       }
+      // Photos are optional for a Full Day; a Profixter example, if chosen, is kept.
+      const library = readLibraryReference(req.body);
+      if (!library.ok) {
+        return res.status(library.status).json({ message: library.message, code: library.code });
+      }
       if (!isAddressInServiceArea(subdoc)) {
         return res.status(403).json({
           message: outOfServiceAreaMessage(),
@@ -1644,6 +1666,7 @@ router.post(
           isFreeFirstVisit: false,
           note: String(note || "").trim(),
           images: uploadResult.images,
+          libraryReference: library.key,
           status: "Pending",
         },
       });
@@ -1768,6 +1791,10 @@ router.post(
       if (!service || !date || !note) {
         return res.status(400).json({ message: "Missing required fields." });
       }
+      const library = readLibraryReference(req.body);
+      if (!library.ok) {
+        return res.status(library.status).json({ message: library.message, code: library.code });
+      }
 
       if (!addressId || !mongoose.isValidObjectId(addressId)) {
         return res
@@ -1890,10 +1917,12 @@ router.post(
         // before the visit so they arrive with the right tools and materials.
         // Enforced server-side here so a crafted request cannot skip it.
         // Scoped to the free-visit branch so member validation is untouched.
-        if (!req.files?.length) {
+        // The closest Profixter Library example is an accepted stand-in when
+        // the customer has no photo to hand; real photos can follow later.
+        if (!req.files?.length && !library.key) {
           return res.status(400).json({
             message:
-              "Add at least one photo so your technician can review the job and arrive prepared.",
+              "Add a photo, or choose the closest Profixter example, so your technician can prepare.",
             code: "PHOTO_REQUIRED",
           });
         }
@@ -2049,6 +2078,7 @@ router.post(
         freeFirstVisitClaimedAt: usingFreeFirstVisit ? new Date() : null,
         note,
         images,
+        libraryReference: library.key,
         status: "Pending",
       };
       let booking;
@@ -2146,6 +2176,12 @@ router.post(
                 <li><strong>Date:</strong> ${nyTime}</li>
                 <li><strong>Address:</strong> ${addressLine}</li>
                 <li><strong>Booking #:</strong> ${booking.bookingNumber}</li>
+                ${
+                  booking.libraryReference
+                    ? `<li><strong>Job type (Profixter example):</strong> ${libraryLabel(booking.libraryReference)}</li>`
+                    : ""
+                }
+                <li><strong>Customer photos:</strong> ${(booking.images || []).length || "Not added yet"}</li>
               </ul>
             `,
           logContext: {
@@ -2187,7 +2223,12 @@ router.post(
           service: booking.service,
           bookingType: bookingTypeLabel(booking),
           address: addressLine,
-          note: booking.notes || booking.description || "",
+          note: [
+            booking.libraryReference ? `Job type (Profixter example): ${libraryLabel(booking.libraryReference)}` : "",
+            booking.note || "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
           source: "bookingCreate",
         });
       } catch (notifyErr) {

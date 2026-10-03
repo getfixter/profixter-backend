@@ -68,6 +68,10 @@ const BookingSchema = new mongoose.Schema({
   adminNote: { type: String, default: "" },
 
   images: [{ type: String }],
+  // A Profixter Library example the customer chose instead of (or before)
+  // sending real photos: a key from utils/bookingLibrary.js, never an image
+  // URL. Empty on every booking that did not use the library.
+  libraryReference: { type: String, trim: true, default: "" },
   contentUpdates: [
     {
       actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
