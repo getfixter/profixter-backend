@@ -547,6 +547,20 @@ async function routeTests() {
       assert.ok(after.body.photos.some((p) => p.id === photos.photoId(url)));
     });
 
+    await test("images never use up the feed's rate limit (the 2026-10-03 outage)", async () => {
+      require("../utils/rateLimit")._reset();
+      // A kiosk that has shown well over 120 photos from one network...
+      for (let i = 0; i < 130; i += 1) {
+        const res = await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${shownId}/image`);
+        assert.strictEqual(res.status, 200, `image ${i} answered ${res.status}`);
+        await res.arrayBuffer();
+      }
+      // ...must still be able to load the library on its next start.
+      const again = await call("GET", "/api/event-display/photos");
+      assert.strictEqual(again.status, 200, `feed answered ${again.status} after 130 images`);
+      require("../utils/rateLimit")._reset();
+    });
+
     for (const [who, token] of [["anonymous", null], ["customer", sign(customer)], ["General Fixter", sign(fixter)]]) {
       await test(`${who}: the public routes are read-only and admin routes stay closed`, async () => {
         const review = await call("GET", "/api/admin/event-display/photos?scope=review", token);

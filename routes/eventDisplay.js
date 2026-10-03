@@ -27,14 +27,33 @@ const { displayIndex, keyFromUrl } = require("../utils/eventDisplayLibrary");
 
 const router = express.Router();
 
-const ipKey = (req) => {
+function clientIp(req) {
   const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  const ip = (forwarded || req.ip || req.socket?.remoteAddress || "").slice(0, 64);
-  return ip ? `event-display:${ip}` : null;
+  return (forwarded || req.ip || req.socket?.remoteAddress || "").slice(0, 64);
+}
+
+/*
+ * Each limiter needs its OWN key. utils/rateLimit keeps one counter per
+ * (window, key), so two limiters with the same window and key share a single
+ * counter. That is what took the kiosk down on 2026-10-03: every image counted
+ * against the feed's 120, and after ~120 images from one network the feed
+ * answered 429 and /event showed the brand with no photos.
+ */
+const feedKey = (req) => {
+  const ip = clientIp(req);
+  return ip ? `event-display-feed:${ip}` : null;
+};
+const imageKey = (req) => {
+  const ip = clientIp(req);
+  return ip ? `event-display-image:${ip}` : null;
 };
 
-const feedLimiter = rateLimit({ limit: 120, windowMs: 10 * 60 * 1000, keyResolver: ipKey });
-const imageLimiter = rateLimit({ limit: 600, windowMs: 10 * 60 * 1000, keyResolver: ipKey });
+// The kiosk asks for the list once per load and every 30 minutes.
+const feedLimiter = rateLimit({ limit: 120, windowMs: 10 * 60 * 1000, keyResolver: feedKey });
+// A kiosk running all day, plus a reload or two and a phone on the same
+// network, stays far below this; a bulk download of the library still takes
+// the better part of ten minutes.
+const imageLimiter = rateLimit({ limit: 2000, windowMs: 10 * 60 * 1000, keyResolver: imageKey });
 
 const ID_PATTERN = /^[0-9a-f]{20}$/;
 const MAX_EDGE = 1600;
