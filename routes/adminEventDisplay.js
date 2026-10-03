@@ -2,7 +2,8 @@
  * The booth display: customer booking photos on a tablet at an event.
  *
  * ADMIN ONLY
- * Both endpoints require PERMISSIONS.ADMIN. Fixters can read bookings, but this
+ * Everything here requires PERMISSIONS.ADMIN. The public kiosk has its own,
+ * narrower routes in routes/eventDisplay.js. Fixters can read bookings, but this
  * is a set of other people's homes shown in public, and only an admin decides
  * what is taken out of it.
  *
@@ -18,59 +19,16 @@
 
 const express = require("express");
 const auth = require("../middleware/auth");
-const Booking = require("../models/Booking");
-const User = require("../models/User");
 const EventDisplayPhoto = require("../models/EventDisplayPhoto");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
-const {
-  STATUS,
-  collectCandidates,
-  withStatus,
-  displayable,
-} = require("../utils/eventDisplayPhotos");
+const { STATUS, displayable } = require("../utils/eventDisplayPhotos");
+const { loadPhotos, invalidate } = require("../utils/eventDisplayLibrary");
 
 const router = express.Router();
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 
-/** Backstops, not paging: there are ~1,200 bookings with photos today. */
-const BOOKING_SCAN_LIMIT = 10000;
 const MAX_IDS_PER_UPDATE = 5000;
-
-function storage() {
-  return {
-    bucket: process.env.S3_BUCKET,
-    region: process.env.S3_REGION || process.env.AWS_REGION || "us-east-1",
-  };
-}
-
-/** Accounts whose bookings are our own tests: admins (by role or the admin email) and employees. */
-async function staffUserIds() {
-  const adminEmail = String(process.env.MAIL_ADMIN || "getfixter@gmail.com").trim().toLowerCase();
-  const staff = await User.find({
-    $or: [{ role: { $in: ["admin", "employee"] } }, { email: adminEmail }],
-  })
-    .select("_id")
-    .lean();
-  return new Set(staff.map((u) => String(u._id)));
-}
-
-async function loadPhotos() {
-  const [bookings, staff] = await Promise.all([
-    Booking.find({ "images.0": { $exists: true } })
-      .select("_id images createdAt user")
-      .sort({ createdAt: -1 })
-      .limit(BOOKING_SCAN_LIMIT)
-      .lean(),
-    staffUserIds(),
-  ]);
-  const customerBookings = bookings.filter((b) => !staff.has(String(b.user)));
-  const candidates = collectCandidates(customerBookings, storage());
-  const decisions = await EventDisplayPhoto.find({ photoId: { $in: candidates.map((p) => p.id) } })
-    .select("photoId status")
-    .lean();
-  return withStatus(candidates, decisions);
-}
 
 router.get("/photos", auth, ...onlyAdmin, async (req, res) => {
   try {
@@ -129,6 +87,9 @@ router.put("/photos", auth, ...onlyAdmin, async (req, res) => {
       entityName: "Event display",
       details: { status, count: photos.length },
     }).catch((error) => console.error("Event display activity log failed:", error));
+
+    // The public kiosk serves from a short cache; a hidden photo must stop now.
+    invalidate();
 
     return res.json({ updated: photos.length, status });
   } catch (error) {

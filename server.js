@@ -225,8 +225,10 @@ app.use("/api/admin/sms", require("./routes/adminSms"));
 app.use("/api/admin/communications", require("./routes/adminCommunications"));
 app.use("/api/admin/recent-work", require("./routes/adminRecentWork"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
-// Admin-only booth display: approved booking photos, never booking details.
+// Booth display. Admin: review, hide, restore. Public: view-only kiosk feed
+// with opaque ids and images re-served from here, never S3 URLs.
 app.use("/api/admin/event-display", require("./routes/adminEventDisplay"));
+app.use("/api/event-display", require("./routes/eventDisplay"));
 app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin/marketing", require("./routes/adminMarketing"));
 app.use("/api/admin", require("./routes/admin"));

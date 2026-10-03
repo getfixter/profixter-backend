@@ -22,6 +22,35 @@ const express = require("express");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const { MongoMemoryServer } = require("mongodb-memory-server");
+const sharp = require("sharp");
+
+/* ---- the bucket, in memory: the public kiosk reads images through utils/s3 ---- */
+const bucket = new Map();
+let s3Reads = 0;
+function stub(modulePath, exports) {
+  const resolved = require.resolve(modulePath);
+  require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
+}
+stub("../utils/s3", {
+  async getObjectBuffer({ Key }) {
+    s3Reads += 1;
+    if (!bucket.has(Key)) {
+      const error = new Error("NoSuchKey");
+      error.name = "NoSuchKey";
+      throw error;
+    }
+    return bucket.get(Key);
+  },
+  async putPublicObject() {
+    throw new Error("the event display must never upload");
+  },
+  async putPrivateObject() {
+    throw new Error("the event display must never upload");
+  },
+  async deletePublicObjects() {
+    throw new Error("the event display must never delete");
+  },
+});
 
 const User = require("../models/User");
 const Booking = require("../models/Booking");
@@ -240,6 +269,26 @@ async function routeTests() {
   const expressApp = express();
   expressApp.use(express.json());
   expressApp.use("/api/admin/event-display", require("../routes/adminEventDisplay"));
+  expressApp.use("/api/event-display", require("../routes/eventDisplay"));
+  const library = require("../utils/eventDisplayLibrary");
+
+  // Real JPEGs for the three eligible photos, one carrying EXIF with GPS.
+  const jpeg = (w, h, withGps) => {
+    let img = sharp({ create: { width: w, height: h, channels: 3, background: { r: 120, g: 90, b: 60 } } });
+    if (withGps) {
+      img = img.withExif({
+        IFD0: { Copyright: "Jane Secretname", Make: "TestPhone" },
+        GPS: { GPSLatitudeRef: "N", GPSLongitudeRef: "W" },
+      });
+    }
+    return img.jpeg().toBuffer();
+  };
+  bucket.set("uploads/2026-09-20/booking-B-1001/1-customer-ceiling.jpg", await jpeg(2400, 1800, true));
+  bucket.set("uploads/2026-09-20/booking-B-1001/2-ceiling2.jpg", await jpeg(1200, 1600, false));
+  bucket.set("uploads/2026-09-21/booking-B-1002/3-fence.jpg", await jpeg(1600, 1200, false));
+  // Photos that later tests add to bookings.
+  bucket.set("uploads/2026-10-02/booking-B-2001/1-customer-leaking-sink.jpg", await jpeg(1600, 1200, false));
+  bucket.set("uploads/2026-10-02/booking-B-3001/1-customer-cracked-tile.jpg", await jpeg(1600, 1200, false));
   app = expressApp.listen(0);
 
   try {
@@ -413,6 +462,107 @@ async function routeTests() {
       assert.deepStrictEqual(bookings[0].images, [`${B}/2026-09-20/booking-B-1001/1-customer-ceiling.jpg`, `${B}/2026-09-20/booking-B-1001/2-ceiling2.jpg`]);
       assert.deepStrictEqual(bookings[1].images, [`${B}/2025-10-20/booking-B-1002/1-old.heic`, `${B}/2026-09-21/booking-B-1002/3-fence.jpg`]);
     });
+
+    section("Public kiosk: what a visitor can do");
+
+    library.invalidate();
+    const feed = await call("GET", "/api/event-display/photos");
+    await test("the public feed needs no login and lists every displayable photo", async () => {
+      assert.strictEqual(feed.status, 200);
+      const adminView = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.deepStrictEqual(
+        feed.body.photos.map((p) => p.id).sort(),
+        adminView.body.photos.map((p) => p.id).sort()
+      );
+      assert.strictEqual(feed.body.total, feed.body.photos.length);
+    });
+
+    await test("the public feed carries only opaque ids and groups: no URL, date, booking or person", async () => {
+      assert.deepStrictEqual(Object.keys(feed.body).sort(), ["photos", "total"]);
+      for (const photo of feed.body.photos) {
+        assert.deepStrictEqual(Object.keys(photo).sort(), ["group", "id"]);
+        assert.ok(/^[0-9a-f]{20}$/.test(photo.id) && /^[0-9a-f]{12}$/.test(photo.group));
+      }
+      for (const secret of ["amazonaws", "uploads/", "booking-", "B-100", "2026-09", ".jpg", "Secretname", "Privacy Lane", "5559999", "jane.secret", "Gate code", "premium", String(customer._id), "status"]) {
+        assert.ok(!feed.raw.includes(secret), `public feed leaked ${secret}`);
+      }
+    });
+
+    const shownId = feed.body.photos[0].id;
+
+    await test("a public image is a JPEG with no EXIF, no GPS and no name in it", async () => {
+      // Every eligible photo, including the one uploaded with GPS and a name in EXIF.
+      for (const { id } of feed.body.photos) {
+        const res = await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${id}/image`);
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.headers.get("content-type"), "image/jpeg");
+        const buf = Buffer.from(await res.arrayBuffer());
+        const meta = await sharp(buf).metadata();
+        assert.strictEqual(meta.format, "jpeg");
+        assert.ok(!meta.exif, "EXIF survived");
+        assert.ok(Math.max(meta.width, meta.height) <= 1600);
+        assert.ok(!buf.includes(Buffer.from("Secretname")), "a name survived in the bytes");
+        assert.ok(!buf.includes(Buffer.from("GPS")), "GPS survived in the bytes");
+      }
+    });
+
+    await test("served images are cached, not re-fetched from S3 every time", async () => {
+      const before = s3Reads;
+      await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${shownId}/image`);
+      assert.strictEqual(s3Reads, before);
+    });
+
+    await test("unknown, malformed and path-like ids are 404, never an S3 read", async () => {
+      const before = s3Reads;
+      for (const bad of ["0123456789abcdef0123", "nope", "..%2F..%2Fsecret", "uploads%2F2026", photos.photoId("https://evil.example.com/a.jpg")]) {
+        const res = await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${bad}/image`);
+        assert.strictEqual(res.status, 404, bad);
+      }
+      assert.strictEqual(s3Reads, before);
+    });
+
+    await test("a photo on a staff test booking is not servable publicly", async () => {
+      const staffUrl = `${B}/2026-09-22/booking-B-1004/1-google-logo-icon.jpg`;
+      const res = await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${photos.photoId(staffUrl)}/image`);
+      assert.strictEqual(res.status, 404);
+    });
+
+    await test("hiding a photo removes it from the public feed and its image at once", async () => {
+      const hide = await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [shownId], status: "hidden" });
+      assert.strictEqual(hide.status, 200);
+      const after = await call("GET", "/api/event-display/photos");
+      assert.ok(!after.body.photos.some((p) => p.id === shownId), "still in the public feed");
+      const img = await fetch(`http://127.0.0.1:${app.address().port}/api/event-display/photos/${shownId}/image`);
+      assert.strictEqual(img.status, 404, "a cached copy was still served");
+      await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [shownId], status: "unreviewed" });
+      const back = await call("GET", "/api/event-display/photos");
+      assert.ok(back.body.photos.some((p) => p.id === shownId));
+    });
+
+    await test("a new booking's photo reaches the public feed with no approval", async () => {
+      const url = `${B}/2026-10-02/booking-B-3001/1-customer-cracked-tile.jpg`;
+      await Booking.create({ ...bookingBase, bookingNumber: "B-3001", images: [url] });
+      library.invalidate(); // the feed caches for a minute
+      const after = await call("GET", "/api/event-display/photos");
+      assert.ok(after.body.photos.some((p) => p.id === photos.photoId(url)));
+    });
+
+    for (const [who, token] of [["anonymous", null], ["customer", sign(customer)], ["General Fixter", sign(fixter)]]) {
+      await test(`${who}: the public routes are read-only and admin routes stay closed`, async () => {
+        const review = await call("GET", "/api/admin/event-display/photos?scope=review", token);
+        assert.ok([401, 403].includes(review.status), `review ${review.status}`);
+        const adminFeed = await call("GET", "/api/admin/event-display/photos", token);
+        assert.ok([401, 403].includes(adminFeed.status), `admin feed ${adminFeed.status}`);
+        const hide = await call("PUT", "/api/admin/event-display/photos", token, { ids: [shownId], status: "hidden" });
+        assert.ok([401, 403].includes(hide.status), `hide ${hide.status}`);
+        for (const method of ["PUT", "POST", "DELETE", "PATCH"]) {
+          const r = await call(method, "/api/event-display/photos", token, { ids: [shownId], status: "hidden" });
+          assert.strictEqual(r.status, 404, `${method} on the public feed answered ${r.status}`);
+        }
+        const still = await call("GET", "/api/event-display/photos");
+        assert.ok(still.body.photos.some((p) => p.id === shownId), "a non-admin changed the display");
+      });
+    }
   } finally {
     app.close();
     await mongoose.disconnect();
