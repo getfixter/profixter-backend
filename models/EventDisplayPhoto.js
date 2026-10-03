@@ -5,7 +5,8 @@ const mongoose = require("mongoose");
  *
  * This is the only thing the feature stores. The photo itself stays where the
  * booking put it; `url` is kept so a decision can be audited without the booking.
- * No row means "not reviewed", and an unreviewed photo is never displayed.
+ * No row means "not reviewed", and an unreviewed eligible photo IS displayed;
+ * only `hidden` keeps a photo off the screen.
  */
 const EventDisplayPhotoSchema = new mongoose.Schema(
   {

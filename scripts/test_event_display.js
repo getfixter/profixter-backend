@@ -2,9 +2,10 @@
  * Event display: customer booking photos on a tablet at a public booth.
  *
  * The bugs this feature can have are not crashes. They are a customer's name
- * riding along in the JSON, a Fixter or a customer reading the curated set, an
- * unreviewed photo of someone's mail reaching the screen, or an old HEIC with
- * GPS in it being shown at all.
+ * riding along in the JSON, a Fixter or a customer reading the library, a photo
+ * the admin hid coming back on screen, or an old HEIC with GPS in it being
+ * shown at all. Since 2026-10-02 every eligible photo plays unless hidden (the
+ * owner's explicit choice); these tests pin that down.
  *
  *   node scripts/test_event_display.js
  *
@@ -147,48 +148,13 @@ async function unitTests() {
     assert.strictEqual(p.id, photos.photoId(p.url));
   });
 
-  section("Tonight's shortlist");
-
-  const many = (jobs, perJob) => {
-    const list = [];
-    for (let j = 0; j < jobs; j += 1) {
-      for (let k = 0; k < perJob; k += 1) list.push({ id: `j${j}p${k}`, url: "u", group: `g${j}`, status: "unreviewed" });
-    }
-    return list;
-  };
-
-  await test("the shortlist is capped, one photo per job before any second", () => {
-    const picked = photos.shortlist(many(200, 4));
-    assert.strictEqual(picked.size, photos.SHORTLIST_SIZE);
-    assert.ok([...picked].every((id) => id.endsWith("p0")), "a second photo of a job was taken while new jobs remained");
-  });
-
-  await test("newest jobs come first", () => {
-    const picked = photos.shortlist(many(200, 1), { limit: 10 });
-    assert.deepStrictEqual([...picked], Array.from({ length: 10 }, (_, j) => `j${j}p0`));
-  });
-
-  await test("with few jobs, it takes more per job, never more than three", () => {
-    const picked = photos.shortlist(many(10, 6));
-    assert.strictEqual(picked.size, 30);
-  });
-
-  await test("reviewed photos are never shortlisted", () => {
-    const list = many(5, 1);
-    list[0].status = "approved";
-    list[1].status = "hidden";
-    const picked = photos.shortlist(list);
-    assert.ok(!picked.has("j0p0") && !picked.has("j1p0"));
-    assert.strictEqual(picked.size, 3);
-  });
-
-  await test("without a decision a photo is unreviewed and not displayable", () => {
+  await test("without a decision a photo is unreviewed AND displayed; only hidden is not", () => {
     const list = photos.withStatus(
       [{ id: "a", url: "u1", group: "g" }, { id: "b", url: "u2", group: "g" }, { id: "c", url: "u3", group: "g" }],
       [{ photoId: "a", status: "approved" }, { photoId: "b", status: "hidden" }]
     );
     assert.deepStrictEqual(list.map((p) => p.status), ["approved", "hidden", "unreviewed"]);
-    assert.deepStrictEqual(photos.displayable(list).map((p) => p.id), ["a"]);
+    assert.deepStrictEqual(photos.displayable(list).map((p) => p.id), ["a", "c"]);
   });
 }
 
@@ -291,6 +257,13 @@ async function routeTests() {
         403
       );
     });
+    await test("customer → 403 on the review scope too", async () => {
+      assert.strictEqual((await call("GET", "/api/admin/event-display/photos?scope=review", sign(customer))).status, 403);
+    });
+    await test("a customer cannot hide or restore photos", async () => {
+      const r = await call("PUT", "/api/admin/event-display/photos", sign(customer), { ids: ["x"], status: "hidden" });
+      assert.strictEqual(r.status, 403);
+    });
     await test("a Fixter cannot approve photos", async () => {
       const r = await call("PUT", "/api/admin/event-display/photos", sign(fixter), { ids: ["x"], status: "approved" });
       assert.strictEqual(r.status, 403);
@@ -303,7 +276,7 @@ async function routeTests() {
       review = await call("GET", "/api/admin/event-display/photos?scope=review", adminToken);
       assert.strictEqual(review.status, 200);
       assert.strictEqual(review.body.total, 3);
-      assert.deepStrictEqual(review.body.counts, { approved: 0, hidden: 0, unreviewed: 3, shortlist: 3 });
+      assert.deepStrictEqual(review.body.counts, { approved: 0, hidden: 0, unreviewed: 3 });
       assert.ok(!review.raw.includes(".heic"));
     });
 
@@ -312,10 +285,25 @@ async function routeTests() {
       assert.ok(!review.raw.includes("fixter-test"));
     });
 
-    await test("nothing reaches the display before review", async () => {
-      const r = await call("GET", "/api/admin/event-display/photos", adminToken);
-      assert.strictEqual(r.status, 200);
-      assert.deepStrictEqual(r.body.photos, []);
+    let display;
+    await test("every eligible photo is on the display without any review", async () => {
+      display = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.strictEqual(display.status, 200);
+      assert.deepStrictEqual(
+        display.body.photos.map((p) => p.id).sort(),
+        review.body.photos.map((p) => p.id).sort()
+      );
+      assert.strictEqual(display.body.total, 3);
+    });
+
+    await test("the display response carries only id, url and group", async () => {
+      for (const photo of display.body.photos) {
+        assert.deepStrictEqual(Object.keys(photo).sort(), ["group", "id", "url"]);
+      }
+      assert.deepStrictEqual(Object.keys(display.body).sort(), ["photos", "total"]);
+      for (const secret of ["Secretname", "Privacy Lane", "5559999", "jane.secret", "Gate code", "4321", String(customer._id), "premium", "Huntington", "2026-09-20T"]) {
+        assert.ok(!display.raw.includes(secret), `leaked ${secret}`);
+      }
     });
 
     await test("responses never carry customer or booking details", async () => {
@@ -323,7 +311,7 @@ async function routeTests() {
         assert.ok(!review.raw.includes(secret), `leaked ${secret}`);
       }
       for (const photo of review.body.photos) {
-        assert.deepStrictEqual(Object.keys(photo).sort(), ["group", "id", "shortlisted", "status", "url"]);
+        assert.deepStrictEqual(Object.keys(photo).sort(), ["group", "id", "status", "url"]);
       }
     });
 
@@ -332,7 +320,7 @@ async function routeTests() {
       assert.strictEqual(new Set(groups).size, 2);
     });
 
-    section("Reviewing");
+    section("Hiding");
 
     await test("invalid status → 400", async () => {
       const r = await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: ["a"], status: "public" });
@@ -351,37 +339,79 @@ async function routeTests() {
       assert.strictEqual(await EventDisplayPhoto.countDocuments(), 0);
     });
 
-    await test("approve two, hide one → display shows exactly the approved two", async () => {
+    await test("hiding one photo removes exactly that photo from the display", async () => {
       const [a, b, c] = review.body.photos;
-      assert.strictEqual(
-        (await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [a.id, b.id], status: "approved" })).body.updated,
-        2
-      );
-      await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [c.id], status: "hidden" });
+      const r = await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [c.id], status: "hidden" });
+      assert.strictEqual(r.body.updated, 1);
       const shown = await call("GET", "/api/admin/event-display/photos?scope=display", adminToken);
       assert.deepStrictEqual(shown.body.photos.map((p) => p.id).sort(), [a.id, b.id].sort());
-      for (const photo of shown.body.photos) {
-        assert.deepStrictEqual(Object.keys(photo).sort(), ["group", "id", "url"]);
-      }
+      const again = await call("GET", "/api/admin/event-display/photos?scope=review", adminToken);
+      assert.deepStrictEqual(again.body.counts, { approved: 0, hidden: 1, unreviewed: 2 });
     });
 
-    await test("hiding an approved photo removes it from the display", async () => {
+    await test("an approved photo is still displayed, and hiding it removes it", async () => {
       const [a] = review.body.photos;
+      await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [a.id], status: "approved" });
+      let shown = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.ok(shown.body.photos.some((p) => p.id === a.id));
       await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [a.id], status: "hidden" });
-      const shown = await call("GET", "/api/admin/event-display/photos", adminToken);
+      shown = await call("GET", "/api/admin/event-display/photos", adminToken);
       assert.ok(!shown.body.photos.some((p) => p.id === a.id));
     });
 
-    await test("un-reviewing deletes the decision", async () => {
+    await test("a hidden photo stays hidden when its job gets new photos", async () => {
+      const [, , c] = review.body.photos;
+      const extra = `${B}/2026-09-21/booking-B-1002/9-gutter.jpg`;
+      await Booking.updateOne({ bookingNumber: "B-1002" }, { $push: { images: extra } });
+      const shown = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.ok(!shown.body.photos.some((p) => p.id === c.id), "the hidden photo came back");
+      assert.ok(shown.raw.includes("9-gutter"), "the new photo of that job should join");
+      await Booking.updateOne({ bookingNumber: "B-1002" }, { $pull: { images: extra } });
+    });
+
+    await test("restoring (unreviewed) deletes the decision and puts the photo back", async () => {
       const [a] = review.body.photos;
       await call("PUT", "/api/admin/event-display/photos", adminToken, { ids: [a.id], status: "unreviewed" });
       assert.strictEqual(await EventDisplayPhoto.countDocuments({ photoId: a.id }), 0);
+      const shown = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.ok(shown.body.photos.some((p) => p.id === a.id));
     });
 
-    await test("reviewing never touches a booking", async () => {
-      const bookings = await Booking.find().sort({ bookingNumber: 1 }).lean();
-      assert.strictEqual(bookings[0].images.length, 2);
-      assert.strictEqual(bookings[1].images.length, 2);
+    section("New bookings");
+
+    await test("a new booking's eligible photos join the display with no approval", async () => {
+      const before = await call("GET", "/api/admin/event-display/photos", adminToken);
+      await Booking.create({
+        ...bookingBase,
+        bookingNumber: "B-2001",
+        images: [
+          `${B}/2026-10-02/booking-B-2001/1-customer-leaking-sink.jpg`,
+          `${B}/2026-10-02/booking-B-2001/2-customer-scan.png`,
+        ],
+      });
+      const after = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.strictEqual(after.body.photos.length, before.body.photos.length + 1, "exactly the new JPEG joins");
+      assert.ok(after.raw.includes("leaking-sink"));
+      assert.ok(!after.raw.includes("scan.png"), "a non-JPEG must not join");
+    });
+
+    await test("a new photo on a staff test booking does not join", async () => {
+      const before = await call("GET", "/api/admin/event-display/photos", adminToken);
+      await Booking.create({
+        ...bookingBase,
+        bookingNumber: "B-2002",
+        user: admin._id,
+        userId: admin.userId,
+        images: [`${B}/2026-10-02/booking-B-2002/1-admin-test.jpg`],
+      });
+      const after = await call("GET", "/api/admin/event-display/photos", adminToken);
+      assert.strictEqual(after.body.photos.length, before.body.photos.length);
+    });
+
+    await test("hiding and restoring never touch a booking", async () => {
+      const bookings = await Booking.find({ bookingNumber: { $in: ["B-1001", "B-1002"] } }).sort({ bookingNumber: 1 }).lean();
+      assert.deepStrictEqual(bookings[0].images, [`${B}/2026-09-20/booking-B-1001/1-customer-ceiling.jpg`, `${B}/2026-09-20/booking-B-1001/2-ceiling2.jpg`]);
+      assert.deepStrictEqual(bookings[1].images, [`${B}/2025-10-20/booking-B-1002/1-old.heic`, `${B}/2026-09-21/booking-B-1002/3-fence.jpg`]);
     });
   } finally {
     app.close();

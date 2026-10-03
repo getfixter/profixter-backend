@@ -3,17 +3,17 @@
  *
  * ADMIN ONLY
  * Both endpoints require PERMISSIONS.ADMIN. Fixters can read bookings, but this
- * is a curated set of other people's homes and only an admin decides what of it
- * goes in front of the public.
+ * is a set of other people's homes shown in public, and only an admin decides
+ * what is taken out of it.
  *
  * NOTHING BUT PHOTOS
- * Bookings are read with `_id images createdAt` and nothing else, and each photo
- * is answered as { id, url, status, group } (see utils/eventDisplayPhotos.js).
+ * Bookings are read with `_id images createdAt user` and nothing else (`user`
+ * only to drop staff test bookings), and each photo is answered as
+ * { id, url, group } or { id, url, group, status } (see utils/eventDisplayPhotos.js).
  *
- * GET  /photos?scope=display  approved photos only: what the tablet plays
- * GET  /photos?scope=review   every candidate with its status, and which of the
- *                             unreviewed ones are in tonight's shortlist
- * PUT  /photos                { ids, status } approve / hide / un-review
+ * GET  /photos?scope=display  every eligible photo that is not hidden: what the tablet plays
+ * GET  /photos?scope=review   every eligible photo with its status: the hide/restore grid
+ * PUT  /photos                { ids, status } hide / restore (unreviewed) / approve
  */
 
 const express = require("express");
@@ -28,7 +28,6 @@ const {
   collectCandidates,
   withStatus,
   displayable,
-  shortlist,
 } = require("../utils/eventDisplayPhotos");
 
 const router = express.Router();
@@ -78,14 +77,9 @@ router.get("/photos", auth, ...onlyAdmin, async (req, res) => {
     const photos = await loadPhotos();
     res.set("Cache-Control", "no-store");
     if (req.query.scope === "review") {
-      const picked = shortlist(photos);
-      const counts = { approved: 0, hidden: 0, unreviewed: 0, shortlist: picked.size };
+      const counts = { approved: 0, hidden: 0, unreviewed: 0 };
       for (const photo of photos) counts[photo.status] += 1;
-      return res.json({
-        photos: photos.map((photo) => ({ ...photo, shortlisted: picked.has(photo.id) })),
-        counts,
-        total: photos.length,
-      });
+      return res.json({ photos, counts, total: photos.length });
     }
     const shown = displayable(photos).map(({ id, url, group }) => ({ id, url, group }));
     return res.json({ photos: shown, total: shown.length });

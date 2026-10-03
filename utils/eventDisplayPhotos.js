@@ -20,9 +20,11 @@
  *  - photos on bookings owned by staff accounts: those are our own tests
  *    (the "google-logo-icon" upload), not a customer's home
  *
- * NOTHING IS SHOWN UNTIL AN ADMIN APPROVES IT
- * No filter here can see a face, a piece of mail or a house number, so the
- * display reads only photos whose stored decision is `approved`.
+ * EVERY ELIGIBLE PHOTO PLAYS UNLESS AN ADMIN HIDES IT
+ * The owner chose this on 2026-10-02, knowing that no filter here can see a
+ * face, a piece of mail or a house number: the display is meant to rotate
+ * through the whole library, and the review page exists to take individual
+ * photos out. A new booking's photos join on the display's next refresh.
  */
 
 const crypto = require("crypto");
@@ -152,34 +154,9 @@ function withStatus(candidates, decisions) {
   }));
 }
 
+/** Everything not hidden: unreviewed and approved photos both play. */
 function displayable(photos) {
-  return photos.filter((photo) => photo.status === STATUS.APPROVED);
-}
-
-/**
- * Tonight's review batch: a manageable slice of the unreviewed photos, picked
- * by plain facts only. Candidates arrive newest booking first, and the batch
- * takes one photo per job before it takes a second from any job, so a batch of
- * 150 is ~150 different homes, not 30 homes five times over. Nothing here
- * judges what is in a photo; the admin still approves every one of them.
- */
-const SHORTLIST_SIZE = 150;
-
-function shortlist(photos, { limit = SHORTLIST_SIZE, maxPerJob = 3 } = {}) {
-  const pending = photos.filter((photo) => photo.status === STATUS.UNREVIEWED);
-  const picked = new Set();
-  const perJob = new Map();
-  for (let round = 1; round <= maxPerJob && picked.size < limit; round += 1) {
-    for (const photo of pending) {
-      if (picked.size >= limit) break;
-      if (picked.has(photo.id)) continue;
-      const taken = perJob.get(photo.group) || 0;
-      if (taken >= round) continue;
-      picked.add(photo.id);
-      perJob.set(photo.group, taken + 1);
-    }
-  }
-  return picked;
+  return photos.filter((photo) => photo.status !== STATUS.HIDDEN);
 }
 
 module.exports = {
@@ -193,6 +170,4 @@ module.exports = {
   collectCandidates,
   withStatus,
   displayable,
-  shortlist,
-  SHORTLIST_SIZE,
 };
