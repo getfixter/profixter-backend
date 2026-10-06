@@ -12,6 +12,7 @@ const {
 } = require("../utils/adminLeadNotification");
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const { buildSignupAddress } = require("../utils/addressVerification");
+const metaCapi = require("../utils/metaCapi");
 const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
@@ -487,8 +488,89 @@ router.post("/register", async (req, res) => {
     user.addresses.push(signupAddress);
     user.defaultAddressId = user.addresses[0]._id;
 
+    /*
+     * Which ad produced this account, if any.
+     *
+     * The values come from the browser because they only ever existed there:
+     * the campaign parameters are on the landing URL, and this app replaces the
+     * query string on the first client-side navigation. They are stored rather
+     * than only forwarded to Meta so the question "which campaign produced
+     * paying members" can be answered against our own data later.
+     *
+     * Treated as untrusted input and clamped: anybody can post anything here,
+     * and an unbounded string on a user document is a storage problem, not a
+     * security one, but it is still ours to avoid.
+     */
+    const attribution = req.body?.attribution;
+    if (attribution && typeof attribution === "object") {
+      const clip = (value) =>
+        value === undefined || value === null ? null : String(value).slice(0, 300) || null;
+      user.attribution = {
+        utmSource: clip(attribution.utmSource),
+        utmMedium: clip(attribution.utmMedium),
+        utmCampaign: clip(attribution.utmCampaign),
+        utmContent: clip(attribution.utmContent),
+        utmTerm: clip(attribution.utmTerm),
+        fbclid: clip(attribution.fbclid),
+        landingPath: clip(attribution.landingPath),
+        referrer: clip(attribution.referrer),
+        capturedAt: new Date(),
+      };
+    }
+
     await user.save();
     await markLeadRegistered(user);
+
+    /*
+     * Lead, from the server, sharing the browser's event id.
+     *
+     * This is the event the ad account optimises against, so it is the one
+     * that must survive a blocked pixel. The browser fires its own Lead with
+     * the same metaEventId and Meta collapses the pair into one conversion.
+     *
+     * Sent from here rather than relayed from the page because this is where
+     * the real identifiers are: the verified email and phone, the name split
+     * into first and last, and the address that was just checked against the
+     * service area. Those are what decide whether Meta can match the
+     * conversion to the person who saw the ad.
+     *
+     * Detached on purpose. Nobody waits on Meta to finish creating an account,
+     * and a tracking failure must not turn a successful registration into an
+     * error the customer sees.
+     */
+    try {
+      const primary = user.addresses?.[0];
+      metaCapi.sendDetached({
+        eventName: "Lead",
+        eventId: String(req.body?.metaEventId || "") || undefined,
+        eventSourceUrl: req.headers?.referer || `${process.env.CLIENT_URL || ""}/signup`,
+        customData: {
+          content_name: "account_created",
+          status: "new_account",
+          utm_source: user.attribution?.utmSource || undefined,
+          utm_campaign: user.attribution?.utmCampaign || undefined,
+        },
+        user: {
+          email: user.email,
+          phone: user.phone,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          name: user.name,
+        },
+        address: {
+          city: primary?.city || user.city,
+          state: primary?.state || user.state,
+          zip: primary?.zip || user.zip,
+        },
+        externalId: user.userId || String(user._id),
+        fbp: req.body?.fbp,
+        fbc: req.body?.fbc,
+        fbclid: user.attribution?.fbclid,
+        req,
+      });
+    } catch (trackingError) {
+      console.warn("Meta Lead dispatch failed:", trackingError.message);
+    }
 
     /*
      * A NEW CUSTOMER IS NOT COPIED INTO GOHIGHLEVEL ANY MORE.

@@ -1,4 +1,5 @@
 const adminSubjects = require("../utils/adminSubjects");
+const metaCapi = require("../utils/metaCapi");
 const crypto = require("crypto");
 const mongoose = require("mongoose");
 const User = require("../models/User");
@@ -118,55 +119,12 @@ function cleanObject(obj) {
   return out;
 }
 
-function buildUserData({ email, phone, externalId, fbp, fbc, clientIp, userAgent }) {
-  return cleanObject({
-    external_id: externalId ? [sha256(externalId)] : undefined,
-    em: email ? [sha256(email)] : undefined,
-    ph: phone ? [sha256(normPhone(phone))] : undefined,
-    fbp: fbp || undefined,
-    fbc: fbc || undefined,
-    client_ip_address: clientIp || undefined,
-    client_user_agent: userAgent || undefined,
-  });
-}
-
-async function sendMetaCapi(body) {
-  try {
-    if (typeof fetch !== "function") {
-      console.warn("Meta CAPI skipped: fetch not available");
-      return;
-    }
-
-    const pixelId = process.env.FB_PIXEL_ID;
-    const token = process.env.FB_ACCESS_TOKEN;
-    if (!pixelId || !token) return;
-
-    const url = `https://graph.facebook.com/v20.0/${pixelId}/events?access_token=${token}`;
-    const payload = { data: [cleanObject(body)] };
-    if (process.env.FB_TEST_CODE) {
-      payload.test_event_code = process.env.FB_TEST_CODE;
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    let json;
-    try {
-      json = await response.json();
-    } catch {
-      json = { raw: await response.text() };
-    }
-
-    if (!response.ok) {
-      console.warn("Meta CAPI failed:", response.status, json);
-    }
-  } catch (error) {
-    console.warn("Meta CAPI (webhook) failed:", error.message);
-  }
-}
+/*
+ * The webhook's own Meta sender used to live here, with its own copy of the
+ * pixel id read from FB_PIXEL_ID - which is how this file kept writing to the
+ * old dataset after the pixel was replaced. It is gone; utils/metaCapi.js is
+ * the only way out to Meta now, and it names the dataset in code.
+ */
 
 async function findBestLeadMatch({ user }) {
   let doc = null;
@@ -1051,6 +1009,54 @@ async function handleOneTimeCheckoutCompleted(session) {
   }
 
   await sendOneTimePaymentEmails({ booking, user, entitlement, session });
+
+  /*
+   * Purchase - a single paid visit, which is the only thing this event means.
+   *
+   * The event id is derived from the Stripe session rather than stored,
+   * because both halves of this conversion can compute it independently: the
+   * webhook has session.id, and the browser lands on /book/confirmation with
+   * the same id in the query string. No round trip, nothing to persist, and no
+   * way for the two sides to disagree.
+   *
+   * The value is amount_total from Stripe - what the customer was actually
+   * charged after any promotion - not a price the page looked up.
+   *
+   * Detached: a Meta outage must never leave a paid booking unconfirmed.
+   */
+  const primaryAddress =
+    (user.addresses || []).find((a) => String(a._id) === String(booking.addressId)) ||
+    (user.addresses || [])[0] ||
+    null;
+
+  metaCapi.sendDetached({
+    eventName: "Purchase",
+    eventId: `sess_${session.id}`,
+    eventSourceUrl: `${process.env.CLIENT_URL || "https://www.profixter.com"}/book/confirmation`,
+    customData: {
+      currency: String(session.currency || "usd").toUpperCase(),
+      value: Number(session.amount_total || 0) / 100,
+      content_name: "one_time_visit",
+      content_type: "product",
+    },
+    user: {
+      email: user.email,
+      phone: user.phone,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+    },
+    address: {
+      city: primaryAddress?.city || user.city,
+      state: primaryAddress?.state || user.state,
+      zip: primaryAddress?.zip || user.zip,
+    },
+    externalId: user.userId || String(user._id),
+    fbp: session.metadata?.fbp,
+    fbc: session.metadata?.fbc,
+    fbclid: user.attribution?.fbclid,
+  });
+
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
 
@@ -1662,39 +1668,59 @@ async function handleCheckoutCompleted(session, eventId) {
     }
   );
 
-  const userData = buildUserData({
-    email: String(email).toLowerCase(),
-    phone: prevLP.phone || user.phone || "",
+  /*
+   * Subscribe, not Purchase.
+   *
+   * This reported a started membership as "Purchase" for as long as it has
+   * existed, which put recurring subscriptions in the same bucket as one-off
+   * visit payments and left the ad account optimising against a blend of two
+   * different things. Purchase still exists and still means what it says - a
+   * single paid visit, sent from the one-time checkout.
+   *
+   * It also went to whatever FB_PIXEL_ID happened to hold, which is how events
+   * reached the old dataset. metaCapi names the pixel in code, so the browser
+   * and the server cannot disagree about where this is going.
+   *
+   * The event id comes from lastPurchase, which routes/stripe.js has always
+   * written and the schema has always silently discarded; now that it persists,
+   * the confirmation page can read it back and fire the browser half of this
+   * conversion under the same id. The session fallback stays for checkouts that
+   * were already in flight when this deployed.
+   */
+  await metaCapi.send({
+    eventName: "Subscribe",
+    eventId: prevLP.eventId || `sess_${session.id}`,
+    eventSourceUrl:
+      prevLP.sourceUrl ||
+      session.metadata?.source_url ||
+      process.env.CLIENT_URL ||
+      "https://www.profixter.com",
+    customData: {
+      currency,
+      value,
+      content_name: plan,
+      plan,
+      billingCycle,
+    },
+    user: {
+      email: String(email).toLowerCase(),
+      phone: prevLP.phone || user.phone || "",
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+    },
+    address: {
+      city: subscription.addressSnapshot?.city || user.city,
+      state: subscription.addressSnapshot?.state || user.state,
+      zip: subscription.addressSnapshot?.zip || user.zip,
+    },
     externalId: user.userId || String(user._id),
     fbp: prevLP.fbp || session.metadata?.fbp,
     fbc: prevLP.fbc || session.metadata?.fbc,
+    fbclid: user.attribution?.fbclid,
     clientIp: prevLP.clientIp,
     userAgent: prevLP.userAgent,
   });
-
-  const hasStrongId = !!(
-    userData.external_id ||
-    userData.em ||
-    userData.ph ||
-    userData.fbp ||
-    userData.fbc
-  );
-
-  if (hasStrongId) {
-    await sendMetaCapi({
-      event_name: "Purchase",
-      event_time: Math.floor(Date.now() / 1000),
-      event_id: prevLP.eventId || `sess_${session.id}`,
-      action_source: "website",
-      event_source_url:
-        prevLP.sourceUrl ||
-        session.metadata?.source_url ||
-        process.env.CLIENT_URL ||
-        "https://www.profixter.com",
-      custom_data: { currency, value, plan, billingCycle },
-      user_data: userData,
-    });
-  }
 
   // The welcome text for a new membership. Placed before the email rather
   // than after only so a mail failure cannot skip it; neither can throw.

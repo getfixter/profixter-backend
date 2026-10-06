@@ -121,6 +121,24 @@ const UserSchema = new mongoose.Schema(
     subscriptionStart: { type: Date, default: null },
 
     // ✅ Added: store latest purchase data for confirmation page tracking
+    /**
+     * The last checkout, and everything needed to report it to Meta.
+     *
+     * THE TRACKING FIELDS BELOW WERE BEING WRITTEN AND SILENTLY DISCARDED.
+     *
+     * routes/stripe.js has always generated an eventId at checkout and set it
+     * here along with the click cookies, the IP and the user agent. None of
+     * them were declared, and Mongoose strict mode drops undeclared paths on
+     * write without complaining - so the field was set, the write succeeded,
+     * and nothing arrived. The Stripe webhook then read lastPurchase.eventId,
+     * found undefined, and fell back to an id derived from the Stripe session
+     * that the browser has no way to know. Every membership conversion was
+     * therefore sent to Meta twice under two different ids, and sent without
+     * the fbp/fbc that connect it to the ad click.
+     *
+     * Declaring them is the whole fix. The behaviour the code always intended
+     * starts working the moment the schema stops discarding it.
+     */
     lastPurchase: {
       token: { type: String, default: null },
       stripeSessionId: { type: String, default: null },
@@ -128,6 +146,41 @@ const UserSchema = new mongoose.Schema(
       value: { type: Number, default: 0 },
       currency: { type: String, default: "USD" },
       createdAt: { type: Date, default: null },
+      /* The id the browser must reuse so Meta counts one conversion, not two. */
+      eventId: { type: String, default: null },
+      billingCycle: { type: String, default: null },
+      addressId: { type: mongoose.Schema.Types.ObjectId, default: null },
+      /* Meta's own identifiers, stored raw because Meta requires them raw. */
+      fbp: { type: String, default: null },
+      fbc: { type: String, default: null },
+      sourceUrl: { type: String, default: null },
+      clientIp: { type: String, default: null },
+      userAgent: { type: String, default: null },
+      phone: { type: String, default: null },
+      updatedAt: { type: Date, default: null },
+    },
+
+    /**
+     * Which ad, if any, produced this customer.
+     *
+     * Written once, when the account is created, from parameters that only ever
+     * existed on the landing URL - this app routes on the client, so the first
+     * tap after arrival replaces the query string and the campaign is gone.
+     *
+     * Kept on the user rather than only sent to Meta because the ad agency
+     * needs to answer "which campaign produced paying members" against our own
+     * data, not only inside Meta's attribution window.
+     */
+    attribution: {
+      utmSource: { type: String, default: null },
+      utmMedium: { type: String, default: null },
+      utmCampaign: { type: String, default: null },
+      utmContent: { type: String, default: null },
+      utmTerm: { type: String, default: null },
+      fbclid: { type: String, default: null },
+      landingPath: { type: String, default: null },
+      referrer: { type: String, default: null },
+      capturedAt: { type: Date, default: null },
     },
 
     /**

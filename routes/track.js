@@ -1,17 +1,50 @@
 const express = require("express");
+const jwt = require("jsonwebtoken");
 const router = express.Router();
 const User = require("../models/User");
+const metaCapi = require("../utils/metaCapi");
 
-const PIXEL_ID = process.env.FB_PIXEL_ID;
-const ACCESS_TOKEN = process.env.FB_ACCESS_TOKEN;
-
-// Meta CAPI relay (client -> server -> Meta)
-router.post("/fbcap", async (req, res) => {
+/**
+ * Who is calling, if anybody - and never a refusal.
+ *
+ * The shared auth middleware answers 401 when there is no token, which is
+ * correct everywhere it is used and wrong here: a conversion can happen before
+ * an account exists, and an anonymous event matched on cookies alone is worth
+ * more than no event. So a token is decoded when present and ignored when it
+ * is absent, expired or malformed.
+ *
+ * It deliberately does not load the user. The handler decides whether it needs
+ * the record, so a relay call that ends up rejected by the allow-list costs no
+ * database read at all.
+ */
+async function optionalAuth(req, _res, next) {
   try {
-    if (!PIXEL_ID || !ACCESS_TOKEN) {
-      return res.status(200).json({ ok: true, skipped: true });
+    const bearer = req.header("Authorization");
+    const token = (bearer && bearer.replace(/^Bearer\s+/i, "")) || req.header("x-auth-token");
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded?.id) req.user = { _id: decoded.id };
     }
+  } catch {
+    /* An unreadable token is simply an anonymous caller. */
+  }
+  next();
+}
 
+/**
+ * The legacy /fbcap relay, kept reachable but repointed.
+ *
+ * It had its own copy of the pixel id from FB_PIXEL_ID, its own API version,
+ * and no caller anywhere in the frontend. The id is what mattered: a stale env
+ * var here meant conversions landing in the old dataset. It now forwards to the
+ * single sender, which names the dataset in code and hashes what Meta needs.
+ *
+ * Kept rather than deleted because it is publicly mounted and something we
+ * cannot see from this repo - a custom GTM tag, the agency's own tooling -
+ * may still be posting to it. Use POST /api/track/meta for anything new.
+ */
+router.post("/fbcap", optionalAuth, async (req, res) => {
+  try {
     const {
       event_name = "Purchase",
       event_id,
@@ -22,51 +55,25 @@ router.post("/fbcap", async (req, res) => {
       user_data = {},
     } = req.body || {};
 
-    const mergedUserData = {
-      client_user_agent: req.headers["user-agent"] || "",
-      client_ip_address:
-        (req.headers["x-forwarded-for"]?.split(",")[0]?.trim()) ||
-        req.socket?.remoteAddress ||
-        "",
-      ...user_data,
-    };
-
-    const payload = {
-      data: [
-        {
-          event_name,
-          event_time: Math.floor(Date.now() / 1000),
-          event_id,
-          action_source: "website",
-          event_source_url: source_url || req.headers.referer || undefined,
-          user_data: mergedUserData,
-          custom_data: {
-            value: Number(value) || 0,
-            currency,
-            plan,
-          },
-        },
-      ],
-    };
-
-    const url = `https://graph.facebook.com/v17.0/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!r.ok) {
-      const text = await r.text();
-      console.warn("Meta CAPI error:", r.status, text);
-      return res.status(200).json({ ok: true, meta_error: true });
+    const ALLOWED = new Set(["Lead", "Subscribe", "Purchase"]);
+    if (ALLOWED.has(String(event_name))) {
+      await metaCapi.send({
+        eventName: String(event_name),
+        eventId: event_id || undefined,
+        eventSourceUrl: source_url || req.headers.referer,
+        customData: { value: Number(value) || 0, currency, plan, content_name: plan },
+        user: { email: user_data.em, phone: user_data.ph },
+        externalId: user_data.external_id,
+        fbp: user_data.fbp,
+        fbc: user_data.fbc,
+        req,
+      });
     }
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.warn("CAPI relay failed:", e.message);
-    return res.status(200).json({ ok: true, error: true });
+  } catch (error) {
+    console.warn("Legacy /fbcap relay failed:", error.message);
   }
+
+  return res.status(200).json({ ok: true });
 });
 
 // Confirmation page fetches real plan/value using token (?t=...)
@@ -84,6 +91,15 @@ router.get("/last-purchase", async (req, res) => {
       value: user.lastPurchase.value,
       currency: user.lastPurchase.currency,
       createdAt: user.lastPurchase.createdAt,
+      /*
+       * The id the Stripe webhook used when it reported this to Meta.
+       *
+       * Without it the confirmation page would mint its own, and Meta would
+       * count the same membership twice - once from the browser and once from
+       * the server - because deduplication is by event_id and nothing else.
+       */
+      eventId: user.lastPurchase.eventId || null,
+      billingCycle: user.lastPurchase.billingCycle || null,
     });
   } catch (e) {
     return res.status(500).json({ ok: false });
@@ -104,11 +120,111 @@ router.get("/last-purchase-by-session", async (req, res) => {
       value: user.lastPurchase.value,
       currency: user.lastPurchase.currency,
       createdAt: user.lastPurchase.createdAt,
+      /*
+       * The id the Stripe webhook used when it reported this to Meta.
+       *
+       * Without it the confirmation page would mint its own, and Meta would
+       * count the same membership twice - once from the browser and once from
+       * the server - because deduplication is by event_id and nothing else.
+       */
+      eventId: user.lastPurchase.eventId || null,
+      billingCycle: user.lastPurchase.billingCycle || null,
     });
   } catch (e) {
     return res.status(500).json({ ok: false });
   }
 });
 
+
+/**
+ * The browser handing an event to the server so it can reach Meta a second way.
+ *
+ * Used only for conversions the server does not already know about by itself.
+ * Registration and Stripe both report their own events from the handler that
+ * owns the truth, with better identifiers than a page has; this endpoint exists
+ * for the cases in between - a free visit booked from a screen we have not
+ * given a server-side hook.
+ *
+ * ALWAYS 204, WHATEVER HAPPENS. The caller is a fire-and-forget fetch on a
+ * conversion path. There is no failure it could usefully act on, and an error
+ * status would only produce noise in a console the customer might have open.
+ */
+router.post("/meta", optionalAuth, async (req, res) => {
+  try {
+    const {
+      eventName,
+      eventId,
+      eventSourceUrl,
+      customData = {},
+      fbp,
+      fbc,
+      attribution = {},
+    } = req.body || {};
+
+    /*
+     * Only the conversions we actually optimise for.
+     *
+     * An open relay to the Conversions API is an open relay: anybody could post
+     * arbitrary event names into the dataset and quietly poison the ad
+     * account's optimisation. The allow-list is the whole defence.
+     */
+    const ALLOWED = new Set(["Lead", "Subscribe", "Purchase"]);
+    if (!eventName || !ALLOWED.has(String(eventName))) {
+      return res.status(204).end();
+    }
+
+    /*
+     * Identity comes from the session, never from the request body.
+     *
+     * The browser may send fbp and fbc, which are opaque and harmless. It may
+     * not tell us who it is - that would let anybody attribute a conversion to
+     * any email they like. So the email, phone, name and address are read from
+     * the authenticated user, and an anonymous caller simply sends an event
+     * matched on cookies alone.
+     */
+    let user = null;
+    if (req.user?._id) {
+      user = await User.findById(req.user._id).select(
+        "email phone firstName lastName name userId addresses city state zip attribution"
+      );
+    }
+
+    const primary =
+      (user?.addresses || []).find((a) => String(a._id) === String(user?.defaultAddressId)) ||
+      (user?.addresses || [])[0] ||
+      null;
+
+    await metaCapi.send({
+      eventName: String(eventName),
+      eventId: eventId ? String(eventId) : undefined,
+      eventSourceUrl: eventSourceUrl || req.headers.referer,
+      customData,
+      user: user
+        ? {
+            email: user.email,
+            phone: user.phone,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            name: user.name,
+          }
+        : {},
+      address: {
+        city: primary?.city || user?.city,
+        state: primary?.state || user?.state,
+        zip: primary?.zip || user?.zip,
+      },
+      externalId: user ? user.userId || String(user._id) : undefined,
+      fbp,
+      fbc,
+      fbclid: attribution?.fbclid || user?.attribution?.fbclid,
+      fbclidAt: attribution?.fbclidAt,
+      req,
+    });
+  } catch (error) {
+    console.warn("Meta relay failed:", error.message);
+  }
+
+  return res.status(204).end();
+});
 
 module.exports = router;
