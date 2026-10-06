@@ -209,9 +209,15 @@ test("PageView is tracked once per page", () => {
     ["MetaPageView.tsx", "layout.tsx"],
     `PageView call sites: ${sites.join(", ") || "none"}`
   );
+  const layout = read(FRONTEND, "app", "layout.tsx");
   assert.ok(
-    read(FRONTEND, "app", "layout.tsx").includes("fbq.disablePushState = true"),
+    layout.includes("fbq.disablePushState = true"),
     "the pixel's automatic pushState PageView is not disabled"
+  );
+  // Without this, fbevents.js drops every route-change PageView as a duplicate.
+  assert.ok(
+    layout.includes("fbq.allowDuplicatePageViews = true"),
+    "route-change PageViews will be dropped by fbevents.js"
   );
 });
 
