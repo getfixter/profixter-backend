@@ -559,7 +559,11 @@ function delta(value, prev) {
 
 async function buildOverview({ range, from, to, now = new Date() } = {}) {
   const period = resolvePeriod({ range, from, to, now });
-  const cacheKey = `${period.from.toISOString()}|${period.to.toISOString()}`;
+  /*
+   * The range key is part of the key: "Last 7 days" and "This month" can be
+   * the same window (Oct 1-7), and must still come back labelled as asked.
+   */
+  const cacheKey = `${period.key}|${period.from.toISOString()}|${period.to.toISOString()}`;
   const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
 

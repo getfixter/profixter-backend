@@ -183,6 +183,18 @@ async function main() {
     assert.match(res.headers.get("cache-control") || "", /no-store/);
   });
 
+  section("Ranges that share a window keep their own label");
+  await test("on Oct 7, 'Last 7 days' and 'This month' are the same days but not the same answer", async () => {
+    overview.clearOverviewCache();
+    const now = new Date("2026-10-07T16:00:00Z");
+    const week = await overview.buildOverview({ range: "7d", now });
+    const month = await overview.buildOverview({ range: "month", now });
+    assert.strictEqual(new Date(week.period.from).getTime(), new Date(month.period.from).getTime());
+    assert.strictEqual(week.period.label, "Last 7 days");
+    assert.strictEqual(month.period.key, "month");
+    assert.strictEqual(month.period.label, "This month");
+  });
+
   overview.clearOverviewCache();
   const body = await (await get("/api/admin/overview?range=30d", "owner")).json();
   const k = body.kpis;
