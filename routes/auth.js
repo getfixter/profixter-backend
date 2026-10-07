@@ -13,6 +13,8 @@ const {
 const { subscriptionGrantsAccess } = require("../utils/subscriptionManagement");
 const { buildSignupAddress } = require("../utils/addressVerification");
 const metaCapi = require("../utils/metaCapi");
+const { sanitizeAttribution } = require("../utils/analytics/attribution");
+const SiteVisitor = require("../models/SiteVisitor");
 const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
@@ -501,25 +503,23 @@ router.post("/register", async (req, res) => {
      * and an unbounded string on a user document is a storage problem, not a
      * security one, but it is still ours to avoid.
      */
-    const attribution = req.body?.attribution;
-    if (attribution && typeof attribution === "object") {
-      const clip = (value) =>
-        value === undefined || value === null ? null : String(value).slice(0, 300) || null;
-      user.attribution = {
-        utmSource: clip(attribution.utmSource),
-        utmMedium: clip(attribution.utmMedium),
-        utmCampaign: clip(attribution.utmCampaign),
-        utmContent: clip(attribution.utmContent),
-        utmTerm: clip(attribution.utmTerm),
-        fbclid: clip(attribution.fbclid),
-        landingPath: clip(attribution.landingPath),
-        referrer: clip(attribution.referrer),
-        capturedAt: new Date(),
-      };
-    }
+    const attribution = sanitizeAttribution(req.body?.attribution);
+    if (attribution) user.attribution = attribution;
 
     await user.save();
     await markLeadRegistered(user);
+
+    /*
+     * Link this browser's anonymous first visit to the new account, so the
+     * Overview funnel can follow Visitor -> Registered. Only an unclaimed row,
+     * and never fatal: a missing visitor record must not cost a signup.
+     */
+    if (attribution?.visitorId) {
+      SiteVisitor.updateOne(
+        { visitorId: attribution.visitorId, user: null },
+        { $set: { user: user._id } }
+      ).catch(() => {});
+    }
 
     /*
      * Lead, from the server, sharing the browser's event id.
@@ -854,6 +854,11 @@ router.post("/google", async (req, res) => {
         employeePosition: null,
         isActive: true,
         mustChangePassword: false,
+        /*
+         * First touch for a new Google account, same rules as /register. An
+         * existing account is never touched: its first touch already happened.
+         */
+        attribution: sanitizeAttribution(req.body?.attribution) || undefined,
       });
 
       await user.save();

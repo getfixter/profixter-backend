@@ -14,6 +14,9 @@ const PERMISSIONS = Object.freeze({
    * this permission says "may look at tips", not "may look at everyone's".
    */
   TIPS_READ: "tips.read",
+  /* Admin Overview. Admin-only today; a future Marketing role can hold these. */
+  ANALYTICS_READ: "analytics.read",
+  ANALYTICS_MAP: "analytics.map",
 });
 
 const ADMIN_EMAIL = String(

@@ -180,6 +180,21 @@ const UserSchema = new mongoose.Schema(
       fbclid: { type: String, default: null },
       landingPath: { type: String, default: null },
       referrer: { type: String, default: null },
+      /* Click ids and Meta ad identity, from the ad URL parameters. */
+      gclid: { type: String, default: null },
+      campaignId: { type: String, default: null },
+      adsetId: { type: String, default: null },
+      adsetName: { type: String, default: null },
+      adId: { type: String, default: null },
+      adName: { type: String, default: null },
+      /* ?source= on our own links (event QR, referral). */
+      refSource: { type: String, default: null },
+      /* The first page this browser ever saw, marketing or not. */
+      firstLandingPath: { type: String, default: null },
+      firstReferrer: { type: String, default: null },
+      firstSeenAt: { type: Date, default: null },
+      fbclidAt: { type: Date, default: null },
+      visitorId: { type: String, default: null },
       capturedAt: { type: Date, default: null },
     },
 

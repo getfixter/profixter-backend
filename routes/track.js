@@ -3,6 +3,9 @@ const jwt = require("jsonwebtoken");
 const router = express.Router();
 const User = require("../models/User");
 const metaCapi = require("../utils/metaCapi");
+const SiteVisitor = require("../models/SiteVisitor");
+const { classifySource } = require("../utils/analytics/attribution");
+const { rateLimit } = require("../utils/rateLimit");
 
 /**
  * Who is calling, if anybody - and never a refusal.
@@ -224,6 +227,64 @@ router.post("/meta", optionalAuth, async (req, res) => {
     console.warn("Meta relay failed:", error.message);
   }
 
+  return res.status(204).end();
+});
+
+/**
+ * First sight of an anonymous browser: the top of the Overview funnel.
+ *
+ * Public by necessity (it fires before anyone has an account), so it accepts
+ * only a random id and URL facts, stores no IP or user agent, ignores obvious
+ * bots, and is insert-only: repeating it changes nothing. Always 204.
+ */
+const visitLimiter = rateLimit({
+  limit: 20,
+  windowMs: 10 * 60 * 1000,
+  keyResolver: (req) => String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null,
+});
+const BOT_UA = /bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexternalhit|pingdom|monitor/i;
+
+router.post("/visit", visitLimiter, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const visitorId = String(body.visitorId || "");
+    if (!/^[A-Za-z0-9_-]{12,64}$/.test(visitorId) || BOT_UA.test(String(req.headers["user-agent"] || ""))) {
+      return res.status(204).end();
+    }
+    const clip = (v, n = 200) => (v === undefined || v === null || v === "" ? null : String(v).slice(0, n));
+    let referrerHost = null;
+    try {
+      referrerHost = body.referrer ? new URL(String(body.referrer)).hostname.replace(/^www\./, "").slice(0, 120) : null;
+    } catch {
+      referrerHost = null;
+    }
+    const doc = {
+      visitorId,
+      firstSeenAt: new Date(),
+      landingPath: clip(body.landingPath),
+      referrerHost,
+      utmSource: clip(body.utmSource),
+      utmMedium: clip(body.utmMedium),
+      utmCampaign: clip(body.utmCampaign),
+      utmContent: clip(body.utmContent),
+      utmTerm: clip(body.utmTerm),
+      campaignId: clip(body.campaignId, 64),
+      adsetId: clip(body.adsetId, 64),
+      adId: clip(body.adId, 64),
+      refSource: clip(body.refSource, 64),
+      hasFbclid: !!body.fbclid,
+      hasGclid: !!body.gclid,
+    };
+    doc.source = classifySource({
+      ...doc,
+      fbclid: doc.hasFbclid ? "1" : null,
+      gclid: doc.hasGclid ? "1" : null,
+      referrer: referrerHost ? `https://${referrerHost}/` : null,
+    }).key;
+    await SiteVisitor.updateOne({ visitorId }, { $setOnInsert: doc }, { upsert: true });
+  } catch (error) {
+    if (error?.code !== 11000) console.warn("Visit record failed:", error.message);
+  }
   return res.status(204).end();
 });
 
