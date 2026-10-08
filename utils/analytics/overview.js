@@ -671,6 +671,8 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
       revenue: {
         available: revenueAll.available,
         syncing: !!revenueAll.syncing,
+        // The Stripe sync has not succeeded for 30+ minutes: recent payments may be missing.
+        stale: !!revenueAll.stale,
         syncedAt: revenueAll.syncedAt || null,
         error: revenueAll.error || null,
         truncated: revenueAll.truncated,
@@ -766,7 +768,7 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
     activity: buildActivity(data),
     attention: buildAttention(data, period, cur),
   };
-  if (revenueAll.available && mrr.available) {
+  if (revenueAll.available && !revenueAll.stale && mrr.available) {
     cache.set(cacheKey, { at: Date.now(), value });
     if (cache.size > 30) cache.delete(cache.keys().next().value);
   }

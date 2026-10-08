@@ -136,6 +136,7 @@ const STATE_KEY = "revenue-ledger";
 // missing one that Stripe listed late is not.
 const OVERLAP_SEC = 2 * 24 * 60 * 60;
 const STALE_MS = 2 * 60 * 1000;
+const STALE_WARN_MS = 30 * 60 * 1000;
 const INTERVAL_MS = 5 * 60 * 1000;
 
 let client = stripe;
@@ -181,59 +182,135 @@ async function ledgerRow(charge) {
   };
 }
 
+/*
+ * One writer across all instances. The backend is load-balanced (one to four
+ * instances, and a rolling deploy runs old and new side by side), so each
+ * run first takes a lease in Mongo. A run that cannot get it skips: another
+ * instance is already syncing. A process that dies mid-run leaves a lease
+ * that simply expires.
+ */
+const LEASE_KEY = "revenue-ledger-lease";
+const LEASE_MS = 10 * 60 * 1000;
+const DEEP_REFUND_EVERY_MS = 24 * 60 * 60 * 1000;
+const DEEP_REFUND_WINDOW_SEC = 180 * 24 * 60 * 60;
+const OWNER = `${require("os").hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
+
+async function takeLease() {
+  const AnalyticsState = require("../../models/AnalyticsState");
+  await AnalyticsState.init(); // the unique key that lets exactly one instance win
+  const now = Date.now();
+  try {
+    const doc = await AnalyticsState.findOneAndUpdate(
+      { key: LEASE_KEY, $or: [{ "value.until": { $lt: now } }, { "value.owner": OWNER }, { "value.until": { $exists: false } }] },
+      { $set: { value: { owner: OWNER, until: now + LEASE_MS } } },
+      { upsert: true, new: true }
+    ).lean();
+    return doc?.value?.owner === OWNER;
+  } catch (error) {
+    // Two instances upserting the lease at once: the unique key lets exactly one win.
+    if (error?.code === 11000) return false;
+    throw error;
+  }
+}
+
+async function releaseLease() {
+  const AnalyticsState = require("../../models/AnalyticsState");
+  await AnalyticsState.updateOne({ key: LEASE_KEY, "value.owner": OWNER }, { $set: { "value.until": 0 } });
+}
+
+/*
+ * Upserts keyed by chargeId, which is unique in the collection: re-reading a
+ * charge (the two-day overlap, a restarted backfill) updates it in place. If
+ * two writers race on a brand-new charge, the loser's insert hits the unique
+ * index; the retry then finds the row and updates it.
+ */
+async function writeRows(RevenueCharge, rows) {
+  if (!rows.length) return;
+  const ops = rows.map((row) => ({ updateOne: { filter: { chargeId: row.chargeId }, update: { $set: row }, upsert: true } }));
+  try {
+    await RevenueCharge.bulkWrite(ops, { ordered: false });
+  } catch (error) {
+    const writeErrors = error?.writeErrors || error?.result?.result?.writeErrors || [];
+    const dupOnly = error?.code === 11000 || (writeErrors.length && writeErrors.every((e) => (e.code ?? e.err?.code) === 11000));
+    if (!dupOnly) throw error;
+    await RevenueCharge.bulkWrite(ops, { ordered: false });
+  }
+}
+
+async function applyRefunds(RevenueCharge, sinceSec) {
+  let n = 0;
+  for await (const refund of client.refunds.list({ created: { gte: sinceSec }, limit: 100, expand: ["data.charge"] })) {
+    const charge = refund.charge && typeof refund.charge === "object" ? refund.charge : null;
+    if (!charge) continue;
+    n += 1;
+    // amount_refunded is the charge's running total: partial, repeated, or a refund that later failed.
+    await RevenueCharge.updateOne({ chargeId: charge.id }, { $set: { refundedCents: Number(charge.amount_refunded || 0) } });
+  }
+  return n;
+}
+
 /**
  * Bring the ledger up to date. The first run reads every charge the account
  * has ever had (once, in the background); every later run reads only charges
- * created since the last one plus refunds issued since - a page or two.
- * One run at a time per process; concurrent callers share it.
+ * created since the last one plus refunds issued since - a page or two - and
+ * once a day re-reads 180 days of refunds as a safety net.
+ *
+ * Safe to stop at any point: the bookmark is written only after a run
+ * finishes, so an interrupted run is simply repeated, and repeating it
+ * rewrites the same rows. One run at a time per process (callers share it)
+ * and across instances (the lease).
  */
 function syncRevenueLedger({ now = new Date() } = {}) {
   if (inFlight) return inFlight;
   inFlight = (async () => {
     const RevenueCharge = require("../../models/RevenueCharge");
-    const state = await readState();
-    const startedAt = Math.floor(now.getTime() / 1000);
-    const created = state.lastChargeCreated ? { gte: state.lastChargeCreated - OVERLAP_SEC } : null;
-    let maxCreated = state.lastChargeCreated || 0;
-    let ops = [];
-    let seen = 0;
-    const flush = async () => {
-      if (ops.length) await RevenueCharge.bulkWrite(ops, { ordered: false });
-      ops = [];
-    };
-    const params = { limit: 100, expand: ["data.invoice", "data.payment_intent"] };
-    if (created) params.created = created;
-    for await (const charge of client.charges.list(params)) {
-      seen += 1;
-      maxCreated = Math.max(maxCreated, Number(charge.created || 0));
-      if (charge.status !== "succeeded" || !charge.paid) continue;
-      const row = await ledgerRow(charge);
-      ops.push({ updateOne: { filter: { chargeId: row.chargeId }, update: { $set: row }, upsert: true } });
-      if (ops.length >= 200) await flush();
-    }
-    await flush();
-
-    // Refunds on charges already mirrored. The first run needs none: each charge carried its own.
-    let refunds = 0;
-    if (state.lastRefundCheck) {
-      const list = client.refunds.list({ created: { gte: state.lastRefundCheck - OVERLAP_SEC }, limit: 100, expand: ["data.charge"] });
-      for await (const refund of list) {
-        const charge = refund.charge && typeof refund.charge === "object" ? refund.charge : null;
-        if (!charge) continue;
-        refunds += 1;
-        await RevenueCharge.updateOne({ chargeId: charge.id }, { $set: { refundedCents: Number(charge.amount_refunded || 0) } });
+    await RevenueCharge.init(); // the unique index exists before the first write
+    if (!(await takeLease())) return { skipped: true };
+    try {
+      const state = await readState();
+      const startedAt = Math.floor(now.getTime() / 1000);
+      const created = state.lastChargeCreated ? { gte: state.lastChargeCreated - OVERLAP_SEC } : null;
+      let maxCreated = state.lastChargeCreated || 0;
+      let batch = [];
+      let seen = 0;
+      const params = { limit: 100, expand: ["data.invoice", "data.payment_intent"] };
+      if (created) params.created = created;
+      for await (const charge of client.charges.list(params)) {
+        seen += 1;
+        maxCreated = Math.max(maxCreated, Number(charge.created || 0));
+        if (charge.status !== "succeeded" || !charge.paid) continue;
+        batch.push(await ledgerRow(charge));
+        if (batch.length >= 200) {
+          await writeRows(RevenueCharge, batch);
+          batch = [];
+        }
       }
-    }
+      await writeRows(RevenueCharge, batch);
 
-    const value = {
-      backfilledAt: state.backfilledAt || new Date(),
-      lastChargeCreated: maxCreated || startedAt,
-      lastRefundCheck: startedAt,
-      lastSyncAt: new Date(),
-      lastRun: { charges: seen, refunds },
-    };
-    await writeState(value);
-    return value;
+      // Refunds on charges already mirrored. The first run needs none: each charge carried its own.
+      let refunds = 0;
+      let lastDeepRefundCheck = state.lastDeepRefundCheck || null;
+      if (state.lastRefundCheck) {
+        const deep = !lastDeepRefundCheck || now.getTime() - new Date(lastDeepRefundCheck).getTime() > DEEP_REFUND_EVERY_MS;
+        refunds = await applyRefunds(RevenueCharge, deep ? startedAt - DEEP_REFUND_WINDOW_SEC : state.lastRefundCheck - OVERLAP_SEC);
+        if (deep) lastDeepRefundCheck = now;
+      } else {
+        lastDeepRefundCheck = now;
+      }
+
+      const value = {
+        backfilledAt: state.backfilledAt || new Date(),
+        lastChargeCreated: maxCreated || startedAt,
+        lastRefundCheck: startedAt,
+        lastDeepRefundCheck,
+        lastSyncAt: new Date(),
+        lastRun: { charges: seen, refunds },
+      };
+      await writeState(value);
+      return value;
+    } finally {
+      await releaseLease().catch(() => {});
+    }
   })().finally(() => {
     inFlight = null;
   });
@@ -271,7 +348,14 @@ async function collectedRevenue({ from, to }) {
         error: "Revenue is loading from Stripe for the first time. It will appear in a minute.",
       };
     }
-    if (!state.lastSyncAt || Date.now() - new Date(state.lastSyncAt).getTime() > STALE_MS) kickSync();
+    const ageMs = state.lastSyncAt ? Date.now() - new Date(state.lastSyncAt).getTime() : Infinity;
+    if (ageMs > STALE_MS) kickSync();
+    /*
+     * The background sync normally keeps this within five minutes. If it has
+     * been failing for half an hour, the total may be missing recent payments:
+     * say so instead of presenting it as final.
+     */
+    const stale = ageMs > STALE_WARN_MS;
     const docs = await RevenueCharge.find({ created: { $gte: from, $lt: to } }).lean();
     const rows = docs.map((d) => ({
       id: d.chargeId,
@@ -288,7 +372,7 @@ async function collectedRevenue({ from, to }) {
       userRef: d.userRef,
       subscriptionId: d.subscriptionId,
     }));
-    return { available: true, rows, truncated: false, syncedAt: state.lastSyncAt };
+    return { available: true, stale, rows, truncated: false, syncedAt: state.lastSyncAt };
   } catch (error) {
     console.warn("Overview revenue read failed:", error.message);
     return { available: false, rows: [], truncated: false, error: "Revenue is temporarily unavailable." };

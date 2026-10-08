@@ -192,7 +192,7 @@ async function main() {
       },
     },
     checkout: { sessions: { list: async ({ payment_intent }) => { calls.sessions += 1; return { data: payment_intent === "pi_gift" ? [{ total_details: { amount_tax: 2162 } }] : [] }; } } },
-    refunds: { list: () => { calls.refunds += 1; return iter(REFUNDS); } },
+    refunds: { list: (params) => { calls.refunds += 1; calls.refundParams = params; return iter(REFUNDS); } },
   });
 
   await test("before the first sync the Overview says revenue is loading, not $0", async () => {
@@ -250,6 +250,96 @@ async function main() {
     assert.ok(took < 1000, `took ${took}ms`);
     await revenue.syncRevenueLedger(); // let the background run finish before shutdown
     slow = 0;
+  });
+
+  section("Safe to restart, run twice, or run on two instances");
+  const AnalyticsState = require("../models/AnalyticsState");
+  const expectedIds = () => CHARGES.filter((c) => c.status === "succeeded").map((c) => c.id).sort();
+  const storedIds = async () => (await RevenueCharge.find({}).lean()).map((d) => d.chargeId).sort();
+
+  await test("chargeId is unique in the collection itself, not just by convention", async () => {
+    const idx = await RevenueCharge.collection.indexes();
+    assert.ok(idx.some((i) => i.key.chargeId === 1 && i.unique), JSON.stringify(idx));
+  });
+  await test("running the same sync again adds nothing", async () => {
+    const before = await RevenueCharge.countDocuments({});
+    await revenue.syncRevenueLedger({ now: new Date(NOW.getTime() + 300000) });
+    await revenue.syncRevenueLedger({ now: new Date(NOW.getTime() + 360000) });
+    assert.strictEqual(await RevenueCharge.countDocuments({}), before);
+  });
+  await test("a backfill killed halfway leaves no bookmark, and the rerun completes with no duplicates", async () => {
+    await RevenueCharge.deleteMany({});
+    await AnalyticsState.deleteMany({});
+    let crash = true;
+    revenue.setStripeClient({
+      charges: {
+        list: () => ({
+          async *[Symbol.asyncIterator]() {
+            let i = 0;
+            for (const c of CHARGES) {
+              if (crash && i++ === 2) throw new Error("process killed");
+              yield c;
+            }
+          },
+        }),
+      },
+      checkout: { sessions: { list: async () => ({ data: [{ total_details: { amount_tax: 2162 } }] }) } },
+      refunds: { list: () => iter([]) },
+    });
+    await assert.rejects(revenue.syncRevenueLedger(), /process killed/);
+    assert.strictEqual((await AnalyticsState.findOne({ key: "revenue-ledger" }).lean())?.value?.backfilledAt, undefined);
+    const r = await revenue.collectedRevenue({ from: new Date(0), to: new Date(NOW.getTime() + DAY_S * 1000) });
+    assert.strictEqual(r.available, false, "a half-done backfill is never shown as a total");
+    await revenue.syncRevenueLedger().catch(() => {}); // the run collectedRevenue started (still crashing)
+    crash = false;
+    await revenue.syncRevenueLedger();
+    assert.deepStrictEqual(await storedIds(), expectedIds());
+  });
+  await test("another instance holding the lease: this one skips, writes nothing", async () => {
+    await AnalyticsState.updateOne({ key: "revenue-ledger-lease" }, { $set: { value: { owner: "other-instance", until: Date.now() + 60000 } } }, { upsert: true });
+    const before = (await AnalyticsState.findOne({ key: "revenue-ledger" }).lean()).value.lastSyncAt;
+    const out = await revenue.syncRevenueLedger();
+    assert.strictEqual(out.skipped, true);
+    assert.strictEqual(String((await AnalyticsState.findOne({ key: "revenue-ledger" }).lean()).value.lastSyncAt), String(before));
+  });
+  await test("a lease left by a dead instance expires and the sync proceeds", async () => {
+    await AnalyticsState.updateOne({ key: "revenue-ledger-lease" }, { $set: { value: { owner: "dead-instance", until: Date.now() - 1 } } });
+    const out = await revenue.syncRevenueLedger();
+    assert.notStrictEqual(out.skipped, true);
+  });
+  await test("three syncs started together in one process share one run: one row per charge", async () => {
+    await RevenueCharge.deleteMany({});
+    await AnalyticsState.deleteMany({});
+    await Promise.all([revenue.syncRevenueLedger(), revenue.syncRevenueLedger(), revenue.syncRevenueLedger()]);
+    assert.deepStrictEqual(await storedIds(), expectedIds());
+  });
+  await test("an existing charge re-read in the overlap is updated in place (refund grew)", async () => {
+    const recent = CHARGES.find((c) => c.id === "ch_onetime");
+    recent.amount_refunded = 4950;
+    await revenue.syncRevenueLedger({ now: new Date(NOW.getTime() + 600000) });
+    const rows = await RevenueCharge.find({ chargeId: "ch_onetime" }).lean();
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].refundedCents, 4950);
+  });
+  await test("once a day, 180 days of refunds are re-read as a safety net", async () => {
+    revenue.setStripeClient({
+      charges: { list: () => iter([]) },
+      checkout: { sessions: { list: async () => ({ data: [] }) } },
+      refunds: { list: (params) => { calls.refundParams = params; return iter([{ id: "re_old", charge: { id: "ch_member", amount_refunded: 16204 } }]); } },
+    });
+    await AnalyticsState.updateOne({ key: "revenue-ledger" }, { $set: { "value.lastDeepRefundCheck": new Date(NOW.getTime() - 2 * DAY_S * 1000) } });
+    await revenue.syncRevenueLedger();
+    assert.ok(calls.refundParams.created.gte <= Math.floor(Date.now() / 1000) - 179 * DAY_S, JSON.stringify(calls.refundParams.created));
+    assert.strictEqual((await RevenueCharge.findOne({ chargeId: "ch_member" }).lean()).refundedCents, 16204);
+  });
+  await test("a sync that has failed for 30+ minutes is reported as stale, not final", async () => {
+    await AnalyticsState.updateOne({ key: "revenue-ledger" }, { $set: { "value.lastSyncAt": new Date(Date.now() - 40 * 60 * 1000) } });
+    const r = await revenue.collectedRevenue({ from: new Date(0), to: new Date(NOW.getTime() + DAY_S * 1000) });
+    assert.strictEqual(r.available, true);
+    assert.strictEqual(r.stale, true);
+    await revenue.syncRevenueLedger();
+    const fresh = await revenue.collectedRevenue({ from: new Date(0), to: new Date(NOW.getTime() + DAY_S * 1000) });
+    assert.strictEqual(fresh.stale, false);
   });
 
   await mongoose.disconnect();
