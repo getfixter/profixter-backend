@@ -649,6 +649,14 @@ startOverrideRefresh();
  */
 startGiftLifecycle();
 
+/*
+ * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
+ * first run after a deploy backfills it once in the background; then every
+ * five minutes it reads only new charges and refunds. The Overview reads the
+ * copy, so opening it never waits on a year of Stripe pages.
+ */
+require("./utils/analytics/stripeRevenue").startRevenueLedgerSync();
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 

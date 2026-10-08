@@ -40,6 +40,7 @@ const { project } = require("../membershipMap/projection");
 const { placeZipCluster } = require("../membershipMap/publicPoint");
 const { classifySource, campaignOf, SOURCES } = require("./attribution");
 const { collectedRevenue } = require("./stripeRevenue");
+const { currentMrr } = require("./stripeMrr");
 
 const TZ = "America/New_York";
 const DAY = 24 * 60 * 60 * 1000;
@@ -304,17 +305,41 @@ function revenueUser(data, row) {
   return null;
 }
 
+/*
+ * Sales tax still owed on what was kept: a partly refunded charge keeps the
+ * same share of its tax as of its amount.
+ */
+function rowTaxCents(r) {
+  const tax = Number(r.taxCents || 0);
+  if (!tax || !r.cents) return 0;
+  return Math.round((tax * r.netCents) / r.cents);
+}
+
+/** Revenue in one charge: what was kept after refunds, without the sales tax. */
+function rowRevenueCents(r) {
+  return r.netCents - rowTaxCents(r);
+}
+
+/*
+ * Revenue excludes sales tax (owed to the state) and is net of refunds.
+ * collectedCents is the same money with the tax in: what reached the bank.
+ */
 function summarizeRevenue(rows) {
-  const out = { membershipCents: 0, oneTimeCents: 0, fullDayCents: 0, giftCents: 0, otherCents: 0, refundedCents: 0, count: 0 };
+  const out = { membershipCents: 0, oneTimeCents: 0, fullDayCents: 0, giftCents: 0, otherCents: 0, refundedCents: 0, taxCents: 0, collectedCents: 0, count: 0 };
   for (const r of rows) {
     if (r.kind === "project" || r.kind === "tip") continue;
     out.refundedCents += r.refundedCents;
-    if (r.kind === "membership") out.membershipCents += r.netCents;
-    else if (r.kind === "one_time") out.oneTimeCents += r.netCents;
-    else if (r.kind === "full_day") out.fullDayCents += r.netCents;
-    else if (r.kind === "gift") out.giftCents += r.netCents;
-    else out.otherCents += r.netCents;
-    if (r.service) out.count += 1;
+    const revenue = rowRevenueCents(r);
+    if (r.kind === "membership") out.membershipCents += revenue;
+    else if (r.kind === "one_time") out.oneTimeCents += revenue;
+    else if (r.kind === "full_day") out.fullDayCents += revenue;
+    else if (r.kind === "gift") out.giftCents += revenue;
+    else out.otherCents += revenue;
+    if (r.service) {
+      out.count += 1;
+      out.taxCents += rowTaxCents(r);
+      out.collectedCents += r.netCents;
+    }
   }
   out.totalCents = out.membershipCents + out.oneTimeCents + out.fullDayCents + out.giftCents;
   return out;
@@ -335,20 +360,23 @@ function periodCounts(data, from, to) {
   return { newCustomers, newMemberships, cancellations, fvBooked, fvCompleted, fvConverted, activeAtEnd };
 }
 
-function buildPlans(data, period) {
+function buildPlans(data, period, mrr) {
   const active = data.memberships.filter((m) => m.activeNow);
   return PLANS.map((plan) => {
     const current = active.filter((m) => m.plan === plan);
+    const fromStripe = mrr?.available ? mrr.byPlan[plan] || { netCents: 0, fullPriceCents: 0, paying: 0, comped: 0 } : null;
     return {
       plan,
       active: current.length,
-      paying: current.filter((m) => m.paying).length,
+      paying: fromStripe ? fromStripe.paying : current.filter((m) => m.paying).length,
+      comped: fromStripe ? fromStripe.comped : 0,
       gifts: current.filter((m) => m.kind === "gift").length,
       newInPeriod: data.memberships.filter((m) => m.plan === plan && inRange(m.start, period.from, period.to)).length,
       canceledInPeriod: data.memberships.filter(
         (m) => m.plan === plan && m.kind === "paid" && ENDED_STATUSES.has(m.status) && inRange(m.end, period.from, period.to)
       ).length,
-      mrrCents: current.filter((m) => m.paying).reduce((s, m) => s + m.monthlyCents, 0),
+      mrrCents: fromStripe ? fromStripe.netCents : current.filter((m) => m.paying).reduce((s, m) => s + m.monthlyCents, 0),
+      fullPriceCents: fromStripe ? fromStripe.fullPriceCents : current.filter((m) => m.paying).reduce((s, m) => s + m.monthlyCents, 0),
       share: pct(current.length, active.length),
     };
   });
@@ -438,8 +466,8 @@ function buildSources(data, period, counts, revenueRows, visitors) {
   for (const r of revenueRows) {
     if (!r.service) continue;
     const user = revenueUser(data, r);
-    if (user) bump(user, "revenueCents", r.netCents);
-    else unmatchedRevenueCents += r.netCents;
+    if (user) bump(user, "revenueCents", rowRevenueCents(r));
+    else unmatchedRevenueCents += rowRevenueCents(r);
   }
   const list = [...rows.values()].map((r) => ({
     ...r,
@@ -479,7 +507,7 @@ function buildCampaigns(data, period, counts, revenueRows) {
   for (const u of counts.newCustomers) add(u, "registrations");
   for (const b of counts.fvBooked) add(data.userById.get(String(b.user)), "freeVisits");
   for (const m of counts.newMemberships) add(data.userById.get(m.userId), "members", 1, m.plan);
-  for (const r of revenueRows) if (r.service) add(revenueUser(data, r), "revenueCents", r.netCents);
+  for (const r of revenueRows) if (r.service) add(revenueUser(data, r), "revenueCents", rowRevenueCents(r));
   const finish = (n) => ({ ...n, conversion: pct(n.members, n.registrations), spendCents: null, roas: null, costPerMemberCents: null });
   return [...tree.values()]
     .map((c) => ({
@@ -578,10 +606,11 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
   const revenueWindowFrom = new Date(Math.min(period.prevFrom.getTime(), yearPeriod.from.getTime()));
   const revenueWindowTo = new Date(Math.max(period.to.getTime(), yearPeriod.to.getTime()));
-  const [revenueAll, visitors, prevVisitors] = await Promise.all([
+  const [revenueAll, visitors, prevVisitors, mrr] = await Promise.all([
     collectedRevenue({ from: revenueWindowFrom, to: revenueWindowTo }),
     visitorCounts(period.from, period.to),
     visitorCounts(period.prevFrom, period.prevTo),
+    currentMrr(),
   ]);
   const curRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.from, period.to));
   const prevRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.prevFrom, period.prevTo));
@@ -627,19 +656,62 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
     },
     kpis: {
       totalCustomers: { value: data.customers.length },
-      activeMembers: { value: activeNow.length, prev: activeAtStart, delta: delta(activeNow.length, activeAtStart), paying: activeNow.filter((m) => m.paying).length, gifts: activeNow.filter((m) => m.kind === "gift").length },
+      activeMembers: {
+        value: activeNow.length,
+        prev: activeAtStart,
+        delta: delta(activeNow.length, activeAtStart),
+        // From Stripe when it answered: a 100%-off membership is active but not paying.
+        paying: mrr.available ? mrr.payingMembers : activeNow.filter((m) => m.paying).length,
+        comped: mrr.available ? mrr.compedMembers : 0,
+        gifts: activeNow.filter((m) => m.kind === "gift").length,
+      },
       newMembers: { value: cur.newMemberships.length, prev: prev.newMemberships.length, delta: delta(cur.newMemberships.length, prev.newMemberships.length) },
       cancellations: { value: cur.cancellations.length, prev: prev.cancellations.length, delta: delta(cur.cancellations.length, prev.cancellations.length), scheduled: data.memberships.filter((m) => m.cancelScheduled && m.activeNow).length },
       newCustomers: { value: cur.newCustomers.length, prev: prev.newCustomers.length, delta: delta(cur.newCustomers.length, prev.newCustomers.length) },
       revenue: {
         available: revenueAll.available,
+        syncing: !!revenueAll.syncing,
+        syncedAt: revenueAll.syncedAt || null,
         error: revenueAll.error || null,
         truncated: revenueAll.truncated,
         ...revenueNow,
         prevTotalCents: revenuePrev.totalCents,
+        prevCollectedCents: revenuePrev.collectedCents,
         delta: revenueAll.available ? delta(revenueNow.totalCents, revenuePrev.totalCents) : null,
       },
-      mrr: { cents: mrrNow, startCents: mrrStart, delta: delta(mrrNow, mrrStart), payingMembers: activeNow.filter((m) => m.paying).length },
+      mrr: mrr.available
+        ? {
+            /*
+             * Net of the discounts that still apply, from Stripe. There is no
+             * honest "net MRR at period start" (coupon history is not kept), so
+             * no delta rather than a list-price delta next to a net figure.
+             */
+            source: "stripe",
+            cents: mrr.netCents,
+            fullPriceCents: mrr.fullPriceCents,
+            discountCents: mrr.discountCents,
+            startCents: null,
+            delta: null,
+            payingMembers: mrr.payingMembers,
+            compedMembers: mrr.compedMembers,
+            discountedMembers: mrr.discountedMembers,
+            annualMembers: mrr.annualMembers,
+            pastDueMembers: mrr.pastDueMembers,
+            trialingMembers: mrr.trialingMembers,
+            endingMembers: mrr.endingMembers,
+            endingCents: mrr.endingCents,
+          }
+        : {
+            // Stripe did not answer: list prices from Mongo, labelled as such.
+            source: "list_price",
+            cents: null,
+            fullPriceCents: mrrNow,
+            discountCents: null,
+            startCents: mrrStart,
+            delta: delta(mrrNow, mrrStart),
+            payingMembers: activeNow.filter((m) => m.paying).length,
+            error: mrr.error || "Recurring revenue is unavailable right now.",
+          },
       freeVisits: {
         booked: cur.fvBooked.length,
         prevBooked: prev.fvBooked.length,
@@ -666,7 +738,7 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
         fullDayRevenueCents: revenueNow.fullDayCents,
       },
     },
-    plans: buildPlans(data, period),
+    plans: buildPlans(data, period, mrr),
     growth: {
       period: { granularity: gran, points: growthSeries(data, period, gran) },
       year: { granularity: "month", points: growthSeries(data, yearPeriod, "month") },
@@ -694,8 +766,10 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
     activity: buildActivity(data),
     attention: buildAttention(data, period, cur),
   };
-  cache.set(cacheKey, { at: Date.now(), value });
-  if (cache.size > 30) cache.delete(cache.keys().next().value);
+  if (revenueAll.available && mrr.available) {
+    cache.set(cacheKey, { at: Date.now(), value });
+    if (cache.size > 30) cache.delete(cache.keys().next().value);
+  }
   return value;
 }
 

@@ -54,6 +54,15 @@ async function main() {
   const Booking = require("../models/Booking");
   const SiteVisitor = require("../models/SiteVisitor");
   const overview = require("../utils/analytics/overview");
+  /*
+   * MRR comes from Stripe subscriptions. This fake holds the same two paying
+   * memberships the Mongo world below has (Plus monthly, Premium annual).
+   */
+  const stripeMrr = require("../utils/analytics/stripeMrr");
+  const fakeSub = (id, unit, interval, plan) => ({ id, status: "active", metadata: { plan }, items: { data: [{ quantity: 1, price: { id: `price_${id}`, unit_amount: unit, recurring: { interval, interval_count: 1 } } }] }, discounts: [] });
+  const MRR_SUBS = [fakeSub("sub_A", 24900, "month", "plus"), fakeSub("sub_B", 349000, "year", "premium")];
+  const listOf = (rows) => ({ async *[Symbol.asyncIterator]() { for (const r of rows) yield r; } });
+  stripeMrr.setStripeClient({ subscriptions: { list: ({ status }) => listOf(MRR_SUBS.filter((s) => s.status === status)) } });
   const { classifyCharge } = realRevenue;
   const { sanitizeAttribution, classifySource } = require("../utils/analytics/attribution");
 
@@ -210,7 +219,22 @@ async function main() {
   await test("active members at period start reconstructed from dates", async () => assert.strictEqual(k.activeMembers.prev, 2));
   await test("new members in period: Plus + gift Elite", async () => assert.strictEqual(k.newMembers.value, 2));
   await test("cancellations: the Basic that ended", async () => assert.strictEqual(k.cancellations.value, 1));
-  await test("MRR: monthly list price + annual / 12, gifts excluded", async () => assert.strictEqual(k.mrr.cents, 24900 + Math.round((3490 / 12) * 100)));
+  await test("MRR from Stripe: monthly + annual / 12, gifts excluded", async () => {
+    assert.strictEqual(k.mrr.source, "stripe");
+    assert.strictEqual(k.mrr.cents, 24900 + Math.round((3490 / 12) * 100));
+    assert.strictEqual(k.mrr.fullPriceCents, k.mrr.cents);
+  });
+  await test("Stripe down: MRR says list price, not a net figure", async () => {
+    stripeMrr.setStripeClient({ subscriptions: { list: () => { throw new Error("stripe down"); } } });
+    overview.clearOverviewCache();
+    const o = await overview.buildOverview({ range: "30d" });
+    assert.strictEqual(o.kpis.mrr.source, "list_price");
+    assert.strictEqual(o.kpis.mrr.cents, null);
+    assert.strictEqual(o.kpis.mrr.fullPriceCents, 24900 + Math.round((3490 / 12) * 100));
+    assert.ok(o.kpis.mrr.error);
+    stripeMrr.setStripeClient({ subscriptions: { list: ({ status }) => listOf(MRR_SUBS.filter((s) => s.status === status)) } });
+    overview.clearOverviewCache();
+  });
   await test("plans: counts per plan", async () => {
     const by = Object.fromEntries(body.plans.map((p) => [p.plan, p]));
     assert.deepStrictEqual([by.basic.active, by.plus.active, by.premium.active, by.elite.active], [0, 1, 1, 1]);
