@@ -116,6 +116,12 @@ function matchesValue(actual, expected) {
     if (Object.prototype.hasOwnProperty.call(expected, "$ne")) {
       return actual !== expected.$ne;
     }
+    if (Object.prototype.hasOwnProperty.call(expected, "$gte")) {
+      return actual != null && new Date(actual) >= new Date(expected.$gte);
+    }
+    if (Object.prototype.hasOwnProperty.call(expected, "$in")) {
+      return expected.$in.includes(actual);
+    }
   }
   if (expected === null) return actual == null;
   if (expected instanceof Date) {
@@ -253,8 +259,38 @@ async function testFailureReleasesLock() {
   assert.equal(booking.reviewRequestSentAt, undefined);
 }
 
+/*
+ * The per-customer cooldown: off by default (every completed booking is asked,
+ * exactly as before), and when set, a customer asked within the window is not
+ * asked again - their new booking is marked skipped, not emailed.
+ */
+async function testCustomerCooldown() {
+  const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
+  const seed = () => [
+    { ...completedBooking(61), _id: "earlier", email: "member@example.com", reviewRequestSentAt: tenDaysAgo },
+    { ...completedBooking(61), _id: "latest", email: "Member@Example.com" },
+  ];
+  const sendEmail = async () => ({ messageId: "test-message" });
+
+  const off = createFakeBookingModel(seed());
+  const offResult = await runBookingReviewRequestCycle(now, { BookingModel: off, sendEmail, cooldownDays: 0 });
+  assert.equal(offResult.sent, 1, "cooldown off: the new booking is asked, as before");
+
+  const on = createFakeBookingModel(seed());
+  const onResult = await runBookingReviewRequestCycle(now, { BookingModel: on, sendEmail, cooldownDays: 30 });
+  const latest = on.documents.find((item) => item._id === "latest");
+  assert.equal(onResult.sent, 0, "asked 10 days ago: not asked again inside a 30-day window");
+  assert.ok(latest.reviewRequestSkippedAt, "the skipped booking is marked so it is not re-evaluated");
+  assert.equal(latest.reviewRequestSentAt, undefined);
+
+  const outside = createFakeBookingModel(seed());
+  const outsideResult = await runBookingReviewRequestCycle(now, { BookingModel: outside, sendEmail, cooldownDays: 7 });
+  assert.equal(outsideResult.sent, 1, "asked 10 days ago: asked again once a 7-day window has passed");
+}
+
 Promise.resolve()
   .then(testAtomicClaim)
+  .then(testCustomerCooldown)
   .then(testWorkerCycle)
   .then(testConcurrentWorkers)
   .then(testFailureReleasesLock)

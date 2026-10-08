@@ -7,6 +7,14 @@ const {
   evaluateReviewRequest,
 } = require("../utils/bookingReviewRequestPolicy");
 
+const MINUTE_MS = 60 * 1000;
+
+/** Days between review requests to the same customer. 0 (default) = ask after every completed booking. */
+function customerCooldownDays() {
+  const days = Number(process.env.REVIEW_REQUEST_CUSTOMER_COOLDOWN_DAYS);
+  return Number.isFinite(days) && days > 0 ? days : 0;
+}
+
 function emptyField(field) {
   return {
     $or: [{ [field]: { $exists: false } }, { [field]: null }],
@@ -135,6 +143,38 @@ async function runBookingReviewRequestCycle(
         reason: eligibility.reason,
       });
       continue;
+    }
+
+    /*
+     * One ask per customer per cooldown window, not one per booking.
+     *
+     * A member who books every week was being asked "How did we do?" after
+     * every visit, which is how a review request turns into noise and gets
+     * ignored - or unsubscribed from. With a cooldown set, a booking whose
+     * customer was already asked within the window is marked skipped (never
+     * re-evaluated) instead of emailed. Nobody is screened by satisfaction:
+     * the only test is when they were last asked.
+     *
+     * Off unless REVIEW_REQUEST_CUSTOMER_COOLDOWN_DAYS is set, so deploying
+     * this changes nothing until that is a deliberate decision.
+     */
+    const cooldownDays = dependencies.cooldownDays ?? customerCooldownDays();
+    if (cooldownDays > 0) {
+      const email = safeEmail(booking.email);
+      const askedRecently = await BookingModel.exists({
+        _id: { $ne: booking._id },
+        email: { $in: [...new Set([booking.email, email].filter(Boolean))] },
+        reviewRequestSentAt: { $gte: new Date(now.getTime() - cooldownDays * 24 * 60 * MINUTE_MS) },
+      });
+      if (askedRecently) {
+        await BookingModel.updateOne(
+          { _id: booking._id, ...emptyField("reviewRequestSentAt") },
+          { $set: { reviewRequestSkippedAt: now } }
+        );
+        stats.cooldownSkipped = (stats.cooldownSkipped || 0) + 1;
+        console.log("Booking review request skipped", { ...logShape(booking), reason: "customer_cooldown", cooldownDays });
+        continue;
+      }
     }
 
     const claim = await claimReviewRequest(booking._id, now, BookingModel);
@@ -281,6 +321,7 @@ function startBookingReviewRequests() {
 
 module.exports = {
   claimReviewRequest,
+  customerCooldownDays,
   runBookingReviewRequestCycle,
   startBookingReviewRequests,
 };
