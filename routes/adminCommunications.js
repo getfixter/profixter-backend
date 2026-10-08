@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
-const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const { PERMISSIONS, requirePermission, requireAnyPermission } = require("../middleware/authorize");
 const CommunicationTemplate = require("../models/CommunicationTemplate");
 const EmailLog = require("../models/EmailLog");
 const SmsMessage = require("../models/SmsMessage");
@@ -53,7 +53,9 @@ const { NON_REGISTRY_EMAILS } = require("../utils/communications/emailCatalogue"
  * half-written message reaches a real customer.
  */
 
-const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const sectionAccess = requirePermission(PERMISSIONS.COMMUNICATIONS_MANAGE);
+/* A customer's message history is also part of their record in All Users. */
+const customerHistoryAccess = requireAnyPermission(PERMISSIONS.COMMUNICATIONS_MANAGE, PERMISSIONS.CUSTOMERS_MANAGE);
 
 function adminIdentity(req) {
   return {
@@ -198,7 +200,7 @@ async function emailCatalogue() {
   return [...registered, ...nonRegistry];
 }
 
-router.get("/templates", auth, ...onlyAdmin, async (req, res) => {
+router.get("/templates", auth, ...sectionAccess, async (req, res) => {
   try {
     const channel = String(req.query.channel || "").trim();
     const payload = { protectedContent: PROTECTED_CONTENT };
@@ -211,7 +213,7 @@ router.get("/templates", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.get("/templates/:channel/:templateKey", auth, ...onlyAdmin, async (req, res) => {
+router.get("/templates/:channel/:templateKey", auth, ...sectionAccess, async (req, res) => {
   try {
     const { channel, templateKey } = req.params;
 
@@ -258,7 +260,7 @@ router.get("/templates/:channel/:templateKey", auth, ...onlyAdmin, async (req, r
  * the errors arrive together rather than the admin discovering on Save that the
  * body they were happily previewing was never going to be accepted.
  */
-router.post("/preview", auth, ...onlyAdmin, async (req, res) => {
+router.post("/preview", auth, ...sectionAccess, async (req, res) => {
   try {
     const channel = String(req.body?.channel || "sms");
     const templateKey = String(req.body?.templateKey || "");
@@ -413,7 +415,7 @@ function validateEmailSave(templateKey, subject, body) {
   return { valid: errors.length === 0, errors, usedTokens: result.usedTokens };
 }
 
-router.put("/templates/email/:templateKey", auth, ...onlyAdmin, async (req, res) => {
+router.put("/templates/email/:templateKey", auth, ...sectionAccess, async (req, res) => {
   try {
     const templateKey = String(req.params.templateKey || "");
     if (!EMAIL_TEMPLATES[templateKey] || !EMAIL_DEFINITIONS[templateKey]) {
@@ -476,7 +478,7 @@ router.put("/templates/email/:templateKey", auth, ...onlyAdmin, async (req, res)
   }
 });
 
-router.post("/templates/email/:templateKey/reset", auth, ...onlyAdmin, async (req, res) => {
+router.post("/templates/email/:templateKey/reset", auth, ...sectionAccess, async (req, res) => {
   try {
     const templateKey = String(req.params.templateKey || "");
     if (!EMAIL_TEMPLATES[templateKey]) {
@@ -534,7 +536,7 @@ router.post("/templates/email/:templateKey/reset", auth, ...onlyAdmin, async (re
  * Restoring is a save, not a rewind: the current wording is pushed onto the
  * revision stack first, so restoring the wrong one is itself undoable.
  */
-router.post("/templates/:channel/:templateKey/restore/:index", auth, ...onlyAdmin, async (req, res) => {
+router.post("/templates/:channel/:templateKey/restore/:index", auth, ...sectionAccess, async (req, res) => {
   try {
     const { channel, templateKey } = req.params;
     if (channel !== "sms" && channel !== "email") {
@@ -581,7 +583,7 @@ router.post("/templates/:channel/:templateKey/restore/:index", auth, ...onlyAdmi
   }
 });
 
-router.put("/templates/sms/:templateKey", auth, ...onlyAdmin, async (req, res) => {
+router.put("/templates/sms/:templateKey", auth, ...sectionAccess, async (req, res) => {
   try {
     const templateKey = String(req.params.templateKey || "");
     if (!SMS_TYPES[templateKey] || !DEFINITIONS[templateKey]) {
@@ -656,7 +658,7 @@ router.put("/templates/sms/:templateKey", auth, ...onlyAdmin, async (req, res) =
  * change it to before somebody reset it?" stays answerable, and the code
  * template takes over on the very next render.
  */
-router.post("/templates/sms/:templateKey/reset", auth, ...onlyAdmin, async (req, res) => {
+router.post("/templates/sms/:templateKey/reset", auth, ...sectionAccess, async (req, res) => {
   try {
     const templateKey = String(req.params.templateKey || "");
     if (!SMS_TYPES[templateKey]) return res.status(404).json({ message: "Unknown SMS type" });
@@ -802,7 +804,7 @@ function byNewest(a, b) {
  * and key their recipient differently. Matching each the way it actually
  * stores its recipient is what stops this quietly returning half the history.
  */
-router.get("/customers/:userId/history", auth, ...onlyAdmin, async (req, res) => {
+router.get("/customers/:userId/history", auth, ...customerHistoryAccess, async (req, res) => {
   try {
     const rawId = String(req.params.userId || "");
     const limit = Math.min(200, Math.max(1, Number(req.query.limit || 100)));
@@ -842,7 +844,7 @@ router.get("/customers/:userId/history", auth, ...onlyAdmin, async (req, res) =>
  * out", and folding in the customer's password resets and membership notices
  * would bury the answer.
  */
-router.get("/bookings/:bookingNumber/history", auth, ...onlyAdmin, async (req, res) => {
+router.get("/bookings/:bookingNumber/history", auth, ...sectionAccess, async (req, res) => {
   try {
     const bookingNumber = String(req.params.bookingNumber || "").trim();
     if (!bookingNumber) return res.status(400).json({ message: "bookingNumber is required" });

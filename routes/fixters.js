@@ -10,14 +10,40 @@ const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailability
 const AvailabilityOverride = require("../models/AvailabilityOverride");
 const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const { SECTIONS, cleanSections, isFieldPosition, registryForEditor } = require("../utils/adminAccess");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
 
+/*
+ * Staff accounts: Fixters and every other employee. Owner only (whoever can
+ * manage staff can grant themselves anything, so this is never a section).
+ *
+ * An employee has a free-text title (display only), optional field work
+ * (Fixter / General Fixter: the job access those positions always had) and the
+ * Admin sections the owner switched on. See utils/adminAccess.js.
+ */
 const router = express.Router();
 const POSITIONS = ["Fixter", "General Fixter"];
+const TITLE_MAX = 80;
+
+const sectionLabel = new Map(SECTIONS.map((s) => [s.id, s.label]));
+const labels = (ids) => ids.map((id) => sectionLabel.get(id) || id);
+
+/* "" (or null) means no field work: an office, marketing or sales employee. */
+function readPosition(value) {
+  const v = clean(value);
+  if (!v || v === "none") return { ok: true, value: null };
+  return POSITIONS.includes(v) ? { ok: true, value: v } : { ok: false };
+}
+
+function readTitle(value, position) {
+  const title = clean(value).slice(0, TITLE_MAX);
+  // A Fixter created before titles existed reads as their position.
+  return title || (position ? position : "");
+}
 const AVAILABILITY_STATUSES = [
   "Available",
   "Busy",
@@ -64,12 +90,15 @@ function localDate(value) {
 function fixterDTO(user, reporting = {}) {
   return {
     id: String(user._id),
+    name: user.name || "",
     firstName: user.firstName || "",
     lastName: user.lastName || "",
     email: user.email,
     phone: user.phone || "",
     role: user.role,
-    employeePosition: user.employeePosition,
+    employeePosition: user.employeePosition || null,
+    employeeTitle: user.employeeTitle || user.employeePosition || "",
+    adminSections: cleanSections(user.adminSections),
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
     isDefaultFixter: !!user.isDefaultFixter,
@@ -182,22 +211,32 @@ router.get("/", async (_req, res) => {
   return res.json({ fixters: await loadFixtersWithReporting() });
 });
 
+/* What the access editor shows: sections with plain-language labels, grouped. */
+router.get("/access-registry", (_req, res) => {
+  return res.json(registryForEditor());
+});
+
 router.post("/", async (req, res) => {
   try {
     const firstName = clean(req.body.firstName);
     const lastName = clean(req.body.lastName);
     const email = clean(req.body.email).toLowerCase();
     const phone = normalizePhone(req.body.phone);
-    const employeePosition = clean(req.body.employeePosition);
+    const position = readPosition(req.body.employeePosition);
+    if (!position.ok) return res.status(400).json({ message: "Invalid field work option" });
+    const employeePosition = position.value;
+    const employeeTitle = readTitle(req.body.employeeTitle, employeePosition);
+    const adminSections = cleanSections(req.body.adminSections);
 
-    if (!firstName || !lastName || !email || !phone) {
-      return res.status(400).json({ message: "First name, last name, email, and valid phone are required" });
+    if (!firstName || !lastName || !email) {
+      return res.status(400).json({ message: "First name, last name and email are required" });
+    }
+    // Field workers get job texts, so they need a phone; for office staff it is optional.
+    if (phone === null || (employeePosition && !phone)) {
+      return res.status(400).json({ message: employeePosition ? "A valid phone is required for a Fixter" : "Phone number is not valid" });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ message: "Invalid email" });
-    }
-    if (!POSITIONS.includes(employeePosition)) {
-      return res.status(400).json({ message: "Invalid employee position" });
     }
     /*
      * The duplicate-email exception, and the only one in the system.
@@ -224,6 +263,8 @@ router.post("/", async (req, res) => {
       password: await bcrypt.hash("11111111", 10),
       role: "employee",
       employeePosition,
+      employeeTitle,
+      adminSections,
       isActive: true,
       mustChangePassword: true,
       employeeAvailabilityStatus: "Available",
@@ -231,6 +272,17 @@ router.post("/", async (req, res) => {
       defaultAddressId: null,
       subscription: null,
     });
+    await createAdminActivityLog(req, {
+      action: "Employee Created",
+      entityType: "employee",
+      entityId: user._id,
+      entityName: user.name,
+      details: { title: employeeTitle, fieldWork: employeePosition || "None", sections: labels(adminSections) },
+    }).catch((e) => console.warn("Employee audit log failed:", e.message));
+    // Only field workers have a working calendar.
+    if (!isFieldPosition(employeePosition)) {
+      return res.status(201).json({ fixter: fixterDTO(user), templateReady: true });
+    }
     try {
       await ensureTechnicianTemplate(user._id);
       return res.status(201).json({
@@ -260,17 +312,52 @@ router.put("/:id", async (req, res) => {
     const firstName = clean(req.body.firstName);
     const lastName = clean(req.body.lastName);
     const phone = normalizePhone(req.body.phone);
-    const employeePosition = clean(req.body.employeePosition);
-    if (!firstName || !lastName || !phone || !POSITIONS.includes(employeePosition)) {
-      return res.status(400).json({ message: "Valid name, phone, and position are required" });
+    const position = readPosition(req.body.employeePosition);
+    if (!firstName || !lastName || !position.ok || phone === null || (position.value && !phone)) {
+      return res.status(400).json({ message: "Valid name and field work are required, and a phone for a Fixter" });
     }
+    const employeePosition = position.value;
+    const employeeTitle = readTitle(req.body.employeeTitle, employeePosition);
+    // Sections are only changed when sent, so an older client editing a name cannot wipe them.
+    const adminSections = req.body.adminSections === undefined ? cleanSections(user.adminSections) : cleanSections(req.body.adminSections);
+
+    const before = {
+      title: user.employeeTitle || user.employeePosition || "",
+      fieldWork: user.employeePosition || null,
+      sections: cleanSections(user.adminSections),
+    };
 
     user.firstName = firstName;
     user.lastName = lastName;
     user.name = `${firstName} ${lastName}`;
     user.phone = phone;
     user.employeePosition = employeePosition;
+    user.employeeTitle = employeeTitle;
+    user.adminSections = adminSections;
+    if (!employeePosition) user.isDefaultFixter = false;
     await user.save();
+    if (employeePosition && !before.fieldWork) {
+      await ensureTechnicianTemplate(user._id).catch((e) => console.error("Template provisioning failed:", e.message));
+    }
+
+    /* The changes that matter for who can see what, each in the activity log. */
+    const log = (action, details) =>
+      createAdminActivityLog(req, { action, entityType: "employee", entityId: user._id, entityName: user.name, details }).catch((e) =>
+        console.warn("Employee audit log failed:", e.message)
+      );
+    const sameSections = before.sections.join(",") === adminSections.join(",");
+    if (!sameSections) {
+      await log("Employee Permissions Changed", {
+        before: labels(before.sections),
+        after: labels(adminSections),
+        added: labels(adminSections.filter((s) => !before.sections.includes(s))),
+        removed: labels(before.sections.filter((s) => !adminSections.includes(s))),
+      });
+    }
+    if (before.title !== employeeTitle) await log("Employee Title Changed", { before: before.title, after: employeeTitle });
+    if ((before.fieldWork || null) !== (employeePosition || null)) {
+      await log("Employee Field Work Changed", { before: before.fieldWork || "None", after: employeePosition || "None" });
+    }
     return res.json({ fixter: fixterDTO(user) });
   } catch (error) {
     console.error("Update Fixter failed:", error);
@@ -286,7 +373,12 @@ router.patch("/:id/status", async (req, res) => {
       return res.status(400).json({ message: "isActive must be boolean" });
     }
 
-    if (req.body.isActive) {
+    const wasActive = user.isActive !== false;
+    if (req.body.isActive && !isFieldPosition(user.employeePosition)) {
+      // Office staff have no working calendar to prepare.
+      user.isActive = true;
+      if (user.employeeAvailabilityStatus === "Inactive") user.employeeAvailabilityStatus = "Available";
+    } else if (req.body.isActive) {
       try {
         await ensureTechnicianTemplate(user._id);
       } catch (templateError) {
@@ -308,6 +400,15 @@ router.patch("/:id/status", async (req, res) => {
     }
 
     await user.save();
+    if (wasActive !== user.isActive) {
+      await createAdminActivityLog(req, {
+        action: user.isActive ? "Employee Enabled" : "Employee Disabled",
+        entityType: "employee",
+        entityId: user._id,
+        entityName: user.name,
+        details: { title: user.employeeTitle || user.employeePosition || "" },
+      }).catch((e) => console.warn("Employee audit log failed:", e.message));
+    }
     return res.json({
       fixter: fixterDTO(user),
       templateReady: true,
@@ -337,6 +438,9 @@ router.patch("/:id/default", async (req, res) => {
     if (!user) return res.status(404).json({ message: "Fixter not found" });
     if (isDefault && user.isActive === false) {
       return res.status(400).json({ message: "Inactive employee cannot be default" });
+    }
+    if (isDefault && !isFieldPosition(user.employeePosition)) {
+      return res.status(400).json({ message: "Only a Fixter can be the default for new jobs" });
     }
 
     await User.updateMany(

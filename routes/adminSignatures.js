@@ -58,7 +58,7 @@ const ACTIVE_STATUSES = Object.freeze([
   "Partially Signed",
 ]);
 
-router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
+router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */

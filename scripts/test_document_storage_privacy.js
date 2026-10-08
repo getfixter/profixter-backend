@@ -139,12 +139,17 @@ test("no document read takes its S3 key from the request", () => {
   }
 });
 
-test("admin document routers require authentication and admin permission", () => {
+/*
+ * Project documents are part of the Projects section (utils/adminAccess.js),
+ * which the owner can grant to an employee. The whole router must still sit
+ * behind auth and that one permission - never a broader one, never none.
+ */
+test("admin document routers require authentication and the Projects permission", () => {
   for (const file of ["routes/adminContracts.js", "routes/adminChangeOrders.js", "routes/adminInvoices.js"]) {
     const src = read(file);
     assert.ok(
-      /router\.use\(\s*auth\s*,\s*\.\.\.requirePermission\(PERMISSIONS\.ADMIN\)\s*\)/.test(src),
-      `${file} does not gate the whole router behind auth + ADMIN permission`
+      /router\.use\(\s*auth\s*,\s*\.\.\.requirePermission\(PERMISSIONS\.(ADMIN|PROJECTS_MANAGE)\)\s*\)/.test(src),
+      `${file} does not gate the whole router behind auth + the Projects permission`
     );
   }
 });

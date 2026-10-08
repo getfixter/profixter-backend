@@ -63,7 +63,7 @@ const signedUpload = multer({
   },
 });
 
-router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
+router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */

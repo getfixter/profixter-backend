@@ -6,7 +6,7 @@ const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const EmailLog = require("../models/EmailLog");
 
-const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const sectionAccess = requirePermission(PERMISSIONS.COMMUNICATIONS_MANAGE);
 
 function escapeRegex(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -20,7 +20,7 @@ function asDate(value, endOfDay = false) {
   return date;
 }
 
-router.get("/", auth, ...onlyAdmin, async (req, res) => {
+router.get("/", auth, ...sectionAccess, async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page || 1));
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
@@ -83,7 +83,7 @@ router.get("/", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.get("/:id", auth, ...onlyAdmin, async (req, res) => {
+router.get("/:id", auth, ...sectionAccess, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ message: "Invalid email log id" });

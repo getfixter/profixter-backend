@@ -44,7 +44,8 @@ function accountKind(user) {
 
 function accountChoiceLabel(user) {
   if (!isEmployeeRecord(user)) return "Customer account";
-  return user.employeePosition ? `${user.employeePosition} account` : "Employee account";
+  const title = user.employeeTitle || user.employeePosition;
+  return title ? `${title} account` : "Employee account";
 }
 
 function authUserDTO(user, coverageMap) {

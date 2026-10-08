@@ -315,7 +315,7 @@ async function repairReturnedCustomerSearchFields(users = []) {
   );
 }
 
-router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
+router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE));
 
 router.get("/meta", (_req, res) => {
   return res.json({ projectTypes: PROJECT_TYPES, statuses: PROJECT_STATUSES });

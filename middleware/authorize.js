@@ -1,23 +1,10 @@
 const User = require("../models/User");
+const { PERMISSIONS, cleanSections, permissionsForSections, positionPermissions } = require("../utils/adminAccess");
 
-const PERMISSIONS = Object.freeze({
-  ADMIN: "admin.all",
-  BOOKINGS_READ: "bookings.read",
-  BOOKINGS_WRITE: "bookings.write",
-  BOOKINGS_ASSIGN: "bookings.assign",
-  MEMBERS_READ: "members.read",
-  SCHEDULE_READ: "schedule.read",
-  SCHEDULE_WRITE: "schedule.write",
-  /**
-   * Read tips. Held by every employee, because a Fixter seeing what they earned
-   * is the point of the feature. The route still scopes the query to the caller:
-   * this permission says "may look at tips", not "may look at everyone's".
-   */
-  TIPS_READ: "tips.read",
-  /* Admin Overview. Admin-only today; a future Marketing role can hold these. */
-  ANALYTICS_READ: "analytics.read",
-  ANALYTICS_MAP: "analytics.map",
-});
+/*
+ * Permissions live in utils/adminAccess.js (the registry). This file turns a
+ * user into their permissions on every request and guards routes with them.
+ */
 
 const ADMIN_EMAIL = String(
   process.env.MAIL_ADMIN || "getfixter@gmail.com"
@@ -28,25 +15,20 @@ function effectiveRole(user) {
   return user?.role || "customer";
 }
 
+/**
+ * The owner: everything, including permissions added later. An employee: their
+ * field work plus the sections the owner switched on. A disabled employee, a
+ * customer, anyone else: nothing.
+ */
 function permissionsForUser(user) {
   const role = effectiveRole(user);
   if (role === "admin") return Object.values(PERMISSIONS);
-  if (role !== "employee") return [];
-  if (user.employeePosition === "General Fixter") {
-    return [
-      PERMISSIONS.BOOKINGS_READ,
-      PERMISSIONS.BOOKINGS_WRITE,
-      PERMISSIONS.BOOKINGS_ASSIGN,
-      PERMISSIONS.MEMBERS_READ,
-      PERMISSIONS.SCHEDULE_READ,
-      PERMISSIONS.SCHEDULE_WRITE,
-      PERMISSIONS.TIPS_READ,
-    ];
-  }
-  if (user.employeePosition === "Fixter") {
-    return [PERMISSIONS.BOOKINGS_READ, PERMISSIONS.BOOKINGS_WRITE, PERMISSIONS.TIPS_READ];
-  }
-  return [];
+  if (role !== "employee" || user.isActive === false) return [];
+  const out = new Set(positionPermissions(user.employeePosition));
+  for (const p of permissionsForSections(user.adminSections)) out.add(p);
+  // Belt and braces: the owner's key is never in a section, but never let it through.
+  out.delete(PERMISSIONS.ADMIN);
+  return [...out];
 }
 
 async function loadAccessUser(req, res, next) {
@@ -84,10 +66,27 @@ function requirePermission(permission) {
   ];
 }
 
+/** Any one of several permissions (e.g. a timeline readable from Members or All Users). */
+function requireAnyPermission(...permissions) {
+  return [
+    loadAccessUser,
+    (req, res, next) => {
+      if (req.accessRole === "admin" || permissions.some((p) => req.permissions.includes(p))) return next();
+      return res.status(403).json({ message: "Access denied" });
+    },
+  ];
+}
+
+const hasPermission = (req, permission) => req.accessRole === "admin" || (req.permissions || []).includes(permission);
+
 function accessProfile(user) {
+  const role = effectiveRole(user);
   return {
-    role: effectiveRole(user),
+    role,
+    isOwner: role === "admin",
     employeePosition: user.employeePosition || null,
+    employeeTitle: user.employeeTitle || "",
+    adminSections: role === "employee" ? cleanSections(user.adminSections) : [],
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
     permissions: permissionsForUser(user),
@@ -101,4 +100,6 @@ module.exports = {
   permissionsForUser,
   loadAccessUser,
   requirePermission,
+  requireAnyPermission,
+  hasPermission,
 };

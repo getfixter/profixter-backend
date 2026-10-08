@@ -29,7 +29,7 @@ const router = express.Router();
  * feature. The public half lives in routes/recentWork.js and shares nothing
  * with this file except the service layer.
  */
-const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const sectionAccess = requirePermission(PERMISSIONS.RECENT_WORK_MANAGE);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -91,7 +91,7 @@ const VIEWS = {
   rejected: { status: STATUS.REJECTED },
 };
 
-router.get("/", auth, ...onlyAdmin, async (req, res) => {
+router.get("/", auth, ...sectionAccess, async (req, res) => {
   try {
     const view = VIEWS[String(req.query.view || "library")] ? String(req.query.view) : "library";
     const limit = Math.min(Math.max(Number(req.query.limit) || 48, 1), 100);
@@ -162,7 +162,7 @@ router.get("/", auth, ...onlyAdmin, async (req, res) => {
 router.post(
   "/",
   auth,
-  ...onlyAdmin,
+  ...sectionAccess,
   handleUploadErrors(async (req, res) => {
     try {
       const files = req.files || [];
@@ -239,7 +239,7 @@ const audit = (req, action, photo, details = {}) =>
     details: { status: photo.status, uploaderType: photo.uploaderType, ...details },
   }).catch(() => {});
 
-router.post("/:id/publish", auth, ...onlyAdmin, async (req, res) => {
+router.post("/:id/publish", auth, ...sectionAccess, async (req, res) => {
   try {
     const photo = await service.publish(req.params.id, actorOf(req));
     await audit(req, "recent_work.publish", photo);
@@ -249,7 +249,7 @@ router.post("/:id/publish", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.post("/:id/unpublish", auth, ...onlyAdmin, async (req, res) => {
+router.post("/:id/unpublish", auth, ...sectionAccess, async (req, res) => {
   try {
     const photo = await service.unpublish(req.params.id, actorOf(req));
     await audit(req, "recent_work.unpublish", photo);
@@ -259,7 +259,7 @@ router.post("/:id/unpublish", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.post("/:id/reject", auth, ...onlyAdmin, async (req, res) => {
+router.post("/:id/reject", auth, ...sectionAccess, async (req, res) => {
   try {
     const photo = await service.reject(req.params.id, actorOf(req), req.body?.reason);
     await audit(req, "recent_work.reject", photo, { reason: photo.rejectionReason });
@@ -269,7 +269,7 @@ router.post("/:id/reject", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.patch("/:id", auth, ...onlyAdmin, async (req, res) => {
+router.patch("/:id", auth, ...sectionAccess, async (req, res) => {
   try {
     const photo = await service.updateDetails(req.params.id, req.body || {});
     await audit(req, "recent_work.edit", photo, { fields: Object.keys(req.body || {}) });
@@ -279,7 +279,7 @@ router.patch("/:id", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.delete("/:id", auth, ...onlyAdmin, async (req, res) => {
+router.delete("/:id", auth, ...sectionAccess, async (req, res) => {
   try {
     const photo = await service.remove(req.params.id, actorOf(req));
     await audit(req, "recent_work.delete", photo, {

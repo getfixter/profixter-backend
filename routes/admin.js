@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
-const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
+const { PERMISSIONS, requirePermission, requireAnyPermission } = require("../middleware/authorize");
 const smsNotify = require("../utils/sms/smsNotifications");
 const { optOutFor } = require("../utils/sms/smsEligibility");
 const { toE164, maskPhone } = require("../utils/sms/smsPhone");
@@ -109,9 +109,40 @@ const legacyOnlyAdmin = async (req, res, next) => {
 };
 
 /* ───────────────── per-address plan helper ───────────────── */
+/*
+ * Guards. Owner-only things (settings, repair and debug tools, deleting a
+ * customer account) keep onlyAdmin. Everything else is a section permission
+ * from utils/adminAccess.js that the owner can grant per employee.
+ */
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
 const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
+const customersManage = requirePermission(PERMISSIONS.CUSTOMERS_MANAGE);
+const blacklistManage = requirePermission(PERMISSIONS.BLACKLIST_MANAGE);
+const leadsManage = requirePermission(PERMISSIONS.LEADS_MANAGE);
+const activityRead = requirePermission(PERMISSIONS.ACTIVITY_READ);
+
+const isOwnerAccount = (user) =>
+  String(user?.email || "").toLowerCase() === String(ADMIN_EMAIL).toLowerCase() || user?.role === "admin";
+const isStaffAccount = (user) => isOwnerAccount(user) || user?.role === "employee";
+
+/*
+ * An employee holding a customer section acts on CUSTOMER accounts only: not
+ * on the owner, not on other staff. Without this, "All Users" would let them
+ * edit the owner's phone or blacklist a colleague. The owner is unaffected.
+ */
+function customerTargetsOnly(param = "id") {
+  return async (req, res, next) => {
+    if (req.accessRole === "admin") return next();
+    try {
+      const target = await User.findById(req.params[param]).select("email role").lean();
+      if (target && isStaffAccount(target)) return res.status(403).json({ message: "Access denied" });
+      return next();
+    } catch (error) {
+      return next();
+    }
+  };
+}
 
 const ONE_TIME_SETTING_FIELDS = new Set([
   "enabled",
@@ -445,7 +476,7 @@ async function syncActiveStripeSubscriptionForUser(user, options = {}) {
 }
 
 // DEBUG: see exactly what Admin will render for one user
-router.get("/users/:id/addressesDetailed", auth, onlyAdmin, async (req, res) => {
+router.get("/users/:id/addressesDetailed", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
   const u = await User.findById(req.params.id).lean();
   if (!u) return res.status(404).json({ message: "User not found" });
   const rows = await getAddressPlansForUser(u);
@@ -471,7 +502,7 @@ router.get("/users/:id/addressesDetailed", auth, onlyAdmin, async (req, res) => 
  * send time. An admin screen that disagreed with the eligibility engine would be
  * worse than no screen.
  */
-router.get("/users/:id/sms-consent", auth, onlyAdmin, async (req, res) => {
+router.get("/users/:id/sms-consent", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("phone smsPreferences").lean();
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -592,9 +623,13 @@ router.post("/users/subscription-sync/repair", auth, ...onlyAdmin, async (req, r
 /* ───────────────── USERS ───────────────── */
 
 // ✅ GET All Users (NEWEST FIRST) + includes addressesDetailed with per-address plan
-router.get("/users", auth, onlyAdmin, async (_req, res) => {
+router.get("/users", auth, ...customersManage, async (req, res) => {
   try {
-    const users = await User.find({ role: { $ne: "employee" } })
+    // The owner sees every non-staff account as before; an employee sees customers only.
+    const filter = req.accessRole === "admin"
+      ? { role: { $ne: "employee" } }
+      : { role: "customer", email: { $ne: String(ADMIN_EMAIL).toLowerCase() } };
+    const users = await User.find(filter)
       .select("-password")
       .sort({ createdAt: -1 })
       .lean();
@@ -1162,7 +1197,7 @@ router.get(
 );
 
 // GET /api/admin/activity-log
-router.get("/activity-log", auth, onlyAdmin, async (req, res) => {
+router.get("/activity-log", auth, ...activityRead, async (req, res) => {
   try {
     const page = Math.max(Number.parseInt(String(req.query.page || "1"), 10) || 1, 1);
     const limit = Math.min(
@@ -1219,7 +1254,7 @@ router.get("/activity-log", auth, onlyAdmin, async (req, res) => {
 });
 
 // GET /api/admin/activity-log/summary
-router.get("/activity-log/summary", auth, onlyAdmin, async (_req, res) => {
+router.get("/activity-log/summary", auth, ...activityRead, async (_req, res) => {
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const [usersDeleted, leadsDeleted, projectsDeleted] = await Promise.all([
@@ -1314,7 +1349,7 @@ router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
 });
 
 // ✅ UPDATE User Info (name, phone, legacy subscription)
-router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
+router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
   const allowedFields = ["name", "phone", "subscription"];
   const updates = {};
 
@@ -1427,7 +1462,7 @@ router.put("/users/:id", auth, onlyAdmin, async (req, res) => {
 });
 
 // ✅ Legacy: Update single user.subscription (kept for backward compatibility)
-router.put("/users/:id/subscription", auth, onlyAdmin, async (req, res) => {
+router.put("/users/:id/subscription", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
   try {
     const { id } = req.params;
     const { subscription } = req.body;
@@ -1455,7 +1490,7 @@ router.put("/users/:id/subscription", auth, onlyAdmin, async (req, res) => {
 router.put(
   "/users/:id/address/:addressId/subscription",
   auth,
-  onlyAdmin,
+  ...customersManage,
   async (req, res) => {
     try {
       const { id, addressId } = req.params;
@@ -1757,7 +1792,7 @@ router.put(
 router.put(
   "/users/:id/address/:addressId/cancellation-date",
   auth,
-  onlyAdmin,
+  ...customersManage,
   async (req, res) => {
     try {
       const { id, addressId } = req.params;
@@ -2650,7 +2685,7 @@ router.get("/referrals", auth, onlyAdmin, async (_req, res) => {
 /* ───────────────── BLACKLIST ───────────────── */
 
 // GET /api/admin/blacklist
-router.get("/blacklist", auth, onlyAdmin, async (_req, res) => {
+router.get("/blacklist", auth, ...blacklistManage, async (_req, res) => {
   try {
     const rows = await Blacklist.find().populate(
       "user",
@@ -2682,7 +2717,7 @@ router.get("/blacklist", auth, onlyAdmin, async (_req, res) => {
 });
 
 // POST /api/admin/blacklist/:id
-router.post("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
+router.post("/blacklist/:id", auth, ...blacklistManage, customerTargetsOnly(), async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -2730,7 +2765,7 @@ router.post("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
 });
 
 // DELETE /api/admin/blacklist/:id
-router.delete("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
+router.delete("/blacklist/:id", auth, ...blacklistManage, async (req, res) => {
   try {
     const { id } = req.params;
     let target = await Blacklist.findById(id).lean();
@@ -2784,7 +2819,7 @@ router.delete("/blacklist/:id", auth, onlyAdmin, async (req, res) => {
 /* ───────────────── REQUESTS / LEADS ───────────────── */
 
 // GET /api/admin/requests
-router.get("/requests", auth, onlyAdmin, async (_req, res) => {
+router.get("/requests", auth, ...leadsManage, async (_req, res) => {
   try {
     const [requests, estimateLeads] = await Promise.all([
       Request.find({}).sort({ createdAt: -1 }).lean(),
@@ -2817,7 +2852,7 @@ router.get("/requests", auth, onlyAdmin, async (_req, res) => {
 });
 
 // PUT /api/admin/requests/:id/status
-router.put("/requests/:id/status", auth, onlyAdmin, async (req, res) => {
+router.put("/requests/:id/status", auth, ...leadsManage, async (req, res) => {
   try {
     const { status } = req.body;
 
@@ -2874,7 +2909,7 @@ router.put("/requests/:id/status", auth, onlyAdmin, async (req, res) => {
 });
 
 // DELETE /api/admin/requests/:id
-router.delete("/requests/:id", auth, onlyAdmin, async (req, res) => {
+router.delete("/requests/:id", auth, ...leadsManage, async (req, res) => {
   try {
     const rawId = String(req.params.id || "");
     const isEstimateLead = rawId.startsWith("estimate:");

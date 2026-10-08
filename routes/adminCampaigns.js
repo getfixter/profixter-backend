@@ -18,7 +18,7 @@ const {
 } = require("../utils/campaignMergeTags");
 const { sendPromo } = require("../utils/emailService");
 
-const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const sectionAccess = requirePermission(PERMISSIONS.COMMUNICATIONS_MANAGE);
 const ADMIN_EMAIL = String(
   process.env.MAIL_ADMIN || "getfixter@gmail.com"
 ).trim().toLowerCase();
@@ -137,7 +137,7 @@ async function nextCampaignNumber() {
   return `EML-${year}-${String(counter.value).padStart(5, "0")}`;
 }
 
-router.get("/segments", auth, ...onlyAdmin, async (_req, res) => {
+router.get("/segments", auth, ...sectionAccess, async (_req, res) => {
   try {
     return res.json(await resolveAudienceCounts());
   } catch (error) {
@@ -146,11 +146,11 @@ router.get("/segments", auth, ...onlyAdmin, async (_req, res) => {
   }
 });
 
-router.get("/campaigns/variables", auth, ...onlyAdmin, (_req, res) => {
+router.get("/campaigns/variables", auth, ...sectionAccess, (_req, res) => {
   return res.json({ groups: MERGE_TAG_GROUPS });
 });
 
-router.get("/campaigns/recipients", auth, ...onlyAdmin, async (req, res) => {
+router.get("/campaigns/recipients", auth, ...sectionAccess, async (req, res) => {
   try {
     const segment = normalizeSegment(req.query.segment || "all");
     const excludedUserIds = String(req.query.excludedUserIds || "")
@@ -183,7 +183,7 @@ router.get("/campaigns/recipients", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.post("/campaigns/preview", auth, ...onlyAdmin, async (req, res) => {
+router.post("/campaigns/preview", auth, ...sectionAccess, async (req, res) => {
   try {
     const input = validateCampaignInput(req.body);
     const {
@@ -213,7 +213,7 @@ router.post("/campaigns/preview", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.post("/campaigns/test", auth, ...onlyAdmin, async (req, res) => {
+router.post("/campaigns/test", auth, ...sectionAccess, async (req, res) => {
   try {
     const input = validateCampaignInput(req.body);
     const { recipients, excludedRecipients } = await resolveAudience(
@@ -261,7 +261,7 @@ router.post("/campaigns/test", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
+router.post("/campaigns/send", auth, ...sectionAccess, async (req, res) => {
   let campaign = null;
   try {
     if (req.body?.testOnly === true) {
@@ -419,7 +419,7 @@ router.post("/campaigns/send", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-router.get("/campaigns/:campaignNumber", auth, ...onlyAdmin, async (req, res) => {
+router.get("/campaigns/:campaignNumber", auth, ...sectionAccess, async (req, res) => {
   const campaign = await EmailCampaign.findOne({
     campaignNumber: req.params.campaignNumber,
   }).lean();

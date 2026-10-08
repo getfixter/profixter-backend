@@ -171,7 +171,7 @@ function handleWriteError(error, res, fallbackMessage) {
   return res.status(500).json({ message: fallbackMessage });
 }
 
-router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
+router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE));
 
 router.get("/", async (req, res) => {
   try {

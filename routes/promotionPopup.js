@@ -5,7 +5,7 @@ const PromotionPopup = require("../models/PromotionPopup");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
 const router = express.Router();
-const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
+const sectionAccess = requirePermission(PERMISSIONS.PROMOTION_MANAGE);
 const DEFAULTS = {
   singletonKey: "active",
   enabled: false,
@@ -134,7 +134,7 @@ async function getPopup() {
 router.get(
   "/admin/promotion-popup",
   auth,
-  ...onlyAdmin,
+  ...sectionAccess,
   async (_req, res) => {
     try {
       return res.json({ popup: await getPopup() });
@@ -148,7 +148,7 @@ router.get(
 router.put(
   "/admin/promotion-popup",
   auth,
-  ...onlyAdmin,
+  ...sectionAccess,
   async (req, res) => {
     try {
       const input = validateInput(req.body);

@@ -73,6 +73,15 @@ const UserSchema = new mongoose.Schema(
       default: null,
     },
     isActive: { type: Boolean, default: true, required: true, index: true },
+    /*
+     * Staff access (utils/adminAccess.js). employeeTitle is free text the owner
+     * types ("Marketing Manager") and grants nothing. adminSections are the
+     * Admin sections the owner switched on for this employee; permissions are
+     * computed from them on every request. Both are empty for every account
+     * that existed before them, so nobody gained access by their arrival.
+     */
+    employeeTitle: { type: String, trim: true, default: "", maxlength: 80 },
+    adminSections: { type: [String], default: [] },
     /**
      * Explicitly keep this account out of lifecycle marketing.
      *

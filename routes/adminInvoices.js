@@ -53,7 +53,7 @@ const INVOICE_S3_PREFIX = (
   process.env.INVOICE_S3_PREFIX || "private/admin/invoices"
 ).replace(/^\/+|\/+$/g, "");
 
-router.use(auth, ...requirePermission(PERMISSIONS.ADMIN));
+router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE));
 
 function actorEmail(req) {
   const actor = req.accessUser || req.authUser || {};
