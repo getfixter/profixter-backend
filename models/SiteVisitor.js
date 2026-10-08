@@ -23,13 +23,24 @@ const siteVisitorSchema = new mongoose.Schema(
     utmCampaign: { type: String, default: null },
     utmContent: { type: String, default: null },
     utmTerm: { type: String, default: null },
+    /* Meta ids and names, each in its own field (an id is never stored as a name). */
     campaignId: { type: String, default: null },
+    campaignName: { type: String, default: null },
     adsetId: { type: String, default: null },
+    adsetName: { type: String, default: null },
     adId: { type: String, default: null },
+    adName: { type: String, default: null },
+    /* Our acquisition ?source= (event, qr, referral) - never an internal button's ?source=. */
     refSource: { type: String, default: null },
+    /* ?ref= on a referral-program link. */
+    refCode: { type: String, default: null },
     hasFbclid: { type: Boolean, default: false },
+    /* gclid, or Google's app click ids gbraid / wbraid. */
     hasGclid: { type: Boolean, default: false },
-    /* classifySource() at insert, so counting by source is a plain group-by. */
+    /*
+     * classifySource() at insert, for reference. The Overview re-classifies
+     * every row when it counts, so a rule change applies to old rows too.
+     */
     source: { type: String, default: "direct", index: true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },

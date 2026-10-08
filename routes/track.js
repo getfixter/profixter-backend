@@ -4,7 +4,7 @@ const router = express.Router();
 const User = require("../models/User");
 const metaCapi = require("../utils/metaCapi");
 const SiteVisitor = require("../models/SiteVisitor");
-const { classifySource } = require("../utils/analytics/attribution");
+const { classifySource, ACQUISITION_REF_SOURCES } = require("../utils/analytics/attribution");
 const { rateLimit } = require("../utils/rateLimit");
 
 /**
@@ -269,11 +269,16 @@ router.post("/visit", visitLimiter, async (req, res) => {
       utmContent: clip(body.utmContent),
       utmTerm: clip(body.utmTerm),
       campaignId: clip(body.campaignId, 64),
+      campaignName: clip(body.campaignName),
       adsetId: clip(body.adsetId, 64),
+      adsetName: clip(body.adsetName),
       adId: clip(body.adId, 64),
-      refSource: clip(body.refSource, 64),
+      adName: clip(body.adName),
+      // Only our acquisition tags; an internal button's ?source= is navigation, not how they found us.
+      refSource: ACQUISITION_REF_SOURCES.has(String(body.refSource || "").toLowerCase()) ? String(body.refSource).toLowerCase() : null,
+      refCode: clip(body.refCode, 64),
       hasFbclid: !!body.fbclid,
-      hasGclid: !!body.gclid,
+      hasGclid: !!(body.gclid || body.gbraid || body.wbraid),
     };
     doc.source = classifySource({
       ...doc,

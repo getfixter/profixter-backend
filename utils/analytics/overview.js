@@ -38,7 +38,7 @@ const { subscriptionGrantsAccess } = require("../subscriptionManagement");
 const { giftAccessState } = require("../gifts/giftAccess");
 const { project } = require("../membershipMap/projection");
 const { placeZipCluster } = require("../membershipMap/publicPoint");
-const { classifySource, campaignOf, SOURCES } = require("./attribution");
+const { classifySource, campaignOf, originOf, displayName, SOURCES, GROUPS } = require("./attribution");
 const { collectedRevenue } = require("./stripeRevenue");
 const { currentMrr } = require("./stripeMrr");
 
@@ -442,18 +442,44 @@ function revenueSeries(rows, period, granularity) {
 /* Marketing                                                           */
 /* ------------------------------------------------------------------ */
 
+/* A SiteVisitor row in the shape classifySource() reads. */
+function visitorAttribution(v) {
+  return {
+    ...v,
+    fbclid: v.hasFbclid ? "1" : null,
+    gclid: v.hasGclid ? "1" : null,
+    referrer: v.referrerHost ? `https://${v.referrerHost}/` : null,
+  };
+}
+
+/*
+ * Visitors in [from, to), classified now with today's rules - not by the
+ * source stored at insert - so a rule change (Facebook vs Instagram, internal
+ * ?source= ignored) applies to every row. One row per browser, so this stays small.
+ */
 async function visitorCounts(from, to) {
-  const rows = await SiteVisitor.aggregate([
-    { $match: { firstSeenAt: { $gte: from, $lt: to } } },
-    { $group: { _id: "$source", n: { $sum: 1 } } },
-  ]);
-  const bySource = Object.fromEntries(rows.map((r) => [r._id || "direct", r.n]));
-  return { total: rows.reduce((s, r) => s + r.n, 0), bySource };
+  const rows = await SiteVisitor.find({ firstSeenAt: { $gte: from, $lt: to } })
+    .select("utmSource utmMedium utmCampaign utmTerm utmContent campaignId campaignName adsetId adsetName adId adName refSource refCode referrerHost landingPath hasFbclid hasGclid")
+    .lean();
+  const bySource = {};
+  const otherOrigins = {};
+  const meta = [];
+  for (const v of rows) {
+    const attr = visitorAttribution(v);
+    const src = classifySource(attr);
+    bySource[src.key] = (bySource[src.key] || 0) + 1;
+    if (src.key === "other") {
+      const origin = originOf(attr) || "unknown";
+      otherOrigins[origin] = (otherOrigins[origin] || 0) + 1;
+    }
+    if (src.group === "meta") meta.push(attr);
+  }
+  return { total: rows.length, bySource, otherOrigins, meta };
 }
 
 function buildSources(data, period, counts, revenueRows, visitors) {
   const rows = new Map(
-    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0, spendCents: null }])
+    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0, spendCents: null }])
   );
   const bump = (user, field, by = 1) => {
     const row = rows.get(sourceOf(user)) || rows.get("other");
@@ -478,32 +504,91 @@ function buildSources(data, period, counts, revenueRows, visitors) {
   }));
   const totalRegs = counts.newCustomers.length;
   for (const r of list) r.share = pct(r.registrations, totalRegs);
-  return { rows: list, unmatchedRevenueCents };
+
+  /* "Meta Ads" = Facebook + Instagram + Other Meta, as one more line for the total. */
+  const groups = GROUPS.map((g) => {
+    const members = list.filter((r) => r.group === g.key);
+    const sum = (f) => members.reduce((s, r) => s + r[f], 0);
+    const regs = sum("registrations");
+    return {
+      key: g.key,
+      label: g.label,
+      sources: members.map((r) => r.key),
+      visitors: sum("visitors"),
+      registrations: regs,
+      freeVisits: sum("freeVisits"),
+      members: sum("members"),
+      revenueCents: sum("revenueCents"),
+      conversion: pct(sum("members"), regs),
+      share: pct(regs, totalRegs),
+    };
+  });
+
+  /* What "Other" is made of: referring sites and unknown utm_source values. */
+  const other = new Map();
+  const add = (origin, field, by = 1) => {
+    const k = origin || "unknown";
+    if (!other.has(k)) other.set(k, { origin: k, visitors: 0, registrations: 0 });
+    other.get(k)[field] += by;
+  };
+  for (const [origin, n] of Object.entries(visitors.otherOrigins || {})) add(origin, "visitors", n);
+  for (const u of counts.newCustomers) if (sourceOf(u) === "other") add(originOf(u.attribution), "registrations");
+  const otherDetail = [...other.values()].sort((a, b) => b.registrations - a.registrations || b.visitors - a.visitors).slice(0, 8);
+
+  return { rows: list, groups, otherDetail, unmatchedRevenueCents };
 }
 
-function buildCampaigns(data, period, counts, revenueRows) {
+/*
+ * Meta campaign -> ad set -> ad. Each node is keyed by its Meta id (or, with
+ * no id, its name) and carries the id and the name separately: `name` is
+ * null when the ad's URL only had ids, and `label` then shows "ID <id>".
+ */
+const NO_CAMPAIGN = "(no campaign tag)";
+const NO_ADSET = "(no ad set tag)";
+const NO_AD = "(no ad tag)";
+
+function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: [] }) {
   const tree = new Map();
-  const node = (user) => {
-    const c = campaignOf(user?.attribution);
-    const campaignName = c.campaign || "(no campaign tag)";
-    if (!tree.has(campaignName)) tree.set(campaignName, { name: campaignName, campaignId: c.campaignId, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0, plans: {}, adsets: new Map() });
-    const camp = tree.get(campaignName);
-    const adsetName = c.adset || "(no ad set tag)";
-    if (!camp.adsets.has(adsetName)) camp.adsets.set(adsetName, { name: adsetName, adsetId: c.adsetId, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0, ads: new Map() });
-    const adset = camp.adsets.get(adsetName);
-    const adName = c.ad || "(no ad tag)";
-    if (!adset.ads.has(adName)) adset.ads.set(adName, { name: adName, adId: c.adId, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0 });
-    return [camp, adset, adset.ads.get(adName)];
+  const blank = (key, id, name, missing) => ({
+    key,
+    id,
+    name,
+    label: displayName(name, id, missing),
+    visitors: 0,
+    registrations: 0,
+    freeVisits: 0,
+    members: 0,
+    revenueCents: 0,
+  });
+  const nodeFor = (attr) => {
+    const c = campaignOf(attr);
+    const ck = c.campaignKey || NO_CAMPAIGN;
+    if (!tree.has(ck)) tree.set(ck, { ...blank(ck, c.campaignId, c.campaignName, NO_CAMPAIGN), plans: {}, adsets: new Map() });
+    const camp = tree.get(ck);
+    // A later row may know the name an earlier one lacked; never the other way round.
+    camp.name ||= c.campaignName;
+    camp.label = displayName(camp.name, camp.id, NO_CAMPAIGN);
+    const sk = c.adsetKey || NO_ADSET;
+    if (!camp.adsets.has(sk)) camp.adsets.set(sk, { ...blank(sk, c.adsetId, c.adsetName, NO_ADSET), ads: new Map() });
+    const adset = camp.adsets.get(sk);
+    adset.name ||= c.adsetName;
+    adset.label = displayName(adset.name, adset.id, NO_ADSET);
+    const ak = c.adKey || NO_AD;
+    if (!adset.ads.has(ak)) adset.ads.set(ak, blank(ak, c.adId, c.adName, NO_AD));
+    const ad = adset.ads.get(ak);
+    ad.name ||= c.adName;
+    ad.label = displayName(ad.name, ad.id, NO_AD);
+    return [camp, adset, ad];
   };
-  const isMeta = (u) => u && sourceOf(u) === "meta_ads";
+  const isMeta = (u) => u && classifySource(u.attribution).group === "meta";
   const add = (user, field, by = 1, plan) => {
     if (!isMeta(user)) return;
-    for (const n of node(user)) n[field] += by;
-    if (plan) {
-      const [camp] = node(user);
-      camp.plans[plan] = (camp.plans[plan] || 0) + 1;
-    }
+    const nodes = nodeFor(user.attribution);
+    for (const n of nodes) n[field] += by;
+    if (plan) nodes[0].plans[plan] = (nodes[0].plans[plan] || 0) + 1;
   };
+  // Visitors from Meta ads in the period, by the same campaign / ad set / ad.
+  for (const attr of visitors.meta || []) for (const n of nodeFor(attr)) n.visitors += 1;
   for (const u of counts.newCustomers) add(u, "registrations");
   for (const b of counts.fvBooked) add(data.userById.get(String(b.user)), "freeVisits");
   for (const m of counts.newMemberships) add(data.userById.get(m.userId), "members", 1, m.plan);
@@ -514,7 +599,7 @@ function buildCampaigns(data, period, counts, revenueRows) {
       ...finish(c),
       adsets: [...c.adsets.values()].map((s) => ({ ...finish(s), ads: [...s.ads.values()].map(finish) })),
     }))
-    .sort((a, b) => b.revenueCents - a.revenueCents || b.members - a.members || b.registrations - a.registrations);
+    .sort((a, b) => b.revenueCents - a.revenueCents || b.members - a.members || b.registrations - a.registrations || b.visitors - a.visitors);
 }
 
 /* ------------------------------------------------------------------ */
@@ -761,8 +846,10 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
       members: cur.newMemberships.filter((m) => m.kind === "paid").length,
     },
     sources: sources.rows,
+    sourceGroups: sources.groups,
+    otherDetail: sources.otherDetail,
     unmatchedRevenueCents: sources.unmatchedRevenueCents,
-    campaigns: buildCampaigns(data, period, cur, curRevenueRows),
+    campaigns: buildCampaigns(data, period, cur, curRevenueRows, visitors),
     spend: { connected: false },
     topAreas: [...cities.values()].sort((a, b) => b.customers - a.customers).slice(0, 8),
     activity: buildActivity(data),
@@ -793,8 +880,8 @@ function customerRow(data, user, extra = {}) {
     membership: active ? (active.kind === "gift" ? "gift" : active.billingCycle) : null,
     registeredAt: user.createdAt,
     source: src.label,
-    campaign: src.key === "meta_ads" ? c.campaign : null,
-    ad: src.key === "meta_ads" ? c.ad : null,
+    campaign: src.group === "meta" ? displayName(c.campaignName, c.campaignId, null) : null,
+    ad: src.group === "meta" ? displayName(c.adName, c.adId, null) : null,
     hadFreeVisit: data.freeVisits.some((b) => String(b.user) === String(user._id)),
     ...extra,
   };
@@ -848,14 +935,19 @@ async function buildList({ metric, range, from, to, now = new Date(), param } = 
       title = `${String(param || "").replace(/^./, (c) => c.toUpperCase())} members`;
       rows = data.memberships.filter((m) => m.activeNow && m.plan === param).map((m) => byMembership(m));
       break;
-    case "source":
-      title = `${(SOURCES.find((s) => s.key === param) || { label: "Source" }).label}: new customers`;
-      rows = cur.newCustomers.filter((user) => sourceOf(user) === param).map((user) => customerRow(data, user, { date: user.createdAt }));
-      break;
-    case "campaign":
-      title = `Campaign: ${param}`;
+    case "source": {
+      // A source key, or a group key ("meta" = Facebook + Instagram + Other Meta).
+      const group = GROUPS.find((g) => g.key === param);
+      title = `${(group || SOURCES.find((s) => s.key === param) || { label: "Source" }).label}: new customers`;
       rows = cur.newCustomers
-        .filter((user) => sourceOf(user) === "meta_ads" && (campaignOf(user.attribution).campaign || "(no campaign tag)") === param)
+        .filter((user) => (group ? classifySource(user.attribution).group === group.key : sourceOf(user) === param))
+        .map((user) => customerRow(data, user, { date: user.createdAt }));
+      break;
+    }
+    case "campaign":
+      title = `Campaign: ${String(param || "").match(/^\d{6,}$/) ? `ID ${param}` : param}`;
+      rows = cur.newCustomers
+        .filter((user) => classifySource(user.attribution).group === "meta" && (campaignOf(user.attribution).campaignKey || NO_CAMPAIGN) === param)
         .map((user) => customerRow(data, user, { date: user.createdAt }));
       break;
     case "area":

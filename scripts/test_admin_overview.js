@@ -161,9 +161,11 @@ async function main() {
   ]);
 
   await SiteVisitor.collection.insertMany([
-    { visitorId: "v-aaaaaaaaaaaa1", firstSeenAt: ago(16), source: "meta_ads" },
-    { visitorId: "v-aaaaaaaaaaaa2", firstSeenAt: ago(4), source: "meta_ads" },
+    // As the beacon stores them: the evidence, which the Overview classifies when it counts.
+    { visitorId: "v-aaaaaaaaaaaa1", firstSeenAt: ago(16), source: "meta_ads", utmSource: "fb", utmMedium: "paid", utmCampaign: "120201234567890", hasFbclid: true },
+    { visitorId: "v-aaaaaaaaaaaa2", firstSeenAt: ago(4), source: "meta_ads", utmSource: "ig", utmMedium: "paid", utmCampaign: "120201234567890", hasFbclid: true },
     { visitorId: "v-aaaaaaaaaaaa3", firstSeenAt: ago(2), source: "direct" },
+    { visitorId: "v-aaaaaaaaaaaa5", firstSeenAt: ago(3), source: "other", referrerHost: "m.yelp.com" },
     { visitorId: "v-aaaaaaaaaaaa4", firstSeenAt: ago(50), source: "direct" },
   ]);
 
@@ -278,17 +280,24 @@ async function main() {
     assert.strictEqual(body.sources.reduce((s, r) => s + r.registrations, 0), k.newCustomers.value);
     assert.strictEqual(body.sources.reduce((s, r) => s + r.members, 0), k.newMembers.value);
   });
-  await test("Meta: 2 registrations, 1 member, its revenue; visitors counted", async () => {
-    assert.strictEqual(src.meta_ads.registrations, 2);
-    assert.strictEqual(src.meta_ads.members, 1);
-    assert.strictEqual(src.meta_ads.revenueCents, 24900);
-    assert.strictEqual(src.meta_ads.visitors, 2);
+  await test("Meta Ads total: 2 registrations, 1 member, its revenue; visitors counted", async () => {
+    const meta = body.sourceGroups.find((g) => g.key === "meta");
+    assert.strictEqual(meta.registrations, 2);
+    assert.strictEqual(meta.members, 1);
+    assert.strictEqual(meta.revenueCents, 24900);
+    assert.strictEqual(meta.visitors, 2);
+  });
+  await test("...split by placement: both customers came from Facebook, one visitor each from Facebook and Instagram", async () => {
+    assert.strictEqual(src.meta_facebook.registrations, 2);
+    assert.strictEqual(src.meta_instagram.registrations, 0);
+    assert.strictEqual(src.meta_facebook.visitors, 1);
+    assert.strictEqual(src.meta_instagram.visitors, 1);
   });
   await test("event QR customer credited to Events / QR", async () => assert.strictEqual(src.events_qr.registrations, 1));
   await test("one-time revenue credited to the customer's own source (direct)", async () => assert.strictEqual(src.direct.revenueCents, 9900));
   await test("no spend data: cost and ROAS are empty, never zero", async () => {
     assert.strictEqual(body.spend.connected, false);
-    assert.strictEqual(src.meta_ads.roas, null);
+    assert.strictEqual(src.meta_facebook.roas, null);
   });
   await test("campaign -> ad set -> ad", async () => {
     const camp = body.campaigns.find((c) => c.name === "Free Handyman LI");
@@ -297,8 +306,23 @@ async function main() {
     assert.strictEqual(camp.plans.plus, 1);
     assert.strictEqual(camp.adsets[0].name, "LI 30-55");
     assert.strictEqual(camp.adsets[0].ads[0].name, "Video 03");
+    // Explicit ids stay ids, beside the names.
+    assert.strictEqual(camp.id, "111");
+    assert.strictEqual(camp.adsets[0].id, "222");
+    assert.strictEqual(camp.adsets[0].ads[0].id, "333");
   });
-  await test("funnel: visitors in period", async () => assert.strictEqual(body.funnel.visitors, 3));
+  await test("visitors from an ad whose URL only had ids: shown by id, never named", async () => {
+    const byId = body.campaigns.find((c) => c.id === "120201234567890");
+    assert.ok(byId, "id-only campaign present");
+    assert.strictEqual(byId.name, null);
+    assert.strictEqual(byId.label, "ID 120201234567890");
+    assert.strictEqual(byId.visitors, 2);
+  });
+  await test("funnel: visitors in period", async () => assert.strictEqual(body.funnel.visitors, 4));
+  await test("Other says what it is made of (referring site, normalised)", async () => {
+    assert.strictEqual(src.other.visitors, 1);
+    assert.deepStrictEqual(body.otherDetail.find((d) => d.origin === "yelp.com"), { origin: "yelp.com", visitors: 1, registrations: 0 });
+  });
 
   section("Activity, areas, attention");
   await test("activity has the Plus purchase", async () => assert.ok(body.activity.some((a) => a.text === "Plus membership purchased")));
@@ -313,7 +337,7 @@ async function main() {
   await test("new members list, with source", async () => {
     const list = await (await get("/api/admin/overview/list?metric=newMembers&range=30d", "owner")).json();
     assert.strictEqual(list.rows.length, 2);
-    assert.ok(list.rows.some((r) => r.source === "Meta Ads" && r.plan === "plus"));
+    assert.ok(list.rows.some((r) => r.source === "Facebook" && r.plan === "plus"));
   });
   await test("plan list", async () => {
     const list = await (await get("/api/admin/overview/list?metric=plan&param=premium&range=30d", "owner")).json();
@@ -349,7 +373,7 @@ async function main() {
     const first = await SiteVisitor.findOne({ visitorId: "vis_test_000001" }).lean();
     await post({ visitorId: "vis_test_000001", landingPath: "/other" });
     const again = await SiteVisitor.findOne({ visitorId: "vis_test_000001" }).lean();
-    assert.strictEqual(first.source, "meta_ads");
+    assert.strictEqual(first.source, "meta_facebook");
     assert.strictEqual(again.landingPath, "/");
   });
   await test("bots and malformed ids ignored", async () => {
