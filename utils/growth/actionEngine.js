@@ -173,6 +173,18 @@ async function execute(actionId, { now = new Date() } = {}) {
 
   try {
     const outcome = (await def.execute(claimed.payload, { action: claimed.toObject(), now })) || {};
+    /*
+     * "Not now": e.g. a marketing text approved at 10pm waits for the morning
+     * window instead of being suppressed for good. Not an attempt, not a
+     * failure - back in the queue until `until`.
+     */
+    if (outcome.outcome === "defer") {
+      claimed.status = "approved";
+      claimed.attempts = Math.max(0, claimed.attempts - 1);
+      claimed.nextAttemptAt = outcome.until || new Date(Date.now() + 60 * 60 * 1000);
+      await claimed.save();
+      return claimed.toObject();
+    }
     if (outcome.outcome === "skip") {
       claimed.status = "skipped";
       claimed.result = { reason: outcome.reason || "not_applicable", ...(outcome.result || {}) };

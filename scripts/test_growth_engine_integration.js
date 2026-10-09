@@ -334,6 +334,70 @@ async function main() {
     assert.strictEqual(sent.filter((m2) => m2.to === repeat.email).length, 1);
   });
 
+  console.log("post-free-visit text");
+
+  const Booking = require("../models/Booking");
+  const { proposePostFreeVisitTexts, nextWindowStart } = require("../utils/growth/actions/postFreeVisitSms");
+  const freeVisit = async (user, daysAgo) =>
+    Booking.collection.insertOne({
+      user: user._id,
+      isFreeFirstVisit: true,
+      accessType: "free_first_visit",
+      status: "completed",
+      completedAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+    });
+
+  await test("proposes only for opted-in customers 2-5 days after the visit, in shadow", async () => {
+    await Booking.deleteMany({});
+    const optedIn = await makeUser({ smsPreferences: { transactionalEnabled: true, marketingEnabled: true } });
+    const serviceOnly = await makeUser({ smsPreferences: { transactionalEnabled: true } });
+    const tooEarly = await makeUser({ smsPreferences: { marketingEnabled: true } });
+    await freeVisit(optedIn, 3);
+    await freeVisit(serviceOnly, 3);
+    await freeVisit(tooEarly, 1);
+    const first = await proposePostFreeVisitTexts({ propose: engine.propose });
+    const again = await proposePostFreeVisitTexts({ propose: engine.propose });
+    assert.strictEqual(first.proposed, 1);
+    assert.strictEqual(again.proposed, 0);
+    const rows = await GrowthAction.find({ type: "post_free_visit_sms" }).lean();
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].status, "shadow");
+    assert.strictEqual(rows[0].subject.entityType, "booking");
+  });
+
+  await test("outside 11am-6pm it waits for the window instead of being suppressed", async () => {
+    const night = new Date("2026-10-09T03:00:00Z"); // 11pm in New York
+    const next = nextWindowStart(night);
+    assert.strictEqual(next.toISOString(), "2026-10-09T15:05:00.000Z");
+    assert.strictEqual(nextWindowStart(new Date("2026-10-09T17:00:00Z")), null);
+
+    await engine.setPolicyMode("post_free_visit_sms", "supervised", { kind: "owner" });
+    await Booking.deleteMany({});
+    const u = await makeUser({ smsPreferences: { transactionalEnabled: true, marketingEnabled: true } });
+    await freeVisit(u, 3);
+    await proposePostFreeVisitTexts({ propose: engine.propose });
+    const pending = await GrowthAction.findOne({ type: "post_free_visit_sms", status: "awaiting_approval" });
+    await GrowthAction.updateOne({ _id: pending._id }, { $set: { status: "approved" } });
+    const out = await engine.execute(pending._id, { now: night });
+    assert.strictEqual(out.status, "approved");
+    assert.strictEqual(out.attempts, 0);
+    assert.strictEqual(new Date(out.nextAttemptAt).toISOString(), "2026-10-09T15:05:00.000Z");
+  });
+
+  await test("with SMS sending off it records the decision and sends nothing", async () => {
+    delete process.env.SMS_ENABLED;
+    await engine.setPolicyMode("post_free_visit_sms", "supervised", { kind: "owner" });
+    await Booking.deleteMany({});
+    const u = await makeUser({ smsPreferences: { transactionalEnabled: true, marketingEnabled: true } });
+    await freeVisit(u, 3);
+    await proposePostFreeVisitTexts({ propose: engine.propose });
+    const pending = await GrowthAction.findOne({ type: "post_free_visit_sms", status: "awaiting_approval" });
+    await GrowthAction.updateOne({ _id: pending._id }, { $set: { status: "approved" } });
+    const out = await engine.execute(pending._id, { now: new Date("2026-10-09T17:00:00Z") });
+    assert.strictEqual(out.status, "skipped");
+    assert.match(out.result.reason, /sms_sending_disabled|suppressed/);
+  });
+
   console.log("waitlist route");
 
   await test("waitlist validates, refuses served ZIPs, and dedupes", async () => {

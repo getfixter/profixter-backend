@@ -3,3 +3,4 @@
  * admin routes do) before proposing or listing actions.
  */
 require("./checkoutRecoveryEmail");
+require("./postFreeVisitSms");

@@ -1,7 +1,8 @@
 const cron = require("node-cron");
 
 require("../utils/growth/actions");
-const { runSweeps, engineEnabled } = require("../utils/growth/actionEngine");
+const { runSweeps, engineEnabled, propose } = require("../utils/growth/actionEngine");
+const { proposePostFreeVisitTexts } = require("../utils/growth/actions/postFreeVisitSms");
 
 /**
  * The growth engine's heartbeat: every minute, run what is approved, verify
@@ -37,11 +38,37 @@ async function runGrowthCycle(now = new Date()) {
   }
 }
 
+/**
+ * Proposers: find the situations an automation applies to and propose it.
+ * Hourly is plenty - each proposal waits for the send window anyway - and the
+ * idempotency key per booking makes repeated scans harmless on any instance.
+ */
+let proposing = false;
+async function runGrowthProposers(now = new Date()) {
+  if (proposing) return null;
+  proposing = true;
+  try {
+    const postFreeVisit = await proposePostFreeVisitTexts({ propose, now });
+    if (postFreeVisit.proposed) {
+      console.log(JSON.stringify({ event: "growth_proposed", at: now.toISOString(), postFreeVisit }));
+    }
+    return { postFreeVisit };
+  } catch (error) {
+    console.error(
+      JSON.stringify({ event: "growth_proposers_failed", error: String(error?.message || error).slice(0, 300) })
+    );
+    return null;
+  } finally {
+    proposing = false;
+  }
+}
+
 function startGrowthJobs() {
   cron.schedule("* * * * *", () => runGrowthCycle(new Date()), { timezone: TIMEZONE });
+  cron.schedule("20 * * * *", () => runGrowthProposers(new Date()), { timezone: TIMEZONE });
   console.log(
     JSON.stringify({ event: "growth_jobs_started", schedule: "* * * * *", enabled: engineEnabled() })
   );
 }
 
-module.exports = { runGrowthCycle, startGrowthJobs };
+module.exports = { runGrowthCycle, runGrowthProposers, startGrowthJobs };
