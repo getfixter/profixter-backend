@@ -170,8 +170,12 @@ router.post("/meta", optionalAuth, async (req, res) => {
      * An open relay to the Conversions API is an open relay: anybody could post
      * arbitrary event names into the dataset and quietly poison the ad
      * account's optimisation. The allow-list is the whole defence.
+     *
+     * Schedule is the free first visit being booked. It used to be sent as a
+     * second Lead, so a cold visitor who signed up and booked counted as two
+     * leads; account creation is now the only Lead.
      */
-    const ALLOWED = new Set(["Lead", "Subscribe", "Purchase"]);
+    const ALLOWED = new Set(["Lead", "Schedule", "Subscribe", "Purchase"]);
     if (!eventName || !ALLOWED.has(String(eventName))) {
       return res.status(204).end();
     }
