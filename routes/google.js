@@ -1,5 +1,5 @@
 const express = require("express");
-const fetch = require("node-fetch");
+const { fetchPlaceDetails, BADGE_FIELDS } = require("../utils/googlePlaces");
 const router = express.Router();
 
 router.get("/reviews", async (req, res) => {
@@ -14,15 +14,8 @@ router.get("/reviews", async (req, res) => {
       });
     }
 
-    const url =
-      `https://maps.googleapis.com/maps/api/place/details/json` +
-      `?place_id=${encodeURIComponent(placeId)}` +
-      `&fields=${encodeURIComponent("name,rating,user_ratings_total,url,reviews")}` +
-      `&language=en` +
-      `&key=${encodeURIComponent(key)}`;
-
-    const resp = await fetch(url);
-    const json = await resp.json();
+    // Shared with the daily review snapshot (utils/visibility/googleReviews).
+    const json = await fetchPlaceDetails({ key, placeId, fields: BADGE_FIELDS });
 
     if (json.status !== "OK") {
       return res.status(502).json({
