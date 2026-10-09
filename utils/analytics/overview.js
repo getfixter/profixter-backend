@@ -24,6 +24,11 @@
  * - Source: the customer's first touch (utils/analytics/attribution). Every
  *   event in the period is credited to the source of the customer it belongs
  *   to, so the source rows always add up to the totals above them.
+ * - Spend: Meta ad spend for the period's days, from the AdSpendDaily mirror
+ *   (utils/analytics/metaAdSpend). CAC = spend / new paying customers (first
+ *   paid membership or paid One-Time / Full Day visit in the period) credited
+ *   to that source; ROAS = attributed revenue / spend. Both are null when
+ *   spend is not connected or the denominator is zero.
  *
  * Everything is computed in memory from lean, projected queries: Profixter's
  * volumes are thousands of rows, not millions, and one consistent pass is far
@@ -41,6 +46,7 @@ const { placeZipCluster } = require("../membershipMap/publicPoint");
 const { classifySource, campaignOf, originOf, displayName, SOURCES, GROUPS } = require("./attribution");
 const { collectedRevenue } = require("./stripeRevenue");
 const { currentMrr } = require("./stripeMrr");
+const { adSpendForPeriod } = require("./metaAdSpend");
 
 const TZ = "America/New_York";
 const DAY = 24 * 60 * 60 * 1000;
@@ -297,6 +303,54 @@ function pct(part, whole) {
   return whole > 0 ? Math.round((part / whole) * 1000) / 10 : null;
 }
 
+/*
+ * Ad-spend ratios. Empty (null), never zero or infinite, when spend is not
+ * known or the denominator is zero: "$0 per customer" and "ROAS 0" would both
+ * read as real results.
+ */
+function costPer(spendCents, count) {
+  if (spendCents === null || spendCents === undefined || !Number.isFinite(spendCents) || !(count > 0)) return null;
+  return Math.round(spendCents / count);
+}
+
+/** Attributed revenue per dollar of spend, to two decimals. */
+function roasOf(revenueCents, spendCents) {
+  if (spendCents === null || spendCents === undefined || !(spendCents > 0)) return null;
+  return Math.round((Number(revenueCents || 0) / spendCents) * 100) / 100;
+}
+
+/*
+ * New paying customers in [from, to): customers whose FIRST payment for a
+ * service falls in the period - a paid membership starting (the "new members"
+ * set, gifts excluded since the recipient did not pay) or a paid One-Time /
+ * Full Day visit booked (the same sets the One-Time card counts). A customer
+ * who already paid before the period is not new. This is CAC's denominator.
+ */
+function firstPaidAt(data) {
+  if (data._firstPaidAt) return data._firstPaidAt;
+  const first = new Map();
+  const note = (userId, at) => {
+    if (!userId || !at) return;
+    const t = new Date(at);
+    if (Number.isNaN(t.getTime())) return;
+    if (!first.has(userId) || first.get(userId) > t) first.set(userId, t);
+  };
+  for (const m of data.memberships) if (m.kind === "paid") note(m.userId, m.start);
+  for (const b of data.oneTimeVisits) note(String(b.user), b.createdAt);
+  for (const b of data.fullDayVisits) note(String(b.user), b.createdAt);
+  data._firstPaidAt = first;
+  return first;
+}
+
+function newPayingCustomers(data, from, to) {
+  const out = [];
+  for (const [userId, at] of firstPaidAt(data)) {
+    const user = data.userById.get(userId);
+    if (user && inRange(at, from, to)) out.push(user);
+  }
+  return out;
+}
+
 function revenueUser(data, row) {
   if (row.stripeCustomerId && data.userByStripe.has(row.stripeCustomerId)) return data.userByStripe.get(row.stripeCustomerId);
   if (row.userRef) {
@@ -477,9 +531,35 @@ async function visitorCounts(from, to) {
   return { total: rows.length, bySource, otherOrigins, meta };
 }
 
-function buildSources(data, period, counts, revenueRows, visitors) {
+/*
+ * Meta reports spend by publisher_platform; the ads write the same placement
+ * into utm_source, which is how a customer becomes Facebook or Instagram.
+ */
+const PLATFORM_SOURCE = { facebook: "meta_facebook", instagram: "meta_instagram" };
+
+function spendBySource(spend) {
+  if (!spend?.connected || !spend.platformSplit) return {};
+  const out = { meta_facebook: 0, meta_instagram: 0, meta_other: 0 };
+  for (const [platform, cents] of Object.entries(spend.byPlatform || {})) out[PLATFORM_SOURCE[platform] || "meta_other"] += cents;
+  return out;
+}
+
+/* Spend and its ratios onto a source, group or campaign row. */
+function withSpend(row, spendCents) {
+  const s = spendCents === undefined ? null : spendCents;
+  return {
+    ...row,
+    spendCents: s,
+    costPerRegistrationCents: costPer(s, row.registrations),
+    costPerMemberCents: costPer(s, row.members),
+    cacCents: costPer(s, row.newPayingCustomers),
+    roas: roasOf(row.revenueCents, s),
+  };
+}
+
+function buildSources(data, period, counts, revenueRows, visitors, spend = null, newPaying = []) {
   const rows = new Map(
-    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, members: 0, revenueCents: 0, spendCents: null }])
+    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, members: 0, newPayingCustomers: 0, revenueCents: 0, spendCents: null }])
   );
   const bump = (user, field, by = 1) => {
     const row = rows.get(sourceOf(user)) || rows.get("other");
@@ -488,6 +568,7 @@ function buildSources(data, period, counts, revenueRows, visitors) {
   for (const u of counts.newCustomers) bump(u, "registrations");
   for (const b of counts.fvBooked) bump(data.userById.get(String(b.user)), "freeVisits");
   for (const m of counts.newMemberships) bump(data.userById.get(m.userId), "members");
+  for (const u of newPaying) bump(u, "newPayingCustomers");
   let unmatchedRevenueCents = 0;
   for (const r of revenueRows) {
     if (!r.service) continue;
@@ -495,13 +576,15 @@ function buildSources(data, period, counts, revenueRows, visitors) {
     if (user) bump(user, "revenueCents", rowRevenueCents(r));
     else unmatchedRevenueCents += rowRevenueCents(r);
   }
-  const list = [...rows.values()].map((r) => ({
-    ...r,
-    conversion: pct(r.members, r.registrations),
-    costPerRegistrationCents: null,
-    costPerMemberCents: null,
-    roas: null,
-  }));
+  /*
+   * Spend is known only for Meta. Facebook / Instagram / Other Meta carry
+   * their own spend when Meta's placement split was synced; every other
+   * source's spend is unknown (null), not zero.
+   */
+  const sourceSpend = spendBySource(spend);
+  const list = [...rows.values()].map((r) =>
+    withSpend({ ...r, conversion: pct(r.members, r.registrations) }, Object.prototype.hasOwnProperty.call(sourceSpend, r.key) ? sourceSpend[r.key] : null)
+  );
   const totalRegs = counts.newCustomers.length;
   for (const r of list) r.share = pct(r.registrations, totalRegs);
 
@@ -510,18 +593,23 @@ function buildSources(data, period, counts, revenueRows, visitors) {
     const members = list.filter((r) => r.group === g.key);
     const sum = (f) => members.reduce((s, r) => s + r[f], 0);
     const regs = sum("registrations");
-    return {
-      key: g.key,
-      label: g.label,
-      sources: members.map((r) => r.key),
-      visitors: sum("visitors"),
-      registrations: regs,
-      freeVisits: sum("freeVisits"),
-      members: sum("members"),
-      revenueCents: sum("revenueCents"),
-      conversion: pct(sum("members"), regs),
-      share: pct(regs, totalRegs),
-    };
+    return withSpend(
+      {
+        key: g.key,
+        label: g.label,
+        sources: members.map((r) => r.key),
+        visitors: sum("visitors"),
+        registrations: regs,
+        freeVisits: sum("freeVisits"),
+        members: sum("members"),
+        newPayingCustomers: sum("newPayingCustomers"),
+        revenueCents: sum("revenueCents"),
+        conversion: pct(sum("members"), regs),
+        share: pct(regs, totalRegs),
+      },
+      // The group's spend is the whole account's (ad-level total), split or not.
+      g.key === "meta" && spend?.connected ? spend.totalCents : null
+    );
   });
 
   /* What "Other" is made of: referring sites and unknown utm_source values. */
@@ -547,7 +635,7 @@ const NO_CAMPAIGN = "(no campaign tag)";
 const NO_ADSET = "(no ad set tag)";
 const NO_AD = "(no ad tag)";
 
-function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: [] }) {
+function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: [] }, spend = null, newPaying = []) {
   const tree = new Map();
   const blank = (key, id, name, missing) => ({
     key,
@@ -558,6 +646,7 @@ function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: []
     registrations: 0,
     freeVisits: 0,
     members: 0,
+    newPayingCustomers: 0,
     revenueCents: 0,
   });
   const nodeFor = (attr) => {
@@ -593,13 +682,47 @@ function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: []
   for (const b of counts.fvBooked) add(data.userById.get(String(b.user)), "freeVisits");
   for (const m of counts.newMemberships) add(data.userById.get(m.userId), "members", 1, m.plan);
   for (const r of revenueRows) if (r.service) add(revenueUser(data, r), "revenueCents", rowRevenueCents(r));
-  const finish = (n) => ({ ...n, conversion: pct(n.members, n.registrations), spendCents: null, roas: null, costPerMemberCents: null });
+  for (const u of newPaying) add(u, "newPayingCustomers");
+
+  /*
+   * Spend, matched by Meta id (what the ads put in their URLs), or by exact
+   * name for a node whose URL carried only a name. A campaign, ad set or ad
+   * that spent in the period but brought no tracked visitor still gets a row:
+   * spend with no result is the most important line to see. A node with no
+   * spend row in the period keeps spend null (it may belong to an account
+   * that is not synced), never zero. Names Meta reports fill in id-only nodes.
+   */
+  if (spend?.connected) {
+    const attach = (map, s, missing, extra) => {
+      let n = map.get(s.id) || [...map.values()].find((x) => !x.id && s.name && x.name === s.name);
+      if (!n) {
+        n = { ...blank(s.id, s.id, s.name, missing), ...extra() };
+        map.set(s.id, n);
+      }
+      n.name ||= s.name || null;
+      n.label = displayName(n.name, n.id, missing);
+      n.spendCents = (n.spendCents || 0) + s.spendCents;
+      return n;
+    };
+    for (const sc of spend.campaigns.values()) {
+      const camp = attach(tree, sc, NO_CAMPAIGN, () => ({ plans: {}, adsets: new Map() }));
+      for (const ss of (sc.adsets || new Map()).values()) {
+        const adset = attach(camp.adsets, ss, NO_ADSET, () => ({ ads: new Map() }));
+        for (const sa of (ss.ads || new Map()).values()) attach(adset.ads, sa, NO_AD, () => ({}));
+      }
+    }
+  }
+
+  const finish = (n) => withSpend({ ...n, conversion: pct(n.members, n.registrations) }, n.spendCents ?? null);
   return [...tree.values()]
     .map((c) => ({
       ...finish(c),
       adsets: [...c.adsets.values()].map((s) => ({ ...finish(s), ads: [...s.ads.values()].map(finish) })),
     }))
-    .sort((a, b) => b.revenueCents - a.revenueCents || b.members - a.members || b.registrations - a.registrations || b.visitors - a.visitors);
+    .sort(
+      (a, b) =>
+        b.revenueCents - a.revenueCents || b.members - a.members || b.registrations - a.registrations || b.visitors - a.visitors || (b.spendCents || 0) - (a.spendCents || 0)
+    );
 }
 
 /* ------------------------------------------------------------------ */
@@ -691,11 +814,13 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
   const revenueWindowFrom = new Date(Math.min(period.prevFrom.getTime(), yearPeriod.from.getTime()));
   const revenueWindowTo = new Date(Math.max(period.to.getTime(), yearPeriod.to.getTime()));
-  const [revenueAll, visitors, prevVisitors, mrr] = await Promise.all([
+  const [revenueAll, visitors, prevVisitors, mrr, adSpend] = await Promise.all([
     collectedRevenue({ from: revenueWindowFrom, to: revenueWindowTo }),
     visitorCounts(period.from, period.to),
     visitorCounts(period.prevFrom, period.prevTo),
     currentMrr(),
+    // Mirrored by a background sync; never calls Meta here, never throws.
+    adSpendForPeriod({ fromYmd: period.fromYmd, toYmd: period.toYmd }),
   ]);
   const curRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.from, period.to));
   const prevRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.prevFrom, period.prevTo));
@@ -711,7 +836,8 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
   const oneTimeBooked = data.oneTimeVisits.filter((b) => inRange(b.createdAt, period.from, period.to));
   const fullDayBooked = data.fullDayVisits.filter((b) => inRange(b.createdAt, period.from, period.to));
 
-  const sources = buildSources(data, period, cur, curRevenueRows, visitors);
+  const newPaying = newPayingCustomers(data, period.from, period.to);
+  const sources = buildSources(data, period, cur, curRevenueRows, visitors, adSpend, newPaying);
   const cities = new Map();
   for (const u of data.customers) {
     const addr = primaryAddress(u);
@@ -849,8 +975,24 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
     sourceGroups: sources.groups,
     otherDetail: sources.otherDetail,
     unmatchedRevenueCents: sources.unmatchedRevenueCents,
-    campaigns: buildCampaigns(data, period, cur, curRevenueRows, visitors),
-    spend: { connected: false },
+    campaigns: buildCampaigns(data, period, cur, curRevenueRows, visitors, adSpend, newPaying),
+    /*
+     * Meta ad spend for the period, from the AdSpendDaily mirror. totalCents
+     * is null (not zero) when not connected. stale: no successful sync for a
+     * day. partial: the period starts before the first synced day.
+     */
+    spend: {
+      connected: adSpend.connected,
+      status: adSpend.status,
+      lastSuccessAt: adSpend.lastSuccessAt,
+      totalCents: adSpend.connected ? adSpend.totalCents : null,
+      currency: adSpend.currency,
+      stale: adSpend.stale,
+      partial: adSpend.partial,
+      coverageFromYmd: adSpend.coverageFromYmd,
+      platformSplit: adSpend.platformSplit,
+      newPayingCustomers: newPaying.length,
+    },
     topAreas: [...cities.values()].sort((a, b) => b.customers - a.customers).slice(0, 8),
     activity: buildActivity(data),
     attention: buildAttention(data, period, cur),
@@ -1067,5 +1209,5 @@ module.exports = {
   buildList,
   buildMap,
   clearOverviewCache,
-  _internal: { activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName },
+  _internal: { activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName, costPer, roasOf, withSpend, spendBySource },
 };

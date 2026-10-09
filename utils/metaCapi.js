@@ -302,6 +302,7 @@ function sendDetached(options) {
 module.exports = {
   META_PIXEL_ID,
   GRAPH_VERSION,
+  getToken,
   send,
   sendDetached,
   sha256,

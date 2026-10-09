@@ -183,40 +183,18 @@ async function ledgerRow(charge) {
 }
 
 /*
- * One writer across all instances. The backend is load-balanced (one to four
- * instances, and a rolling deploy runs old and new side by side), so each
- * run first takes a lease in Mongo. A run that cannot get it skips: another
- * instance is already syncing. A process that dies mid-run leaves a lease
- * that simply expires.
+ * One writer across all instances: each run first takes a lease in Mongo
+ * (utils/analytics/analyticsLease, shared with the other analytics syncs).
+ * A run that cannot get it skips: another instance is already syncing.
  */
 const LEASE_KEY = "revenue-ledger-lease";
 const LEASE_MS = 10 * 60 * 1000;
 const DEEP_REFUND_EVERY_MS = 24 * 60 * 60 * 1000;
 const DEEP_REFUND_WINDOW_SEC = 180 * 24 * 60 * 60;
-const OWNER = `${require("os").hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
+const lease = require("./analyticsLease");
 
-async function takeLease() {
-  const AnalyticsState = require("../../models/AnalyticsState");
-  await AnalyticsState.init(); // the unique key that lets exactly one instance win
-  const now = Date.now();
-  try {
-    const doc = await AnalyticsState.findOneAndUpdate(
-      { key: LEASE_KEY, $or: [{ "value.until": { $lt: now } }, { "value.owner": OWNER }, { "value.until": { $exists: false } }] },
-      { $set: { value: { owner: OWNER, until: now + LEASE_MS } } },
-      { upsert: true, new: true }
-    ).lean();
-    return doc?.value?.owner === OWNER;
-  } catch (error) {
-    // Two instances upserting the lease at once: the unique key lets exactly one win.
-    if (error?.code === 11000) return false;
-    throw error;
-  }
-}
-
-async function releaseLease() {
-  const AnalyticsState = require("../../models/AnalyticsState");
-  await AnalyticsState.updateOne({ key: LEASE_KEY, "value.owner": OWNER }, { $set: { "value.until": 0 } });
-}
+const takeLease = () => lease.takeLease(LEASE_KEY, LEASE_MS);
+const releaseLease = () => lease.releaseLease(LEASE_KEY);
 
 /*
  * Upserts keyed by chargeId, which is unique in the collection: re-reading a

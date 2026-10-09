@@ -1,7 +1,9 @@
 const express = require("express");
 const auth = require("../middleware/auth");
 const { requirePermission, hasPermission, PERMISSIONS } = require("../middleware/authorize");
-const { buildOverview, buildList, buildMap } = require("../utils/analytics/overview");
+const { buildOverview, buildList, buildMap, clearOverviewCache } = require("../utils/analytics/overview");
+const { adSpendStatus, syncMetaAdSpend } = require("../utils/analytics/metaAdSpend");
+const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
 /**
  * Admin Overview: the business numbers, their drill-down lists and the
@@ -52,6 +54,45 @@ router.get("/list", async (req, res) => {
   } catch (error) {
     console.error("Overview list failed:", error);
     res.status(500).json({ message: "This list is temporarily unavailable." });
+  }
+});
+
+/*
+ * Meta ad spend sync: its configuration and last runs (never the token), and
+ * a "sync now" that respects the same cross-instance lease as the schedule.
+ * The sync answers within a few seconds normally; a first 90-day backfill may
+ * take longer, so after 20s the request returns 202 and the run carries on.
+ */
+router.get("/ad-spend/status", async (req, res) => {
+  try {
+    res.json(await adSpendStatus());
+  } catch (error) {
+    console.error("Ad spend status failed:", error.message);
+    res.status(500).json({ message: "Ad spend status is temporarily unavailable." });
+  }
+});
+
+router.post("/ad-spend/sync", async (req, res) => {
+  try {
+    await createAdminActivityLog(req, {
+      action: "Meta Ad Spend Sync Requested",
+      entityType: "analytics",
+      entityId: "meta-ad-spend",
+      entityName: "Meta ad spend",
+      details: {},
+    }).catch((error) => console.warn("Ad spend sync log failed:", error.message));
+    const run = syncMetaAdSpend();
+    const timedOut = Symbol("timeout");
+    let timer;
+    const result = await Promise.race([run, new Promise((resolve) => (timer = setTimeout(() => resolve(timedOut), 20000)))]);
+    clearTimeout(timer);
+    if (result === timedOut) return res.status(202).json({ running: true, status: await adSpendStatus() });
+    if (result?.skipped) return res.status(202).json({ running: true, skipped: "another instance is syncing", status: await adSpendStatus() });
+    clearOverviewCache();
+    return res.json({ running: false, status: await adSpendStatus() });
+  } catch (error) {
+    console.error("Ad spend sync failed:", error.message);
+    res.status(500).json({ message: "Ad spend sync is temporarily unavailable." });
   }
 });
 
