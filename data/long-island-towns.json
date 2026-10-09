@@ -1,0 +1,1283 @@
+{
+  "_about": [
+    "Long Island place names Profixter serves, for the visibility collectors (utils/visibility).",
+    "towns: every name in the ZIP comments of utils/serviceArea.js (the service-area allowlist), plus hamlets named on FrontEnd town pages (FrontEnd/lib/seo-content.ts). Used to recognise local-intent search queries; a town name alone is not enough, see utils/visibility/queryFamilies.js.",
+    "rankGrid: the towns that have a Profixter town page (FrontEnd/lib/seo-content.ts serviceAreas), in that order, which is roughly distance from the Lindenhurst base. These are the local-pack check points. Coordinates are the Census internal point of the town's main ZIP unless noted; do not move a point without saying why."
+  ],
+  "towns": [
+    {
+      "name": "Floral Park",
+      "county": "Nassau",
+      "zips": [
+        "11001"
+      ]
+    },
+    {
+      "name": "Elmont",
+      "county": "Nassau",
+      "zips": [
+        "11003"
+      ]
+    },
+    {
+      "name": "Franklin Square",
+      "county": "Nassau",
+      "zips": [
+        "11010"
+      ]
+    },
+    {
+      "name": "Great Neck",
+      "county": "Nassau",
+      "zips": [
+        "11020",
+        "11021",
+        "11023",
+        "11024"
+      ]
+    },
+    {
+      "name": "Manhasset",
+      "county": "Nassau",
+      "zips": [
+        "11030"
+      ]
+    },
+    {
+      "name": "New Hyde Park",
+      "county": "Nassau",
+      "zips": [
+        "11040",
+        "11042"
+      ]
+    },
+    {
+      "name": "Port Washington",
+      "county": "Nassau",
+      "zips": [
+        "11050"
+      ]
+    },
+    {
+      "name": "Inwood",
+      "county": "Nassau",
+      "zips": [
+        "11096"
+      ]
+    },
+    {
+      "name": "Mineola",
+      "county": "Nassau",
+      "zips": [
+        "11501"
+      ]
+    },
+    {
+      "name": "Albertson",
+      "county": "Nassau",
+      "zips": [
+        "11507"
+      ]
+    },
+    {
+      "name": "Atlantic Beach",
+      "county": "Nassau",
+      "zips": [
+        "11509"
+      ]
+    },
+    {
+      "name": "Baldwin",
+      "county": "Nassau",
+      "zips": [
+        "11510"
+      ]
+    },
+    {
+      "name": "Carle Place",
+      "county": "Nassau",
+      "zips": [
+        "11514"
+      ]
+    },
+    {
+      "name": "Cedarhurst",
+      "county": "Nassau",
+      "zips": [
+        "11516"
+      ]
+    },
+    {
+      "name": "East Rockaway",
+      "county": "Nassau",
+      "zips": [
+        "11518"
+      ]
+    },
+    {
+      "name": "Freeport",
+      "county": "Nassau",
+      "zips": [
+        "11520"
+      ]
+    },
+    {
+      "name": "Garden City",
+      "county": "Nassau",
+      "zips": [
+        "11530"
+      ]
+    },
+    {
+      "name": "Glen Cove",
+      "county": "Nassau",
+      "zips": [
+        "11542"
+      ]
+    },
+    {
+      "name": "Glen Head",
+      "county": "Nassau",
+      "zips": [
+        "11545"
+      ]
+    },
+    {
+      "name": "Glenwood Landing",
+      "county": "Nassau",
+      "zips": [
+        "11547"
+      ]
+    },
+    {
+      "name": "Greenvale",
+      "county": "Nassau",
+      "zips": [
+        "11548"
+      ]
+    },
+    {
+      "name": "Hempstead",
+      "county": "Nassau",
+      "zips": [
+        "11550"
+      ]
+    },
+    {
+      "name": "West Hempstead",
+      "county": "Nassau",
+      "zips": [
+        "11552"
+      ]
+    },
+    {
+      "name": "Uniondale",
+      "county": "Nassau",
+      "zips": [
+        "11553",
+        "11556"
+      ]
+    },
+    {
+      "name": "East Meadow",
+      "county": "Nassau",
+      "zips": [
+        "11554"
+      ]
+    },
+    {
+      "name": "Hewlett",
+      "county": "Nassau",
+      "zips": [
+        "11557"
+      ]
+    },
+    {
+      "name": "Island Park",
+      "county": "Nassau",
+      "zips": [
+        "11558"
+      ]
+    },
+    {
+      "name": "Lawrence",
+      "county": "Nassau",
+      "zips": [
+        "11559"
+      ]
+    },
+    {
+      "name": "Locust Valley",
+      "county": "Nassau",
+      "zips": [
+        "11560"
+      ]
+    },
+    {
+      "name": "Long Beach",
+      "county": "Nassau",
+      "zips": [
+        "11561"
+      ]
+    },
+    {
+      "name": "Lynbrook",
+      "county": "Nassau",
+      "zips": [
+        "11563"
+      ]
+    },
+    {
+      "name": "Malverne",
+      "county": "Nassau",
+      "zips": [
+        "11565"
+      ]
+    },
+    {
+      "name": "Merrick",
+      "county": "Nassau",
+      "zips": [
+        "11566"
+      ]
+    },
+    {
+      "name": "Old Westbury",
+      "county": "Nassau",
+      "zips": [
+        "11568"
+      ]
+    },
+    {
+      "name": "Point Lookout",
+      "county": "Nassau",
+      "zips": [
+        "11569"
+      ]
+    },
+    {
+      "name": "Rockville Centre",
+      "county": "Nassau",
+      "zips": [
+        "11570"
+      ]
+    },
+    {
+      "name": "Oceanside",
+      "county": "Nassau",
+      "zips": [
+        "11572"
+      ]
+    },
+    {
+      "name": "Roosevelt",
+      "county": "Nassau",
+      "zips": [
+        "11575"
+      ]
+    },
+    {
+      "name": "Roslyn",
+      "county": "Nassau",
+      "zips": [
+        "11576"
+      ]
+    },
+    {
+      "name": "Roslyn Heights",
+      "county": "Nassau",
+      "zips": [
+        "11577"
+      ]
+    },
+    {
+      "name": "Sea Cliff",
+      "county": "Nassau",
+      "zips": [
+        "11579"
+      ]
+    },
+    {
+      "name": "Valley Stream",
+      "county": "Nassau",
+      "zips": [
+        "11580",
+        "11581"
+      ]
+    },
+    {
+      "name": "Westbury",
+      "county": "Nassau",
+      "zips": [
+        "11590"
+      ]
+    },
+    {
+      "name": "Williston Park",
+      "county": "Nassau",
+      "zips": [
+        "11596"
+      ]
+    },
+    {
+      "name": "Woodmere",
+      "county": "Nassau",
+      "zips": [
+        "11598"
+      ]
+    },
+    {
+      "name": "Bellmore",
+      "county": "Nassau",
+      "zips": [
+        "11710"
+      ]
+    },
+    {
+      "name": "Bethpage",
+      "county": "Nassau",
+      "zips": [
+        "11714"
+      ]
+    },
+    {
+      "name": "East Norwich",
+      "county": "Nassau",
+      "zips": [
+        "11732"
+      ]
+    },
+    {
+      "name": "Farmingdale",
+      "county": "Nassau",
+      "zips": [
+        "11735"
+      ]
+    },
+    {
+      "name": "Jericho",
+      "county": "Nassau",
+      "zips": [
+        "11753"
+      ]
+    },
+    {
+      "name": "Levittown",
+      "county": "Nassau",
+      "zips": [
+        "11756"
+      ]
+    },
+    {
+      "name": "Massapequa",
+      "county": "Nassau",
+      "zips": [
+        "11758"
+      ]
+    },
+    {
+      "name": "Massapequa Park",
+      "county": "Nassau",
+      "zips": [
+        "11762"
+      ]
+    },
+    {
+      "name": "Mill Neck",
+      "county": "Nassau",
+      "zips": [
+        "11765"
+      ]
+    },
+    {
+      "name": "Oyster Bay",
+      "county": "Nassau",
+      "zips": [
+        "11771"
+      ]
+    },
+    {
+      "name": "Seaford",
+      "county": "Nassau",
+      "zips": [
+        "11783"
+      ]
+    },
+    {
+      "name": "Syosset",
+      "county": "Nassau",
+      "zips": [
+        "11791"
+      ]
+    },
+    {
+      "name": "Wantagh",
+      "county": "Nassau",
+      "zips": [
+        "11793"
+      ]
+    },
+    {
+      "name": "Woodbury",
+      "county": "Nassau",
+      "zips": [
+        "11797"
+      ]
+    },
+    {
+      "name": "Hicksville",
+      "county": "Nassau",
+      "zips": [
+        "11801"
+      ]
+    },
+    {
+      "name": "Plainview",
+      "county": "Nassau",
+      "zips": [
+        "11803"
+      ]
+    },
+    {
+      "name": "Old Bethpage",
+      "county": "Nassau",
+      "zips": [
+        "11804"
+      ]
+    },
+    {
+      "name": "Amityville",
+      "county": "Suffolk",
+      "zips": [
+        "11701"
+      ]
+    },
+    {
+      "name": "Babylon",
+      "county": "Suffolk",
+      "zips": [
+        "11702"
+      ]
+    },
+    {
+      "name": "North Babylon",
+      "county": "Suffolk",
+      "zips": [
+        "11703"
+      ]
+    },
+    {
+      "name": "West Babylon",
+      "county": "Suffolk",
+      "zips": [
+        "11704"
+      ]
+    },
+    {
+      "name": "Bayport",
+      "county": "Suffolk",
+      "zips": [
+        "11705"
+      ]
+    },
+    {
+      "name": "Bay Shore",
+      "county": "Suffolk",
+      "zips": [
+        "11706"
+      ]
+    },
+    {
+      "name": "Bellport",
+      "county": "Suffolk",
+      "zips": [
+        "11713"
+      ]
+    },
+    {
+      "name": "Blue Point",
+      "county": "Suffolk",
+      "zips": [
+        "11715"
+      ]
+    },
+    {
+      "name": "Bohemia",
+      "county": "Suffolk",
+      "zips": [
+        "11716"
+      ]
+    },
+    {
+      "name": "Brentwood",
+      "county": "Suffolk",
+      "zips": [
+        "11717"
+      ]
+    },
+    {
+      "name": "Brightwaters",
+      "county": "Suffolk",
+      "zips": [
+        "11718"
+      ]
+    },
+    {
+      "name": "Brookhaven",
+      "county": "Suffolk",
+      "zips": [
+        "11719"
+      ]
+    },
+    {
+      "name": "Centereach",
+      "county": "Suffolk",
+      "zips": [
+        "11720"
+      ]
+    },
+    {
+      "name": "Centerport",
+      "county": "Suffolk",
+      "zips": [
+        "11721"
+      ]
+    },
+    {
+      "name": "Central Islip",
+      "county": "Suffolk",
+      "zips": [
+        "11722"
+      ]
+    },
+    {
+      "name": "Cold Spring Harbor",
+      "county": "Suffolk",
+      "zips": [
+        "11724"
+      ]
+    },
+    {
+      "name": "Commack",
+      "county": "Suffolk",
+      "zips": [
+        "11725"
+      ]
+    },
+    {
+      "name": "Copiague",
+      "county": "Suffolk",
+      "zips": [
+        "11726"
+      ]
+    },
+    {
+      "name": "Coram",
+      "county": "Suffolk",
+      "zips": [
+        "11727"
+      ]
+    },
+    {
+      "name": "Deer Park",
+      "county": "Suffolk",
+      "zips": [
+        "11729"
+      ]
+    },
+    {
+      "name": "East Islip",
+      "county": "Suffolk",
+      "zips": [
+        "11730"
+      ]
+    },
+    {
+      "name": "East Northport",
+      "county": "Suffolk",
+      "zips": [
+        "11731"
+      ]
+    },
+    {
+      "name": "East Setauket",
+      "county": "Suffolk",
+      "zips": [
+        "11733"
+      ]
+    },
+    {
+      "name": "Farmingville",
+      "county": "Suffolk",
+      "zips": [
+        "11738"
+      ]
+    },
+    {
+      "name": "Great River",
+      "county": "Suffolk",
+      "zips": [
+        "11739"
+      ]
+    },
+    {
+      "name": "Greenlawn",
+      "county": "Suffolk",
+      "zips": [
+        "11740"
+      ]
+    },
+    {
+      "name": "Holbrook",
+      "county": "Suffolk",
+      "zips": [
+        "11741"
+      ]
+    },
+    {
+      "name": "Holtsville",
+      "county": "Suffolk",
+      "zips": [
+        "11742"
+      ]
+    },
+    {
+      "name": "Huntington",
+      "county": "Suffolk",
+      "zips": [
+        "11743"
+      ]
+    },
+    {
+      "name": "Huntington Station",
+      "county": "Suffolk",
+      "zips": [
+        "11746"
+      ]
+    },
+    {
+      "name": "Melville",
+      "county": "Suffolk",
+      "zips": [
+        "11747"
+      ]
+    },
+    {
+      "name": "Islandia",
+      "county": "Suffolk",
+      "zips": [
+        "11749"
+      ]
+    },
+    {
+      "name": "Islip",
+      "county": "Suffolk",
+      "zips": [
+        "11751"
+      ]
+    },
+    {
+      "name": "Islip Terrace",
+      "county": "Suffolk",
+      "zips": [
+        "11752"
+      ]
+    },
+    {
+      "name": "Kings Park",
+      "county": "Suffolk",
+      "zips": [
+        "11754"
+      ]
+    },
+    {
+      "name": "Lake Grove",
+      "county": "Suffolk",
+      "zips": [
+        "11755"
+      ]
+    },
+    {
+      "name": "Lindenhurst",
+      "county": "Suffolk",
+      "zips": [
+        "11757"
+      ]
+    },
+    {
+      "name": "Medford",
+      "county": "Suffolk",
+      "zips": [
+        "11763"
+      ]
+    },
+    {
+      "name": "Miller Place",
+      "county": "Suffolk",
+      "zips": [
+        "11764"
+      ]
+    },
+    {
+      "name": "Mount Sinai",
+      "county": "Suffolk",
+      "zips": [
+        "11766"
+      ]
+    },
+    {
+      "name": "Nesconset",
+      "county": "Suffolk",
+      "zips": [
+        "11767"
+      ]
+    },
+    {
+      "name": "Northport",
+      "county": "Suffolk",
+      "zips": [
+        "11768"
+      ]
+    },
+    {
+      "name": "Oakdale",
+      "county": "Suffolk",
+      "zips": [
+        "11769"
+      ]
+    },
+    {
+      "name": "Patchogue",
+      "county": "Suffolk",
+      "zips": [
+        "11772"
+      ]
+    },
+    {
+      "name": "Port Jefferson Station",
+      "county": "Suffolk",
+      "zips": [
+        "11776"
+      ],
+      "aliases": [
+        "Port Jeff Station"
+      ]
+    },
+    {
+      "name": "Port Jefferson",
+      "county": "Suffolk",
+      "zips": [
+        "11777"
+      ],
+      "aliases": [
+        "Port Jeff"
+      ]
+    },
+    {
+      "name": "Rocky Point",
+      "county": "Suffolk",
+      "zips": [
+        "11778"
+      ]
+    },
+    {
+      "name": "Ronkonkoma",
+      "county": "Suffolk",
+      "zips": [
+        "11779"
+      ]
+    },
+    {
+      "name": "Saint James",
+      "county": "Suffolk",
+      "zips": [
+        "11780"
+      ],
+      "aliases": [
+        "St James",
+        "St. James"
+      ]
+    },
+    {
+      "name": "Sayville",
+      "county": "Suffolk",
+      "zips": [
+        "11782"
+      ]
+    },
+    {
+      "name": "Selden",
+      "county": "Suffolk",
+      "zips": [
+        "11784"
+      ]
+    },
+    {
+      "name": "Shoreham",
+      "county": "Suffolk",
+      "zips": [
+        "11786"
+      ]
+    },
+    {
+      "name": "Smithtown",
+      "county": "Suffolk",
+      "zips": [
+        "11787"
+      ]
+    },
+    {
+      "name": "Hauppauge",
+      "county": "Suffolk",
+      "zips": [
+        "11788"
+      ]
+    },
+    {
+      "name": "Sound Beach",
+      "county": "Suffolk",
+      "zips": [
+        "11789"
+      ]
+    },
+    {
+      "name": "Stony Brook",
+      "county": "Suffolk",
+      "zips": [
+        "11790"
+      ]
+    },
+    {
+      "name": "Wading River",
+      "county": "Suffolk",
+      "zips": [
+        "11792"
+      ]
+    },
+    {
+      "name": "West Islip",
+      "county": "Suffolk",
+      "zips": [
+        "11795"
+      ]
+    },
+    {
+      "name": "West Sayville",
+      "county": "Suffolk",
+      "zips": [
+        "11796"
+      ]
+    },
+    {
+      "name": "Wyandanch",
+      "county": "Suffolk",
+      "zips": [
+        "11798"
+      ]
+    },
+    {
+      "name": "Riverhead",
+      "county": "Suffolk",
+      "zips": [
+        "11901"
+      ]
+    },
+    {
+      "name": "Amagansett",
+      "county": "Suffolk",
+      "zips": [
+        "11930"
+      ]
+    },
+    {
+      "name": "Aquebogue",
+      "county": "Suffolk",
+      "zips": [
+        "11931"
+      ]
+    },
+    {
+      "name": "Bridgehampton",
+      "county": "Suffolk",
+      "zips": [
+        "11932"
+      ]
+    },
+    {
+      "name": "Calverton",
+      "county": "Suffolk",
+      "zips": [
+        "11933"
+      ]
+    },
+    {
+      "name": "Center Moriches",
+      "county": "Suffolk",
+      "zips": [
+        "11934"
+      ]
+    },
+    {
+      "name": "Cutchogue",
+      "county": "Suffolk",
+      "zips": [
+        "11935"
+      ]
+    },
+    {
+      "name": "East Hampton",
+      "county": "Suffolk",
+      "zips": [
+        "11937"
+      ]
+    },
+    {
+      "name": "East Marion",
+      "county": "Suffolk",
+      "zips": [
+        "11939"
+      ]
+    },
+    {
+      "name": "East Moriches",
+      "county": "Suffolk",
+      "zips": [
+        "11940"
+      ]
+    },
+    {
+      "name": "Eastport",
+      "county": "Suffolk",
+      "zips": [
+        "11941"
+      ]
+    },
+    {
+      "name": "East Quogue",
+      "county": "Suffolk",
+      "zips": [
+        "11942"
+      ]
+    },
+    {
+      "name": "Greenport",
+      "county": "Suffolk",
+      "zips": [
+        "11944"
+      ]
+    },
+    {
+      "name": "Hampton Bays",
+      "county": "Suffolk",
+      "zips": [
+        "11946"
+      ]
+    },
+    {
+      "name": "Jamesport",
+      "county": "Suffolk",
+      "zips": [
+        "11947"
+      ]
+    },
+    {
+      "name": "Laurel",
+      "county": "Suffolk",
+      "zips": [
+        "11948"
+      ]
+    },
+    {
+      "name": "Manorville",
+      "county": "Suffolk",
+      "zips": [
+        "11949"
+      ]
+    },
+    {
+      "name": "Mastic",
+      "county": "Suffolk",
+      "zips": [
+        "11950"
+      ]
+    },
+    {
+      "name": "Mastic Beach",
+      "county": "Suffolk",
+      "zips": [
+        "11951"
+      ]
+    },
+    {
+      "name": "Mattituck",
+      "county": "Suffolk",
+      "zips": [
+        "11952"
+      ]
+    },
+    {
+      "name": "Middle Island",
+      "county": "Suffolk",
+      "zips": [
+        "11953"
+      ]
+    },
+    {
+      "name": "Montauk",
+      "county": "Suffolk",
+      "zips": [
+        "11954"
+      ]
+    },
+    {
+      "name": "Moriches",
+      "county": "Suffolk",
+      "zips": [
+        "11955"
+      ]
+    },
+    {
+      "name": "New Suffolk",
+      "county": "Suffolk",
+      "zips": [
+        "11956"
+      ]
+    },
+    {
+      "name": "Orient",
+      "county": "Suffolk",
+      "zips": [
+        "11957"
+      ]
+    },
+    {
+      "name": "Peconic",
+      "county": "Suffolk",
+      "zips": [
+        "11958"
+      ]
+    },
+    {
+      "name": "Quogue",
+      "county": "Suffolk",
+      "zips": [
+        "11959"
+      ]
+    },
+    {
+      "name": "Remsenburg",
+      "county": "Suffolk",
+      "zips": [
+        "11960"
+      ]
+    },
+    {
+      "name": "Ridge",
+      "county": "Suffolk",
+      "zips": [
+        "11961"
+      ]
+    },
+    {
+      "name": "Sagaponack",
+      "county": "Suffolk",
+      "zips": [
+        "11962"
+      ]
+    },
+    {
+      "name": "Sag Harbor",
+      "county": "Suffolk",
+      "zips": [
+        "11963"
+      ]
+    },
+    {
+      "name": "Shirley",
+      "county": "Suffolk",
+      "zips": [
+        "11967"
+      ]
+    },
+    {
+      "name": "Southampton",
+      "county": "Suffolk",
+      "zips": [
+        "11968"
+      ]
+    },
+    {
+      "name": "South Jamesport",
+      "county": "Suffolk",
+      "zips": [
+        "11970"
+      ]
+    },
+    {
+      "name": "Southold",
+      "county": "Suffolk",
+      "zips": [
+        "11971"
+      ]
+    },
+    {
+      "name": "Speonk",
+      "county": "Suffolk",
+      "zips": [
+        "11972"
+      ]
+    },
+    {
+      "name": "Wainscott",
+      "county": "Suffolk",
+      "zips": [
+        "11975"
+      ]
+    },
+    {
+      "name": "Water Mill",
+      "county": "Suffolk",
+      "zips": [
+        "11976"
+      ]
+    },
+    {
+      "name": "Westhampton",
+      "county": "Suffolk",
+      "zips": [
+        "11977"
+      ]
+    },
+    {
+      "name": "Westhampton Beach",
+      "county": "Suffolk",
+      "zips": [
+        "11978"
+      ]
+    },
+    {
+      "name": "Yaphank",
+      "county": "Suffolk",
+      "zips": [
+        "11980"
+      ]
+    },
+    {
+      "name": "Amity Harbor",
+      "county": "Suffolk",
+      "zips": [
+        "11701"
+      ],
+      "note": "hamlet inside the Amityville ZIP; named on the Amityville town page"
+    }
+  ],
+  "rankGrid": [
+    {
+      "name": "Lindenhurst",
+      "zip": "11757",
+      "lat": 40.689,
+      "lng": -73.3733,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "West Babylon",
+      "zip": "11704",
+      "lat": 40.7158,
+      "lng": -73.3593,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "North Babylon",
+      "zip": "11703",
+      "lat": 40.7328,
+      "lng": -73.3242,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Babylon",
+      "zip": "11702",
+      "lat": 40.6957,
+      "lng": -73.3257,
+      "coordSource": "village/hamlet center",
+      "note": "ZIP 11702 internal point (40.6362,-73.3838) falls on the barrier-beach part of the ZIP, far from the village; village center used instead"
+    },
+    {
+      "name": "Amityville",
+      "zip": "11701",
+      "lat": 40.6822,
+      "lng": -73.4146,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Copiague",
+      "zip": "11726",
+      "lat": 40.679,
+      "lng": -73.3944,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "West Islip",
+      "zip": "11795",
+      "lat": 40.709,
+      "lng": -73.2963,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Bay Shore",
+      "zip": "11706",
+      "lat": 40.7106,
+      "lng": -73.2429,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Islip",
+      "zip": "11751",
+      "lat": 40.7305,
+      "lng": -73.2139,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Massapequa",
+      "zip": "11758",
+      "lat": 40.6807,
+      "lng": -73.4743,
+      "coordSource": "village/hamlet center",
+      "note": "ZIP 11758 internal point (40.6538,-73.4571) sits near the south-shore canals, ~3 km from the hamlet center; hamlet center used instead"
+    },
+    {
+      "name": "Seaford",
+      "zip": "11783",
+      "lat": 40.6776,
+      "lng": -73.49,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Farmingdale",
+      "zip": "11735",
+      "lat": 40.733,
+      "lng": -73.4328,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Syosset",
+      "zip": "11791",
+      "lat": 40.8278,
+      "lng": -73.5028,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "Huntington",
+      "zip": "11743",
+      "lat": 40.8834,
+      "lng": -73.4235,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    },
+    {
+      "name": "East Northport",
+      "zip": "11731",
+      "lat": 40.8626,
+      "lng": -73.317,
+      "coordSource": "Census ZCTA internal point (utils/membershipMap/zipGeography.json)"
+    }
+  ]
+}

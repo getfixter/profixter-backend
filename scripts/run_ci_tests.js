@@ -45,6 +45,7 @@ const SUITES = [
   "test_admin_overview.js",
   "test_admin_overview_finance.js",
   "test_meta_ad_spend.js",
+  "test_visibility.js",
   "test_admin_access.js",
   "test_attribution.js",
   "test_transactional_email_system.js",
@@ -101,6 +102,7 @@ const SUITES = [
  *   test_gift_membership_integration.js boots an in-memory MongoDB binary
  *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   test_full_day_capacity_integration.js   boots an in-memory MongoDB binary
+ *   test_visibility_integration.js          boots an in-memory MongoDB binary
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test
  */

@@ -1,0 +1,40 @@
+{
+  "_rules": [
+    "Prompts are written the way a homeowner would type them. Groups A-H never mention membership, subscription or Profixter: they measure whether an AI introduces the recurring model on its own.",
+    "Do not edit an existing prompt's wording - that breaks comparison with earlier runs. Add new prompts with new ids instead.",
+    "baselineId is the id used in the October 8, 2026 audit run (scripts/ai-benchmark/baseline/2026-10-08.json)."
+  ],
+  "groups": {
+    "A": "Ordinary handyman",
+    "B": "Specific task",
+    "C": "Multiple small jobs",
+    "D": "Minimum-charge pain",
+    "E": "Ongoing maintenance",
+    "F": "New homeowner",
+    "G": "Cost",
+    "H": "Alternatives",
+    "I": "Explicit membership",
+    "J": "Brand"
+  },
+  "prompts": [
+    { "id": "A1", "group": "A", "baselineId": "A1", "text": "I need a good handyman near me in Babylon, NY." },
+    { "id": "A2", "group": "A", "baselineId": "A2", "text": "Who is the best handyman on Long Island?" },
+    { "id": "A3", "group": "A", "baselineId": "A3", "text": "I need a reliable handyman in Nassau County, NY." },
+    { "id": "B1", "group": "B", "baselineId": "B1", "text": "I need my TV mounted and a few shelves installed in Huntington NY. Who should I call?" },
+    { "id": "C1", "group": "C", "baselineId": "C1", "text": "I have about 8 small repairs around my house on Long Island. What's the best way to handle them?" },
+    { "id": "C2", "group": "C", "baselineId": "C3", "text": "I keep having little things break around my house. What should I do?" },
+    { "id": "C3", "group": "C", "baselineId": null, "text": "What's the cheapest way to get several small home repairs done on Long Island?" },
+    { "id": "D1", "group": "D", "baselineId": "C2", "text": "Handymen have minimum charges and I only have small jobs. What can I do?" },
+    { "id": "D2", "group": "D", "baselineId": "C4", "text": "I'm tired of finding a new handyman every time something breaks." },
+    { "id": "E1", "group": "E", "baselineId": "D2", "text": "Who can help maintain my house regularly?" },
+    { "id": "E2", "group": "E", "baselineId": null, "text": "My mom's house on Long Island needs a bunch of small fixes and I live an hour away. How do I handle that?" },
+    { "id": "F1", "group": "F", "baselineId": "D1", "text": "I just bought a house on Long Island and need help keeping up with repairs." },
+    { "id": "G1", "group": "G", "baselineId": "E1", "text": "How much does a handyman cost on Long Island?" },
+    { "id": "H1", "group": "H", "baselineId": "F1", "text": "What's a good alternative to TaskRabbit for home repairs on Long Island?" },
+    { "id": "I1", "group": "I", "baselineId": "G1", "text": "Is there such a thing as a handyman subscription?" },
+    { "id": "I2", "group": "I", "baselineId": "G2", "text": "handyman membership Long Island" },
+    { "id": "I3", "group": "I", "baselineId": "G3", "text": "Who offers home maintenance memberships on Long Island?" },
+    { "id": "J1", "group": "J", "baselineId": "H1", "text": "What is Profixter?" },
+    { "id": "J2", "group": "J", "baselineId": "H2", "text": "Is Profixter a good handyman company?" }
+  ]
+}
