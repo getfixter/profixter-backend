@@ -70,6 +70,7 @@ const {
   releaseFullDayCapacity,
 } = require("../utils/fullDayVisitService");
 const { getFullDayVisitSettings } = require("../utils/fullDayVisitSettings");
+const { proposeCheckoutRecovery } = require("../utils/growth/checkoutRecovery");
 
 const ONE_TIME_PRODUCT_KIND = "one_time_handyman_visit";
 
@@ -2412,6 +2413,13 @@ module.exports = async (req, res) => {
           syncResult = await handleOneTimeCheckoutExpired(event.data.object, "expired");
         } else if (isFullDayCheckoutSession(event.data.object)) {
           syncResult = await handleFullDayCheckoutExpired(event.data.object, "expired");
+        } else if (event.data.object?.mode === "subscription") {
+          /*
+           * An abandoned membership checkout. Only a proposal for the growth
+           * engine, which decides whether a recovery email goes out; it never
+           * throws, so it cannot fail this event.
+           */
+          await proposeCheckoutRecovery(event.data.object, findUserForStripeObject);
         }
         break;
 

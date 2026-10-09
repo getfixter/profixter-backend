@@ -23,6 +23,7 @@ const { startSmsJobs } = require("./jobs/smsJobs");
 const { startOverrideRefresh } = require("./utils/communications/templateOverrides");
 const { startGiftLifecycle } = require("./jobs/giftLifecycle");
 const { startLoyaltyReminders } = require("./jobs/loyaltyReminders");
+const { startGrowthJobs } = require("./jobs/growthActions");
 const { startRecentWorkPublisher } = require("./jobs/recentWorkPublisher");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
@@ -203,6 +204,7 @@ app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api", require("./routes/promotionPopup"));
 app.use("/api/admin/overview", require("./routes/adminOverview"));
+app.use("/api/admin/growth", require("./routes/adminGrowth"));
 app.use("/api/admin/calendar", adminCalendarShadow);
 app.use(
   "/api/admin/calendar",
@@ -430,6 +432,14 @@ startSmsJobs();
  * benefit.
  */
 startLoyaltyReminders();
+
+/*
+ * The growth engine: executes approved growth actions, verifies them and
+ * expires stale approvals. Registered unconditionally; with
+ * GROWTH_ACTIONS_ENABLED unset every proposal is recorded in shadow and
+ * nothing executes. See utils/growth/actionEngine.
+ */
+startGrowthJobs();
 
 /*
  * Keep admin-edited message wording warm in memory.
