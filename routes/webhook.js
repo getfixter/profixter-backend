@@ -920,6 +920,50 @@ async function preserveHeldReservationAfterPromotionFailure({ booking, error, se
   return { holdExpiresAt, reservationId: String(reservation._id) };
 }
 
+/**
+ * Server half of Purchase for a single paid visit (One-Time or Full Day).
+ *
+ * The event id is derived from the Stripe session, so the browser's copy on
+ * /book/confirmation (sess_<session id>) deduplicates against this one. The
+ * value is Stripe's amount_total - what was actually charged - never a price
+ * looked up elsewhere. Detached: a Meta outage must never leave a paid
+ * booking unconfirmed.
+ */
+function reportPaidVisitPurchase({ session, user, booking, contentName }) {
+  const primaryAddress =
+    (user.addresses || []).find((a) => String(a._id) === String(booking.addressId)) ||
+    (user.addresses || [])[0] ||
+    null;
+
+  metaCapi.sendDetached({
+    eventName: "Purchase",
+    eventId: `sess_${session.id}`,
+    eventSourceUrl: `${process.env.CLIENT_URL || "https://www.profixter.com"}/book/confirmation`,
+    customData: {
+      currency: String(session.currency || "usd").toUpperCase(),
+      value: Number(session.amount_total || 0) / 100,
+      content_name: contentName,
+      content_type: "product",
+    },
+    user: {
+      email: user.email,
+      phone: user.phone,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+    },
+    address: {
+      city: primaryAddress?.city || user.city,
+      state: primaryAddress?.state || user.state,
+      zip: primaryAddress?.zip || user.zip,
+    },
+    externalId: user.userId || String(user._id),
+    fbp: session.metadata?.fbp,
+    fbc: session.metadata?.fbc,
+    fbclid: user.attribution?.fbclid,
+  });
+}
+
 async function handleOneTimeCheckoutCompleted(session) {
   const metadata = session.metadata || {};
   const bookingId = metadata.bookingId || session.client_reference_id || null;
@@ -1025,38 +1069,7 @@ async function handleOneTimeCheckoutCompleted(session) {
    *
    * Detached: a Meta outage must never leave a paid booking unconfirmed.
    */
-  const primaryAddress =
-    (user.addresses || []).find((a) => String(a._id) === String(booking.addressId)) ||
-    (user.addresses || [])[0] ||
-    null;
-
-  metaCapi.sendDetached({
-    eventName: "Purchase",
-    eventId: `sess_${session.id}`,
-    eventSourceUrl: `${process.env.CLIENT_URL || "https://www.profixter.com"}/book/confirmation`,
-    customData: {
-      currency: String(session.currency || "usd").toUpperCase(),
-      value: Number(session.amount_total || 0) / 100,
-      content_name: "one_time_visit",
-      content_type: "product",
-    },
-    user: {
-      email: user.email,
-      phone: user.phone,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      name: user.name,
-    },
-    address: {
-      city: primaryAddress?.city || user.city,
-      state: primaryAddress?.state || user.state,
-      zip: primaryAddress?.zip || user.zip,
-    },
-    externalId: user.userId || String(user._id),
-    fbp: session.metadata?.fbp,
-    fbc: session.metadata?.fbc,
-    fbclid: user.attribution?.fbclid,
-  });
+  reportPaidVisitPurchase({ session, user, booking, contentName: "one_time_visit" });
 
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
@@ -1313,6 +1326,8 @@ async function handleFullDayCheckoutCompleted(session) {
   }
 
   await sendFullDayPaidEmails({ booking, user, entitlement, session });
+  // Previously no server Purchase at all for the most valuable single sale.
+  reportPaidVisitPurchase({ session, user, booking, contentName: "full_day_visit" });
   return {
     bookingId: String(booking._id),
     entitlementId: entitlement ? String(entitlement._id) : null,
