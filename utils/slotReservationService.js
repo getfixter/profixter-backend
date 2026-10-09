@@ -6,7 +6,10 @@ const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 const User = require("../models/User");
 const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailabilityTemplate");
-const { calculateDayAvailability } = require("./availabilityService");
+const {
+  calculateDayAvailability,
+  isFullDayBooking,
+} = require("./availabilityService");
 const {
   snapshot: bookingSnapshot,
   logBookingChanges,
@@ -23,6 +26,12 @@ const TIMEZONE = "America/New_York";
 const VISIT_DURATION_MINUTES = 90;
 const BUCKET_MINUTES = 15;
 const ACTIVE_RESERVATION_STATUSES = ["held", "reserved"];
+
+// Required on use: fullDayVisitService builds on this module, so a top-level
+// require in the other direction would hand it a half-loaded export object.
+function fullDayService() {
+  return require("./fullDayVisitService");
+}
 const TERMINAL_BOOKING_STATUSES = new Set([
   "canceled",
   "cancelled",
@@ -622,6 +631,7 @@ async function ensureReservationLocks(
     const availability = await getAvailability({
       technicianId: reservation.technicianId,
       slotStart: reservation.slotStart,
+      excludeBookingId: reservation.bookingId,
     });
     if (!availability.available || availability.slot?.totalCapacity <= 0) {
       throw serviceError(
@@ -717,7 +727,11 @@ async function assertNoTechnicianOverlap({
   }
 }
 
-async function availabilityForTechnician({ technicianId, slotStart }) {
+async function availabilityForTechnician({
+  technicianId,
+  slotStart,
+  excludeBookingId = null,
+}) {
   const window = reservationWindow(slotStart);
   let day;
   try {
@@ -744,14 +758,29 @@ async function availabilityForTechnician({ technicianId, slotStart }) {
   const technicianState = slot?.technicians?.find(
     (technician) => String(technician.id) === String(technicianId)
   );
+  /*
+   * A Full Day already owns this Fixter's whole day. Its reservation buckets
+   * normally refuse the write on their own, but the decision cannot rest on
+   * them alone: a Full Day whose reservation was narrowed to its first 90
+   * minutes would otherwise leave the rest of the day open to anyone who asks
+   * the API directly. The booking is the authority on what was sold.
+   */
+  const fullDayConflict = (technicianState?.fullDayBookingIds || []).some(
+    (id) => !excludeBookingId || String(id) !== String(excludeBookingId)
+  );
   const scheduleDiagnostics = day?.scheduleDiagnostics || {};
   const unavailableReason =
+    (fullDayConflict ? "Booked for a Full Day" : "") ||
     technicianState?.unavailableReason ||
     (!slot
       ? `No company start matches ${window.date} ${window.time}; check company hours, day/slot closures, start interval, and 90-minute fit`
       : "Technician is unavailable");
   return {
-    available: !!slot && !!technicianState?.available && slot.totalCapacity > 0,
+    available:
+      !!slot &&
+      !!technicianState?.available &&
+      !fullDayConflict &&
+      slot.totalCapacity > 0,
     reason: unavailableReason,
     slot,
     day,
@@ -814,6 +843,7 @@ function rankEligibleTechnicians(technicians) {
 async function findEligibleTechnicians({
   slotStart,
   excludeReservationId = null,
+  excludeBookingId = null,
   includeDiagnostics = false,
   dependencies = {},
 }) {
@@ -856,6 +886,7 @@ async function findEligibleTechnicians({
       const availability = await getAvailability({
         technicianId: technician._id,
         slotStart: window.slotStart,
+        excludeBookingId,
       });
       const conflict = availability.available
         ? await findOverlap({
@@ -979,11 +1010,24 @@ async function reserveSlotForBooking({
     throw serviceError("BOOKING_INACTIVE", "Canceled or completed bookings cannot be reserved");
   }
   const desiredStart = slotStart || booking.date;
+  if (isFullDayBooking(booking)) {
+    return fullDayService().moveFullDayReservation({
+      booking,
+      technicianId,
+      slotStart: desiredStart,
+      actorUser,
+      createdByType,
+      assignmentSource,
+    });
+  }
   const window = reservationWindow(desiredStart);
 
   let selectedId = technicianId;
   if (!selectedId) {
-    const options = await findEligibleTechnicians({ slotStart: window.slotStart });
+    const options = await findEligibleTechnicians({
+      slotStart: window.slotStart,
+      excludeBookingId: booking._id,
+    });
     selectedId = options.recommended?.id;
     if (!selectedId) {
       throw serviceError("TECHNICIAN_UNAVAILABLE", "No eligible technician is available");
@@ -1001,6 +1045,7 @@ async function reserveSlotForBooking({
   const availability = await availabilityForTechnician({
     technicianId: technician._id,
     slotStart: window.slotStart,
+    excludeBookingId: booking._id,
   });
   if (!availability.available) {
     await logReservationAction({
@@ -1514,6 +1559,19 @@ async function moveReservationForBooking({
   const booking = await Booking.findById(bookingId);
   if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
   const desiredStart = slotStart || booking.date;
+  // A visit is 90 minutes from its start. A Full Day is not, and rebuilding it
+  // from reservationWindow() is exactly how Confirm once shrank a paid Full
+  // Day to 8:00-9:30 and put the rest of the day back on sale.
+  if (isFullDayBooking(booking)) {
+    return fullDayService().moveFullDayReservation({
+      booking,
+      technicianId,
+      slotStart: desiredStart,
+      actorUser,
+      createdByType,
+      assignmentSource,
+    });
+  }
   const window = reservationWindow(desiredStart);
   const technician = await User.findOne({
     _id: technicianId,
@@ -1530,6 +1588,7 @@ async function moveReservationForBooking({
   const availability = await availabilityForTechnician({
     technicianId: technician._id,
     slotStart: window.slotStart,
+    excludeBookingId: booking._id,
   });
   if (!availability.available) {
     throw serviceError("TECHNICIAN_UNAVAILABLE", availability.reason);
@@ -2272,7 +2331,9 @@ module.exports = {
   analyzeReservationBucketAudit,
   analyzeReservationCapacityBucketAudit,
   applyCapacityBucketMove,
+  activeReservationForBooking,
   applyBucketMove,
+  assignmentFields,
   assertNoTechnicianOverlap,
   auditReservationConflicts,
   backfillReservationsForFutureBookings,

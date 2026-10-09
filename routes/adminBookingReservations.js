@@ -30,6 +30,7 @@ router.get(
       const options = await findEligibleTechnicians({
         slotStart: booking.date,
         excludeReservationId: booking.slotReservationId || null,
+        excludeBookingId: booking._id,
       });
       return res.json({
         bookingId: String(booking._id),

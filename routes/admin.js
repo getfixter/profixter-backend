@@ -2293,6 +2293,7 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
     ) {
       const options = await findEligibleTechnicians({
         slotStart: booking.date,
+        excludeBookingId: booking._id,
       });
       if (!options.recommended?.id) {
         return res.status(409).json({
@@ -2576,6 +2577,7 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
         const options = await findEligibleTechnicians({
           slotStart: dateChanged ? parsedDate : booking.date,
           excludeReservationId: booking.slotReservationId || null,
+          excludeBookingId: booking._id,
         });
         technicianId = options.recommended?.id;
       }

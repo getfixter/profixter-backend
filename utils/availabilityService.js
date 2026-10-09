@@ -21,6 +21,22 @@ const NON_OCCUPYING_STATUSES = new Set([
   "no-show",
   "noshow",
 ]);
+const FULL_DAY_BOOKING_TYPE = "full_day_visit";
+
+/*
+ * A Full Day is the Fixter's whole workday, not a visit that starts at 8:00.
+ *
+ * Its `date` is the first start of the day, which is all an ordinary visit
+ * needs to say where it sits. Matching a Full Day on that start alone is what
+ * once let 10:30, 13:00 and 15:30 be sold on a day already sold whole. So a
+ * Full Day occupies every slot of the service day it falls on, for the Fixter
+ * it is assigned to and for one unit of company capacity. It is read from the
+ * booking rather than from its reservation, so a Full Day whose reservation was
+ * ever narrowed still counts as the day it is.
+ */
+function isFullDayBooking(booking) {
+  return booking?.bookingType === FULL_DAY_BOOKING_TYPE;
+}
 
 function foundationError(message) {
   const error = new Error(message);
@@ -325,7 +341,7 @@ async function loadAvailabilityContext({
       date: { $gte: start.toDate(), $lt: endExclusive.toDate() },
     })
       .select(
-        "_id bookingNumber date status service assignedFixterId assignedFixterName name"
+        "_id bookingNumber date status service bookingType assignedFixterId assignedFixterName name"
       )
       .lean(),
     CalendarDayNote.find({ date: dateRange }).lean(),
@@ -533,8 +549,15 @@ function calculateDayFromContext({
     const availableTechnicians = technicians.filter((technician) =>
       technicianAvailability.get(String(technician._id))?.has(companySlot.time)
     );
+    // What is listed against this slot: the bookings that start in it.
     const slotBookings = occupyingBookings.filter(
       (booking) => bookingTime(booking, timezone) === companySlot.time
+    );
+    // What is using this slot's capacity: those, plus any Full Day that day.
+    const slotOccupants = occupyingBookings.filter(
+      (booking) =>
+        isFullDayBooking(booking) ||
+        bookingTime(booking, timezone) === companySlot.time
     );
     const configuredCapacity = applyCapacity(
       companySlot.capacity,
@@ -547,7 +570,7 @@ function calculateDayFromContext({
           ? 1
           : 0
         : Math.min(configuredCapacity, availableTechnicians.length);
-    const usedCapacity = slotBookings.length;
+    const usedCapacity = slotOccupants.length;
     const slotStart = moment.tz(
       `${date} ${companySlot.time}`,
       "YYYY-MM-DD HH:mm",
@@ -584,10 +607,17 @@ function calculateDayFromContext({
                   technician.employeeAvailabilityStatus || "Available",
                 available: state.available,
                 unavailableReason: state.unavailableReason,
-                booked: slotBookings.some(
+                booked: slotOccupants.some(
                   (booking) =>
                     String(booking.assignedFixterId || "") === id
                 ),
+                fullDayBookingIds: slotOccupants
+                  .filter(
+                    (booking) =>
+                      isFullDayBooking(booking) &&
+                      String(booking.assignedFixterId || "") === id
+                  )
+                  .map((booking) => String(booking._id)),
               };
             }),
             bookings: slotBookings.map((booking) => ({
@@ -747,11 +777,13 @@ async function calculateMonthSummary({
 
 module.exports = {
   CANCELED_STATUSES,
+  FULL_DAY_BOOKING_TYPE,
   NON_OCCUPYING_STATUSES,
   applyAvailabilityOverride,
   applyCapacity,
   calculateDayAvailability,
   calculateDayFromContext,
+  isFullDayBooking,
   calculateMonthSummary,
   generateSlots,
   generateSlotsFromStarts,

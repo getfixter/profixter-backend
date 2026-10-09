@@ -3,7 +3,9 @@ const moment = require("moment-timezone");
 const Booking = require("../models/Booking");
 const BookingSlotReservation = require("../models/BookingSlotReservation");
 const CalendarConfig = require("../models/CalendarConfig");
+const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
 const ReservationTimeBucket = require("../models/ReservationTimeBucket");
+const User = require("../models/User");
 const SlotCounter = require("../models/SlotCounter");
 const {
   calculateDayFromContext,
@@ -13,13 +15,18 @@ const { hoursForDate, hhmmInTZ, leadDays, ymdInTZ } = require("./legacyCalendarS
 const { logBookingCreated, logReservationAction } = require("./bookingHistory");
 const { runReservationTransaction } = require("./reservationTransaction");
 const {
+  activeReservationForBooking,
+  applyBucketMove,
+  assignmentFields,
   blockingReservationFilter,
+  bucketDocuments,
   createReservationBuckets,
   deleteReservationBuckets,
   isTerminalBookingStatus,
   rankEligibleTechnicians,
   releaseExpiredHolds,
   reservationEngineEnabled,
+  resetBookingReminderEmailStateForDateChange,
 } = require("./slotReservationService");
 
 const TIMEZONE = "America/New_York";
@@ -578,6 +585,192 @@ async function createFullDayBooking({
   );
 }
 
+/**
+ * Put a Full Day on a Fixter's whole workday: the one Admin picks, on the day
+ * asked for.
+ *
+ * This is the Full Day's version of moveReservationForBooking, and it is what
+ * Confirm, reassign and reschedule reach when the booking is a Full Day. The
+ * generic move rebuilds every reservation as 90 minutes from its start, which
+ * is right for a visit and turned a paid Full Day into an 8:00 visit with the
+ * rest of the day back on sale. Here the span always comes from that day's
+ * configured hours, so confirming a Full Day keeps it a Full Day, and running it
+ * against one that was already narrowed widens it back.
+ *
+ * No customer booking window applies. Admin moves of visits do not check one
+ * either, and a confirmed Full Day two days out is still a Full Day.
+ */
+async function moveFullDayReservation({
+  booking,
+  technicianId = null,
+  slotStart = null,
+  actorUser = null,
+  createdByType = "admin",
+  assignmentSource = "admin",
+  now = new Date(),
+}) {
+  if (isTerminalBookingStatus(booking.status)) {
+    throw serviceError(
+      "BOOKING_INACTIVE",
+      "Canceled or completed bookings cannot be reserved"
+    );
+  }
+  const date = moment(slotStart || booking.date).tz(TIMEZONE).format("YYYY-MM-DD");
+  const context = await loadAvailabilityContext({
+    from: date,
+    to: date,
+    scope: "company",
+  });
+  // The day as it would look without this booking, so a Full Day does not
+  // stand in its own way.
+  const ownId = String(booking._id);
+  const detail = calculateDayFromContext({
+    date,
+    context: {
+      ...context,
+      bookings: (context.bookings || []).filter(
+        (entry) => String(entry._id) !== ownId
+      ),
+    },
+    now,
+    includeDetails: true,
+  });
+  const span = workdaySpan(detail, date, context.timezone || TIMEZONE);
+  if (!span) {
+    throw serviceError("TECHNICIAN_UNAVAILABLE", "Closed that day");
+  }
+
+  const wholeDayFree = (context.technicians || []).filter((technician) =>
+    detail.slots.every((slot) => {
+      const state = technicianStateFor(slot, technician._id);
+      return !!state?.available && !state.booked;
+    })
+  );
+  const keepCurrent =
+    booking.assignedFixterId &&
+    wholeDayFree.some(
+      (technician) => String(technician._id) === String(booking.assignedFixterId)
+    );
+  const chosenId =
+    technicianId || (keepCurrent ? booking.assignedFixterId : wholeDayFree[0]?._id);
+  if (!chosenId) {
+    throw serviceError("TECHNICIAN_UNAVAILABLE", "No Fixter is free for the whole day");
+  }
+  const technician = await User.findOne({
+    _id: chosenId,
+    role: "employee",
+    isActive: { $ne: false },
+    employeePosition: { $in: ["Fixter", "General Fixter"] },
+  }).lean();
+  if (!technician) {
+    throw serviceError("TECHNICIAN_UNAVAILABLE", "Technician is invalid or inactive");
+  }
+  if (
+    !wholeDayFree.some((entry) => String(entry._id) === String(technician._id))
+  ) {
+    throw serviceError(
+      "TECHNICIAN_UNAVAILABLE",
+      `${technician.name || "That Fixter"} is not free for the whole day`
+    );
+  }
+
+  const actor = historyActor({ actorUser, createdByType });
+  try {
+    return await runReservationTransaction(async (session) => {
+      await releaseExpiredHolds(session, now);
+      const transactionalBooking = await Booking.findById(booking._id).session(session);
+      if (!transactionalBooking || isTerminalBookingStatus(transactionalBooking.status)) {
+        throw serviceError(
+          "BOOKING_INACTIVE",
+          "Canceled or completed bookings cannot be reserved"
+        );
+      }
+      let reservation = await activeReservationForBooking(booking._id, session);
+      const oldDescription = reservation
+        ? `${transactionalBooking.assignedFixterName || "Technician"} - ${reservation.slotStart.toISOString()}-${reservation.slotEnd.toISOString()}`
+        : "None";
+
+      if (reservation) {
+        const oldBuckets = await ReservationTimeBucket.find({
+          reservationId: reservation._id,
+        }).session(session);
+        // The unique (technicianId, bucketStart) index decides here, exactly as
+        // it does when a Full Day is first booked.
+        await applyBucketMove({
+          oldBuckets,
+          desiredDocuments: bucketDocuments({
+            technicianId: technician._id,
+            reservationId: reservation._id,
+            bookingId: transactionalBooking._id,
+            slotStart: span.start,
+            slotEnd: span.end,
+            status: reservation.status,
+            expiresAt: reservation.holdExpiresAt,
+          }),
+          session,
+        });
+        // A Full Day is held by its Fixter's buckets, as when it is created.
+        // Company buckets left by a 90-minute rebuild are not part of it.
+        await ReservationCapacityBucket.deleteMany({
+          reservationId: reservation._id,
+        }).session(session);
+        reservation.kind = "full_day";
+        reservation.technicianId = technician._id;
+        reservation.slotStart = span.start;
+        reservation.slotEnd = span.end;
+        await reservation.save({ session });
+      } else {
+        [reservation] = await BookingSlotReservation.create(
+          [
+            {
+              bookingId: transactionalBooking._id,
+              technicianId: technician._id,
+              kind: "full_day",
+              slotStart: span.start,
+              slotEnd: span.end,
+              timezone: TIMEZONE,
+              status: "reserved",
+              createdByType,
+              createdBy: actorUser?._id || null,
+            },
+          ],
+          { session }
+        );
+        await createReservationBuckets({ reservation, session });
+      }
+
+      Object.assign(
+        transactionalBooking,
+        assignmentFields(technician, reservation, assignmentSource)
+      );
+      resetBookingReminderEmailStateForDateChange(transactionalBooking, span.start);
+      transactionalBooking.date = span.start;
+      await transactionalBooking.save({ session });
+      await logReservationAction({
+        bookingId: transactionalBooking._id,
+        actionType: "reservation_moved",
+        summary: "Full Day reservation set",
+        actor,
+        changes: [
+          {
+            field: "reservation",
+            label: "Reservation",
+            oldValue: oldDescription,
+            newValue: `${technician.name} - Full Day ${span.start.toISOString()}-${span.end.toISOString()}`,
+          },
+        ],
+        session,
+      });
+      return { booking: transactionalBooking, reservation, technician, span };
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw serviceError("SLOT_CONFLICT", "Technician slot was reserved concurrently");
+    }
+    throw error;
+  }
+}
+
 /** Give a Full Day's time back, whichever engine is holding it. */
 async function releaseFullDayCapacity(booking) {
   if (!booking) return;
@@ -619,6 +812,7 @@ module.exports = {
   legacyDayAvailable,
   legacyDayLoad,
   legacySpan,
+  moveFullDayReservation,
   releaseFullDayCapacity,
   releaseLegacyFullDay,
   stampLegacyFullDay,
