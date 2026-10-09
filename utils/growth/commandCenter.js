@@ -8,6 +8,7 @@ const { customerMonthAvailability } = require("../customerCalendarService");
 const { countyForZip } = require("../serviceArea");
 const { clampMode, listDefinitions } = require("./actionRegistry");
 const { engineEnabled } = require("./actionEngine");
+const { buildVisibilitySummary } = require("../visibility/summary");
 require("./actions");
 
 /**
@@ -226,7 +227,7 @@ function buildAlerts({ capacity, queue, policies, registrationsLast72h, now }) {
 async function buildCommandCenter({ now = new Date() } = {}) {
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-  const [capacity, pending, recent, shadow, statusCounts, policies, outcomes, waitlist, registrationsLast72h] =
+  const [capacity, pending, recent, shadow, statusCounts, policies, outcomes, waitlist, registrationsLast72h, visibility] =
     await Promise.all([
       capacityOutlook({ now }).catch((error) => ({ error: error.message, signal: "unknown" })),
       GrowthAction.find({ status: "awaiting_approval" }).sort({ createdAt: 1 }).limit(50).lean(),
@@ -246,6 +247,8 @@ async function buildCommandCenter({ now = new Date() } = {}) {
         createdAt: { $gte: new Date(now.getTime() - 72 * 60 * 60 * 1000) },
         role: { $nin: ["employee", "admin"] },
       }),
+      // Never throws; each part degrades to { available: false, reason }.
+      buildVisibilitySummary({ now }).catch((error) => ({ error: error.message })),
     ]);
 
   const queue = {
@@ -263,6 +266,7 @@ async function buildCommandCenter({ now = new Date() } = {}) {
     policies,
     outcomes: { checkoutRecovery: outcomes },
     waitlist,
+    visibility,
     alerts: buildAlerts({ capacity, queue, policies, registrationsLast72h, now }),
   };
 }
