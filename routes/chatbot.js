@@ -425,6 +425,18 @@ router.post(
   }
 );
 
+const LEAD_CLIENT_FIELDS = [
+  "name",
+  "email",
+  "phone",
+  "address_line1",
+  "city",
+  "state",
+  "zip",
+  "county",
+  "source",
+];
+
 // ========== MAIN ENDPOINT ==========
 router.post("/message", async (req, res) => {
   console.log("💬 New chatbot request:", req.body?.visitorId, req.body?.channel);
@@ -457,12 +469,20 @@ router.post("/message", async (req, res) => {
       if (countyGuess.includes("suffolk")) detectedCounty = "Suffolk";
       if (!detectedCounty) status = "waitlist";
 
+      // Only contact fields the visitor can legitimately supply. Spreading the
+      // raw body let a client set status, convertedAt, tags or follow-up stamps.
+      const contactFields = {};
+      for (const key of LEAD_CLIENT_FIELDS) {
+        if (lead[key] == null) continue;
+        contactFields[key] = String(lead[key]).trim().slice(0, 200);
+      }
+
       leadDoc = await Lead.findOneAndUpdate(
         { $or: identity },
         {
           $set: {
-            ...lead,
-            county: detectedCounty || lead.county || null,
+            ...contactFields,
+            county: detectedCounty || contactFields.county || null,
             status,
             channel,
             lastContactAt: new Date(),

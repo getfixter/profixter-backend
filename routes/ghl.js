@@ -1,7 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const RepAttribution = require("../models/RepAttribution");
+const crypto = require("crypto");
 const { normalizeEmail, normalizePhone } = require("../utils/identity");
+
+function secretsMatch(provided, expected) {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 function verifyGhlWebhook(req, res, next) {
   const provided = req.headers["x-ghl-secret"];
@@ -12,7 +19,7 @@ function verifyGhlWebhook(req, res, next) {
     return res.status(500).json({ message: "Server misconfigured" });
   }
 
-  if (!provided || provided !== expected) {
+  if (!provided || !secretsMatch(String(provided), expected)) {
     return res.status(401).json({ message: "Unauthorized" });
   }
 
@@ -53,14 +60,20 @@ router.post("/lead-assigned", verifyGhlWebhook, async (req, res) => {
       tags,
     } = req.body || {};
 
-    console.log("📥 GHL webhook headers:", req.headers);
-console.log("📥 GHL webhook body:", req.body);
+    // Never log req.headers (it carries x-ghl-secret) or req.body (contact
+    // PII). Ids and presence flags are enough to trace a delivery.
+    console.log("📥 GHL lead-assigned:", {
+      ghlContactId: ghlContactId ? String(ghlContactId) : null,
+      hasPhone: Boolean(phone),
+      hasEmail: Boolean(email),
+      rep: repName ? String(repName) : null,
+    });
 
-if (!phone) {
-  return res.status(400).json({
-    message: "phone is required",
-  });
-}
+    if (!phone) {
+      return res.status(400).json({
+        message: "phone is required",
+      });
+    }
 
     const phoneNormalized = normalizePhone(phone);
     const emailNormalized = normalizeEmail(email);
