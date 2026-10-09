@@ -46,6 +46,8 @@ const SUITES = [
   "test_admin_overview_finance.js",
   "test_meta_ad_spend.js",
   "test_visibility.js",
+  // Trust ladder, idempotency and consent re-checks of the growth engine (in-memory Mongo, like the Overview suites).
+  "test_growth_engine_integration.js",
   "test_admin_access.js",
   "test_attribution.js",
   "test_transactional_email_system.js",
