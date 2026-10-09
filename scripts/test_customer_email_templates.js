@@ -41,10 +41,6 @@ const customerTemplateKeys = [
   "subscription_cancellation_scheduled",
   "subscription_canceled",
   "payment_failed",
-  "nurture_1",
-  "nurture_2",
-  "nurture_3",
-  "nudge_subscribe",
   "password_otp",
   "password_changed",
 ];

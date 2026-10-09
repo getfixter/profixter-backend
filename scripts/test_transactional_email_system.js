@@ -297,6 +297,10 @@ test("templates with no call site were removed", () => {
   for (const key of [
     "estimate_lead_admin",
     "exterior_lead_admin",
+    "nudge_subscribe",
+    "nurture_1",
+    "nurture_2",
+    "nurture_3",
     "password_reset",
     "promo_generic",
     "service_request_admin",

@@ -243,10 +243,6 @@ const EMAIL_DEFINITIONS = {
   },
 
   /* ----------------------------- Nurture ----------------------------- */
-  nudge_subscribe: { label: "Membership nudge", channelClass: "marketing", preheader: "Home help, handled.", tokens: membershipTokens },
-  nurture_1: { label: "Nurture 1", channelClass: "marketing", preheader: "We are here when you need us.", tokens: () => ({}) },
-  nurture_2: { label: "Nurture 2", channelClass: "marketing", preheader: "A little help goes a long way.", tokens: () => ({}) },
-  nurture_3: { label: "Nurture 3", channelClass: "marketing", preheader: "No pressure, just here.", tokens: () => ({}) },
 
   /* ------------------------------ Gifts ------------------------------ */
   gift_invitation: {

@@ -846,17 +846,6 @@ const TEMPLATES = {
   }),
 
 
-  nudge_subscribe: ({ name = "there" }) => ({
-    subject: "Make home care easy — choose your Profixter plan",
-    html: frame(`
-      <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Hey ${name}, ready to start with Profixter?</h2>
-      <p>Choose a plan to unlock easy, reliable, personal handyman help. We recommend <strong>Premium</strong> for the best value and quicker turnarounds.</p>
-      <p style="margin:14px 0 0;">${btn(URLS.plans, "See plans & subscribe")}</p>
-      <p style="margin-top:14px; font-size:14px; color:${BRAND.gray700};">
-        Earn <strong>$20</strong> when a friend joins, and ask about our <strong>2+ address</strong> discount.
-      </p>
-    `, { preheader: "Choose a plan to start booking home maintenance visits." }),
-  }),
 
 
 
@@ -957,78 +946,8 @@ const TEMPLATES = {
       footer: "Your running tip total is on the Tips tab of your Profixter workspace.",
     }),
 
-  nurture_1: ({ name = "there" }) => ({
-    subject: `Ready when you are, ${name}`,
-    html: frame(`
-    <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">You're all set, ${name}.</h2>
 
-    <p style="margin:0 0 12px">
-      Your Profixter account is ready. The next step is choosing a plan so you can start booking visits.
-    </p>
 
-    <p style="margin:0 0 12px">
-      Here's how it works: pick a plan, book a visit, and we'll send a skilled pro to your door.
-      Each visit focuses on one clear task — up to 90 minutes. Best for planned home maintenance and small repairs.
-    </p>
-
-    <p style="margin:0 0 14px; color:${BRAND.gray700};">
-      Most homeowners start with Basic, then upgrade once they see how smooth the process is.
-    </p>
-
-    <div style="margin:16px 0; text-align:center;">
-      ${btn(URLS.plans, "See plans & get started")}
-    </div>
-  `, { preheader: "Your Profixter account is set up. Here's what to do next." }),
-  }),
-
-  nurture_2: ({ name = "there" }) => ({
-    subject: "What a Profixter visit actually looks like",
-    html: frame(`
-    <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">Here's what a visit looks like.</h2>
-
-    <p style="margin:0 0 12px">
-      Each Profixter visit focuses on one clear task — up to 90 minutes, with a 30-minute arrival window.
-    </p>
-
-    <p style="margin:0 0 12px">
-      It's designed for planned home maintenance and small repairs: fixing a leaky faucet, patching drywall,
-      mounting a TV, caulking, door adjustments, and similar work.
-    </p>
-
-    <p style="margin:0 0 14px; color:${BRAND.gray700};">
-      If the task fits the visit scope, we'll handle it. If it's larger or more complex,
-      we'll let you know upfront before starting — no surprises.
-    </p>
-
-    <div style="margin:16px 0; text-align:center;">
-      ${btn(URLS.plans, "Choose your plan")}
-    </div>
-  `, { preheader: "One task, one visit, up to 90 minutes — here's what to expect." }),
-  }),
-
-  nurture_3: ({ name = "there" }) => ({
-    subject: "Last email from us — your account stays saved",
-    html: frame(`
-    <h2 style="font-size:22px;font-weight:800;margin:0 0 8px">This is our last email about plans.</h2>
-
-    <p style="margin:0 0 12px">
-      We know your inbox is busy. If Profixter isn't right for you right now, that's completely fine.
-    </p>
-
-    <p style="margin:0 0 12px; color:${BRAND.gray700};">
-      Your account stays saved — your addresses, your history, everything.
-      Whenever something comes up around the house, you can subscribe and book a visit in minutes.
-    </p>
-
-    <p style="margin:0 0 14px; color:${BRAND.gray700};">
-      If now works, here's where to start.
-    </p>
-
-    <div style="margin:16px 0; text-align:center;">
-      ${btn(URLS.plans, "View plans", "dark")}
-    </div>
-  `, { preheader: "No pressure. But if you ever need home help, we're here." }),
-  }),
 };
 
 Object.assign(

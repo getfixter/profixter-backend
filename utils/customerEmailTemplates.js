@@ -695,57 +695,9 @@ function createCustomerEmailTemplates({
       });
     },
 
-    nudge_subscribe: ({ name = "there" }) =>
-      email({
-        subject: "Your Profixter account is ready when you need it",
-        preheader: "A simple overview of Profixter membership options.",
-        content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Home maintenance when you need it</h1>
-          <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Your Profixter account is ready. A membership lets you schedule planned home-maintenance and small-repair visits with a local team.</p>
-          <p style="margin:0;">You can compare the available options whenever the timing is right for your home.</p>
-          ${button(urls.plans, "View membership options")}`,
-        text: `${greeting(name)}\n\nYour Profixter account is ready. A membership lets you schedule planned home-maintenance and small-repair visits.\n\nView membership options: ${urls.plans}\n\n${SUPPORT_EMAIL}`,
-      }),
 
-    nurture_1: ({ name = "there" }) =>
-      email({
-        subject: "Getting started with Profixter",
-        preheader: "Here is how a Profixter membership works.",
-        content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Getting started</h1>
-          <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">Your account is set up. When you are ready, choose a membership and schedule a visit for one clear home-maintenance or small-repair task.</p>
-          <p style="margin:0;">Each visit includes up to 90 minutes of labor. You choose the date, describe the task, and add photos so the team can prepare.</p>
-          ${button(urls.plans, "Explore membership options")}`,
-        text: `${greeting(name)}\n\nYour Profixter account is set up. Choose a membership when you are ready to schedule home-maintenance or small-repair visits.\n\nEach visit includes up to 90 minutes of labor.\n\nExplore membership options: ${urls.plans}\n\n${SUPPORT_EMAIL}`,
-      }),
 
-    nurture_2: ({ name = "there" }) =>
-      email({
-        subject: "What to expect from a Profixter visit",
-        preheader: "One clear task and up to 90 minutes of labor.",
-        content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">What to expect from a visit</h1>
-          <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">A Profixter visit focuses on one clear task and includes up to 90 minutes of labor.</p>
-          <p style="margin:0;">Typical visits include fixture replacement, minor plumbing repairs, drywall patches, mounting, caulking, door adjustments, and similar planned work. If a task is outside the visit scope, the team will explain that before work begins.</p>
-          ${button(urls.plans, "View membership options")}`,
-        text: `${greeting(name)}\n\nA Profixter visit focuses on one clear task and includes up to 90 minutes of labor.\n\nTypical visits cover planned maintenance and small repairs. If a task is outside the visit scope, we will explain that before work begins.\n\nView membership options: ${urls.plans}\n\n${SUPPORT_EMAIL}`,
-      }),
 
-    nurture_3: ({ name = "there" }) =>
-      email({
-        subject: "Your Profixter account will remain available",
-        preheader: "Your account will be here whenever you need home help.",
-        content: `
-          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your account will remain available</h1>
-          <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">This is the last message in our getting-started series.</p>
-          <p style="margin:0;">Your account and saved address will remain available. If a home-maintenance task comes up later, you can review membership options and schedule a visit then.</p>
-          ${button(urls.plans, "View membership options")}`,
-        text: `${greeting(name)}\n\nThis is the last message in our getting-started series. Your Profixter account and saved address will remain available.\n\nView membership options: ${urls.plans}\n\n${SUPPORT_EMAIL}`,
-      }),
   };
 }
 
