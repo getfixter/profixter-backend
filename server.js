@@ -475,6 +475,10 @@ startGiftLifecycle();
 require("./utils/analytics/stripeRevenue").startRevenueLedgerSync();
 /* Meta ad spend for CAC/ROAS. No-op unless META_ADS_SYNC_ENABLED and META_ADS_ACCOUNT_ID are set. */
 require("./utils/analytics/metaAdSpend").startMetaAdSpendSync();
+/* Read-only: which events the live Meta campaigns optimise for (logged as meta_campaign_audit). */
+require("./utils/analytics/metaCampaignAudit").startMetaCampaignAudit();
+/* Logs the Command Center aggregates once after boot (growth_self_check) - no personal data. */
+require("./utils/growth/selfCheck").scheduleSelfCheck();
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
