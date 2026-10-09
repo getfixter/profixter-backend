@@ -548,6 +548,9 @@ router.post("/register", async (req, res) => {
         customData: {
           content_name: "account_created",
           status: "new_account",
+          // Matches the browser Lead (same event id), so a Meta custom
+          // conversion on lead_type=account counts whichever copy arrives first.
+          lead_type: "account",
           utm_source: user.attribution?.utmSource || undefined,
           utm_campaign: user.attribution?.utmCampaign || undefined,
         },
