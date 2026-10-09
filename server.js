@@ -469,6 +469,8 @@ startGiftLifecycle();
  * copy, so opening it never waits on a year of Stripe pages.
  */
 require("./utils/analytics/stripeRevenue").startRevenueLedgerSync();
+/* Meta ad spend for CAC/ROAS. No-op unless META_ADS_SYNC_ENABLED and META_ADS_ACCOUNT_ID are set. */
+require("./utils/analytics/metaAdSpend").startMetaAdSpendSync();
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
