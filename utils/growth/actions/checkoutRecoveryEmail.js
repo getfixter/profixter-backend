@@ -35,7 +35,6 @@ const { defineAction } = require("../actionRegistry");
  */
 
 const TYPE = "checkout_recovery_email";
-const TEMPLATE_KEY = "growth:checkout_recovery_v1";
 const REMIND_AT_MOST_EVERY_DAYS = 30;
 const PLAN_LABELS = { basic: "Basic", plus: "Plus", premium: "Premium", elite: "Elite" };
 
@@ -125,7 +124,7 @@ async function execute(payload, { action, now }) {
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
     logContext: {
-      templateKey: TEMPLATE_KEY,
+      templateKey: "growth:checkout_recovery_v1",
       emailType: "marketing",
       source: "growth_engine",
       userId: user.userId || String(user._id),

@@ -94,4 +94,105 @@ router.put("/policies/:type", ownerOnly, async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* Agents                                                              */
+/* ------------------------------------------------------------------ */
+
+const AgentRun = require("../models/AgentRun");
+const AgentFinding = require("../models/AgentFinding");
+const { AGENTS } = require("../utils/agents/definitions");
+const { agentsEnabled, dailyBudgetCents, runAgent } = require("../utils/agents/runtime");
+
+const SCHEDULES = {
+  growth_intelligence: "Daily 7:40am check; weekly owner report Mondays 8:10am",
+  visibility: "Mondays 9:30am",
+  marketing: "Daily 9:00am once Meta spend is connected (Mondays until then)",
+};
+
+router.get("/agents", canRead, async (req, res) => {
+  try {
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const [runs, monthCost, openCounts] = await Promise.all([
+      AgentRun.find({}).sort({ startedAt: -1 }).limit(60).lean(),
+      AgentRun.aggregate([{ $match: { startedAt: { $gte: monthStart } } }, { $group: { _id: "$agent", cents: { $sum: "$costCents" }, runs: { $sum: 1 } } }]),
+      AgentFinding.aggregate([{ $match: { status: "open" } }, { $group: { _id: "$agent", n: { $sum: 1 } } }]),
+    ]);
+    const cost = Object.fromEntries(monthCost.map((r) => [r._id, r]));
+    const open = Object.fromEntries(openCounts.map((r) => [r._id, r.n]));
+    res.json({
+      enabled: agentsEnabled(),
+      dailyBudgetCents: dailyBudgetCents(),
+      agents: Object.values(AGENTS).map((a) => ({
+        name: a.name,
+        label: a.label,
+        schedule: SCHEDULES[a.name] || "",
+        budgetCents: a.budgetCents,
+        allowedActions: a.allowedActions,
+        monthCostCents: Math.round((cost[a.name]?.cents || 0) * 100) / 100,
+        monthRuns: cost[a.name]?.runs || 0,
+        openFindings: open[a.name] || 0,
+        runs: runs
+          .filter((r) => r.agent === a.name)
+          .slice(0, 8)
+          .map((r) => ({
+            id: String(r._id),
+            startedAt: r.startedAt,
+            status: r.status,
+            skipReason: r.skipReason,
+            costCents: r.costCents,
+            turns: r.turns,
+            tools: r.toolCalls?.length || 0,
+            findings: r.findings?.length || 0,
+            actions: r.actions?.length || 0,
+            summary: r.summary,
+            error: r.error,
+          })),
+      })),
+    });
+  } catch (error) {
+    fail(res, error, "Could not load agents.");
+  }
+});
+
+router.get("/findings", canRead, async (req, res) => {
+  try {
+    const filter = {};
+    if (["open", "acknowledged", "resolved", "dismissed", "superseded"].includes(String(req.query.status))) filter.status = String(req.query.status);
+    if (req.query.kind) filter.kind = String(req.query.kind).slice(0, 40);
+    const rows = await AgentFinding.find(filter).sort({ updatedAt: -1 }).limit(Math.min(Number(req.query.limit) || 50, 200)).lean();
+    res.json({ findings: rows.map(({ __v, ...f }) => ({ ...f, id: String(f._id) })) });
+  } catch (error) {
+    fail(res, error, "Could not load findings.");
+  }
+});
+
+router.post("/findings/:id/status", ownerOnly, async (req, res) => {
+  try {
+    const status = String(req.body?.status || "");
+    if (!["acknowledged", "dismissed", "resolved", "open"].includes(status)) return res.status(400).json({ message: "Bad status" });
+    const actor = ownerActor(req);
+    const f = await AgentFinding.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status, statusNote: String(req.body?.note || "").slice(0, 500), statusBy: actor.name } },
+      { new: true }
+    ).lean();
+    if (!f) return res.status(404).json({ message: "Not found" });
+    res.json({ finding: { ...f, id: String(f._id) } });
+  } catch (error) {
+    fail(res, error, "Could not update that finding.");
+  }
+});
+
+/** Run an agent now. Returns at once; the run appears in GET /agents when done. */
+router.post("/agents/:name/run", ownerOnly, async (req, res) => {
+  const def = AGENTS[req.params.name];
+  if (!def) return res.status(404).json({ message: "Unknown agent" });
+  if (!agentsEnabled()) return res.status(409).json({ message: "Agents are switched off (AGENTS_ENABLED / ANTHROPIC_API_KEY)." });
+  const mode = req.body?.mode === "weekly" ? "weekly" : "daily";
+  runAgent(def, { trigger: "manual", mode }).catch((error) => console.error("Manual agent run failed:", error.message));
+  res.status(202).json({ started: true });
+});
+
 module.exports = router;

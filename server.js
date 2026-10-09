@@ -25,6 +25,7 @@ const { startGiftLifecycle } = require("./jobs/giftLifecycle");
 const { startLoyaltyReminders } = require("./jobs/loyaltyReminders");
 const { startGrowthJobs } = require("./jobs/growthActions");
 const { startVisibilityJobs } = require("./jobs/visibility");
+const { startAgentJobs } = require("./jobs/agents");
 const { startRecentWorkPublisher } = require("./jobs/recentWorkPublisher");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
@@ -444,6 +445,9 @@ startGrowthJobs();
 
 /* Visibility collectors for the Command Center (reviews daily; Search Console, local rank and AI answers only when configured). See jobs/visibility. */
 startVisibilityJobs();
+
+/* The three growth agents. Inert until AGENTS_ENABLED=true and ANTHROPIC_API_KEY are set; see utils/agents. */
+startAgentJobs();
 
 /*
  * Keep admin-edited message wording warm in memory.

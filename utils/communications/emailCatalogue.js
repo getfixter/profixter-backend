@@ -303,6 +303,32 @@ const NON_REGISTRY_EMAILS = {
       "preview every campaign and see exactly who would receive what through " +
       "Marketing > Campaigns and the dry run, but cannot edit the wording.",
   },
+
+  /* ------------------------- growth engine and agents ------------------------ */
+  "growth:checkout_recovery_v1": {
+    label: "Abandoned checkout reminder",
+    category: "A",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Customer",
+    channelClass: "marketing",
+    trigger:
+      "A membership checkout expired unpaid. Sent only through the growth engine (Admin > Growth), " +
+      "under its trust policy: watch-only until automations are switched on, then approval until trusted.",
+    source: "utils/growth/actions/checkoutRecoveryEmail.js",
+    protectedNote:
+      "Marketing rules apply: marketable account, not unsubscribed, one-click unsubscribe, at most one " +
+      "per person per 30 days. Copy lives in code next to those checks.",
+  },
+  "agent:owner_report": {
+    label: "Growth agent report / alert to the owner",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Owner (MAIL_ADMIN)",
+    channelClass: "operational",
+    trigger: "The Growth Intelligence agent's weekly report (once per ISO week) or an urgent alert (max 2 a day).",
+    source: "utils/agents/tools.js",
+    protectedNote: "Written by the agent from aggregate business data; never sent to a customer.",
+  },
 };
 
 /** True when a logged key belongs to a dynamic family rather than a literal. */
