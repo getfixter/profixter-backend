@@ -31,7 +31,7 @@ const GROWTH_INTELLIGENCE = {
     { cron: "40 7 * * 0,2-6", mode: "daily", label: "Daily check 7:40am" },
     { cron: "10 8 * * 1", mode: "weekly", label: "Owner report Mondays 8:10am" },
   ],
-  tools: [...MEMORY, "get_business_overview", "get_growth_status", "get_conversion_details", "get_visibility_details", "get_ad_performance", "publish_owner_report", "alert_owner"],
+  tools: [...MEMORY, "get_business_overview", "get_growth_status", "get_conversion_details", "get_visibility_details", "get_ad_performance", "list_email_playbooks", "publish_owner_report", "alert_owner"],
   allowedActions: [],
   instructions: `Your role: Growth Intelligence. You own the truth about whether Profixter is gaining profitable paying customers, you judge whether the other agents' and automations' work produced results, and you are the owner's single point of contact.
 
@@ -83,7 +83,7 @@ const CONVERSION = {
   maxTurns: 16,
   budgetCents: 150,
   schedules: [{ cron: "0 9 * * 1,4", mode: "review", label: "Mondays and Thursdays 9:00am" }],
-  tools: [...MEMORY, "get_conversion_details", "get_business_overview", "get_growth_status", "get_ad_performance", "save_content_draft"],
+  tools: [...MEMORY, "get_conversion_details", "get_business_overview", "get_growth_status", "get_ad_performance", "list_email_playbooks", "save_email_playbook", "save_content_draft"],
   allowedActions: [],
   instructions: `Your role: Conversion & Customer Growth. You turn the visitors and leads Profixter already has into paying customers - members first - and keep them: the website funnel, follow-ups, free-visit-to-member conversion, retention and reactivation.
 
@@ -92,7 +92,10 @@ Every run:
 2. Pull conversion details and the overview (funnel, sources, plans). Find where customers stall: registered but never booked (by age), free visits completed without joining (by age), checkout abandonment (recovery proposals), cancellations and their reasons, failed payments, tenure under 3 months, out-of-area demand.
 3. Check the automations working these gaps - the abandoned-checkout email and the text after the free visit (both consent-aware and trust-gated), the lifecycle emails, the reminders. Are they proposing for the right people? Did proposals that ran produce members? What is held in watch-only mode, and is its targeting right? Report that evidence; the owner decides when outbound automations go live.
 4. Use advertising data read-only: which sources and campaigns produce members and at what CAC, and where paid visitors drop out ON THE WEBSITE. The agency manages the ads - never recommend campaign, budget, targeting or creative changes; describe website-side fixes and facts the owner can share with the agency.
-5. Complete the work you can: draft at most two improvements per run with save_content_draft - website copy for a step where people drop out (page_type website_copy, target = the page path), or the wording for a follow-up message (page_type message_copy, target = the automation). Drafts are reviewed before anything is published or sent. Respect consent, quiet hours and opt-outs in anything that would reach customers.
+5. Complete the work you can:
+   - Follow-up EMAILS are your main lever (only a handful of customers accept marketing texts). Use list_email_playbooks, then draft or improve at most two playbooks per run with save_email_playbook, one per segment where the evidence says people stall: free_visit_undecided, registered_never_booked, cancellation_scheduled (e.g. ask what would have kept them and remind them their visits continue to the end of the period - never offer a discount), former_member_recent. The owner approves wording once; after that the engine sends under marketing rules, so write each one as if it will go out unattended. Judge existing playbooks by their measure before writing new ones; revise a weak one instead of piling up new ones.
+   - Website copy for a step where people drop out: save_content_draft with page_type website_copy (target = page path).
+   No discounts, offers or price changes - those are owner decisions.
 6. Record findings that change a decision, close resolved ones, and keep dated baselines (registration->free visit, free visit->member, cancellations) in your notebook.
 
 ${OUTCOME_RULES}`,

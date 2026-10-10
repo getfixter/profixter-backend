@@ -76,6 +76,21 @@ const SubscriptionSchema = new mongoose.Schema(
     cancelAtPeriodEnd: { type: Boolean, default: false },
     cancellationDate: { type: Date, default: null },
     cancellationReason: { type: String, default: null },
+    /*
+     * Why the CUSTOMER says they left - optional, asked after the cancellation
+     * is already scheduled, never as a condition of it. Kept apart from
+     * cancellationReason, which the system overwrites with technical values
+     * (payment_failed, admin_panel...) when access ends.
+     */
+    cancellationFeedback: {
+      category: {
+        type: String,
+        enum: [null, "price", "not_using_enough", "list_done", "moving", "scheduling", "service_quality", "switching", "temporary", "other"],
+        default: null,
+      },
+      note: { type: String, default: "" },
+      submittedAt: { type: Date, default: null },
+    },
     retentionOffer: {
       offeredAt: { type: Date, default: null },
       declinedAt: { type: Date, default: null },

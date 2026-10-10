@@ -2,6 +2,7 @@ const express = require("express");
 const auth = require("../middleware/auth");
 const { requirePermission, PERMISSIONS } = require("../middleware/authorize");
 const GrowthAction = require("../models/GrowthAction");
+const AdminActivityLogModel = require("../models/AdminActivityLog");
 require("../utils/growth/actions");
 const engine = require("../utils/growth/actionEngine");
 const { buildCommandCenter } = require("../utils/growth/commandCenter");
@@ -191,6 +192,104 @@ router.post("/findings/:id/status", ownerOnly, async (req, res) => {
     res.json({ finding: { ...f, id: String(f._id) } });
   } catch (error) {
     fail(res, error, "Could not update that finding.");
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Email playbooks: agents draft, the owner approves the wording        */
+/* ------------------------------------------------------------------ */
+
+const EmailPlaybook = require("../models/EmailPlaybook");
+const { templateOf, playbookText } = require("../utils/growth/actions/playbookEmail");
+const { checkCopy } = require("../utils/agents/copyRules");
+const { SEGMENT_DEFS } = require("../utils/growth/segments");
+
+router.get("/playbooks", canRead, async (req, res) => {
+  try {
+    const rows = await EmailPlaybook.find({}).sort({ updatedAt: -1 }).limit(50).lean();
+    const stats = await GrowthAction.aggregate([
+      { $match: { type: "playbook_email" } },
+      { $group: { _id: { key: "$payload.playbookKey", status: "$status" }, n: { $sum: 1 } } },
+    ]);
+    res.json({
+      playbooks: rows.map((p) => ({
+        ...p,
+        id: String(p._id),
+        segmentLabel: SEGMENT_DEFS[p.segment]?.label || p.segment,
+        copyProblems: checkCopy(playbookText(p)),
+        sends: Object.fromEntries(stats.filter((s) => s._id.key === p.key).map((s) => [s._id.status, s.n])),
+      })),
+    });
+  } catch (error) {
+    fail(res, error, "Could not load playbooks.");
+  }
+});
+
+/** The email exactly as a customer would see it, with a sample name. */
+router.get("/playbooks/:key/preview", canRead, async (req, res) => {
+  try {
+    const pb = await EmailPlaybook.findOne({ key: req.params.key }).lean();
+    if (!pb) return res.status(404).json({ message: "Not found" });
+    const { renderMarketingEmail } = require("../utils/marketing/marketingRenderer");
+    const out = renderMarketingEmail(templateOf(pb), { name: "Sam", email: "preview@profixter.com" });
+    res.json({ subject: out.subject, html: out.html, text: out.text });
+  } catch (error) {
+    fail(res, error, "Could not render the preview.");
+  }
+});
+
+router.post("/playbooks/:key/approve", ownerOnly, async (req, res) => {
+  try {
+    const pb = await EmailPlaybook.findOne({ key: req.params.key });
+    if (!pb) return res.status(404).json({ message: "Not found" });
+    if (pb.status === "retired") return res.status(409).json({ message: "This playbook was retired." });
+    const problems = checkCopy(playbookText(pb));
+    if (problems.length) return res.status(400).json({ message: `Cannot approve: ${problems.join(" ")}` });
+    const actor = ownerActor(req);
+    pb.status = "approved";
+    pb.approvedBy = actor.name;
+    pb.approvedAt = new Date();
+    pb.approvedVersion = pb.version;
+    pb.statusNote = String(req.body?.note || "").slice(0, 300);
+    await pb.save();
+    await AdminActivityLogModel.create({
+      action: "growth_playbook.approved",
+      entityType: "email_playbook",
+      entityId: pb.key,
+      entityName: pb.name,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: { version: pb.version, segment: pb.segment },
+    });
+    res.json({ playbook: pb.toObject() });
+  } catch (error) {
+    fail(res, error, "Could not approve that playbook.");
+  }
+});
+
+router.post("/playbooks/:key/retire", ownerOnly, async (req, res) => {
+  try {
+    const actor = ownerActor(req);
+    const pb = await EmailPlaybook.findOneAndUpdate(
+      { key: req.params.key },
+      { $set: { status: "retired", retiredAt: new Date(), statusNote: String(req.body?.note || "").slice(0, 300) } },
+      { new: true }
+    ).lean();
+    if (!pb) return res.status(404).json({ message: "Not found" });
+    await AdminActivityLogModel.create({
+      action: "growth_playbook.retired",
+      entityType: "email_playbook",
+      entityId: pb.key,
+      entityName: pb.name,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: { version: pb.version },
+    });
+    res.json({ playbook: pb });
+  } catch (error) {
+    fail(res, error, "Could not retire that playbook.");
   }
 });
 

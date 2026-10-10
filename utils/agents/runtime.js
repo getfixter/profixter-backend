@@ -264,6 +264,31 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
     { new: true }
   ).lean();
 
+  // Each finding in full, one line each: what the run concluded, reviewable
+  // from the server log. Business observations and drafted copy only - the
+  // tools never give the model personal data.
+  if (ctx.findingIds.length) {
+    const full = await AgentFinding.find({ _id: { $in: ctx.findingIds } })
+      .select("kind severity title detail expectedImpact evidence target body status")
+      .lean();
+    for (const f of full) {
+      console.log(
+        JSON.stringify({
+          event: "agent_finding",
+          agent: def.name,
+          kind: f.kind,
+          severity: f.severity,
+          status: f.status,
+          title: f.title,
+          detail: String(f.detail || "").slice(0, 2500),
+          expectedImpact: String(f.expectedImpact || "").slice(0, 600),
+          evidence: typeof f.evidence === "string" ? f.evidence.slice(0, 1200) : undefined,
+          target: f.target || undefined,
+          body: f.body ? String(f.body).slice(0, 3000) : undefined,
+        })
+      );
+    }
+  }
   // The summary and finding titles are aggregate business observations (the
   // tools never hand the model personal data), so the log can show what a
   // run concluded - which is how a run is reviewed without an admin login.

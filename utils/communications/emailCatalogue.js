@@ -319,6 +319,16 @@ const NON_REGISTRY_EMAILS = {
       "Marketing rules apply: marketable account, not unsubscribed, one-click unsubscribe, at most one " +
       "per person per 30 days. Copy lives in code next to those checks.",
   },
+  "playbook:*": {
+    label: "Approved follow-up emails (playbooks)",
+    category: "A",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Customers in one predefined segment",
+    channelClass: "marketing",
+    trigger: "An agent drafts a playbook; the owner approves its wording in Admin > Growth; sends then follow the growth engine trust policy (watch-only first).",
+    source: "utils/growth/actions/playbookEmail.js",
+    protectedNote: "Key is playbook:<key>. Marketing rules, one-click unsubscribe, one per person per playbook, 4 quiet days after any other marketing email, no discounts or prices (copy rules).",
+  },
   "agent:owner_report": {
     label: "Growth agent report / alert to the owner",
     category: "B",
@@ -334,6 +344,7 @@ const NON_REGISTRY_EMAILS = {
 /** True when a logged key belongs to a dynamic family rather than a literal. */
 function dynamicFamilyFor(key) {
   if (String(key || "").startsWith("marketing:")) return "marketing:*";
+  if (String(key || "").startsWith("playbook:")) return "playbook:*";
   return null;
 }
 

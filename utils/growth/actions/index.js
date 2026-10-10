@@ -4,3 +4,4 @@
  */
 require("./checkoutRecoveryEmail");
 require("./postFreeVisitSms");
+require("./playbookEmail");

@@ -461,6 +461,9 @@ Object.assign(TOOL_DEFS, {
     }),
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
+      const draftProblems = require("./copyRules").checkCopy(`${input.title}
+${input.body_markdown}`);
+      if (draftProblems.length) throw new Error(`Rewrite needed: ${draftProblems.join(" ")}`);
       const doc = await AgentFinding.findOneAndUpdate(
         { agent: ctx.agent, dedupeKey: clip(input.dedupe_key, 120) },
         {
@@ -482,6 +485,90 @@ Object.assign(TOOL_DEFS, {
       ctx.findingsThisRun += 1;
       ctx.findingIds.push(doc._id);
       return { id: String(doc._id), status: doc.status };
+    },
+  },
+});
+
+/* ------------------------------------------------------------------ */
+/* Email playbooks (drafted by agents, approved only by the owner)      */
+/* ------------------------------------------------------------------ */
+
+Object.assign(TOOL_DEFS, {
+  list_email_playbooks: {
+    description:
+      "The email playbooks that exist (draft, approved, retired), with their segment, status, and how their sends went (proposed / sent / skipped and why / joined afterwards). Check this before drafting so you improve or replace instead of duplicating.",
+    input_schema: obj({}),
+    run: async () => {
+      const EmailPlaybook = require("../../models/EmailPlaybook");
+      const GrowthAction = require("../../models/GrowthAction");
+      const rows = await EmailPlaybook.find({}).sort({ updatedAt: -1 }).limit(30).lean();
+      const stats = await GrowthAction.aggregate([
+        { $match: { type: "playbook_email" } },
+        { $group: { _id: { key: "$payload.playbookKey", status: "$status", reason: "$result.reason" }, n: { $sum: 1 } } },
+      ]);
+      return rows.map((p) => ({
+        key: p.key,
+        name: p.name,
+        segment: p.segment,
+        status: p.status,
+        version: p.version,
+        approvedVersion: p.approvedVersion,
+        statusNote: p.statusNote,
+        subject: p.subject,
+        purpose: p.purpose,
+        measure: p.measure,
+        sends: stats.filter((s) => s._id.key === p.key).map((s) => ({ status: s._id.status, reason: s._id.reason || null, count: s.n })),
+      }));
+    },
+  },
+  save_email_playbook: {
+    description:
+      "Draft (or revise) a follow-up EMAIL for one predefined segment. It is saved as a draft for the owner to approve; you cannot approve or send it. Once approved, the growth engine sends it one person at a time under marketing rules (unsubscribe, frequency cap, one per person). Revising an approved playbook sends it back to draft. Copy rules are enforced: no discounts, offers, prices, 'unlimited', visits-per-month, inspection/estimate wording, claimed reviews, or SMS promises. Write like a helpful local business owner: short, specific, honest, one clear next step.",
+    input_schema: obj({
+      key: str("Stable slug, lowercase, e.g. 'free-visit-undecided-v1'"),
+      name: str("Short name the owner will see"),
+      segment: str("Who receives it", { enum: ["free_visit_undecided", "registered_never_booked", "cancellation_scheduled", "former_member_recent"] }),
+      purpose: str("What this email should achieve and why, with the evidence"),
+      measure: str("How success will be measured, e.g. 'members joining within 14 days of the email'"),
+      subject: str("Subject line, under 70 characters"),
+      preheader: str("Preview text, under 100 characters"),
+      headline: str("Headline inside the email"),
+      paragraphs: { type: "array", items: { type: "string" }, description: "2-4 short paragraphs (the greeting 'Hi <name>,' is added automatically)" },
+      cta_label: str("Button text"),
+      cta_route: str("Where the button goes", { enum: ["membership", "plans", "book", "bookOneTime", "account", "services"] }),
+      closing: str("One closing line"),
+    }),
+    run: async (input, ctx) => {
+      const EmailPlaybook = require("../../models/EmailPlaybook");
+      const { checkCopy } = require("./copyRules");
+      const key = String(input.key || "").toLowerCase().trim();
+      if (!/^[a-z0-9_-]{3,60}$/.test(key)) throw new Error("key must be 3-60 chars: a-z, 0-9, - or _");
+      const fields = {
+        name: clip(input.name, 80),
+        segment: input.segment,
+        purpose: clip(input.purpose, 800),
+        measure: clip(input.measure, 300),
+        subject: clip(input.subject, 90),
+        preheader: clip(input.preheader, 140),
+        headline: clip(input.headline, 120),
+        paragraphs: (input.paragraphs || []).slice(0, 5).map((p) => clip(p, 700)),
+        ctaLabel: clip(input.cta_label, 40),
+        ctaRoute: input.cta_route,
+        closing: clip(input.closing, 300),
+      };
+      const problems = checkCopy([fields.subject, fields.preheader, fields.headline, ...fields.paragraphs, fields.ctaLabel, fields.closing].join("\n"));
+      if (problems.length) throw new Error(`Rewrite needed: ${problems.join(" ")}`);
+      const existing = await EmailPlaybook.findOne({ key });
+      if (existing && existing.status === "retired") throw new Error("That playbook was retired by the owner; use a new key and say what changed.");
+      if (existing) {
+        Object.assign(existing, fields, { status: "draft", version: existing.version + 1, statusNote: `revised by ${ctx.agentLabel}` });
+        await existing.save();
+        console.log(JSON.stringify({ event: "agent_playbook_draft", agent: ctx.agent, key, version: existing.version, ...fields }));
+        return { key, status: "draft", version: existing.version, note: "Revised; waits for the owner's approval again." };
+      }
+      await EmailPlaybook.create({ key, ...fields, status: "draft", createdBy: ctx.agentLabel });
+      console.log(JSON.stringify({ event: "agent_playbook_draft", agent: ctx.agent, key, version: 1, ...fields }));
+      return { key, status: "draft", version: 1, note: "Saved as a draft for the owner to approve." };
     },
   },
 });

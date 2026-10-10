@@ -35,7 +35,9 @@ async function conversionDetails({ now = new Date() } = {}) {
   const [registered30, freeVisits, subs, customersTotal, marketingSmsOptIn, transactionalSmsOptIn] = await Promise.all([
     User.find({ ...isCustomer, createdAt: { $gte: d90 } }).select("_id createdAt").lean(),
     Booking.find({ isFreeFirstVisit: true, createdAt: { $gte: new Date(now - 180 * DAY) } }).select("user status completedAt createdAt").lean(),
-    Subscription.find({}).select("user status startDate cancellationDate cancellationReason createdAt cancelAtPeriodEnd").lean(),
+    Subscription.find({})
+      .select("user status startDate cancellationDate cancellationReason cancellationFeedback createdAt updatedAt cancelAtPeriodEnd subscriptionType billingCycle")
+      .lean(),
     User.countDocuments(isCustomer),
     User.countDocuments({ ...isCustomer, "smsPreferences.marketingEnabled": true }),
     User.countDocuments({ ...isCustomer, "smsPreferences.transactionalEnabled": true }),
@@ -99,6 +101,53 @@ async function conversionDetails({ now = new Date() } = {}) {
   }
   const tenureMonths = active.map((s) => (now - new Date(s.startDate || s.createdAt)) / (30 * DAY));
 
+  /*
+   * Who leaves, and after how much use. For each cancellation in the last 90
+   * days and each scheduled one: plan, months as a member, membership visits
+   * actually booked in that time, how it ended (customer, payment failure,
+   * admin...), and the customer's own stated reason when given.
+   */
+  const leaving = [...cancelled90, ...active.filter((s) => s.cancelAtPeriodEnd)];
+  const usage = leaving.length
+    ? await Booking.aggregate([
+        { $match: { user: { $in: leaving.map((s) => s.user) }, accessType: "membership" } },
+        { $project: { user: 1, createdAt: 1, status: 1 } },
+      ])
+    : [];
+  const scrub = (t) =>
+    String(t || "")
+      .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, "[email]")
+      .replace(/\+?\d[\d\s().-]{7,}\d/g, "[phone]")
+      .slice(0, 160);
+  const tenureBucket = (m) => (m < 1 ? "<1 month" : m < 3 ? "1-3 months" : m < 6 ? "3-6 months" : m < 12 ? "6-12 months" : "12+ months");
+  const howEnded = (s) => {
+    const r = String(s.cancellationReason || "");
+    if (s.cancelAtPeriodEnd && !s.cancellationDate) return "scheduled_by_customer";
+    if (/payment/i.test(r)) return "payment_failure";
+    if (/admin/i.test(r)) return "admin";
+    if (/duplicate/i.test(r)) return "duplicate_cleanup";
+    return "customer_or_stripe";
+  };
+  const profile = leaving.map((s) => {
+    const start = new Date(s.startDate || s.createdAt);
+    const end = s.cancellationDate ? new Date(s.cancellationDate) : now;
+    const visits = usage.filter(
+      (b) => String(b.user) === String(s.user) && new Date(b.createdAt) >= start && new Date(b.createdAt) <= end && !/cancel/i.test(String(b.status || ""))
+    ).length;
+    const months = (end - start) / (30 * DAY);
+    return {
+      plan: s.subscriptionType || null,
+      cycle: s.billingCycle || null,
+      scheduled: Boolean(s.cancelAtPeriodEnd && !s.cancellationDate),
+      tenure: tenureBucket(months),
+      membershipVisitsBooked: visits,
+      ended: howEnded(s),
+      reason: s.cancellationFeedback?.category || null,
+      note: s.cancellationFeedback?.note ? scrub(s.cancellationFeedback.note) : null,
+    };
+  });
+  const countBy = (key) => profile.reduce((acc, x) => ((acc[x[key] ?? "unknown"] = (acc[x[key] ?? "unknown"] || 0) + 1), acc), {});
+
   // Automations working the gaps.
   const [actions, sends, unsubs, waitlist] = await Promise.all([
     GrowthAction.aggregate([
@@ -133,7 +182,17 @@ async function conversionDetails({ now = new Date() } = {}) {
       scheduledToCancel: active.filter((s) => s.cancelAtPeriodEnd).length,
       pastDueOrUnpaid: subs.filter((s) => ["past_due", "unpaid"].includes(String(s.status))).length,
       cancelledLast90d: cancelled90.length,
-      cancellationReasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 8),
+      systemCancellationCodes: Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 8),
+      leavers: {
+        note: "Cancelled in the last 90 days plus scheduled to cancel. 'reason' is what the customer chose after cancelling (optional, asked since 2026-10-10).",
+        total: profile.length,
+        byPlan: countBy("plan"),
+        byTenure: countBy("tenure"),
+        byHowEnded: countBy("ended"),
+        byStatedReason: countBy("reason"),
+        usedNoMembershipVisits: profile.filter((x) => x.membershipVisitsBooked === 0).length,
+        detail: profile.slice(0, 40),
+      },
       activeTenureMonths: tenureMonths.length
         ? { median: Math.round(tenureMonths.sort((a, b) => a - b)[Math.floor(tenureMonths.length / 2)] * 10) / 10, under3: tenureMonths.filter((m) => m < 3).length }
         : null,

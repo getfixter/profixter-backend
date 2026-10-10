@@ -1073,4 +1073,53 @@ router.post("/", auth, async (_req, res) => {
   });
 });
 
+/**
+ * "Mind telling us why?" - optional feedback after a cancellation.
+ *
+ * Asked only once the cancellation is already scheduled, so it can never stand
+ * between a customer and leaving. Applies to this customer's own subscription
+ * for this address that is set to cancel or ended in the last 60 days; can be
+ * answered or changed later. A note is optional, trimmed and capped.
+ */
+const CANCELLATION_FEEDBACK_CATEGORIES = new Set([
+  "price",
+  "not_using_enough",
+  "list_done",
+  "moving",
+  "scheduling",
+  "service_quality",
+  "switching",
+  "temporary",
+  "other",
+]);
+
+router.post("/manage/address/:addressId/cancellation-feedback", auth, async (req, res) => {
+  try {
+    const { addressId } = req.params;
+    if (!mongoose.isValidObjectId(addressId)) return res.status(400).json({ message: "Invalid addressId" });
+    const category = String(req.body?.category || "");
+    if (!CANCELLATION_FEEDBACK_CATEGORIES.has(category)) return res.status(400).json({ message: "Please choose a reason." });
+    const note = String(req.body?.note || "").replace(/\s+/g, " ").trim().slice(0, 500);
+
+    const { user, address } = await getOwnedAddress(req.user.id, addressId);
+    if (!user || !address) return res.status(404).json({ message: "Address not found" });
+
+    const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    const subscription = await Subscription.findOne({
+      user: user._id,
+      addressId: address._id,
+      $or: [{ cancelAtPeriodEnd: true }, { status: "canceled", cancellationDate: { $gte: since } }],
+    }).sort({ updatedAt: -1 });
+    if (!subscription) return res.status(404).json({ message: "No cancelled membership found for this address." });
+
+    subscription.cancellationFeedback = { category, note, submittedAt: new Date() };
+    await subscription.save();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /subscriptions/manage/address/:addressId/cancellation-feedback error:", err.message);
+    return res.status(500).json({ message: "Could not save that right now." });
+  }
+});
+
 module.exports = router;
+module.exports.CANCELLATION_FEEDBACK_CATEGORIES = CANCELLATION_FEEDBACK_CATEGORIES;

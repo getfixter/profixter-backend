@@ -3,6 +3,7 @@ const cron = require("node-cron");
 require("../utils/growth/actions");
 const { runSweeps, engineEnabled, propose } = require("../utils/growth/actionEngine");
 const { proposePostFreeVisitTexts } = require("../utils/growth/actions/postFreeVisitSms");
+const { proposePlaybookEmails } = require("../utils/growth/actions/playbookEmail");
 
 /**
  * The growth engine's heartbeat: every minute, run what is approved, verify
@@ -49,10 +50,11 @@ async function runGrowthProposers(now = new Date()) {
   proposing = true;
   try {
     const postFreeVisit = await proposePostFreeVisitTexts({ propose, now });
-    if (postFreeVisit.proposed) {
-      console.log(JSON.stringify({ event: "growth_proposed", at: now.toISOString(), postFreeVisit }));
+    const playbooks = await proposePlaybookEmails({ propose, now });
+    if (postFreeVisit.proposed || playbooks.proposed) {
+      console.log(JSON.stringify({ event: "growth_proposed", at: now.toISOString(), postFreeVisit, playbooks }));
     }
-    return { postFreeVisit };
+    return { postFreeVisit, playbooks };
   } catch (error) {
     console.error(
       JSON.stringify({ event: "growth_proposers_failed", error: String(error?.message || error).slice(0, 300) })

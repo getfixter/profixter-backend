@@ -95,9 +95,25 @@ function parseExternalAccount(encoded) {
   }
 }
 
+/*
+ * The committed WIF config (infra/gcp/search-console-wif.json) is the default:
+ * it holds no secret, only how to swap the EB role's AWS identity for a
+ * Google token. GSC_EXTERNAL_ACCOUNT_JSON overrides it.
+ */
+function committedExternalAccount() {
+  try {
+    const file = require("path").join(__dirname, "../../infra/gcp/search-console-wif.json");
+    return require("fs").readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 function searchConsoleConfig(env = process.env) {
   const siteUrl = String(env.GSC_SITE_URL || "").trim();
-  const external = parseExternalAccount(env.GSC_EXTERNAL_ACCOUNT_JSON);
+  const external = parseExternalAccount(
+    env.GSC_EXTERNAL_ACCOUNT_JSON || (env.GSC_SERVICE_ACCOUNT_JSON ? null : committedExternalAccount())
+  );
   if (external?.ok) return { configured: true, siteUrl: siteUrl || null, external: external.config, secrets: [] };
   if (external && !external.ok) return { configured: false, reason: external.reason };
   const account = parseServiceAccount(env.GSC_SERVICE_ACCOUNT_JSON);

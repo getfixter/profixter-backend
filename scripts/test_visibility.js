@@ -501,8 +501,9 @@ test("runner: off by default, records why, and honours the lease", async () => {
   const store = memoryStore();
   const off = await runCollector("search_console", { env: {}, store, log: quiet });
   assert.deepStrictEqual(off, { ran: false, reason: "disabled" });
-  const unconfigured = await runCollector("search_console", { env: { SEARCH_CONSOLE_SYNC_ENABLED: "true" }, store, log: quiet });
-  assert.strictEqual(unconfigured.reason, "missing GSC_SERVICE_ACCOUNT_JSON");
+  // With the committed keyless config the collector is configured by default; a broken override is not.
+  const unconfigured = await runCollector("search_console", { env: { SEARCH_CONSOLE_SYNC_ENABLED: "true", GSC_EXTERNAL_ACCOUNT_JSON: "not-json" }, store, log: quiet });
+  assert.strictEqual(unconfigured.reason, "GSC_EXTERNAL_ACCOUNT_JSON is not a JSON credential config");
   const status = await store.readState("visibility:status:search_console");
   assert.strictEqual(status.configured, false);
 
@@ -536,7 +537,7 @@ test("summary: everything unconfigured degrades to available:false, never throws
   assert.deepStrictEqual(s.aiVisibility, { available: false, reason: "disabled" });
   assert.deepStrictEqual(
     s.collectors.map((c) => [c.name, c.enabled, c.configured]),
-    [["google_reviews", true, false], ["search_console", false, false], ["local_rank", false, false], ["ai_visibility", false, false]]
+    [["google_reviews", true, false], ["search_console", false, true], ["local_rank", false, false], ["ai_visibility", false, false]]
   );
   const statuses = await collectorStatuses({ env: {}, store });
   assert.strictEqual(statuses.length, 4);
