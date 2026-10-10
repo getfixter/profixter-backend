@@ -133,6 +133,9 @@ function isJsonBodyParseError(err) {
 }
 
 
+/* Secrets from AWS Parameter Store via the instance role (see utils/secrets.js). */
+require("./utils/secrets").startParameterSecrets();
+
 // ✅ 5. MongoDB Connect
 const mongoURI = process.env.MONGO_URI;
 if (!mongoURI) {

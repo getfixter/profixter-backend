@@ -76,8 +76,30 @@ function parseServiceAccount(encoded) {
   return { ok: true, credentials: { client_email: json.client_email, private_key: json.private_key } };
 }
 
+/**
+ * KEYLESS (preferred): Workload Identity Federation. GSC_EXTERNAL_ACCOUNT_JSON
+ * holds a credential CONFIG (not a secret) produced by
+ * `gcloud iam workload-identity-pools create-cred-config ... --aws`: the
+ * server proves its AWS identity (the EB instance role, via IMDSv2) to Google,
+ * which lets it impersonate the read-only service account. No key exists.
+ */
+function parseExternalAccount(encoded) {
+  if (!encoded) return null;
+  try {
+    const text = /^\s*\{/.test(encoded) ? encoded : Buffer.from(String(encoded).trim(), "base64").toString("utf8");
+    const json = JSON.parse(text);
+    if (json.type !== "external_account" || !json.service_account_impersonation_url) return { ok: false, reason: "GSC_EXTERNAL_ACCOUNT_JSON is not an external_account config with impersonation" };
+    return { ok: true, config: json };
+  } catch {
+    return { ok: false, reason: "GSC_EXTERNAL_ACCOUNT_JSON is not a JSON credential config" };
+  }
+}
+
 function searchConsoleConfig(env = process.env) {
   const siteUrl = String(env.GSC_SITE_URL || "").trim();
+  const external = parseExternalAccount(env.GSC_EXTERNAL_ACCOUNT_JSON);
+  if (external?.ok) return { configured: true, siteUrl: siteUrl || null, external: external.config, secrets: [] };
+  if (external && !external.ok) return { configured: false, reason: external.reason };
   const account = parseServiceAccount(env.GSC_SERVICE_ACCOUNT_JSON);
   if (!account.ok) return { configured: false, reason: account.reason };
   // GSC_SITE_URL is optional: without it the property is discovered from the
@@ -87,6 +109,18 @@ function searchConsoleConfig(env = process.env) {
     siteUrl: siteUrl || null,
     credentials: account.credentials,
     secrets: [account.credentials.private_key, env.GSC_SERVICE_ACCOUNT_JSON],
+  };
+}
+
+/** Access tokens through Workload Identity Federation (no key). */
+function externalAccountTokenSource(config) {
+  const { ExternalAccountClient } = require("google-auth-library");
+  const client = ExternalAccountClient.fromJSON({ ...config, scopes: [SCOPE] });
+  if (!client) throw new Error("Search Console: unusable external account config");
+  return async () => {
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error("Search Console: no access token from workload identity federation");
+    return token;
   };
 }
 
@@ -172,7 +206,7 @@ async function syncSearchConsole({
   const config = searchConsoleConfig(env);
   if (!config.configured) throw new Error(config.reason);
   const doFetch = fetchImpl || defaultFetch();
-  const tokenSource = getAccessToken || serviceAccountTokenSource(config.credentials);
+  const tokenSource = getAccessToken || (config.external ? externalAccountTokenSource(config.external) : serviceAccountTokenSource(config.credentials));
   const backfillDays = Math.min(Math.max(Number(env.SEARCH_CONSOLE_BACKFILL_DAYS) || 28, REREAD_DAYS), 480);
 
   const cursor = await store.readState(STATE_KEY);

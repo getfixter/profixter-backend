@@ -27,6 +27,41 @@ const RISK_TIERS = ["low", "medium", "high"];
 
 const definitions = new Map();
 
+/*
+ * PERMANENTLY PROHIBITED: any action on advertising platforms.
+ *
+ * Profixter's Meta (Facebook/Instagram) advertising is managed by an external
+ * agency, and the owner's rule is absolute: the growth system reads ad data and
+ * never changes anything in an ad account - no campaigns, budgets, targeting,
+ * creatives, bids or account settings, at any trust level, ever. Enforced here,
+ * at registration, so no future action type can exist to be proposed,
+ * approved or promoted. Conversion measurement (Pixel and Conversions API in
+ * utils/metaCapi.js) is not an action and is unaffected.
+ * scripts/test_meta_read_only.js holds the whole codebase to this.
+ */
+const PROHIBITED_ACTION_PATTERNS = [
+  /meta/i,
+  /facebook/i,
+  /instagram/i,
+  /(^|_)(fb|ig|ig_|meta)(_|$)/i,
+  /boost|promote_?post|sponsor/i,
+  /ad_?set/i,
+  /ad_?account/i,
+  /(^|_)ads?(_|$)/i,
+  /google_?ads/i,
+  /campaign_?(budget|bid)/i,
+];
+const PROHIBITED_FIELDS = /meta|facebook|instagram|ad set|ad account|advertis/i;
+
+function assertNotAdvertising(def) {
+  const text = `${def.type} ${def.label} ${def.description}`;
+  if (PROHIBITED_ACTION_PATTERNS.some((re) => re.test(def.type)) || PROHIBITED_FIELDS.test(text)) {
+    throw new Error(
+      `Growth action "${def.type}" touches advertising. Ad platforms are read-only for the growth system, permanently (the agency manages them).`
+    );
+  }
+}
+
 function rank(mode) {
   const index = MODES.indexOf(mode);
   if (index < 0) throw new Error(`Unknown growth mode: ${mode}`);
@@ -55,6 +90,7 @@ function defineAction(def) {
   if (def.riskTier === "high" && rank(def.maxMode) > rank("supervised")) {
     throw new Error(`${def.type}: a high-risk action cannot have maxMode above supervised`);
   }
+  assertNotAdvertising(def);
   if (definitions.has(def.type)) throw new Error(`Growth action ${def.type} is defined twice`);
 
   definitions.set(
@@ -91,6 +127,8 @@ function _unregister(type) {
 
 module.exports = {
   MODES,
+  PROHIBITED_ACTION_PATTERNS,
+  assertNotAdvertising,
   RISK_TIERS,
   clampMode,
   defineAction,

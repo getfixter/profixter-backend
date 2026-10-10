@@ -101,33 +101,42 @@ router.put("/policies/:type", ownerOnly, async (req, res) => {
 const AgentRun = require("../models/AgentRun");
 const AgentFinding = require("../models/AgentFinding");
 const { AGENTS } = require("../utils/agents/definitions");
-const { agentsEnabled, dailyBudgetCents, runAgent } = require("../utils/agents/runtime");
-
-const SCHEDULES = {
-  growth_intelligence: "Daily 7:40am check; weekly owner report Mondays 8:10am",
-  visibility: "Mondays 9:30am",
-  marketing: "Daily 9:00am once Meta spend is connected (Mondays until then)",
-};
+const { agentsEnabled, dailyBudgetCents, monthlyBudgetCents, runAgent, spentThisMonthCents, spentTodayCents } = require("../utils/agents/runtime");
+const { nextRunFor } = require("../utils/agents/schedule");
+const { secretsStatus } = require("../utils/secrets");
 
 router.get("/agents", canRead, async (req, res) => {
   try {
     const monthStart = new Date();
     monthStart.setUTCDate(1);
     monthStart.setUTCHours(0, 0, 0, 0);
-    const [runs, monthCost, openCounts] = await Promise.all([
+    const [runs, monthCost, openCounts, monthTotal, todayTotal, lastOk] = await Promise.all([
       AgentRun.find({}).sort({ startedAt: -1 }).limit(60).lean(),
       AgentRun.aggregate([{ $match: { startedAt: { $gte: monthStart } } }, { $group: { _id: "$agent", cents: { $sum: "$costCents" }, runs: { $sum: 1 } } }]),
       AgentFinding.aggregate([{ $match: { status: "open" } }, { $group: { _id: "$agent", n: { $sum: 1 } } }]),
+      spentThisMonthCents(),
+      spentTodayCents(),
+      AgentRun.aggregate([{ $match: { status: "succeeded" } }, { $group: { _id: "$agent", at: { $max: "$finishedAt" } } }]),
     ]);
+    const lastSuccess = Object.fromEntries(lastOk.map((r) => [r._id, r.at]));
+    const secrets = secretsStatus();
     const cost = Object.fromEntries(monthCost.map((r) => [r._id, r]));
     const open = Object.fromEntries(openCounts.map((r) => [r._id, r.n]));
     res.json({
       enabled: agentsEnabled(),
+      keyConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
       dailyBudgetCents: dailyBudgetCents(),
+      monthlyBudgetCents: monthlyBudgetCents(),
+      spentTodayCents: Math.round(todayTotal * 100) / 100,
+      spentThisMonthCents: Math.round(monthTotal * 100) / 100,
+      costNote: "Metered from the token usage the Claude API reports on each call, at published prices.",
+      secrets: { loaded: secrets.loaded, lastLoadAt: secrets.lastLoadAt, error: secrets.lastError },
       agents: Object.values(AGENTS).map((a) => ({
         name: a.name,
         label: a.label,
-        schedule: SCHEDULES[a.name] || "",
+        schedule: (a.schedules || []).map((x) => x.label).join("; "),
+        nextRunAt: nextRunFor(a)?.at || null,
+        lastSuccessAt: lastSuccess[a.name] || null,
         budgetCents: a.budgetCents,
         allowedActions: a.allowedActions,
         monthCostCents: Math.round((cost[a.name]?.cents || 0) * 100) / 100,

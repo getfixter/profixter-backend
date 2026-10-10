@@ -2,44 +2,48 @@ const cron = require("node-cron");
 
 const { AGENTS } = require("../utils/agents/definitions");
 const { agentsEnabled, runAgent } = require("../utils/agents/runtime");
-const { adSpendStatus } = require("../utils/analytics/metaAdSpend");
 
 /**
- * When the growth agents run (America/New_York):
+ * Unattended agent schedules (America/New_York), taken from each agent's
+ * `schedules` in utils/agents/definitions.js:
  *
- *   Growth Intelligence  daily check 07:40 Tue-Sun; weekly owner report Mon 08:10
+ *   Growth Intelligence  daily check 07:40 Tue-Sun; owner report Mon 08:10
  *   Visibility           Mon 09:30, after the Monday rank and AI-answer collectors
- *   Marketing            daily 09:00 once Meta spend is connected; until then
- *                        Mon 09:00 only (there is little to judge without spend)
+ *   Conversion           Mon and Thu 09:00
  *
  * Registered on every instance; runAgent takes a per-agent lease, so one
- * instance runs each slot. With AGENTS_ENABLED unset or no ANTHROPIC_API_KEY,
- * a slot records a "skipped" run and costs nothing.
+ * instance runs each slot. A slot with agents switched off records a skipped
+ * run and costs nothing.
+ *
+ * RECOVERY. A run that fails for a transient reason (rate limit, overload,
+ * network, 5xx - see runtime.isTransient) is retried once, 20 minutes later,
+ * by the instance that ran it. A second failure is left for the next slot and
+ * shows in the Command Center; Growth Intelligence sees it in recent runs.
  */
 const TIMEZONE = "America/New_York";
+const RETRY_AFTER_MS = 20 * 60 * 1000;
 
-function slot(agent, opts) {
-  return () =>
-    runAgent(AGENTS[agent], opts).catch((error) =>
-      console.error(JSON.stringify({ event: "agent_run_crashed", agent, error: String(error?.message || error).slice(0, 300) }))
-    );
-}
-
-async function marketingDaily() {
-  const status = await adSpendStatus().catch(() => null);
-  const connected = Boolean(status?.connected);
-  const monday = new Date().toLocaleString("en-US", { timeZone: TIMEZONE, weekday: "short" }) === "Mon";
-  if (connected || monday) return slot("marketing", {})();
-  return null;
+async function runSlot(name, mode, trigger = "schedule") {
+  try {
+    const run = await runAgent(AGENTS[name], { trigger, mode });
+    if (trigger !== "retry" && run?.status === "failed" && String(run.error || "").startsWith("transient")) {
+      setTimeout(() => runSlot(name, mode, "retry"), RETRY_AFTER_MS).unref?.();
+    }
+    return run;
+  } catch (error) {
+    console.error(JSON.stringify({ event: "agent_run_crashed", agent: name, error: String(error?.message || error).slice(0, 300) }));
+    return null;
+  }
 }
 
 function startAgentJobs() {
   if (process.env.NODE_ENV === "test") return;
-  cron.schedule("40 7 * * 0,2-6", slot("growth_intelligence", { mode: "daily" }), { timezone: TIMEZONE });
-  cron.schedule("10 8 * * 1", slot("growth_intelligence", { mode: "weekly" }), { timezone: TIMEZONE });
-  cron.schedule("30 9 * * 1", slot("visibility", {}), { timezone: TIMEZONE });
-  cron.schedule("0 9 * * *", () => marketingDaily(), { timezone: TIMEZONE });
-  console.log(JSON.stringify({ event: "agent_jobs_started", enabled: agentsEnabled() }));
+  for (const def of Object.values(AGENTS)) {
+    for (const s of def.schedules || []) {
+      cron.schedule(s.cron, () => runSlot(def.name, s.mode), { timezone: TIMEZONE });
+    }
+  }
+  console.log(JSON.stringify({ event: "agent_jobs_started", enabled: agentsEnabled(), agents: Object.keys(AGENTS) }));
 }
 
-module.exports = { startAgentJobs };
+module.exports = { runSlot, startAgentJobs };

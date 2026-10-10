@@ -97,7 +97,31 @@ function resolveToken(env = process.env) {
   return { token, source: env.META_CAPI_TOKEN ? "META_CAPI_TOKEN" : "FB_ACCESS_TOKEN" };
 }
 
-const syncEnabled = (env = process.env) => env.META_ADS_SYNC_ENABLED === "true";
+/*
+ * On when explicitly enabled, or automatically when a dedicated read-only
+ * reporting token (META_ADS_ACCESS_TOKEN, ads_read) has been provided - the
+ * token IS the owner's decision to connect reporting. META_ADS_SYNC_ENABLED
+ * "false" always wins.
+ */
+const syncEnabled = (env = process.env) =>
+  env.META_ADS_SYNC_ENABLED === "true" || (env.META_ADS_SYNC_ENABLED !== "false" && Boolean(env.META_ADS_ACCESS_TOKEN));
+
+/** The ad account to read: configured, else the one discovered (and remembered) from the token. */
+async function resolveAccountId({ env, prev, token, fetchImpl }) {
+  const configured = configuredAccountId(env);
+  if (configured) return configured;
+  if (prev?.discoveredAccountId) return prev.discoveredAccountId;
+  if (!token || !fetchImpl) return null;
+  const u = new URL(`https://${GRAPH_HOST}/${GRAPH_VERSION}/me/adaccounts`);
+  u.searchParams.set("fields", "account_id,name,account_status");
+  u.searchParams.set("limit", "25");
+  const body = await graphGet(u.toString(), { token, fetchImpl });
+  const accounts = Array.isArray(body.data) ? body.data : [];
+  // Prefer an active account (account_status 1); refuse to guess between several.
+  const active = accounts.filter((a) => Number(a.account_status) === 1);
+  const pick = active.length === 1 ? active[0] : accounts.length === 1 ? accounts[0] : null;
+  return pick ? String(pick.account_id || pick.id).replace(/^act_/, "") : null;
+}
 
 /* ------------------------------------------------------------------ */
 /* Pure helpers                                                        */
@@ -482,10 +506,18 @@ function setFetch(next) {
 function syncMetaAdSpend({ now = new Date(), env = process.env, fetchImpl, sleep } = {}) {
   if (inFlight) return inFlight;
   inFlight = (async () => {
-    const accountId = configuredAccountId(env);
     const { token } = resolveToken(env);
     const prev = await readState();
     const runAt = new Date(now);
+    let accountId = null;
+    try {
+      accountId = await resolveAccountId({ env, prev, token, fetchImpl: fetchImpl || defaultFetch });
+    } catch (error) {
+      const c = error instanceof MetaApiError ? error.reason : "error";
+      const value = { ...prev, lastRunAt: runAt, lastFailureAt: runAt, lastError: sanitize(error.message, token), reason: c, connected: AUTH_REASONS.has(c) ? false : !!prev.connected };
+      await writeState(value);
+      return value;
+    }
 
     if (!accountId || !token) {
       const value = {
@@ -493,7 +525,8 @@ function syncMetaAdSpend({ now = new Date(), env = process.env, fetchImpl, sleep
         lastRunAt: runAt,
         lastError: null,
         connected: false,
-        reason: !accountId ? "not_configured" : "token_missing",
+        reason: !token ? "token_missing" : "not_configured",
+        ...(token && !accountId ? { lastError: "No single active ad account visible to the token; set META_ADS_ACCOUNT_ID" } : {}),
       };
       await writeState(value);
       return value;
@@ -514,6 +547,7 @@ function syncMetaAdSpend({ now = new Date(), env = process.env, fetchImpl, sleep
       await AdSpendDaily.init(); // the unique index exists before the first write
       const ctx = { token, fetchImpl: doFetch, sleep: sleep || defaultSleep };
       const account = await fetchAccount(accountId, ctx);
+      if (!configuredAccountId(env)) prev.discoveredAccountId = accountId;
       const currency = account?.currency || prev.accountCurrency || null;
       const timezone = account?.timezone_name || prev.accountTimezone || DEFAULT_TZ;
       const today = ymdIn(timezone, runAt);
@@ -536,6 +570,7 @@ function syncMetaAdSpend({ now = new Date(), env = process.env, fetchImpl, sleep
         connected: true,
         reason: "ok",
         accountId,
+        discoveredAccountId: configuredAccountId(env) ? null : accountId,
         accountName: clip(account?.name, 120),
         accountCurrency: currency,
         accountTimezone: timezone,
@@ -587,6 +622,7 @@ function syncMetaAdSpend({ now = new Date(), env = process.env, fetchImpl, sleep
 }
 
 function kickSync() {
+  if (!syncEnabled()) return;
   syncMetaAdSpend().then((result) => {
     if (result && !result.skipped && result.reason && result.reason !== "ok") {
       console.warn(`Meta ad spend sync: ${result.reason}${result.lastError ? ` - ${result.lastError}` : ""}`);
@@ -599,7 +635,10 @@ function kickSync() {
  * false) unless META_ADS_SYNC_ENABLED is "true" and META_ADS_ACCOUNT_ID is set.
  */
 function startMetaAdSpendSync() {
-  if (!syncEnabled() || !configuredAccountId() || process.env.NODE_ENV === "test") return false;
+  // Timers always register; each tick checks syncEnabled(), so a reporting
+  // token added later (Parameter Store refreshes every 30 minutes) starts the
+  // sync without a restart.
+  if (process.env.NODE_ENV === "test") return false;
   setTimeout(kickSync, BOOT_DELAY_MS).unref?.();
   setInterval(kickSync, INTERVAL_MS).unref?.();
   return true;
@@ -610,7 +649,7 @@ function startMetaAdSpendSync() {
 /* ------------------------------------------------------------------ */
 
 function statusReason(state, env = process.env) {
-  if (!configuredAccountId(env)) return "not_configured";
+  if (!configuredAccountId(env) && !state.discoveredAccountId && !resolveToken(env).token) return "not_configured";
   if (state.reason) return state.reason;
   if (!resolveToken(env).token) return "token_missing";
   return syncEnabled(env) ? "never_run" : "disabled";
@@ -622,7 +661,7 @@ async function adSpendStatus({ env = process.env } = {}) {
   const tok = resolveToken(env);
   return {
     enabled: syncEnabled(env),
-    accountId: configuredAccountId(env),
+    accountId: configuredAccountId(env) || state.discoveredAccountId || null,
     tokenPresent: !!tok.token,
     tokenSource: tok.source,
     graphVersion: GRAPH_VERSION,

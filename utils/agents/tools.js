@@ -174,6 +174,12 @@ const TOOL_DEFS = {
     input_schema: obj({ days: { type: "integer", description: "Window in days, 7 to 90" } }),
     run: async ({ days }) => adPerformance({ days: Math.max(7, Math.min(90, Number(days) || 28)) }),
   },
+  get_conversion_details: {
+    description:
+      "Profixter's own funnel in aggregates: registrations and how many booked a free visit or joined; free visit -> member conversion with time-to-join and the not-yet-converted by age; retention (active, scheduled to cancel, past due, cancellations and their most common reasons, tenure); the consent-reachable audience; what the automations proposed or did; lifecycle emails sent; the out-of-area waitlist.",
+    input_schema: obj({}),
+    run: async () => require("./conversionData").conversionDetails(),
+  },
   list_findings: {
     description:
       "Findings already recorded (by you or the other agents), newest first, so you do not repeat them and can close the ones the data shows are resolved.",
@@ -198,6 +204,27 @@ const TOOL_DEFS = {
         seenCount: f.seenCount,
         createdAt: f.createdAt,
         lastSeenAt: f.lastSeenAt,
+      }));
+    },
+  },
+  get_action_history: {
+    description:
+      "What the growth system actually did or was told not to do in the last 60 days: every automation and agent proposal with its outcome (ran, skipped and why, failed, approved, declined by the owner, expired, watch-only). Use it to judge results and never re-propose what was declined.",
+    input_schema: obj({}),
+    run: async () => {
+      const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+      const GrowthAction = require("../../models/GrowthAction");
+      const rows = await GrowthAction.find({ createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(80).lean();
+      return rows.map((a) => ({
+        type: a.type,
+        status: a.status,
+        summary: a.summary,
+        proposedBy: a.proposedBy?.name || a.proposedBy?.kind,
+        createdAt: a.createdAt,
+        decision: a.decidedAt ? { by: a.decidedBy?.kind, note: clip(a.decisionNote, 200) } : null,
+        outcome: a.result?.reason || (a.status === "succeeded" ? "done" : null),
+        verification: a.verification?.status || null,
+        error: a.lastError ? clip(a.lastError, 200) : null,
       }));
     },
   },
@@ -423,9 +450,9 @@ Object.assign(TOOL_DEFS, {
   },
   save_content_draft: {
     description:
-      "Save a publish-ready draft of a page (town page, service page, guide, FAQ entry or Google Business Profile post) for the owner or developer to review and publish. Nothing is published by this tool. Only write what is true about Profixter; follow the business rules exactly; no invented reviews, statistics or claims.",
+      "Save a publish-ready draft (town page, service page, guide, FAQ entry, Google Business Profile post, website conversion copy, or follow-up message wording) for review. Nothing is published or sent by this tool. Only write what is true about Profixter; follow the business rules exactly; no invented reviews, statistics or claims.",
     input_schema: obj({
-      page_type: str("Kind of page", { enum: ["town_page", "service_page", "guide", "faq", "gbp_post"] }),
+      page_type: str("Kind of draft", { enum: ["town_page", "service_page", "guide", "faq", "gbp_post", "website_copy", "message_copy"] }),
       target: str("Target URL path or query, e.g. '/locations/levittown' or 'handyman membership cost'"),
       title: str("Page title (under 70 characters)"),
       why: str("The evidence: the queries, ranks, waitlist ZIPs or gaps this addresses"),

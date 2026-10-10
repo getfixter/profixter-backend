@@ -50,6 +50,8 @@ const SUITES = [
   "test_growth_engine_integration.js",
   "test_meta_campaign_audit.js",
   "test_agents_integration.js",
+  // Meta advertising is read-only, permanently (agency-managed).
+  "test_meta_read_only.js",
   "test_admin_access.js",
   "test_attribution.js",
   "test_transactional_email_system.js",

@@ -165,8 +165,12 @@ async function main() {
     assert.deepStrictEqual(spendMod.resolveToken({ FB_ACCESS_TOKEN: "c" }), { token: "c", source: "FB_ACCESS_TOKEN" });
     assert.deepStrictEqual(spendMod.resolveToken({}), { token: "", source: null });
   });
-  await test("the schedule is a no-op unless enabled AND an account is set", () => {
-    assert.strictEqual(spendMod.startMetaAdSpendSync(), false);
+  await test("enabled explicitly, or automatically by a dedicated read-only token; 'false' always wins", () => {
+    assert.strictEqual(spendMod.syncEnabled({}), false);
+    assert.strictEqual(spendMod.syncEnabled({ FB_ACCESS_TOKEN: "capi-only" }), false);
+    assert.strictEqual(spendMod.syncEnabled({ META_ADS_SYNC_ENABLED: "true" }), true);
+    assert.strictEqual(spendMod.syncEnabled({ META_ADS_ACCESS_TOKEN: "x" }), true);
+    assert.strictEqual(spendMod.syncEnabled({ META_ADS_ACCESS_TOKEN: "x", META_ADS_SYNC_ENABLED: "false" }), false);
   });
 
   section("Sync window");
@@ -272,12 +276,28 @@ async function main() {
   const state = async () => (await AnalyticsState.findOne({ key: spendMod.STATE_KEY }).lean())?.value || {};
 
   section("Sync: not configured");
-  await test("no account id: status not_configured, nothing fetched", async () => {
-    const fake = fakeGraph({ ads: ADS, platforms: PLATFORMS });
-    const r = await spendMod.syncMetaAdSpend({ now, env: { META_ADS_ACCESS_TOKEN: TOKEN }, fetchImpl: fake, sleep });
+  await test("no account id: discovered from the token when exactly one active account is visible; never guessed", async () => {
+    const accounts = (list) => {
+      const calls = [];
+      const f = async (url) => {
+        calls.push(String(url));
+        return { ok: true, status: 200, json: async () => ({ data: list }) };
+      };
+      f.calls = calls;
+      return f;
+    };
+    const none = accounts([]);
+    const r = await spendMod.syncMetaAdSpend({ now, env: { META_ADS_ACCESS_TOKEN: TOKEN }, fetchImpl: none, sleep });
     assert.strictEqual(r.reason, "not_configured");
     assert.strictEqual(r.connected, false);
-    assert.strictEqual(fake.calls.length, 0);
+    assert.ok(none.calls.every((u) => u.includes("/me/adaccounts")), "only the read-only account listing was called");
+    const two = accounts([
+      { account_id: "111", account_status: 1 },
+      { account_id: "222", account_status: 1 },
+    ]);
+    const r2 = await spendMod.syncMetaAdSpend({ now, env: { META_ADS_ACCESS_TOKEN: TOKEN }, fetchImpl: two, sleep });
+    assert.strictEqual(r2.reason, "not_configured");
+    assert.match(r2.lastError, /META_ADS_ACCOUNT_ID/);
   });
   await test("account but no token: token_missing", async () => {
     const r = await spendMod.syncMetaAdSpend({ now, env: { META_ADS_ACCOUNT_ID: ACCOUNT }, fetchImpl: fakeGraph({ ads: [], platforms: [] }), sleep });

@@ -18,6 +18,7 @@ const { runTool, toolsFor } = require("./tools");
  * LIMITS, all checked before each model call:
  *   per run     the agent's `budgetCents` (estimated from reported usage)
  *   per day     AGENTS_DAILY_BUDGET_CENTS across all agents (default $5)
+ *   per month   AGENTS_MONTHLY_BUDGET_CENTS across all agents (default $75)
  *   turns       the agent's `maxTurns`
  *   one at a time per agent, via a Mongo lease
  *
@@ -32,6 +33,7 @@ const MODEL = "claude-opus-5-5";
 // $0.20 cache read, 1.25x input for a 5-minute cache write).
 const PRICE = { input: 400 / 1e6, output: 2000 / 1e6, cacheRead: 20 / 1e6, cacheWrite: 500 / 1e6 };
 const DEFAULT_DAILY_BUDGET_CENTS = 500;
+const DEFAULT_MONTHLY_BUDGET_CENTS = 7500;
 const LEASE_MS = 30 * 60 * 1000;
 
 function agentsEnabled(env = process.env) {
@@ -50,6 +52,33 @@ function costOf(usage = {}) {
     (usage.cache_read_input_tokens || 0) * PRICE.cacheRead +
     (usage.cache_creation_input_tokens || 0) * PRICE.cacheWrite
   );
+}
+
+function monthlyBudgetCents(env = process.env) {
+  const n = Number(env.AGENTS_MONTHLY_BUDGET_CENTS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MONTHLY_BUDGET_CENTS;
+}
+
+/** Metered agent spend since the 1st of this month (UTC), in cents. */
+async function spentThisMonthCents(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const [row] = await AgentRun.aggregate([
+    { $match: { startedAt: { $gte: start } } },
+    { $group: { _id: null, cents: { $sum: "$costCents" } } },
+  ]);
+  return row?.cents || 0;
+}
+
+/**
+ * Worth one automatic retry: rate limits, overload, server errors and network
+ * failures. A 400 (bad request), 401/403 (key, permission) or a refusal is not
+ * - retrying would fail the same way and spend money doing it.
+ */
+function isTransient(error) {
+  const status = Number(error?.status);
+  if ([408, 409, 429, 500, 502, 503, 504, 529].includes(status)) return true;
+  if (!status && /ECONNRESET|ETIMEDOUT|ENOTFOUND|socket|network|timeout|Connection error/i.test(String(error?.message || error))) return true;
+  return false;
 }
 
 async function spentTodayCents(now = new Date()) {
@@ -92,6 +121,10 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
 
   if (!agentsEnabled(env) && trigger !== "test") {
     return (await AgentRun.create({ ...base, status: "skipped", skipReason: env.ANTHROPIC_API_KEY ? "agents_disabled" : "no_api_key", finishedAt: new Date() })).toObject();
+  }
+  const spentMonth = await spentThisMonthCents(now);
+  if (spentMonth + def.budgetCents > monthlyBudgetCents(env)) {
+    return (await AgentRun.create({ ...base, status: "skipped", skipReason: `monthly_budget (${Math.round(spentMonth)}c spent)`, finishedAt: new Date() })).toObject();
   }
   const spent = await spentTodayCents(now);
   if (spent + def.budgetCents > dailyBudgetCents(env)) {
@@ -205,7 +238,8 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
     }
   } catch (runError) {
     status = "failed";
-    error = String(runError?.message || runError).slice(0, 800);
+    const message = String(runError?.message || runError).slice(0, 760);
+    error = isTransient(runError) ? `transient: ${message}` : message;
   } finally {
     await releaseLease(leaseKey).catch(() => {});
   }
@@ -255,4 +289,16 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   return finished;
 }
 
-module.exports = { MODEL, SHARED_RULES, agentsEnabled, costOf, dailyBudgetCents, runAgent, setClientFactory, spentTodayCents };
+module.exports = {
+  MODEL,
+  SHARED_RULES,
+  agentsEnabled,
+  costOf,
+  dailyBudgetCents,
+  isTransient,
+  monthlyBudgetCents,
+  runAgent,
+  setClientFactory,
+  spentThisMonthCents,
+  spentTodayCents,
+};
