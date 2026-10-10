@@ -1,7 +1,7 @@
 /**
- * Outreach (postal mail): who is mailable, household de-duplication, the
- * nightly sync's gating and resume, the agent's wave planning rules, and that
- * GoHighLevel is only ever READ.
+ * The GoHighLevel list audience (kept for the owner's own mail project): who
+ * is mailable, household de-duplication, the nightly sync's gating and resume,
+ * that GoHighLevel is only ever READ - and that no AI agent has any mail role.
  *
  * Fake GoHighLevel (no real person is contacted), in-memory MongoDB.
  *   node scripts/test_outreach_integration.js
@@ -16,7 +16,7 @@ const AnalyticsState = require("../models/AnalyticsState");
 const User = require("../models/User");
 const audience = require("../utils/outreach/audience");
 const { syncOutreachOnce } = require("../jobs/conversations");
-const { runTool } = require("../utils/agents/tools");
+const { TOOL_DEFS } = require("../utils/agents/tools");
 const { AGENTS } = require("../utils/agents/definitions");
 
 /* Fake GoHighLevel contact search: two pages, then empty. */
@@ -113,41 +113,11 @@ async function main() {
     assert.ok(!/Main St|example\.com|Home1/.test(s), s);
   });
 
-  const ctx = { agent: "outreach", agentLabel: "Outreach agent", toolNames: AGENTS.outreach.tools, allowedActions: [] };
-  const plan = (over = {}) =>
-    runTool(
-      "plan_mail_wave",
-      {
-        name: "Lindenhurst test",
-        target_zips: ["11757"],
-        size: 100,
-        headline: "Your first Profixter visit is free",
-        body: "A local Fixter comes to your home and takes care of real handyman work on your small jobs. Book a time online that suits you.",
-        call_to_action: "Scan to book your free first visit",
-        rationale: "Customers already in Lindenhurst",
-        ...over,
-      },
-      ctx
-    );
-
-  await test("wave planning refuses ZIPs outside the area, bad sizes, too few homes and banned copy", async () => {
-    await assert.rejects(plan({ target_zips: ["10001"] }), /service area/);
-    await assert.rejects(plan({ size: 50 }), /Size must be/);
-    await assert.rejects(plan({ size: 100 }), /Only 2 mailable/);
-    await OutreachRecipient.insertMany(
-      Array.from({ length: 120 }, (_, i) => ({ ghlContactId: `x${i}`, zip: "11757", eligible: true, code: `c${i}`, address1: `${i} Elm St`, city: "Lindenhurst" }))
-    );
-    await assert.rejects(plan({ body: "Get 20% off your first repair - a free estimate for your home." }), /Rewrite needed/);
+  await test("postcards are the owner's: no agent has any mail tool, and no mail tool exists", async () => {
+    for (const name of ["plan_mail_wave", "list_mail_waves", "get_outreach_audience"]) assert.ok(!(name in TOOL_DEFS), name);
+    for (const a of Object.values(AGENTS)) for (const t of a.tools) assert.ok(!/mail_wave|outreach_audience|postcard/i.test(t), `${a.name}: ${t}`);
+    assert.match(AGENTS.outreach.instructions, /POSTAL MAIL AND POSTCARDS ARE NOT YOUR RESPONSIBILITY/);
     assert.strictEqual(await OutreachWave.countDocuments({}), 0);
-  });
-
-  await test("a valid plan is only a draft with its cost; nothing is mailed or exported", async () => {
-    const out = await plan();
-    assert.strictEqual(out.status, "draft");
-    assert.strictEqual(out.estimatedCost, "$95.00");
-    const w = await OutreachWave.findOne({ key: out.key }).lean();
-    assert.strictEqual(w.status, "draft");
-    assert.strictEqual(await OutreachRecipient.countDocuments({ lastMailedAt: { $ne: null } }), 0);
   });
 
   await test("wave results count registrations and first free visits by tracked code", async () => {
@@ -160,7 +130,7 @@ async function main() {
 
   await test("the outreach agent has no messaging, booking or action powers", async () => {
     assert.deepStrictEqual(AGENTS.outreach.allowedActions, []);
-    for (const t of AGENTS.outreach.tools) assert.ok(!/send|propose_action|book|calendar|bulk/.test(t), t);
+    for (const t of AGENTS.outreach.tools) assert.ok(!/send_|propose_action|(^|_)book|calendar|bulk/.test(t), t);
   });
 
   await mongoose.disconnect();

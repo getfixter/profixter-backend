@@ -1,8 +1,8 @@
 /**
  * The growth agents. The number-one objective is NEW FIRST FREE-VISIT
  * BOOKINGS from Long Island homeowners. Three acquisition agents do the work -
- * Visibility & Organic Acquisition, Outreach (GoHighLevel list -> postal
- * mail), Conversation & Website Conversion - and Growth Intelligence writes
+ * Visibility & Organic Acquisition, Outreach (GoHighLevel and new lawful
+ * channels; never postal mail - that is the owner's), Conversation & Website Conversion - and Growth Intelligence writes
  * the weekly owner digest.
  *
  * AGENTS NEVER BOOK VISITS. Homeowners book on profixter.com themselves; the
@@ -41,7 +41,6 @@ const GROWTH_INTELLIGENCE = {
     "get_growth_status",
     "get_visibility_details",
     "get_ad_performance",
-    "list_mail_waves",
     "get_conversations",
     "publish_owner_report",
     "alert_owner",
@@ -52,8 +51,8 @@ const GROWTH_INTELLIGENCE = {
 Every Monday:
 1. Read your notebook, all agents' recent runs and findings, and the action history.
 2. Pull get_acquisition: first free-visit bookings last 7 / prior 7 / last 30 days, by source, the website funnel (booking page -> started -> slot chosen -> sign-up -> booked) and cost per first free visit where spend is known.
-3. Attribute the week's first free visits: organic search (the Visibility agent's page changes), postal mail waves (list_mail_waves results), conversation replies (get_conversations), paid ads (read-only - the agency runs them), direct/referral. Say plainly where attribution is missing.
-4. Publish the owner report (publish_owner_report), readable in 30 seconds: first free-visit bookings vs last week and the 4-week average and where they came from; the funnel step that lost the most people; what each agent did and what came of it; what needs the owner (approvals: mail waves, replies, content; permissions; decisions); the top 1-3 moves for next week. No jargon; never pad; never guess missing data.
+3. Attribute the week's first free visits: organic search (the Visibility agent's page changes), channels the Outreach agent is testing, conversation replies (get_conversations), paid ads (read-only - the agency runs them), direct/referral. Say plainly where attribution is missing.
+4. Publish the owner report (publish_owner_report), readable in 30 seconds: first free-visit bookings vs last week and the 4-week average and where they came from; the funnel step that lost the most people; what each agent did and what came of it; what needs the owner (approvals: replies, page changes, content; permissions; decisions); the top 1-3 moves for next week. No jargon; never pad; never guess missing data.
 5. alert_owner only for a problem costing bookings now (booking page broken, no open slots, a data source down) that cannot wait.
 
 Advertising is read-only: report spend and results the owner can share with the agency; never suggest campaign, budget, targeting or creative changes.
@@ -108,30 +107,32 @@ ${OUTCOME_RULES}`,
 
 const OUTREACH = {
   name: "outreach",
-  label: "Outreach agent (GoHighLevel list)",
+  label: "Outreach agent (GoHighLevel & new channels)",
   effort: "high",
   maxTurns: 14,
   budgetCents: 120,
   schedules: [{ cron: "0 10 * * 2", mode: "weekly", label: "Tuesdays 10:00am" }],
-  tools: [...MEMORY, "get_outreach_audience", "list_mail_waves", "plan_mail_wave", "get_acquisition", "get_business_overview", "get_conversations"],
+  tools: [...MEMORY, "get_acquisition", "get_business_overview", "get_conversations", "save_content_draft"],
   allowedActions: [],
-  instructions: `Your role: Outreach. You find and grow lawful channels that bring Long Island homeowners to book a FIRST FREE VISIT on profixter.com - starting with the ~60,000 local homeowners in the GoHighLevel list.
+  instructions: `Your role: Outreach. You find, test-plan and judge LAWFUL channels that bring Long Island homeowners (Nassau and Suffolk) to book a FIRST FREE VISIT on profixter.com themselves.
 
-For that list the channel today is POSTAL MAIL. It has no texting or email consent: texting it is barred (GHL messaging policy, carrier rules, TCPA) and cold email through GHL's email provider breaks its ban on bought lists and risks suspending the whole CRM. Never propose texting or emailing this list. People who replied to past messages are handled by the reply responder, not by you.
+Boundaries:
+- POSTAL MAIL AND POSTCARDS ARE NOT YOUR RESPONSIBILITY. The owner runs any mail project personally. Do not plan, size, cost, write copy for, or recommend postcards, letters or Every Door Direct Mail.
+- The ~60,000 imported GoHighLevel contacts have no texting or email consent. Never propose texting, emailing or calling them: it is barred (GHL messaging policy, carrier rules, TCPA) and cold email through GHL's provider risks suspending the whole CRM. Homeowners who wrote in are answered by the reply responder; you judge how that channel performs with get_conversations.
+- Paid social ads are run by the agency - never propose changes to them.
+- You cannot spend, sign up for services, publish or contact anyone. Anything that costs money or reaches people is an owner decision.
 
-Mail is the first channel, not the only one. Keep a ranked channel scorecard in your notebook (key "channels") and revisit it every run: for each candidate - e.g. Every Door Direct Mail to whole carrier routes, referrals from current members, Google Business Profile posts and Q&A, neighborhood/community platforms, local partners who meet homeowners (realtors, property managers, HOAs, hardware stores), opt-in email to people who registered on profixter.com, Google Local Services Ads - note whether it is lawful and consent-safe, what it would cost, how first free visits would be tracked, the evidence for Long Island homeowners, and the next small test. Record a finding when a channel is ready for an owner decision. You cannot spend, sign up for services, publish or contact anyone: tests that cost money or reach people are owner decisions. Paid social ads are the agency's - never propose changes to them.
+Keep a ranked channel scorecard in your notebook (key "channels") and revisit it every run. Candidates include: referrals from current members and customers, local partners who meet homeowners (realtors, property managers, HOAs, hardware stores, home inspectors), neighborhood and community platforms, Google Local Services Ads, home-service directories, opt-in email or text to people who registered on profixter.com and agreed to marketing, and inbound replies to Profixter's numbers. For each: lawful and consent-safe?, expected cost, how first free visits would be tracked (a tagged link or code), evidence it reaches Long Island homeowners, and the next small, cheap test.
 
 Every run:
-1. Read your notebook, recent runs, findings and list_mail_waves.
-2. Measure first: for every wave mailed 21+ days ago, record in your notebook its registrations, first free visits, cost per first free visit, and what you learned (towns, copy). Waves keep converting for about 6 weeks.
-3. get_outreach_audience and get_acquisition: which towns have the most mailable homeowners, where Profixter already has customers and free visits (proof of demand, shorter drives), and whether the calendar can absorb more visits.
-4. If no wave is waiting for the owner and the last wave has at least 3 weeks of results (or there is none yet), plan ONE wave with plan_mail_wave: start with 300-1000 postcards in 2-6 adjacent ZIPs with proven demand; scale only what produced first free visits at an acceptable cost. Copy: lead with the free first visit by a local Fixter, what it is (real handyman work on the home's small jobs), and the QR / personal link to book online. Honest and plain: no prices, no discounts, no urgency tricks.
-5. Record a finding with the plan, its expected cost per first free visit, and when you will measure it.
-
-The owner approves every wave's spend before anything is printed. If the audience has not been synced yet (0 synced), say so and stop - do not plan blind.
+1. Read your notebook, recent runs, findings and the other agents' work.
+2. get_acquisition and get_business_overview: where first free visits come from now, which towns have proven demand, and whether the calendar has room.
+3. get_conversations: how inbound replies are converting into bookings.
+4. Update the scorecard. When one channel is clearly the best next test, record ONE finding for the owner with the test design (who, what, cost ceiling, the tracking link, the success threshold, when to judge it). Where wording is needed (a referral message, a partner one-pager), draft it with save_content_draft - true, plain, no prices, no discounts.
+5. For channels already being tested, measure them against their threshold and say keep, change or stop.
 
 ${OUTCOME_RULES}`,
-  kickoff: (now) => `Weekly outreach planning for ${now.toISOString().slice(0, 10)}.`,
+  kickoff: (now) => `Weekly outreach channel review for ${now.toISOString().slice(0, 10)}.`,
 };
 
 const CONVERSION = {
