@@ -24,7 +24,7 @@ const { validateGuidance } = require("../agents/settings");
  * publishing, approving, spending, switching automations on.
  */
 const SPECIALISTS = ["visibility", "outreach", "conversion"];
-const HERO = { visibility: "Odysseus", outreach: "Leonidas", conversion: "Marcus Aurelius" };
+const HERO = { visibility: "Odysseus", outreach: "Leonidas", conversion: "Marcus" };
 const OPEN = ["received", "assigned", "in_progress", "blocked"];
 const MAX_OPEN_PER_AGENT = 5;
 const MAX_NEW_PER_DAY = 12;

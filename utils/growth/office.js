@@ -11,7 +11,7 @@
  * Robots map onto the agents in utils/agents/definitions.js:
  *   Odysseus        - visibility    (SEO and organic acquisition)
  *   Leonidas        - outreach      (lawful new channels; never mail or Meta)
- *   Marcus Aurelius - conversion + the live reply responder ("conversation")
+ *   Marcus - conversion + the live reply responder ("conversation")
  * King Arthur (utils/council) manages the three; he is not a robot here.
  * Growth Intelligence has no robot: its weekly report is the wall display.
  */
@@ -70,7 +70,7 @@ const ROBOTS = [
   },
   {
     key: "conversation",
-    name: "Marcus Aurelius",
+    name: "Marcus",
     role: "The Messenger · conversations",
     agents: ["conversion", "conversation"],
     actionTypes: ["conversation_reply", "playbook_email"],
@@ -459,7 +459,7 @@ async function robotDetail(key, { now = new Date() } = {}) {
       fixedRules: [SHARED_RULES, ...scheduled.map((a) => AGENTS[a].instructions)].join("\n\n"),
       note:
         key === "conversation"
-          ? "Guidance steers Marcus Aurelius's twice-weekly review. The live reply rules (never book, facts only, business-only, opt-outs first) are fixed and can't be edited here."
+          ? "Guidance steers Marcus's twice-weekly review. The live reply rules (never book, facts only, business-only, opt-outs first) are fixed and can't be edited here."
           : "",
     },
   };

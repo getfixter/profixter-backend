@@ -240,7 +240,7 @@ async function buildReport({ scope = "pending", now = new Date() } = {}) {
     "- King Arthur: my AI manager. He reviews the specialists' work, recommends, assigns tasks and escalates. He cannot approve, send messages, spend money, book visits, change ads, prices, offers, booking rules or permissions. His recommendation is never my approval.",
     "- Odysseus: search specialist (Google, Maps, AI search, page wording, town pages).",
     "- Leonidas: outreach specialist (researches lawful new ways to reach homeowners; no mail, no Meta ads, no imported lists).",
-    "- Marcus Aurelius: conversations and website specialist (follow-up emails, replies to homeowners who write in - business-only).",
+    "- Marcus: conversations and website specialist (follow-up emails, replies to homeowners who write in - business-only).",
   ];
   const body = sections.length
     ? [`## Decisions waiting for me (${sections.length})`, ...sections.map((s, n) => `### ${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")

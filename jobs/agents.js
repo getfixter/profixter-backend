@@ -11,7 +11,7 @@ const { agentsEnabled, runAgent } = require("../utils/agents/runtime");
  *   Growth Intelligence  daily check 07:40 Tue-Sun; owner report Mon 08:10
  *   Visibility           Mon 09:30, after the Monday rank and AI-answer collectors
  *   Conversion           Mon and Thu 09:00
- *   King Arthur          council review daily 08:15 (and after shifts, below)
+ *   King Arthur          council review daily 08:15 (Mondays: weekly planning), and after shifts
  *
  * Registered on every instance; runAgent takes a per-agent lease, so one
  * instance runs each slot. A slot with agents switched off records a skipped
@@ -37,7 +37,9 @@ let reviewTimer = null;
 
 async function councilReview(reason = "daily") {
   try {
-    const result = await require("../utils/council/arthur").review();
+    // Mondays (New York) are his weekly planning review: it runs even when nothing new came in.
+    const monday = new Date().toLocaleString("en-US", { weekday: "long", timeZone: TIMEZONE }) === "Monday";
+    const result = await require("../utils/council/arthur").review({ planning: reason === "daily" && monday });
     console.log(JSON.stringify({ event: "council_review", reason, ...result, run: result.run ? String(result.run) : undefined }));
     return result;
   } catch (error) {

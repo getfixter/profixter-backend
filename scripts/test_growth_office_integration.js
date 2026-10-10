@@ -124,7 +124,7 @@ async function main() {
     assert.strictEqual(manual.status, "succeeded");
   });
 
-  await test("pausing Marcus Aurelius also stops the live reply responder", async () => {
+  await test("pausing Marcus also stops the live reply responder", async () => {
     await settings.setPaused("conversation", true, "Owner");
     const { processThread } = require("../utils/conversation/service");
     const out = await processThread({ optedOut: false, status: "needs_reply", messages: [] });

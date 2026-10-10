@@ -431,7 +431,7 @@ function robotOr404(req, res) {
   return robot;
 }
 
-/** Pause or resume all of a robot's automatic work (scheduled shifts, and for Marcus Aurelius the reply responder). */
+/** Pause or resume all of a robot's automatic work (scheduled shifts, and for Marcus the reply responder). */
 router.post("/office/robots/:key/pause", ownerOnly, async (req, res) => {
   try {
     const robot = robotOr404(req, res);
@@ -536,15 +536,17 @@ function publicDecision(d) {
 router.get("/office/council", canRead, async (req, res) => {
   try {
     const { settleDecisions } = require("../utils/council/arthur");
+    await require("../utils/council/mission").ensureMission();
     await settleDecisions();
     const since = new Date(Date.now() - 14 * 864e5);
-    const [messages, openTasks, closedTasks, open, closed, thinking] = await Promise.all([
+    const [messages, openTasks, closedTasks, open, closed, thinking, mission] = await Promise.all([
       CouncilMessage.find({}).sort({ createdAt: -1 }).limit(40).lean(),
       CouncilTask.find({ status: { $in: [...councilTasks.OPEN, "completed"] } }).sort({ createdAt: -1 }).limit(30).lean(),
       CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled"] }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(15).lean(),
       CouncilDecision.find({ status: "open" }).sort({ updatedAt: -1 }).limit(40).lean(),
       CouncilDecision.find({ status: { $ne: "open" }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(20).lean(),
       require("../models/AgentRun").exists({ agent: "arthur", status: "running", startedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } }),
+      agentSettings.getSettings("arthur"),
     ]);
     res.json({
       enabled: agentsEnabled(),
@@ -553,6 +555,11 @@ router.get("/office/council", canRead, async (req, res) => {
       tasks: [...openTasks, ...closedTasks].map(councilTasks.publicTask),
       decisions: open.map(publicDecision),
       history: closed.map(publicDecision),
+      mission: {
+        guidance: mission.guidance || "",
+        version: mission.version || 0,
+        history: (mission.history || []).slice().reverse().map((h) => ({ version: h.version, guidance: h.guidance, by: h.by, at: h.at, note: h.note })),
+      },
       counts: {
         decisions: open.filter((d) => ["decision", "uncertain"].includes(d.category)).length,
         info: open.filter((d) => d.category === "info").length,
@@ -561,6 +568,35 @@ router.get("/office/council", canRead, async (req, res) => {
     });
   } catch (error) {
     fail(res, error, "Could not load the council.");
+  }
+});
+
+/** King Arthur's standing mission (his guidance): owner-only, validated, versioned, restorable. */
+async function logMission(req, action, details) {
+  const actor = ownerActor(req);
+  await AdminActivityLogModel.create({ action, entityType: "growth_council", entityId: "arthur", entityName: "King Arthur", actorUserId: actor.userId, actorName: actor.name, actorRole: "owner", details });
+}
+
+router.put("/office/council/mission", ownerOnly, async (req, res) => {
+  try {
+    const actor = ownerActor(req);
+    const { settings, unchanged } = await agentSettings.saveGuidance("arthur", req.body?.guidance, { by: actor.name, note: req.body?.note });
+    if (!unchanged) await logMission(req, "growth_council.mission_saved", { version: settings.version, guidance: settings.guidance });
+    res.json({ version: settings.version, guidance: settings.guidance, unchanged });
+  } catch (error) {
+    if (error.problems) return res.status(422).json({ message: "Some of that can't be part of the mission.", problems: error.problems });
+    fail(res, error, "Could not save the mission.");
+  }
+});
+
+router.post("/office/council/mission/rollback", ownerOnly, async (req, res) => {
+  try {
+    const { settings } = await agentSettings.rollbackGuidance("arthur", req.body?.version, { by: ownerActor(req).name });
+    await logMission(req, "growth_council.mission_restored", { restored: Number(req.body?.version), version: settings.version });
+    res.json({ version: settings.version, guidance: settings.guidance });
+  } catch (error) {
+    if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
+    fail(res, error, "Could not restore that version.");
   }
 });
 
