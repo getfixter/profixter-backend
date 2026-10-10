@@ -59,7 +59,7 @@ let script = [];
 let calls = [];
 let n = 0;
 const use = (name, input) => ({ name, input });
-setClientFactory(() => ({
+const scriptedClient = () => ({
   beta: {
     messages: {
       create: async (req) => {
@@ -73,7 +73,8 @@ setClientFactory(() => ({
       },
     },
   },
-}));
+});
+setClientFactory(scriptedClient);
 /** The tool results the model received on its last call, parsed. */
 function lastResults() {
   const last = calls[calls.length - 1];
@@ -107,9 +108,17 @@ async function main() {
   await test("Arthur has no tool that approves, sends, spends, books, touches ads or switches anything on", async () => {
     const names = arthur.ARTHUR_TOOL_NAMES;
     assert.deepStrictEqual(names.slice().sort(), [
-      "assign_task", "cancel_task", "file_for_owner", "get_council_state", "get_item", "get_specialist",
-      "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "write_memory",
+      "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_business_overview", "get_council_state", "get_growth_status",
+      "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "write_memory",
     ]);
+    // His business numbers are the very same read-only, aggregate-only tools the specialists use.
+    const { TOOL_DEFS } = require("../utils/agents/tools");
+    for (const t of ["get_business_overview", "get_acquisition", "get_growth_status"]) assert.strictEqual(arthur.ARTHUR_TOOLS[t], TOOL_DEFS[t], t);
+    // Per-answer limits: $0.80 and 16 steps, inside the shared daily/monthly caps.
+    const def = arthur.arthurDef("chat", { kickoff: () => "", context: {} });
+    assert.strictEqual(def.budgetCents, 80);
+    assert.strictEqual(def.maxTurns, 16);
+    assert.match(def.wrapUp, /no more tool calls/);
     for (const name of names) assert.doesNotMatch(name, /approve|reject|send|spend|book|publish|meta|(^|_)ads?(_|$)|enable|activate|price|offer|permission|policy|propose_action|execute/i, name);
     // A tool outside his list cannot be called even if the model asks for it.
     await assert.rejects(arthur.ARTHUR_TOOLSET.runTool("propose_action", {}, { toolNames: names }), /not available to King Arthur/);
@@ -314,6 +323,69 @@ async function main() {
     await assert.rejects(arthur.ARTHUR_TOOLS.start_shift.run({ agent: "outreach", reason: "x" }, { log: [] }), /paused by the owner/);
     for (let i = 0; i < 2; i += 1) await AgentRun.create({ agent: "visibility", trigger: "event", status: "succeeded", startedAt: new Date() });
     await assert.rejects(arthur.ARTHUR_TOOLS.start_shift.run({ agent: "visibility", reason: "x" }, { log: [] }), /limit 2/);
+  });
+
+  console.log("big requests");
+
+  await test("at the limit the tools are taken away for one last turn: completed work is kept and he says what remains", async () => {
+    script = [
+      use("assign_task", { agent: "outreach", instruction: "Score member referrals as a channel for new free visits", why: "Cheapest channel", origin: "owner" }),
+      use("get_council_state", {}),
+      "Boss, I asked Leonidas to look at member referrals. I did not get to the other two ideas yet - reply continue and I will.",
+    ];
+    const msg = await arthur.chat({ text: "Find three big opportunities and assign tasks", limits: { maxTurns: 3 } });
+    const final = calls[2];
+    assert.deepStrictEqual(final.tool_choice, { type: "none" }, "the last turn has no tools");
+    const lastUser = final.messages[final.messages.length - 1];
+    assert.ok(lastUser.content.some((c) => c.type === "text" && /LIMIT REACHED/.test(c.text)));
+    assert.ok(lastUser.content.some((c) => c.type === "tool_result"), "the tool results stay in the same turn");
+    assert.match(msg.text, /reply continue/);
+    assert.strictEqual(await CouncilTask.countDocuments({ status: "assigned" }), 1, "the assigned task is kept");
+    assert.strictEqual(msg.actions[0].type, "task.assigned");
+  });
+
+  await test("if a run stops without his answer, the reply lists what was done and what remains - not a generic error", async () => {
+    script = [
+      use("assign_task", { agent: "visibility", instruction: "Find the three pages closest to page one for repair searches", why: "x", origin: "owner" }),
+      use("get_council_state", {}), // misbehaves on the wrap-up turn: tools instead of an answer
+    ];
+    const msg = await arthur.chat({ text: "Big request", limits: { maxTurns: 2 } });
+    assert.match(msg.text, /^Boss, your request was bigger than one answer allows/);
+    assert.match(msg.text, /What I did:\n- Odysseus: Find the three pages/);
+    assert.match(msg.text, /Reply "continue"/);
+    assert.doesNotMatch(msg.text, /something went wrong/);
+    assert.strictEqual(await CouncilTask.countDocuments({}), 1);
+    // and "continue" sees what was already done
+    script = ["Boss, picking up."];
+    await arthur.chat({ text: "continue" });
+    assert.match(calls.at(-1).messages[0].content, /recorded: task\.assigned Odysseus: Find the three pages/);
+  });
+
+  await test("a budget stop mid-request wraps up the same way", async () => {
+    // each scripted call reports enough usage to pass 80% of the budget after two calls
+    const heavy = { input_tokens: 90000, output_tokens: 2000 };
+    let i = 0;
+    setClientFactory(() => ({
+      beta: {
+        messages: {
+          create: async (req) => {
+            calls.push({ ...req, messages: req.messages.slice() });
+            i += 1;
+            if (req.tool_choice?.type === "none") return { stop_reason: "end_turn", usage: heavy, content: [{ type: "text", text: "Boss, I stopped at my limit. Done: one task. Remaining: two ideas." }] };
+            return { stop_reason: "tool_use", usage: heavy, content: [{ type: "tool_use", id: `h${i}`, name: i === 1 ? "assign_task" : "get_council_state", input: i === 1 ? { agent: "conversion", instruction: "Review the plans page for where visitors drop off", why: "x", origin: "owner" } : {} }] };
+          },
+        },
+      },
+    }));
+    try {
+      const msg = await arthur.chat({ text: "Big request" });
+      assert.match(msg.text, /Remaining: two ideas/);
+      assert.ok(calls.length < 16, `wrapped up after ${calls.length} calls`);
+      assert.deepStrictEqual(calls.at(-1).tool_choice, { type: "none" });
+      assert.strictEqual(await CouncilTask.countDocuments({}), 1);
+    } finally {
+      setClientFactory(scriptedClient);
+    }
   });
 
   console.log("review, budget and the report");

@@ -179,6 +179,7 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   let summary = "";
   let error = null;
   let turns = 0;
+  let wrapping = false; // the final turn before a limit: no tools, just the answer
 
   try {
     const client = clientFactory();
@@ -193,12 +194,24 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
     const messages = [{ role: "user", content: kickoff }];
 
     while (turns < def.maxTurns) {
-      if (costCents >= def.budgetCents) {
+      // WRAP-UP (agents that set def.wrapUp): at the last allowed turn, or at
+      // 80% of the run budget, the tools are taken away for one final call, so
+      // the run ends with a real answer saying what was done and what remains.
+      const last = messages[messages.length - 1];
+      const nearLimit = turns >= def.maxTurns - 1 || costCents >= def.budgetCents * 0.8;
+      const wrapNow = Boolean(def.wrapUp) && !wrapping && turns > 0 && nearLimit && last.role === "user";
+      if (wrapNow) {
+        wrapping = true;
+        const note = { type: "text", text: def.wrapUp };
+        last.content = Array.isArray(last.content) ? [...last.content, note] : [{ type: "text", text: last.content }, note];
+      }
+      if (costCents >= def.budgetCents && !wrapNow) {
         status = "budget_stopped";
         break;
       }
       turns += 1;
       const response = await client.beta.messages.create({
+        ...(wrapping ? { tool_choice: { type: "none" } } : {}),
         model: MODEL,
         max_tokens: 16000,
         system,
@@ -237,6 +250,12 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
       }
 
       const uses = response.content.filter((b) => b.type === "tool_use");
+      if (wrapping) {
+        // the wrap-up turn never runs tools; the text it wrote is the answer
+        summary = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+        if (!summary) status = "budget_stopped";
+        break;
+      }
       if (!uses.length) {
         summary = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
         break;

@@ -62,6 +62,8 @@ YOUR JOB
 WHAT YOU CANNOT DO (your tools make these impossible; never pretend otherwise)
 You cannot approve or decline anything, send any message to a customer or anyone else, spend money or authorise paid campaigns, book visits, change Meta ads (the outside agency runs them), switch on any automation, change prices, offers, plans or booking rules, publish website changes, change permissions or approvals, or change a specialist's guidance without the owner confirming it. Your recommendation is never the owner's approval. You cannot retrain a specialist: guidance you propose becomes a saved note the specialist reads in its next shift, and only after the owner confirms it.
 
+BUSINESS NUMBERS (read-only): get_business_overview (paying members, new members, cancellations and scheduled cancellations vs the previous period, net MRR from Stripe, revenue, free visits and how many became members, the visitor-to-member funnel, sources and towns), get_acquisition (new first free-visit bookings, the booking funnel, bookings by source) and get_growth_status (calendar capacity for the next 3 weeks - when it is nearly full, more demand is not the bottleneck). Volumes are small (about 40-50 members): treat a swing of a few customers as noise and prefer multi-week trends. Paying members come from first free visits that convert, so both matter.
+
 HONESTY
 - Ground every statement in what your tools returned. Never invent numbers, customers, results or reviews. Say what you could not see.
 - Be exact about task states: "I asked Leonidas" (assigned) is not "Leonidas did it" (completed), and neither is "I checked it" (verified). A specialist works on a task in its next shift unless you start a shift.
@@ -484,6 +486,11 @@ const ARTHUR_TOOLS = {
       return { started: true };
     },
   },
+  // Read-only business numbers - the same aggregates the specialists read (no
+  // names, emails, phones or addresses ever reach a model).
+  get_business_overview: TOOL_DEFS.get_business_overview,
+  get_acquisition: TOOL_DEFS.get_acquisition,
+  get_growth_status: TOOL_DEFS.get_growth_status,
   read_memory: TOOL_DEFS.read_memory,
   write_memory: TOOL_DEFS.write_memory,
 };
@@ -524,6 +531,9 @@ Your final message is your briefing for the owner: start with "Boss,", 2-5 short
 
 const ARTHUR_TOOL_NAMES = Object.keys(ARTHUR_TOOLS);
 
+const WRAP_UP_CHAT = `LIMIT REACHED: this answer has used its budget, so you have no more tool calls. Write your final reply to the owner now, starting with "Boss,": what you actually did (only what your tools confirmed - tasks assigned, records filed), what you could not finish yet, and that he can reply "continue" for the rest. Do not claim anything you did not do.`;
+const WRAP_UP_REVIEW = `LIMIT REACHED: no more tool calls in this review. Write your briefing for the owner now, starting with "Boss,": what you did and what you will pick up in your next review.`;
+
 function arthurDef(kind, { kickoff, context }) {
   return {
     name: ARTHUR,
@@ -531,8 +541,11 @@ function arthurDef(kind, { kickoff, context }) {
     rules: ARTHUR_RULES,
     instructions: kind === "chat" ? CHAT_INSTRUCTIONS : REVIEW_INSTRUCTIONS,
     effort: "medium",
-    maxTurns: kind === "chat" ? 10 : 16,
-    budgetCents: kind === "chat" ? 40 : 80,
+    maxTurns: 16,
+    budgetCents: 80,
+    // Near a limit the runtime takes the tools away for one last turn, so he
+    // always answers with what he finished and what remains.
+    wrapUp: kind === "chat" ? WRAP_UP_CHAT : WRAP_UP_REVIEW,
     tools: ARTHUR_TOOL_NAMES,
     allowedActions: [],
     toolset: ARTHUR_TOOLSET,
@@ -551,13 +564,32 @@ function skipText(run) {
   return "Boss, something went wrong on my side and I couldn't answer. Your message is saved - please try again in a few minutes.";
 }
 
-/** Answer one owner message. Returns the saved Arthur message. */
-async function chat({ text, ownerName = "Owner", now = new Date() }) {
+/** Built from what his tools confirmed, when a run stops before his own answer. */
+function partialText(run, log) {
+  const done = log.filter((a) => a.ok).map((a) => `- ${a.label}`);
+  const refused = log.filter((a) => !a.ok).map((a) => `- ${a.label}`);
+  const why = run.status === "failed" ? "something went wrong on my side before I finished" : "your request was bigger than one answer allows, so I stopped early";
+  return [
+    `Boss, ${why}. Everything below is saved.`,
+    done.length ? `What I did:\n${done.join("\n")}` : null,
+    refused.length ? `What I could not assign (it needs you or breaks a rule):\n${refused.join("\n")}` : null,
+    'What remains: the rest of your request. Reply "continue" and I will pick up from here.',
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** Answer one owner message. Returns the saved Arthur message. `limits` overrides budget/turns (tests). */
+async function chat({ text, ownerName = "Owner", now = new Date(), limits = null }) {
   const { runAgent } = require("../agents/runtime");
   const history = await CouncilMessage.find({}).sort({ createdAt: -1 }).limit(12).lean();
+  // His earlier actions travel with his words, so "continue" knows what is already done.
   const transcript = history
     .reverse()
-    .map((m) => `${m.role === "owner" ? "OWNER" : "YOU (Arthur)"}${m.kind === "briefing" ? " [briefing]" : ""}: ${clip(m.text, 1200)}`)
+    .map((m) => {
+      const did = (m.actions || []).length ? `\n  (recorded: ${m.actions.map((a) => `${a.type} ${a.label}`).join("; ")})` : "";
+      return `${m.role === "owner" ? "OWNER" : "YOU (Arthur)"}${m.kind === "briefing" ? " [briefing]" : ""}: ${clip(m.text, 1200)}${did}`;
+    })
     .join("\n");
   const log = [];
   const def = arthurDef("chat", {
@@ -565,9 +597,12 @@ async function chat({ text, ownerName = "Owner", now = new Date() }) {
     kickoff: () =>
       `The conversation so far (oldest first; the owner's newest message is last):\n<conversation>\n${transcript}\n</conversation>\n\nAnswer the owner's newest message: "${clip(text, 2000)}"`,
   });
-  const run = await runAgent(def, { trigger: "chat", now });
-  const ok = run.status === "succeeded" && run.summary;
-  const reply = ok ? clip(run.summary, 3000) : run.status === "budget_stopped" && run.summary && !/^Stopped after/.test(run.summary) ? clip(run.summary, 3000) : skipText(run);
+  const run = await runAgent(limits ? { ...def, ...limits } : def, { trigger: "chat", now });
+  const answered = Boolean(run.summary) && !/^Stopped after \d+ turns/.test(run.summary);
+  let reply;
+  if (["succeeded", "budget_stopped"].includes(run.status) && answered) reply = clip(run.summary, 3000);
+  else if (log.length) reply = partialText(run, log); // real work was done before it stopped: keep it, say what remains
+  else reply = skipText(run);
   const msg = await CouncilMessage.create({ role: "arthur", text: reply, actions: log, run: run._id || null, kind: "chat" });
   return msg.toObject();
 }
