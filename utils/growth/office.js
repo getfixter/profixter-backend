@@ -25,6 +25,8 @@ const { nextRunFor } = require("../agents/schedule");
 const { allSettings, getSettings } = require("../agents/settings");
 const { agentsEnabled, dailyBudgetCents, monthlyBudgetCents, spentThisMonthCents, spentTodayCents, SHARED_RULES } = require("../agents/runtime");
 
+const explain = require("./explain");
+
 const RUNNING_STALE_MS = 30 * 60 * 1000;
 
 const ROBOTS = [
@@ -261,6 +263,7 @@ async function buildOffice({ now = new Date(), fresh = false } = {}) {
     lastFirstFreeVisitAt: lastFirstVisit?.createdAt || null,
     report: report ? { headline: report.title, at: report.updatedAt } : null,
   };
+  value.explained = explain.explainResults(value);
   cache = { at: Date.now(), value };
   return value;
 }
@@ -298,46 +301,78 @@ async function approvalsList() {
           .map(([k, v]) => `${k}: ${v}`)
           .join("\n")
       : "";
+  require("./plainExplainer")
+    .explainMissing({ findings: notes, robotName: "agent" })
+    .catch(() => {});
+  const threadIds = actions.filter((x) => x.type === "conversation_reply" && x.payload?.threadId).map((x) => x.payload.threadId);
+  const threads = threadIds.length ? await ConversationThread.find({ _id: { $in: threadIds } }).lean() : [];
+  const threadById = Object.fromEntries(threads.map((t) => [String(t._id), t]));
+  const nameOf = (key) => ROBOT_BY_KEY[key]?.name;
+  const actionItems = await Promise.all(
+    actions.map(async (x) => {
+      const robot = robotOfAction(x);
+      const e = await explain.explainAction(x, { robotName: nameOf(robot), thread: threadById[String(x.payload?.threadId)] });
+      const names = [threadById[String(x.payload?.threadId)]?.firstName].filter(Boolean);
+      return {
+        kind: "action",
+        id: String(x._id),
+        robot,
+        title: explain.redact(shortText(x.summary, 160), { names }),
+        detail: explain.redact(shortText(x.rationale, 500), { names }),
+        preview: explain.redact(shortText(preview(x), 1500), { names }),
+        at: x.createdAt,
+        risk: x.riskTier,
+        simple: e.simple,
+        chatgpt: e.chatgpt,
+      };
+    })
+  );
   return {
     items: [
-      ...actions.map((a) => ({
-        kind: "action",
-        id: String(a._id),
-        robot: robotOfAction(a),
-        title: shortText(a.summary, 160),
-        detail: shortText(a.rationale, 500),
-        preview: shortText(preview(a), 1500),
-        at: a.createdAt,
-        risk: a.riskTier,
-      })),
-      ...playbooks.map((p) => ({
-        kind: "playbook",
-        id: p.key,
-        robot: "conversation",
-        title: `Follow-up email: ${shortText(p.subject || p.name || p.key, 120)}`,
-        detail: shortText(p.purpose || "", 400),
-        preview: "",
-        at: p.updatedAt,
-      })),
-      ...drafts.map((f) => ({
-        kind: "draft",
+      ...actionItems,
+      ...playbooks.map((pb) => {
+        const e = explain.explainPlaybook(pb);
+        return {
+          kind: "playbook",
+          id: pb.key,
+          robot: "conversation",
+          title: `Follow-up email: ${shortText(pb.subject || pb.name || pb.key, 120)}`,
+          detail: shortText(pb.purpose || "", 400),
+          preview: "",
+          at: pb.updatedAt,
+          simple: e.simple,
+          chatgpt: e.chatgpt,
+        };
+      }),
+      ...drafts.map((f) => {
+        const e = explain.explainDraft(f);
+        return {
+          kind: "draft",
+          id: String(f._id),
+          robot: robotOfAgent(f.agent),
+          title: shortText(f.title, 160),
+          detail: shortText(f.detail || "", 600),
+          preview: shortText(typeof f.body === "string" ? f.body : "", 1500),
+          at: f.updatedAt,
+          simple: e.simple,
+          chatgpt: e.chatgpt,
+        };
+      }),
+    ].sort((x, y) => new Date(y.at) - new Date(x.at)),
+    notes: notes.map((f) => {
+      const e = explain.explainFinding(f);
+      return {
+        kind: "note",
         id: String(f._id),
         robot: robotOfAgent(f.agent),
         title: shortText(f.title, 160),
-        detail: shortText(f.detail || "", 600),
-        preview: shortText(typeof f.body === "string" ? f.body : "", 1500),
+        detail: shortText(f.detail || "", 700),
+        severity: f.severity,
         at: f.updatedAt,
-      })),
-    ].sort((a, b) => new Date(b.at) - new Date(a.at)),
-    notes: notes.map((f) => ({
-      kind: "note",
-      id: String(f._id),
-      robot: robotOfAgent(f.agent),
-      title: shortText(f.title, 160),
-      detail: shortText(f.detail || "", 700),
-      severity: f.severity,
-      at: f.updatedAt,
-    })),
+        simple: e.simple,
+        chatgpt: e.chatgpt,
+      };
+    }),
   };
 }
 
@@ -376,12 +411,16 @@ async function robotDetail(key, { now = new Date() } = {}) {
     conversations: process.env.CONVERSATIONS_ENABLED === "true",
     searchConsole: Boolean((await require("../visibility/summary").buildVisibilitySummary().catch(() => null))?.search?.available),
   };
-  return {
+  require("./plainExplainer")
+    .explainMissing({ findings: openFindings, runs, robotName: robot.name, now })
+    .catch(() => {});
+  const detail = {
     robot: { key: robot.key, name: robot.name, role: robot.role, mission: robot.mission, does: robot.does, cannot: robot.cannot, personality: robot.personality },
     state,
     schedule: scheduled.flatMap((a) => (AGENTS[a].schedules || []).map((s) => s.label)),
     capabilities: capabilities(robot, flags),
     runs: runs.map((r) => ({
+      ...(({ simple, chatgpt }) => ({ simple, chatgpt }))(explain.explainRun(r, { robotName: robot.name })),
       id: String(r._id),
       agent: r.agent,
       at: r.startedAt,
@@ -394,7 +433,7 @@ async function robotDetail(key, { now = new Date() } = {}) {
       findings: r.findings?.length || 0,
       actions: r.actions?.length || 0,
     })),
-    findings: openFindings.map((f) => ({ id: String(f._id), kind: f.kind, severity: f.severity, title: shortText(f.title, 160), detail: shortText(f.detail, 700), at: f.updatedAt })),
+    findings: openFindings.map((f) => ({ ...explain.explainFinding(f), id: String(f._id), kind: f.kind, severity: f.severity, title: shortText(f.title, 160), detail: shortText(f.detail, 700), at: f.updatedAt })),
     results: doneActions.map((a) => ({ id: String(a._id), title: shortText(a.summary, 160), at: a.executedAt || a.updatedAt, verification: a.verification?.status || null })),
     learned: memory.map((m) => ({ key: m.key, content: shortText(m.content, 600), at: m.updatedAt })),
     mistakes: [
@@ -407,7 +446,8 @@ async function robotDetail(key, { now = new Date() } = {}) {
       })),
     ]
       .sort((a, b) => new Date(b.at) - new Date(a.at))
-      .slice(0, 10),
+      .slice(0, 10)
+      .map((m) => ({ ...m, ...explain.explainMistake(m, { robotName: robot.name }) })),
     teach: {
       teachable: scheduled.length > 0,
       agent: scheduled[0] || null,
@@ -421,6 +461,9 @@ async function robotDetail(key, { now = new Date() } = {}) {
           : "",
     },
   };
+  detail.explained = explain.explainRobot(detail);
+  detail.teach.explained = explain.explainTeach(detail);
+  return detail;
 }
 
 module.exports = { ROBOTS, approvalsList, buildOffice, invalidateOffice, robotDetail, robotOfAction, robotStates };

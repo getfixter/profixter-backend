@@ -46,6 +46,8 @@ const agentRunSchema = new mongoose.Schema(
     findings: [{ type: mongoose.Schema.Types.ObjectId, ref: "AgentFinding" }],
     actions: [{ type: mongoose.Schema.Types.ObjectId, ref: "GrowthAction" }],
     summary: { type: String, default: "" },
+    plainSummary: { type: String, default: "" }, // "For the owner": everyday English
+    plainBy: { type: String, default: "" },
     error: { type: String, default: null },
   },
   { timestamps: true }

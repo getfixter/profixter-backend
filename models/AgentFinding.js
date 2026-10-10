@@ -23,6 +23,11 @@ const agentFindingSchema = new mongoose.Schema(
     severity: { type: String, enum: ["info", "low", "medium", "high"], default: "info" },
     title: { type: String, required: true },
     detail: { type: String, default: "" },
+    // The owner-facing version: everyday English, written by the agent (or by the
+    // plain-English explainer for older records - plainBy says which).
+    plain: { type: String, default: "" },
+    ownerQuestion: { type: String, default: "" },
+    plainBy: { type: String, default: "" },
     expectedImpact: { type: String, default: "" },
     evidence: { type: mongoose.Schema.Types.Mixed, default: null },
     /* For content drafts: the publishable body (markdown) and its target. */

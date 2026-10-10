@@ -39,6 +39,12 @@ function obj(properties) {
 const str = (description, extra = {}) => ({ type: "string", description, ...extra });
 const nstr = (description) => ({ type: ["string", "null"], description });
 
+/** The owner-facing fields every agent output carries (everyday English). */
+const PLAIN_HELP =
+  "For the owner, who is not technical: 2-4 short sentences in everyday English, as you would say it to your boss ('I found...', 'Can I...?'). Say what you found or want to do, what happens, and why it matters for Profixter. No jargon, abbreviations, metric or tool names, numbers only where they help.";
+const plainField = () => str(PLAIN_HELP);
+const ownerQuestionField = () => nstr("The one question the owner must answer, in everyday words (e.g. 'Can I change the title of the bathroom repair page?'), or null if nothing is needed");
+
 function clip(value, max) {
   return String(value ?? "").slice(0, max);
 }
@@ -281,6 +287,8 @@ const TOOL_DEFS = {
       expected_impact: str("Expected effect on paying customers or CAC, with your uncertainty; never invented precision"),
       evidence: str("The numbers this rests on, as compact text"),
       dedupe_key: str("Stable key for this topic, e.g. 'cac:instagram-vs-facebook'"),
+      plain: plainField(),
+      owner_question: ownerQuestionField(),
     }),
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
@@ -295,6 +303,9 @@ const TOOL_DEFS = {
             detail: clip(input.detail, 4000),
             expectedImpact: clip(input.expected_impact, 600),
             evidence: clip(input.evidence, 3000),
+            plain: clip(input.plain, 900),
+            ownerQuestion: clip(input.owner_question || "", 300),
+            plainBy: input.plain ? "agent" : "",
             run: ctx.runId,
             lastSeenAt: now,
           },
@@ -333,6 +344,7 @@ const TOOL_DEFS = {
       payload_json: str("The payload as a JSON object string"),
       rationale: str("Why, with the evidence; this is what the owner reads when approving"),
       idempotency_key: str("Stable key so proposing the same thing twice is harmless, e.g. 'weekly-report:2026-W42'"),
+      plain: plainField(),
     }),
     run: async (input, ctx) => {
       if (!ctx.allowedActions.includes(input.type)) {
@@ -350,7 +362,10 @@ const TOOL_DEFS = {
         rationale: clip(input.rationale, 2000),
         proposedBy: { kind: "agent", name: ctx.agentLabel },
       });
-      if (action?._id) ctx.actionIds.push(action._id);
+      if (action?._id) {
+        ctx.actionIds.push(action._id);
+        if (input.plain) await require("../../models/GrowthAction").updateOne({ _id: action._id }, { $set: { plain: clip(input.plain, 900) } });
+      }
       return { created, mode, status: action?.status || "off", id: action?._id ? String(action._id) : null };
     },
   },
@@ -458,6 +473,7 @@ Object.assign(TOOL_DEFS, {
       why: str("The evidence: the queries, ranks, waitlist ZIPs or gaps this addresses"),
       body_markdown: str("The full draft in markdown"),
       dedupe_key: str("Stable key, e.g. 'draft:/locations/levittown'"),
+      plain: plainField(),
     }),
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
@@ -474,6 +490,8 @@ ${input.body_markdown}`);
             detail: clip(input.why, 3000),
             target: clip(input.target, 200),
             body: clip(input.body_markdown, 20000),
+            plain: clip(input.plain, 900),
+            plainBy: input.plain ? "agent" : "",
             run: ctx.runId,
             lastSeenAt: new Date(),
           },

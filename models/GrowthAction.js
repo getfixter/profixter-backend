@@ -63,6 +63,7 @@ const growthActionSchema = new mongoose.Schema(
     proposedBy: { type: actorSchema, default: () => ({}) },
     summary: { type: String, default: "" },
     rationale: { type: String, default: "" },
+    plain: { type: String, default: "" }, // the owner-facing version, in everyday English
     subject: {
       entityType: { type: String, default: null },
       entityId: { type: String, default: null },
