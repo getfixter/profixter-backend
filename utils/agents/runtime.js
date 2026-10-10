@@ -2,6 +2,7 @@ const AgentRun = require("../../models/AgentRun");
 const AgentFinding = require("../../models/AgentFinding");
 const { takeLease, releaseLease } = require("../analytics/analyticsLease");
 const { runTool, toolsFor } = require("./tools");
+const { getSettings, guidanceBlock, isPaused } = require("./settings");
 
 /**
  * The agent loop: Claude with our tools, under our limits.
@@ -100,7 +101,7 @@ function setClientFactory(fn) {
   clientFactory = fn;
 }
 
-const SHARED_RULES = `You are one of Profixter's growth agents. Profixter is a handyman membership company serving homeowners in Nassau and Suffolk counties on Long Island, NY. Its one goal: more profitable paying local customers (members first, then paid one-time and Full Day visits), with minimal owner involvement.
+const SHARED_RULES = `You are one of Profixter's growth agents. Profixter is a handyman membership company serving homeowners in Nassau and Suffolk counties on Long Island, NY. Its number-one goal: more NEW FIRST FREE-VISIT BOOKINGS from local homeowners, who book on profixter.com themselves (agents never book), and from them more paying customers - with minimal owner involvement.
 
 How you work:
 - Start by reading your notebook and recent runs, then the data you need. Finish by saving what you learned to your notebook and writing a short run summary as your final message.
@@ -121,6 +122,11 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
 
   if (!agentsEnabled(env) && trigger !== "test") {
     return (await AgentRun.create({ ...base, status: "skipped", skipReason: env.ANTHROPIC_API_KEY ? "agents_disabled" : "no_api_key", finishedAt: new Date() })).toObject();
+  }
+  if (!["manual", "test"].includes(trigger)) {
+    if (await isPaused(def.name)) {
+      return (await AgentRun.create({ ...base, status: "skipped", skipReason: "paused_by_owner", finishedAt: new Date() })).toObject();
+    }
   }
   const spentMonth = await spentThisMonthCents(now);
   if (spentMonth + def.budgetCents > monthlyBudgetCents(env)) {
@@ -158,7 +164,7 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   try {
     const client = clientFactory();
     const system = [
-      { type: "text", text: `${SHARED_RULES}\n\n${def.instructions}` },
+      { type: "text", text: `${SHARED_RULES}\n\n${def.instructions}${guidanceBlock(await getSettings(def.name))}` },
       // The date changes daily; it sits after the stable rules so the rules stay cacheable.
       { type: "text", text: `Today is ${now.toISOString().slice(0, 10)} (UTC). Your allowed actions: ${(def.allowedActions || []).join(", ") || "none - findings only"}.`, cache_control: { type: "ephemeral" } },
     ];

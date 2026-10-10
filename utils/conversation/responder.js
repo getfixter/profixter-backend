@@ -22,6 +22,14 @@ const MODEL = "claude-opus-5-5";
 const STOP_RE = /^\s*(stop|stopall|unsubscribe|cancel|end|quit|optout|opt out|revoke)\b|\b(stop (texting|messaging|contacting)|remove me|take me off|do not (text|contact|message)|don'?t (text|contact|message)|lose my number|unsubscribe)\b/i;
 const BOOKING_CLAIM_RE = /\b(i|we)\s*(have|'ve|’ve)?\s*(booked|scheduled|reserved|confirmed|locked in|set up)\b|\byou('|’)?re (booked|scheduled|confirmed|all set for)\b|\bappointment (is|has been) (set|confirmed|booked|scheduled)\b|\b(i|we) (can|will|'ll|’ll) (book|schedule|reserve) (it|that|you|a time|your)/i;
 const FORBIDDEN_RE = /\b(\d+\s?%\s?off|discount|coupon|promo code|special offer|free month|guarantee[ds]?|warrant(y|ies)|money.?back|same.?day|tomorrow at|today at|available (on|at) \d)/i;
+/**
+ * Messaging is business-only. A message that only ends the conversation,
+ * declines, thanks, or is chatter (emoji, "ok", "lol", "no thanks", "not
+ * interested") gets no reply and costs no model call. Opt-outs are checked
+ * first, separately, because they must also be recorded.
+ */
+const CLOSER_RE =
+  /^\s*(?:(?:ok(?:ay)?|k+|kk|thanks?(?: you)?(?: so much| very much)?|thx|ty|thank u|cool|great|perfect|sounds good|got it|will do|noted|no|nope|nah|no thanks?(?: you)?|not interested|not now|maybe later|all set|good|nice|lol|haha+|bye|have a good (?:day|one|night|weekend)|you too|same to you|god bless|appreciate it)[\s.!,]*)+[\p{Extended_Pictographic}\u{FE0F}\u{1F3FB}-\u{1F3FF}\s.!]*$|^[\p{Extended_Pictographic}\u{FE0F}\u{1F3FB}-\u{1F3FF}\p{P}\s]+$/iu;
 const URL_RE = /https?:\/\/|www\.|\.com\b/i;
 
 const DECISION_SCHEMA = {
@@ -54,6 +62,7 @@ HARD RULES
 - Use only the facts provided. If they ask something the facts don't answer (insurance, licenses, warranties, exact availability, unusual jobs, prices of specific repairs, complaints, billing, anything legal), set escalate=true and reply briefly that someone from the team will follow up.
 - Never offer discounts, deals, guarantees or anything not in the facts. Never invent services.
 - Do NOT write any link or website address in the reply; choose "link" and the system adds the right one.
+- Messaging is business-only. Thanks, "ok", goodbyes, rejections, small talk and anything unrelated to getting help with their home get NO reply (should_reply=false, intent no_reply_needed or not_interested).
 - If they ask to stop, are not interested, say wrong number, or are hostile: should_reply=false (intent opt_out / not_interested / wrong_number / complaint). Never argue or try to change their mind.
 - Texts: under 300 characters. Emails: under 120 words. No emoji. Sign off as "- Profixter" on texts.
 - Write in the same language they used.`;
@@ -111,6 +120,9 @@ async function decide(thread) {
   if (last && STOP_RE.test(String(last.body || ""))) {
     return { decision: { intent: "opt_out", should_reply: false, escalate: false, summary: "Asked to stop" }, reply: null, problems: [], costCents: 0, optOut: true };
   }
+  if (last && CLOSER_RE.test(String(last.body || "").trim())) {
+    return { decision: { intent: "no_reply_needed", should_reply: false, escalate: false, summary: "Conversation-ending or chatter - no reply needed" }, reply: null, problems: [], costCents: 0 };
+  }
   const { text: facts, allowedAmounts } = await factSheet();
   const response = await clientFactory().beta.messages.create({
     model: MODEL,
@@ -149,4 +161,4 @@ async function decide(thread) {
   return { decision, reply, problems, costCents, optOut: false };
 }
 
-module.exports = { BOOKING_CLAIM_RE, DECISION_SCHEMA, STOP_RE, checkReply, decide, setClientFactory, threadText, trackedLink };
+module.exports = { BOOKING_CLAIM_RE, CLOSER_RE, DECISION_SCHEMA, STOP_RE, checkReply, decide, setClientFactory, threadText, trackedLink };

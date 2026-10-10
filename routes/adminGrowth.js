@@ -391,12 +391,129 @@ router.get("/conversations", canRead, async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* The Growth Office (the Admin "game" view)                            */
+/* ------------------------------------------------------------------ */
+
+const office = require("../utils/growth/office");
+const agentSettings = require("../utils/agents/settings");
+
+router.get("/office", canRead, async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    res.json(await office.buildOffice({ fresh: req.query.fresh === "1" }));
+  } catch (error) {
+    fail(res, error, "Could not load the office.");
+  }
+});
+
+router.get("/office/approvals", canRead, async (req, res) => {
+  try {
+    res.json(await office.approvalsList());
+  } catch (error) {
+    fail(res, error, "Could not load approvals.");
+  }
+});
+
+router.get("/office/robots/:key", canRead, async (req, res) => {
+  try {
+    const detail = await office.robotDetail(String(req.params.key));
+    if (!detail) return res.status(404).json({ message: "No such robot." });
+    res.json(detail);
+  } catch (error) {
+    fail(res, error, "Could not load that robot.");
+  }
+});
+
+function robotOr404(req, res) {
+  const robot = office.ROBOTS.find((r) => r.key === String(req.params.key));
+  if (!robot) res.status(404).json({ message: "No such robot." });
+  return robot;
+}
+
+/** Pause or resume all of a robot's automatic work (scheduled shifts, and for Echo the reply responder). */
+router.post("/office/robots/:key/pause", ownerOnly, async (req, res) => {
+  try {
+    const robot = robotOr404(req, res);
+    if (!robot) return;
+    const paused = Boolean(req.body?.paused);
+    const actor = ownerActor(req);
+    for (const agent of robot.agents) await agentSettings.setPaused(agent, paused, actor.name);
+    await AdminActivityLogModel.create({
+      action: `growth_robot.${paused ? "paused" : "resumed"}`,
+      entityType: "growth_robot",
+      entityId: robot.key,
+      entityName: robot.name,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: { agents: robot.agents },
+    });
+    office.invalidateOffice();
+    res.json({ paused });
+  } catch (error) {
+    fail(res, error, "Could not change that.");
+  }
+});
+
+/** Save owner guidance for a robot's scheduled agent (validated; versioned). */
+router.put("/office/robots/:key/guidance", ownerOnly, async (req, res) => {
+  try {
+    const robot = robotOr404(req, res);
+    if (!robot) return;
+    const agent = robot.agents.find((a) => AGENTS[a]);
+    const actor = ownerActor(req);
+    const { settings, unchanged } = await agentSettings.saveGuidance(agent, req.body?.guidance, { by: actor.name, note: req.body?.note });
+    if (!unchanged) {
+      await AdminActivityLogModel.create({
+        action: "growth_robot.guidance_saved",
+        entityType: "growth_robot",
+        entityId: robot.key,
+        entityName: robot.name,
+        actorUserId: actor.userId,
+        actorName: actor.name,
+        actorRole: "owner",
+        details: { agent, version: settings.version, guidance: settings.guidance },
+      });
+    }
+    res.json({ version: settings.version, guidance: settings.guidance, unchanged });
+  } catch (error) {
+    if (error.problems) return res.status(422).json({ message: "Some of that can't be taught.", problems: error.problems });
+    fail(res, error, "Could not save the guidance.");
+  }
+});
+
+router.post("/office/robots/:key/guidance/rollback", ownerOnly, async (req, res) => {
+  try {
+    const robot = robotOr404(req, res);
+    if (!robot) return;
+    const agent = robot.agents.find((a) => AGENTS[a]);
+    const actor = ownerActor(req);
+    const { settings } = await agentSettings.rollbackGuidance(agent, req.body?.version, { by: actor.name });
+    await AdminActivityLogModel.create({
+      action: "growth_robot.guidance_restored",
+      entityType: "growth_robot",
+      entityId: robot.key,
+      entityName: robot.name,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: { agent, restored: Number(req.body?.version), version: settings.version },
+    });
+    res.json({ version: settings.version, guidance: settings.guidance });
+  } catch (error) {
+    if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
+    fail(res, error, "Could not restore that version.");
+  }
+});
+
 /** Run an agent now. Returns at once; the run appears in GET /agents when done. */
 router.post("/agents/:name/run", ownerOnly, async (req, res) => {
   const def = AGENTS[req.params.name];
   if (!def) return res.status(404).json({ message: "Unknown agent" });
   if (!agentsEnabled()) return res.status(409).json({ message: "Agents are switched off (AGENTS_ENABLED / ANTHROPIC_API_KEY)." });
-  const mode = req.body?.mode === "weekly" ? "weekly" : "daily";
+  const allowedModes = (def.schedules || []).map((s) => s.mode);
+  const mode = allowedModes.includes(req.body?.mode) ? req.body.mode : allowedModes[0] || null;
   runAgent(def, { trigger: "manual", mode }).catch((error) => console.error("Manual agent run failed:", error.message));
   res.status(202).json({ started: true });
 });

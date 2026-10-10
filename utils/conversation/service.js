@@ -98,6 +98,7 @@ async function withinBudget(now) {
 async function processThread(thread, { now = new Date() } = {}) {
   if (thread.optedOut || thread.status !== "needs_reply") return { skipped: "not_waiting" };
   if (!agentsEnabled()) return { skipped: "agents_disabled" };
+  if (await require("../agents/settings").isPaused("conversation")) return { skipped: "paused_by_owner" };
   if (!(await withinBudget(now))) return { skipped: "budget" };
 
   const check = await profixterCustomerCheck(thread);

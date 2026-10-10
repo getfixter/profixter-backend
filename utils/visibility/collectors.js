@@ -141,6 +141,7 @@ async function runCollector(name, { env = process.env, now = new Date(), store =
       };
       if (result?.completed !== false) patch.lastSuccessAt = now.toISOString();
       await writeStatus(store, def.status, patch);
+      log.info?.(JSON.stringify({ event: "visibility_collector_succeeded", collector: name, result: patch.lastResult }));
       return { ran: true, result };
     } finally {
       await store.releaseLease(leaseKey).catch(() => {});

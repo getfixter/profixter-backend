@@ -1,0 +1,426 @@
+/**
+ * The Growth Office: the Admin "game" view of the growth agents.
+ *
+ * Everything here is REAL state, shaped for three characters and a wall
+ * display. A robot is "working" only while an AgentRun is running, "needs you"
+ * only when something it produced is waiting for the owner, "sleeping" when
+ * paused or switched off, "confused" when its last run failed, and otherwise
+ * "waiting" for its next scheduled shift. Nothing is invented: a missing
+ * number is null and the UI says so.
+ *
+ * Robots map onto the agents in utils/agents/definitions.js:
+ *   Lumi  - visibility            (SEO and organic acquisition)
+ *   Rover - outreach              (lawful new channels; never mail or Meta)
+ *   Echo  - conversion + the live reply responder ("conversation")
+ * Growth Intelligence has no robot: its weekly report is the wall display.
+ */
+const AgentRun = require("../../models/AgentRun");
+const AgentFinding = require("../../models/AgentFinding");
+const AgentMemory = require("../../models/AgentMemory");
+const GrowthAction = require("../../models/GrowthAction");
+const EmailPlaybook = require("../../models/EmailPlaybook");
+const ConversationThread = require("../../models/ConversationThread");
+const { AGENTS } = require("../agents/definitions");
+const { nextRunFor } = require("../agents/schedule");
+const { allSettings, getSettings } = require("../agents/settings");
+const { agentsEnabled, dailyBudgetCents, monthlyBudgetCents, spentThisMonthCents, spentTodayCents, SHARED_RULES } = require("../agents/runtime");
+
+const RUNNING_STALE_MS = 30 * 60 * 1000;
+
+const ROBOTS = [
+  {
+    key: "visibility",
+    name: "Lumi",
+    role: "Visibility & organic search",
+    agents: ["visibility"],
+    actionTypes: ["seo_page_update", "seo_content_update"],
+    mission: "Help more Long Island homeowners find Profixter on Google, Maps and AI search - and book their first free visit.",
+    does: [
+      "Reads Search Console: which pages and searches bring people, and where clicks are lost",
+      "Proposes better page titles, descriptions and intros (you approve until it has earned trust)",
+      "Checks each change on the live page and measures it 28 days later",
+      "Drafts new town pages and guides for your review",
+    ],
+    cannot: ["Change services, prices, plans, booking rules or the service area", "Publish new pages on its own", "Touch advertising"],
+    personality: "Curious and tidy. Loves a good search result.",
+  },
+  {
+    key: "outreach",
+    name: "Rover",
+    role: "Outreach & new channels",
+    agents: ["outreach"],
+    actionTypes: [],
+    mission: "Find lawful, trackable ways to reach more Long Island homeowners, test them small, and keep what brings first free visits.",
+    does: [
+      "Keeps a ranked scorecard of channels: referrals, local partners, community, Local Services Ads, opted-in registrants",
+      "Designs small, cheap tests with a tracking link and a success threshold",
+      "Drafts the wording a test needs, for your review",
+      "Measures channels being tested and says keep, change or stop",
+    ],
+    cannot: [
+      "Postcards or any mail (your own project)",
+      "Text, email or call the imported GoHighLevel list",
+      "Spend money, sign up for services or contact anyone",
+      "Touch Meta ads (agency only)",
+    ],
+    personality: "Restless explorer. Always has a map out.",
+  },
+  {
+    key: "conversation",
+    name: "Echo",
+    role: "Conversations & website conversion",
+    agents: ["conversion", "conversation"],
+    actionTypes: ["conversation_reply", "playbook_email"],
+    mission: "Turn homeowners who write in or visit the website into first free-visit bookings they make themselves on profixter.com.",
+    does: [
+      "Answers homeowners who text or email Profixter - once live replies are approved",
+      "Explains the free first visit and links to the booking page; never books",
+      "Hands complaints, billing and anything unusual to a person",
+      "Finds where the website loses people and drafts better wording and follow-up emails",
+    ],
+    cannot: [
+      "Book, schedule or promise a time",
+      "Offer discounts, prices or guarantees that are not on the website",
+      "Reply to thanks, goodbyes, rejections or chatter (business only)",
+      "Message an existing Profixter customer through GoHighLevel",
+    ],
+    personality: "Warm and quick. Never misses a question.",
+  },
+];
+
+const ROBOT_BY_KEY = Object.fromEntries(ROBOTS.map((r) => [r.key, r]));
+
+function labelsOf(robot) {
+  return robot.agents.map((a) => AGENTS[a]?.label).filter(Boolean);
+}
+
+function robotOfAction(a) {
+  const name = a.proposedBy?.name || "";
+  return (
+    ROBOTS.find((r) => r.actionTypes.includes(a.type))?.key ||
+    ROBOTS.find((r) => labelsOf(r).includes(name))?.key ||
+    (/conversation|conversion/i.test(name) ? "conversation" : /visib/i.test(name) ? "visibility" : /outreach/i.test(name) ? "outreach" : null)
+  );
+}
+
+function robotOfAgent(agent) {
+  return ROBOTS.find((r) => r.agents.includes(agent))?.key || null;
+}
+
+function shortText(s, n = 220) {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
+function capabilities(robot, flags) {
+  const pending = "Waits for your approval";
+  if (robot.key === "visibility") {
+    return [
+      { label: "Search Console data", state: flags.searchConsole ? "on" : "off", note: flags.searchConsole ? "Connected" : "Not receiving data yet" },
+      { label: "Page wording changes", state: flags.engine ? "approval" : "off", note: flags.engine ? pending : "Watch-only: proposals are recorded, nothing changes" },
+      { label: "New pages", state: "approval", note: "Drafts only - you publish" },
+    ];
+  }
+  if (robot.key === "outreach") {
+    return [
+      { label: "Channel research", state: "on", note: "Weekly scorecard from your own data" },
+      { label: "Spending or contacting anyone", state: "never", note: "Always your decision" },
+      { label: "Postcards / mail", state: "never", note: "Your own project" },
+    ];
+  }
+  return [
+    { label: "Live replies to homeowners", state: flags.conversations ? "approval" : "off", note: flags.conversations ? pending : "Off until you approve going live" },
+    { label: "Website & follow-up review", state: "on", note: "Twice a week" },
+    { label: "Follow-up emails", state: flags.engine ? "approval" : "off", note: flags.engine ? "You approve the wording" : "Watch-only" },
+    { label: "Booking visits", state: "never", note: "Homeowners book on profixter.com" },
+  ];
+}
+
+async function robotStates({ now = new Date() } = {}) {
+  const agentNames = ROBOTS.flatMap((r) => r.agents);
+  const [latestRuns, running, pending, playbookDrafts, contentDrafts, settings, monthCost] = await Promise.all([
+    AgentRun.aggregate([
+      { $match: { agent: { $in: agentNames }, status: { $ne: "skipped" } } },
+      { $sort: { startedAt: -1 } },
+      { $group: { _id: "$agent", run: { $first: "$$ROOT" } } },
+    ]),
+    AgentRun.find({ agent: { $in: agentNames }, status: "running", startedAt: { $gte: new Date(now - RUNNING_STALE_MS) } }).lean(),
+    GrowthAction.find({ status: "awaiting_approval" }).select("type proposedBy").lean(),
+    EmailPlaybook.countDocuments({ status: "draft" }),
+    AgentFinding.aggregate([{ $match: { kind: "content_draft", status: "open" } }, { $group: { _id: "$agent", n: { $sum: 1 } } }]),
+    allSettings(),
+    AgentRun.aggregate([
+      { $match: { agent: { $in: agentNames }, startedAt: { $gte: new Date(now.getFullYear(), now.getMonth(), 1) } } },
+      { $group: { _id: "$agent", cents: { $sum: "$costCents" } } },
+    ]),
+  ]);
+  const last = Object.fromEntries(latestRuns.map((r) => [r._id, r.run]));
+  const cost = Object.fromEntries(monthCost.map((c) => [c._id, c.cents || 0]));
+  const drafts = Object.fromEntries(contentDrafts.map((d) => [d._id, d.n]));
+  const on = agentsEnabled();
+  const conversationsOn = process.env.CONVERSATIONS_ENABLED === "true";
+
+  return ROBOTS.map((robot) => {
+    const runNow = running.find((r) => robot.agents.includes(r.agent));
+    const lastRun = robot.agents.map((a) => last[a]).filter(Boolean).sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0] || null;
+    const waiting =
+      pending.filter((a) => robotOfAction(a) === robot.key).length +
+      robot.agents.reduce((n, a) => n + (drafts[a] || 0), 0) +
+      (robot.key === "conversation" ? playbookDrafts : 0);
+    const paused = robot.agents.some((a) => settings[a]?.paused);
+    const next = robot.agents
+      .map((a) => (AGENTS[a] ? nextRunFor(AGENTS[a], { from: now }) : null))
+      .filter(Boolean)
+      .sort((a, b) => a.at - b.at)[0];
+    let status = "waiting";
+    let statusText = next ? `Next shift ${next.label}` : "Waiting";
+    if (runNow) {
+      status = "working";
+      statusText = `Working since ${new Date(runNow.startedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}`;
+    } else if (paused) {
+      status = "paused";
+      statusText = "Paused by you";
+    } else if (!on) {
+      status = "off";
+      statusText = "AI agents are switched off";
+    } else if (waiting > 0) {
+      status = "needs_you";
+      statusText = `${waiting} waiting for you`;
+    } else if (lastRun && lastRun.status === "failed") {
+      status = "error";
+      statusText = "Last shift failed";
+    }
+    return {
+      key: robot.key,
+      name: robot.name,
+      role: robot.role,
+      status,
+      statusText,
+      waiting,
+      paused,
+      nextRunAt: next?.at || null,
+      nextRunLabel: next?.label || null,
+      lastRun: lastRun
+        ? { at: lastRun.startedAt, status: lastRun.status, summary: shortText(lastRun.summary, 260), costCents: lastRun.costCents || 0, agent: lastRun.agent }
+        : null,
+      monthCostCents: Math.round(robot.agents.reduce((n, a) => n + (cost[a] || 0), 0) * 100) / 100,
+      guidanceVersion: Math.max(0, ...robot.agents.map((a) => settings[a]?.version || 0)),
+      liveReplies: robot.key === "conversation" ? conversationsOn : undefined,
+    };
+  });
+}
+
+let cache = { at: 0, value: null };
+
+/** The whole office in one small payload. Cached 45s per instance. */
+async function buildOffice({ now = new Date(), fresh = false } = {}) {
+  if (!fresh && cache.value && Date.now() - cache.at < 45 * 1000) return cache.value;
+  const { acquisitionView } = require("./commandCenter");
+  const { buildVisibilitySummary } = require("../visibility/summary");
+  const Booking = require("../../models/Booking");
+  const since30 = new Date(now - 30 * 864e5);
+  const [robots, acquisition, visibility, spentToday, spentMonth, lastFirstVisit, report, approvalsCount, threads30] = await Promise.all([
+    robotStates({ now }),
+    acquisitionView({ now }).catch(() => null),
+    buildVisibilitySummary().catch(() => null),
+    spentTodayCents(now),
+    spentThisMonthCents(now),
+    Booking.findOne({ isFreeFirstVisit: true }).sort({ createdAt: -1 }).select("createdAt").lean(),
+    AgentFinding.findOne({ kind: "report" }).sort({ updatedAt: -1 }).select("title updatedAt").lean(),
+    approvalCounts(),
+    ConversationThread.aggregate([{ $match: { lastInboundAt: { $gte: since30 } } }, { $group: { _id: "$intent", n: { $sum: 1 } } }]).catch(() => []),
+  ]);
+  const search = visibility?.search?.available ? visibility.search : null;
+  const qualifiedIntents = ["interested_free_visit", "question", "membership_or_services", "renovation"];
+  const value = {
+    generatedAt: now,
+    agentsEnabled: agentsEnabled(),
+    engineEnabled: process.env.GROWTH_ACTIONS_ENABLED === "true",
+    conversationsEnabled: process.env.CONVERSATIONS_ENABLED === "true",
+    robots,
+    kpis: {
+      firstFreeVisits: acquisition?.firstFreeVisits || null,
+      funnel30: acquisition?.funnel30 || null,
+      visitors30: acquisition?.visitors30 ?? null,
+      registrations30: acquisition?.registrations30 ?? null,
+      bySource30: acquisition?.bySource30 || [],
+      search: search ? { windowDays: search.windowDays, clicks: search.current?.clicks ?? null, impressions: search.current?.impressions ?? null, clicksChangePct: search.change?.clicksPct ?? null } : null,
+      searchReason: search ? null : visibility?.search?.reason || "not connected",
+      conversations30: {
+        total: threads30.reduce((n, r) => n + r.n, 0),
+        qualified: threads30.filter((r) => qualifiedIntents.includes(r._id)).reduce((n, r) => n + r.n, 0),
+      },
+    },
+    costs: {
+      todayCents: Math.round(spentToday * 100) / 100,
+      monthCents: Math.round(spentMonth * 100) / 100,
+      dailyCapCents: dailyBudgetCents(),
+      monthlyCapCents: monthlyBudgetCents(),
+    },
+    approvals: approvalsCount,
+    lastFirstFreeVisitAt: lastFirstVisit?.createdAt || null,
+    report: report ? { headline: report.title, at: report.updatedAt } : null,
+  };
+  cache = { at: Date.now(), value };
+  return value;
+}
+
+function invalidateOffice() {
+  cache = { at: 0, value: null };
+}
+
+async function approvalCounts() {
+  const [actions, playbooks, drafts, notes] = await Promise.all([
+    GrowthAction.countDocuments({ status: "awaiting_approval" }),
+    EmailPlaybook.countDocuments({ status: "draft" }),
+    AgentFinding.countDocuments({ kind: "content_draft", status: "open" }),
+    AgentFinding.countDocuments({ kind: { $in: ["opportunity", "risk", "anomaly", "experiment"] }, status: "open", severity: { $in: ["medium", "high"] } }),
+  ]);
+  return { actions, playbooks, drafts, notes, total: actions + playbooks + drafts };
+}
+
+/** Everything waiting for the owner, newest first. */
+async function approvalsList() {
+  const [actions, playbooks, drafts, notes] = await Promise.all([
+    GrowthAction.find({ status: "awaiting_approval" }).sort({ createdAt: -1 }).limit(40).lean(),
+    EmailPlaybook.find({ status: "draft" }).sort({ updatedAt: -1 }).limit(20).lean(),
+    AgentFinding.find({ kind: "content_draft", status: "open" }).sort({ updatedAt: -1 }).limit(20).lean(),
+    AgentFinding.find({ kind: { $in: ["opportunity", "risk", "anomaly", "experiment"] }, status: "open", severity: { $in: ["medium", "high"] } })
+      .sort({ updatedAt: -1 })
+      .limit(20)
+      .lean(),
+  ]);
+  const preview = (a) =>
+    a.type === "conversation_reply"
+      ? String(a.payload?.reply || "")
+      : /^seo_/.test(a.type)
+      ? Object.entries(a.payload?.changes || {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n")
+      : "";
+  return {
+    items: [
+      ...actions.map((a) => ({
+        kind: "action",
+        id: String(a._id),
+        robot: robotOfAction(a),
+        title: shortText(a.summary, 160),
+        detail: shortText(a.rationale, 500),
+        preview: shortText(preview(a), 1500),
+        at: a.createdAt,
+        risk: a.riskTier,
+      })),
+      ...playbooks.map((p) => ({
+        kind: "playbook",
+        id: p.key,
+        robot: "conversation",
+        title: `Follow-up email: ${shortText(p.subject || p.name || p.key, 120)}`,
+        detail: shortText(p.purpose || "", 400),
+        preview: "",
+        at: p.updatedAt,
+      })),
+      ...drafts.map((f) => ({
+        kind: "draft",
+        id: String(f._id),
+        robot: robotOfAgent(f.agent),
+        title: shortText(f.title, 160),
+        detail: shortText(f.detail || "", 600),
+        preview: shortText(typeof f.body === "string" ? f.body : "", 1500),
+        at: f.updatedAt,
+      })),
+    ].sort((a, b) => new Date(b.at) - new Date(a.at)),
+    notes: notes.map((f) => ({
+      kind: "note",
+      id: String(f._id),
+      robot: robotOfAgent(f.agent),
+      title: shortText(f.title, 160),
+      detail: shortText(f.detail || "", 700),
+      severity: f.severity,
+      at: f.updatedAt,
+    })),
+  };
+}
+
+/** One robot's panel: who it is, what it did, what it learned, its rules and controls. */
+async function robotDetail(key, { now = new Date() } = {}) {
+  const robot = ROBOT_BY_KEY[key];
+  if (!robot) return null;
+  const states = await robotStates({ now });
+  const state = states.find((s) => s.key === key);
+  const scheduled = robot.agents.filter((a) => AGENTS[a]);
+  const labels = labelsOf(robot);
+  const [runs, openFindings, memory, mistakesActions, settingsList, doneActions] = await Promise.all([
+    AgentRun.find({ agent: { $in: robot.agents } }).sort({ startedAt: -1 }).limit(12).lean(),
+    AgentFinding.find({ agent: { $in: robot.agents }, status: "open", kind: { $ne: "report" } }).sort({ updatedAt: -1 }).limit(12).lean(),
+    AgentMemory.find({ agent: { $in: scheduled } }).sort({ updatedAt: -1 }).limit(30).lean(),
+    GrowthAction.find({
+      status: { $in: ["failed", "rolled_back", "rejected"] },
+      $or: [{ type: { $in: robot.actionTypes } }, { "proposedBy.name": { $in: labels } }],
+    })
+      .sort({ updatedAt: -1 })
+      .limit(8)
+      .lean(),
+    Promise.all(scheduled.map((a) => getSettings(a))),
+    GrowthAction.find({
+      status: "succeeded",
+      $or: [{ type: { $in: robot.actionTypes } }, { "proposedBy.name": { $in: labels } }],
+    })
+      .sort({ updatedAt: -1 })
+      .limit(6)
+      .lean(),
+  ]);
+  const settings = settingsList[0] || { guidance: "", version: 0, history: [] };
+  const toolErrors = runs.flatMap((r) => (r.toolCalls || []).filter((t) => t.ok === false).map((t) => ({ at: r.startedAt, tool: t.name, error: shortText(t.error, 200) }))).slice(0, 6);
+  const flags = {
+    engine: process.env.GROWTH_ACTIONS_ENABLED === "true",
+    conversations: process.env.CONVERSATIONS_ENABLED === "true",
+    searchConsole: Boolean((await require("../visibility/summary").buildVisibilitySummary().catch(() => null))?.search?.available),
+  };
+  return {
+    robot: { key: robot.key, name: robot.name, role: robot.role, mission: robot.mission, does: robot.does, cannot: robot.cannot, personality: robot.personality },
+    state,
+    schedule: scheduled.flatMap((a) => (AGENTS[a].schedules || []).map((s) => s.label)),
+    capabilities: capabilities(robot, flags),
+    runs: runs.map((r) => ({
+      id: String(r._id),
+      agent: r.agent,
+      at: r.startedAt,
+      status: r.status,
+      trigger: r.trigger,
+      skipReason: r.skipReason,
+      costCents: r.costCents || 0,
+      summary: shortText(r.summary, 900),
+      error: shortText(r.error, 300),
+      findings: r.findings?.length || 0,
+      actions: r.actions?.length || 0,
+    })),
+    findings: openFindings.map((f) => ({ id: String(f._id), kind: f.kind, severity: f.severity, title: shortText(f.title, 160), detail: shortText(f.detail, 700), at: f.updatedAt })),
+    results: doneActions.map((a) => ({ id: String(a._id), title: shortText(a.summary, 160), at: a.executedAt || a.updatedAt, verification: a.verification?.status || null })),
+    learned: memory.map((m) => ({ key: m.key, content: shortText(m.content, 600), at: m.updatedAt })),
+    mistakes: [
+      ...runs.filter((r) => r.status === "failed").map((r) => ({ at: r.startedAt, what: "A shift failed", detail: shortText(r.error, 240) })),
+      ...toolErrors.map((t) => ({ at: t.at, what: `A tool call was refused (${t.tool})`, detail: t.error })),
+      ...mistakesActions.map((a) => ({
+        at: a.updatedAt,
+        what: a.status === "rejected" ? "You declined a proposal" : a.status === "rolled_back" ? "A change was rolled back" : "An action failed",
+        detail: shortText(`${a.summary}${a.lastError ? ` - ${a.lastError}` : ""}${a.decisionNote ? ` - "${a.decisionNote}"` : ""}`, 260),
+      })),
+    ]
+      .sort((a, b) => new Date(b.at) - new Date(a.at))
+      .slice(0, 10),
+    teach: {
+      teachable: scheduled.length > 0,
+      agent: scheduled[0] || null,
+      guidance: settings.guidance || "",
+      version: settings.version || 0,
+      history: (settings.history || []).slice().reverse().map((h) => ({ version: h.version, guidance: h.guidance, by: h.by, at: h.at, note: h.note })),
+      fixedRules: [SHARED_RULES, ...scheduled.map((a) => AGENTS[a].instructions)].join("\n\n"),
+      note:
+        key === "conversation"
+          ? "Guidance steers Echo's twice-weekly review. The live reply rules (never book, facts only, business-only, opt-outs first) are fixed and can't be edited here."
+          : "",
+    },
+  };
+}
+
+module.exports = { ROBOTS, approvalsList, buildOffice, invalidateOffice, robotDetail, robotOfAction, robotStates };
