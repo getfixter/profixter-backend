@@ -19,9 +19,9 @@ const SITE = "https://www.profixter.com";
 
 const ROBOT_NAMES = { visibility: "Lumi", outreach: "Rover", conversion: "Echo", conversation: "Echo", growth_intelligence: "the weekly report" };
 const ROBOT_ROLES = {
-  Lumi: "Visibility & organic search agent (Google, Maps, AI search)",
-  Rover: "Outreach & new channels agent",
-  Echo: "Conversations & website conversion agent (also drafts replies to homeowners who write in)",
+  Lumi: "the Knight of Visibility - our search agent (Google, Maps, AI search)",
+  Rover: "the Knight of Outreach - our new-channels agent",
+  Echo: "the Knight of Communication - our conversations & website agent (also drafts replies to homeowners who write in)",
 };
 
 /* ------------------------------------------------------------------ */
@@ -433,9 +433,9 @@ function explainRobot(detail) {
   const r = detail.robot;
   const s = detail.state;
   const intro = {
-    visibility: "I'm Lumi. I help homeowners find Profixter on Google and other search sites, so more of them book a free first visit.",
-    outreach: "I'm Rover. I look for new, honest ways to reach homeowners on Long Island - and I test them small before anything costs real money.",
-    conversation: "I'm Echo. I help homeowners who write to us or visit our website get to booking their free first visit - they always book it themselves.",
+    visibility: "I'm Lumi, your Knight of Visibility. I help homeowners find Profixter on Google and other search sites, so more of them book a free first visit.",
+    outreach: "I'm Rover, your Knight of Outreach. I look for new, honest ways to reach homeowners on Long Island - and I test them small before anything costs real money.",
+    conversation: "I'm Echo, your Knight of Communication. I help homeowners who write to us or visit our website get to booking their free first visit - they always book it themselves.",
   }[r.key];
   const next = s.nextRunAt ? ` My next shift is ${new Date(s.nextRunAt).toLocaleString("en-US", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}.` : "";
   const waiting = s.waiting ? ` ${s.waiting === 1 ? "One thing is" : `${s.waiting} things are`} waiting for you.` : "";

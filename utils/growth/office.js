@@ -33,7 +33,7 @@ const ROBOTS = [
   {
     key: "visibility",
     name: "Lumi",
-    role: "Visibility & organic search",
+    role: "Knight of Visibility · Google & search",
     agents: ["visibility"],
     actionTypes: ["seo_page_update", "seo_content_update"],
     mission: "Help more Long Island homeowners find Profixter on Google, Maps and AI search - and book their first free visit.",
@@ -49,7 +49,7 @@ const ROBOTS = [
   {
     key: "outreach",
     name: "Rover",
-    role: "Outreach & new channels",
+    role: "Knight of Outreach · new homeowners",
     agents: ["outreach"],
     actionTypes: [],
     mission: "Find lawful, trackable ways to reach more Long Island homeowners, test them small, and keep what brings first free visits.",
@@ -70,7 +70,7 @@ const ROBOTS = [
   {
     key: "conversation",
     name: "Echo",
-    role: "Conversations & website conversion",
+    role: "Knight of Communication · conversations",
     agents: ["conversion", "conversation"],
     actionTypes: ["conversation_reply", "playbook_email"],
     mission: "Turn homeowners who write in or visit the website into first free-visit bookings they make themselves on profixter.com.",
