@@ -1,4 +1,5 @@
 const AgentRun = require("../../models/AgentRun");
+const AgentFinding = require("../../models/AgentFinding");
 const { takeLease, releaseLease } = require("../analytics/analyticsLease");
 const { runTool, toolsFor } = require("./tools");
 
@@ -229,16 +230,25 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
     { new: true }
   ).lean();
 
+  // The summary and finding titles are aggregate business observations (the
+  // tools never hand the model personal data), so the log can show what a
+  // run concluded - which is how a run is reviewed without an admin login.
+  const titles = ctx.findingIds.length
+    ? (await AgentFinding.find({ _id: { $in: ctx.findingIds } }).select("kind severity title").lean()).map((f) => `${f.kind}/${f.severity}: ${f.title}`)
+    : [];
   console.log(
     JSON.stringify({
       event: "agent_run",
       agent: def.name,
+      trigger,
       status,
       turns,
       costCents: finished.costCents,
       tools: toolCalls.length,
-      findings: ctx.findingIds.length,
+      toolErrors: toolCalls.filter((c) => !c.ok).map((c) => `${c.name}: ${c.error}`).slice(0, 5),
+      findings: titles.slice(0, 12),
       actions: ctx.actionIds.length,
+      summary: summary.slice(0, 1500),
       error,
     })
   );

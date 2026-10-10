@@ -409,7 +409,31 @@ test("search console: service account parsing never echoes the key", () => {
   const bad = gsc.searchConsoleConfig({ GSC_SERVICE_ACCOUNT_JSON: "not-base64-json", GSC_SITE_URL: "x" });
   assert.strictEqual(bad.configured, false);
   assert.ok(!bad.reason.includes("not-base64-json"));
-  assert.strictEqual(gsc.searchConsoleConfig({ GSC_SERVICE_ACCOUNT_JSON: Buffer.from(JSON.stringify(key)).toString("base64") }).reason, "missing GSC_SITE_URL");
+  // The property is optional: without GSC_SITE_URL it is discovered at sync time.
+  const keyOnly = gsc.searchConsoleConfig({ GSC_SERVICE_ACCOUNT_JSON: Buffer.from(JSON.stringify(key)).toString("base64") });
+  assert.strictEqual(keyOnly.configured, true);
+  assert.strictEqual(keyOnly.siteUrl, null);
+});
+
+test("search console: discovers the profixter.com property, preferring the Domain property", async () => {
+  const list = (entries, ok = true) => async () => ({ ok, status: ok ? 200 : 403, json: async () => ({ siteEntry: entries }) });
+  assert.strictEqual(await gsc.resolveSiteUrl({ configured: "https://x/", fetchImpl: list([]), token: "t" }), "https://x/");
+  assert.strictEqual(
+    await gsc.resolveSiteUrl({
+      configured: null,
+      token: "t",
+      fetchImpl: list([
+        { siteUrl: "https://www.profixter.com/", permissionLevel: "siteRestrictedUser" },
+        { siteUrl: "sc-domain:profixter.com", permissionLevel: "siteRestrictedUser" },
+        { siteUrl: "sc-domain:other.com", permissionLevel: "siteOwner" },
+      ]),
+    }),
+    "sc-domain:profixter.com"
+  );
+  await assert.rejects(
+    () => gsc.resolveSiteUrl({ configured: null, token: "t", fetchImpl: list([{ siteUrl: "sc-domain:profixter.com", permissionLevel: "siteUnverifiedUser" }]) }),
+    /no access to a profixter.com property/
+  );
 });
 
 test("search console: sync writes only published days; summary by family", async () => {

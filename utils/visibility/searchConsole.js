@@ -80,10 +80,11 @@ function searchConsoleConfig(env = process.env) {
   const siteUrl = String(env.GSC_SITE_URL || "").trim();
   const account = parseServiceAccount(env.GSC_SERVICE_ACCOUNT_JSON);
   if (!account.ok) return { configured: false, reason: account.reason };
-  if (!siteUrl) return { configured: false, reason: "missing GSC_SITE_URL" };
+  // GSC_SITE_URL is optional: without it the property is discovered from the
+  // service account's own site list (see resolveSiteUrl).
   return {
     configured: true,
-    siteUrl,
+    siteUrl: siteUrl || null,
     credentials: account.credentials,
     secrets: [account.credentials.private_key, env.GSC_SERVICE_ACCOUNT_JSON],
   };
@@ -140,6 +141,27 @@ function syncWindow(cursor, today, backfillDays) {
 }
 
 /** Read the window from Search Console and upsert its days. */
+/**
+ * The Search Console property to read. GSC_SITE_URL wins; otherwise the
+ * service account's site list is read and the profixter.com property it has
+ * real access to is used (a Domain property is preferred over a URL-prefix
+ * one, because it covers http/https and www/apex together).
+ */
+async function resolveSiteUrl({ configured, fetchImpl, token }) {
+  if (configured) return configured;
+  const res = await fetchImpl(API_BASE, { headers: { Authorization: `Bearer ${token}` } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Search Console site list failed: HTTP ${res.status}`);
+  const usable = (body.siteEntry || []).filter(
+    (e) => /profixter\.com/i.test(e.siteUrl || "") && e.permissionLevel && e.permissionLevel !== "siteUnverifiedUser"
+  );
+  const pick = usable.find((e) => e.siteUrl.startsWith("sc-domain:")) || usable[0];
+  if (!pick) {
+    throw new Error("Search Console: the service account has no access to a profixter.com property yet (add it under Settings > Users and permissions)");
+  }
+  return pick.siteUrl;
+}
+
 async function syncSearchConsole({
   env = process.env,
   now = new Date(),
@@ -156,7 +178,8 @@ async function syncSearchConsole({
   const cursor = await store.readState(STATE_KEY);
   const days = syncWindow(cursor, nyDate(now), backfillDays);
   const token = await tokenSource();
-  const ctx = { fetchImpl: doFetch, token, siteUrl: config.siteUrl };
+  const siteUrl = await resolveSiteUrl({ configured: config.siteUrl, fetchImpl: doFetch, token });
+  const ctx = { fetchImpl: doFetch, token, siteUrl };
 
   // Totals for the whole window in one request; per-day top lists need one
   // request each (a multi-day request ranks rows across days, not within one).
@@ -323,6 +346,7 @@ async function searchSummary({ days = 28, store = getDefaultStore(), now = new D
 }
 
 module.exports = {
+  resolveSiteUrl,
   SOURCE,
   STATE_KEY,
   searchConsoleEnabled,
