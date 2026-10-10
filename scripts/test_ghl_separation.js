@@ -45,6 +45,24 @@ const ALLOWED = new Set([
   path.join("models", "RepAttribution.js"),
   /* Mounts the inbound route and allows its shared-secret header. */
   "server.js",
+  /*
+   * LEAD WORK (2026-10). Strangers in GHL, never Profixter customers:
+   * - the narrow GHL client: read conversations/contacts, one reply into an
+   *   existing conversation, tag/note. No contact create/update, no sync.
+   * - the reply responder and its action: answers homeowners who wrote to the
+   *   GHL numbers. Before any reply (and again before sending) it checks
+   *   whether the person is a Profixter user and, if so - or if it cannot
+   *   tell - hands the thread to a person instead of using GHL.
+   * - the postal-mail audience: READS the cold list to build mailing waves;
+   *   writes nothing to GHL; existing customers are excluded by hash.
+   * - their models, which only hold GHL ids for our own records.
+   */
+  path.join("utils", "ghl", "client.js"),
+  path.join("utils", "conversation", "service.js"),
+  path.join("utils", "growth", "actions", "conversationReply.js"),
+  path.join("utils", "outreach", "audience.js"),
+  path.join("models", "ConversationThread.js"),
+  path.join("models", "Outreach.js"),
   /* This file. */
   path.join("scripts", "test_ghl_separation.js"),
 ]);

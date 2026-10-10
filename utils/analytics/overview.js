@@ -254,6 +254,13 @@ async function loadData({ now = new Date() } = {}) {
   }
 
   const freeVisits = bookings.filter((b) => b.isFreeFirstVisit || b.accessType === "free_first_visit");
+  const earliestByHome = new Map();
+  for (const b of freeVisits) {
+    const home = `${b.user}:${b.addressId || "-"}`;
+    const seen = earliestByHome.get(home);
+    if (!seen || new Date(b.createdAt) < new Date(seen.createdAt)) earliestByHome.set(home, b);
+  }
+  const firstFreeVisitByHome = [...earliestByHome.values()];
   const oneTimeVisits = bookings.filter(
     (b) => b.bookingType === "one_time_handyman_visit" && (b.paymentState === "paid" || b.paymentState === "not_required" || !b.paymentState || b.status === "Completed")
   );
@@ -268,6 +275,7 @@ async function loadData({ now = new Date() } = {}) {
     memberships,
     bookings,
     freeVisits,
+    firstFreeVisitByHome,
     oneTimeVisits,
     fullDayVisits,
     visitorsSince: visitorAgg[0]?.first || null,
@@ -408,10 +416,17 @@ function periodCounts(data, from, to) {
   const newMemberships = data.memberships.filter((m) => inRange(m.start, from, to));
   const cancellations = data.memberships.filter((m) => m.kind === "paid" && ENDED_STATUSES.has(m.status) && inRange(m.end, from, to));
   const fvBooked = data.freeVisits.filter((b) => inRange(b.createdAt, from, to));
+  /*
+   * NEW FIRST free-visit bookings: the growth system's primary metric. A home
+   * gets one free first visit; a cancelled-and-rebooked one, or a second try
+   * for the same address, is not a new first booking. Counted once per home
+   * (user + address) at its earliest free-visit booking.
+   */
+  const firstFv = data.firstFreeVisitByHome.filter((b) => inRange(b.createdAt, from, to));
   const fvCompleted = data.freeVisits.filter((b) => isCompleted(b) && inRange(completedAt(b), from, to));
   const fvConverted = fvCompleted.filter((b) => membershipStartedAfter(data, String(b.user), b.date));
   const activeAtEnd = data.memberships.filter((m) => activeAt(m, new Date(Math.min(to.getTime(), data.now.getTime())))).length;
-  return { newCustomers, newMemberships, cancellations, fvBooked, fvCompleted, fvConverted, activeAtEnd };
+  return { newCustomers, newMemberships, cancellations, fvBooked, firstFv, fvCompleted, fvConverted, activeAtEnd };
 }
 
 function buildPlans(data, period, mrr) {
@@ -926,6 +941,9 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
             error: mrr.error || "Recurring revenue is unavailable right now.",
           },
       freeVisits: {
+        firstBooked: cur.firstFv.length,
+        prevFirstBooked: prev.firstFv.length,
+        firstBookedDelta: delta(cur.firstFv.length, prev.firstFv.length),
         booked: cur.fvBooked.length,
         prevBooked: prev.fvBooked.length,
         delta: delta(cur.fvBooked.length, prev.fvBooked.length),

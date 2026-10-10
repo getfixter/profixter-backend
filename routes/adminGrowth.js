@@ -293,6 +293,104 @@ router.post("/playbooks/:key/retire", ownerOnly, async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* Outreach (postal mail) and conversations                            */
+/* ------------------------------------------------------------------ */
+
+const { OutreachRecipient, OutreachWave } = require("../models/Outreach");
+const ConversationThread = require("../models/ConversationThread");
+
+router.get("/outreach", canRead, async (req, res) => {
+  try {
+    const { audienceSummary, waveResults } = require("../utils/outreach/audience");
+    const [audience, waves] = await Promise.all([audienceSummary(), OutreachWave.find({}).sort({ createdAt: -1 }).limit(20).lean()]);
+    const withResults = [];
+    for (const w of waves) withResults.push({ ...w, results: ["exported", "mailed"].includes(w.status) ? await waveResults(w.key) : null });
+    res.json({ audience, waves: withResults, costPerPieceCents: Number(process.env.MAIL_COST_PER_PIECE_CENTS) || 95 });
+  } catch (error) {
+    fail(res, error, "Could not load outreach.");
+  }
+});
+
+async function waveDecision(req, res, update, allowedFrom, action) {
+  const actor = ownerActor(req);
+  const w = await OutreachWave.findOneAndUpdate({ key: req.params.key, status: { $in: allowedFrom } }, { $set: update(actor) }, { new: true }).lean();
+  if (!w) return res.status(409).json({ message: "That wave is not in a state that allows this." });
+  await AdminActivityLogModel.create({ action: `growth_mail_wave.${action}`, entityType: "mail_wave", entityId: w.key, entityName: w.name, actorUserId: actor.userId, actorName: actor.name, actorRole: "owner", details: { size: w.size, estimatedCostCents: w.estimatedCostCents } });
+  return res.json({ wave: w });
+}
+
+/** Approving a wave approves its SPEND (estimatedCostCents) and its copy. */
+router.post("/outreach/waves/:key/approve", ownerOnly, (req, res) =>
+  waveDecision(req, res, (a) => ({ status: "approved", approvedBy: a.name, approvedAt: new Date(), statusNote: String(req.body?.note || "").slice(0, 300) }), ["draft"], "approved").catch((e) => fail(res, e, "Could not approve."))
+);
+router.post("/outreach/waves/:key/cancel", ownerOnly, (req, res) =>
+  waveDecision(req, res, () => ({ status: "cancelled", statusNote: String(req.body?.note || "").slice(0, 300) }), ["draft", "approved"], "cancelled").catch((e) => fail(res, e, "Could not cancel."))
+);
+router.post("/outreach/waves/:key/mailed", ownerOnly, (req, res) =>
+  waveDecision(req, res, () => ({ status: "mailed", mailedAt: new Date() }), ["exported"], "mailed").catch((e) => fail(res, e, "Could not update."))
+);
+
+/**
+ * The mailing file for the print vendor: name, address, and each person's
+ * tracked URL (www.profixter.com/m/<wave>-<code>, also used for the QR). Owner
+ * only; selects mailable homeowners not mailed in 90 days and marks them.
+ */
+router.post("/outreach/waves/:key/export", ownerOnly, async (req, res) => {
+  try {
+    const wave = await OutreachWave.findOne({ key: req.params.key, status: "approved" });
+    if (!wave) return res.status(409).json({ message: "Only an approved wave can be exported." });
+    const ninety = new Date(Date.now() - 90 * 864e5);
+    const people = await OutreachRecipient.find({ eligible: true, zip: { $in: wave.targetZips }, $or: [{ lastMailedAt: null }, { lastMailedAt: { $lt: ninety } }] })
+      .sort({ zip: 1 })
+      .limit(wave.size)
+      .lean();
+    const esc = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
+    const site = (process.env.MARKETING_SITE_BASE_URL || "https://www.profixter.com").replace(/\/+$/, "");
+    const lines = ["first_name,last_name,address1,city,state,zip,personal_url"];
+    for (const p of people) lines.push([p.firstName, p.lastName, p.address1, p.city, p.state, p.zip, `${site}/m/${wave.key}-${p.code}`].map(esc).join(","));
+    await OutreachRecipient.updateMany({ _id: { $in: people.map((p) => p._id) } }, { $set: { lastMailedAt: new Date() }, $addToSet: { waves: wave.key } });
+    wave.status = "exported";
+    wave.exportedAt = new Date();
+    wave.size = people.length;
+    await wave.save();
+    const actor = ownerActor(req);
+    await AdminActivityLogModel.create({ action: "growth_mail_wave.exported", entityType: "mail_wave", entityId: wave.key, entityName: wave.name, actorUserId: actor.userId, actorName: actor.name, actorRole: "owner", details: { rows: people.length } });
+    res.set("Cache-Control", "no-store");
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="profixter-${wave.key}.csv"`);
+    res.send(lines.join("\n"));
+  } catch (error) {
+    fail(res, error, "Could not export that wave.");
+  }
+});
+
+/** Conversation inbox for the owner: escalations first. */
+router.get("/conversations", canRead, async (req, res) => {
+  try {
+    const rows = await ConversationThread.find({}).sort({ status: 1, lastInboundAt: -1 }).limit(60).lean();
+    const order = { escalated: 0, reply_proposed: 1, needs_reply: 2, replied: 3, closed: 4, opted_out: 5 };
+    rows.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || new Date(b.lastInboundAt) - new Date(a.lastInboundAt));
+    res.json({
+      threads: rows.map((t) => ({
+        id: String(t._id),
+        status: t.status,
+        intent: t.intent,
+        summary: t.summary,
+        channel: t.channel,
+        firstName: t.firstName,
+        town: t.town,
+        escalationReason: t.escalationReason,
+        lastInboundAt: t.lastInboundAt,
+        messages: (t.messages || []).slice(-6).map((m) => ({ direction: m.direction, by: m.by, body: String(m.body || "").slice(0, 600), at: m.at })),
+      })),
+      enabled: process.env.CONVERSATIONS_ENABLED === "true",
+    });
+  } catch (error) {
+    fail(res, error, "Could not load conversations.");
+  }
+});
+
 /** Run an agent now. Returns at once; the run appears in GET /agents when done. */
 router.post("/agents/:name/run", ownerOnly, async (req, res) => {
   const def = AGENTS[req.params.name];

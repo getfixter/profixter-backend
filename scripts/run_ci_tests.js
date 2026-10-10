@@ -53,6 +53,9 @@ const SUITES = [
   // Meta advertising is read-only, permanently (agency-managed).
   "test_meta_read_only.js",
   "test_playbooks_integration.js",
+  "test_seo_actions_integration.js",
+  "test_conversations_integration.js",
+  "test_outreach_integration.js",
   "test_admin_access.js",
   "test_attribution.js",
   "test_transactional_email_system.js",

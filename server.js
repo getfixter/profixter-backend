@@ -26,6 +26,7 @@ const { startLoyaltyReminders } = require("./jobs/loyaltyReminders");
 const { startGrowthJobs } = require("./jobs/growthActions");
 const { startVisibilityJobs } = require("./jobs/visibility");
 const { startAgentJobs } = require("./jobs/agents");
+const { startConversationJobs } = require("./jobs/conversations");
 const { startRecentWorkPublisher } = require("./jobs/recentWorkPublisher");
 const adminCalendar = require("./routes/adminCalendar");
 const adminCalendarShadow = require("./routes/adminCalendarShadow");
@@ -204,6 +205,8 @@ app.use("/api/requests", require("./routes/requests"));
 app.use("/api/recent-work", require("./routes/recentWork"));
 app.use("/api/membership-map", require("./routes/membershipMap"));
 app.use("/api/service-area", require("./routes/serviceArea"));
+/* Public, read-only: live search wording overrides (written only by the growth engine). */
+app.use("/api/seo", require("./routes/seo"));
 app.use("/api/test", require("./routes/test"));
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
@@ -451,6 +454,8 @@ startVisibilityJobs();
 
 /* The three growth agents. Inert until AGENTS_ENABLED=true and ANTHROPIC_API_KEY are set; see utils/agents. */
 startAgentJobs();
+/* Conversation agent poller (inert unless CONVERSATIONS_ENABLED and a GHL token). */
+startConversationJobs();
 
 /*
  * Keep admin-edited message wording warm in memory.

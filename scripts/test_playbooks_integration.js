@@ -184,7 +184,9 @@ async function main() {
     const { AGENTS } = require("../utils/agents/definitions");
     assert.ok(AGENTS.conversion.tools.includes("save_email_playbook"));
     for (const a of Object.values(AGENTS)) {
-      assert.ok(!a.tools.some((t) => /approve|send_email|propose_action/.test(t)), `${a.name}: ${a.tools.join(",")}`);
+      assert.ok(!a.tools.some((t) => /approve|send_email/.test(t)), `${a.name}: ${a.tools.join(",")}`);
+      // propose_action is allowed only for website-wording actions, never customer messages.
+      assert.ok(!a.allowedActions.some((t) => /email|sms|message|playbook|recovery/.test(t)), `${a.name}: ${a.allowedActions}`);
     }
   });
 

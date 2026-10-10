@@ -104,6 +104,15 @@ function publicAction(a) {
     lastError: a.lastError,
     result: a.result ? { reason: a.result.reason || null, to: a.result.to || null } : null,
     verification: a.verification?.status || null,
+    // What the owner approves: the exact reply text, page wording, or playbook.
+    preview:
+      a.type === "conversation_reply"
+        ? String(a.payload?.reply || "").slice(0, 1500)
+        : /^seo_/.test(a.type)
+        ? JSON.stringify(a.payload?.changes || {})
+        : a.type === "playbook_email"
+        ? `playbook ${a.payload?.playbookKey}`
+        : null,
   };
 }
 
@@ -224,10 +233,48 @@ function buildAlerts({ capacity, queue, policies, registrationsLast72h, now }) {
   return alerts;
 }
 
+/**
+ * THE PRIMARY METRIC: new first free-visit bookings, with what feeds them.
+ * Counts come from the Overview (one definition), the funnel steps from the
+ * site's anonymous step beacon (models/FunnelStep).
+ */
+async function acquisitionView({ now = new Date() } = {}) {
+  const { buildOverview } = require("../analytics/overview");
+  const { FunnelStep, STEPS } = require("../../models/FunnelStep");
+  const [o7, o30] = await Promise.all([buildOverview({ range: "7d", now }), buildOverview({ range: "30d", now })]);
+  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const steps = await FunnelStep.aggregate([
+    { $match: { date: { $gte: since } } },
+    { $group: { _id: { step: "$step", source: "$source" }, n: { $sum: "$count" } } },
+  ]);
+  const byStep = Object.fromEntries(STEPS.map((s) => [s, steps.filter((x) => x._id.step === s).reduce((a, x) => a + x.n, 0)]));
+  const fv = (o) => o?.kpis?.freeVisits || {};
+  return {
+    firstFreeVisits: {
+      last7: fv(o7).firstBooked ?? null,
+      prev7: fv(o7).prevFirstBooked ?? null,
+      last30: fv(o30).firstBooked ?? null,
+      prev30: fv(o30).prevFirstBooked ?? null,
+    },
+    visitors30: o30?.funnel?.visitors ?? null,
+    registrations30: o30?.funnel?.registered ?? null,
+    bySource30: (o30?.sources || [])
+      .filter((s) => s.visitors || s.freeVisits || s.registrations)
+      .map((s) => ({ key: s.key, label: s.label, visitors: s.visitors, registrations: s.registrations, freeVisits: s.freeVisits })),
+    funnel30: {
+      ...byStep,
+      firstFreeVisits: fv(o30).firstBooked ?? null,
+      trackingSince: "2026-10-10",
+    },
+    costPerFirstFreeVisitCents:
+      o30?.spend?.connected && o30.spend.totalCents != null && fv(o30).firstBooked ? Math.round(o30.spend.totalCents / fv(o30).firstBooked) : null,
+  };
+}
+
 async function buildCommandCenter({ now = new Date() } = {}) {
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-  const [capacity, pending, recent, shadow, statusCounts, policies, outcomes, waitlist, registrationsLast72h, visibility] =
+  const [capacity, pending, recent, shadow, statusCounts, policies, outcomes, waitlist, registrationsLast72h, visibility, acquisition] =
     await Promise.all([
       capacityOutlook({ now }).catch((error) => ({ error: error.message, signal: "unknown" })),
       GrowthAction.find({ status: "awaiting_approval" }).sort({ createdAt: 1 }).limit(50).lean(),
@@ -249,6 +296,7 @@ async function buildCommandCenter({ now = new Date() } = {}) {
       }),
       // Never throws; each part degrades to { available: false, reason }.
       buildVisibilitySummary({ now }).catch((error) => ({ error: error.message })),
+      acquisitionView({ now }).catch((error) => ({ error: error.message })),
     ]);
 
   const queue = {
@@ -265,10 +313,11 @@ async function buildCommandCenter({ now = new Date() } = {}) {
     queue,
     policies,
     outcomes: { checkoutRecovery: outcomes },
+    acquisition,
     waitlist,
     visibility,
     alerts: buildAlerts({ capacity, queue, policies, registrationsLast72h, now }),
   };
 }
 
-module.exports = { buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts };
+module.exports = { acquisitionView, buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts };

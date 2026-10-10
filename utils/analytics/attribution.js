@@ -101,6 +101,9 @@ const SOURCES = [
   { key: "meta_other", label: "Other Meta", group: "meta" },
   { key: "google_ads", label: "Google Ads" },
   { key: "google_organic", label: "Google Organic" },
+  { key: "search_other", label: "Bing & other search" },
+  /* Our own outreach: replies to homeowners (GHL) and postcards - tagged links only. */
+  { key: "outreach", label: "Outreach (replies, mail)" },
   { key: "events_qr", label: "Events / QR" },
   { key: "referral", label: "Referral" },
   { key: "other", label: "Other" },
@@ -112,6 +115,7 @@ const GROUPS = [{ key: "meta", label: "Meta Ads" }];
 const META_SOURCES = new Set(["facebook", "fb", "instagram", "ig", "meta", "facebook_ads", "meta_ads", "an", "msg", "messenger", "audience_network", "threads"]);
 const FACEBOOK = new Set(["fb", "facebook", "facebook_ads", "facebook.com"]);
 const INSTAGRAM = new Set(["ig", "instagram", "instagram.com"]);
+const OUTREACH_SOURCES = new Set(["ghl_sms", "ghl_email", "direct_mail", "postcard", "eddm"]);
 const PAID_MEDIUMS = new Set(["cpc", "ppc", "paid", "paid_social", "paidsocial", "paid-social", "social_paid", "ads", "ad", "cpm"]);
 
 function hostOf(url) {
@@ -155,10 +159,12 @@ function classifySource(attr) {
     key = FACEBOOK.has(src) ? "meta_facebook" : INSTAGRAM.has(src) ? "meta_instagram" : "meta_other";
   } else if (a.gclid || a.gbraid || a.wbraid || (src === "google" && PAID_MEDIUMS.has(medium))) key = "google_ads";
   else if (ref === "event" || ref === "qr" || src === "event" || src === "qr" || medium === "qr" || landing.startsWith("/event")) key = "events_qr";
+  else if (OUTREACH_SOURCES.has(src)) key = "outreach";
   else if (a.refCode || ref === "referral" || medium === "referral" || src === "referral") key = "referral";
   else if (src === "google") key = "google_organic";
   else if (src) key = "other";
   else if (host === "google.com" || /(^|\.)google\./.test(host)) key = "google_organic";
+  else if (["bing.com", "duckduckgo.com", "yahoo.com"].includes(host) || /(^|\.)(bing|duckduckgo|ecosia|brave)\./.test(host)) key = "search_other";
   // An organic Facebook/Instagram post (no click id, no tag) is not an ad: Other, with its host kept.
   else if (!isInternalHost(host)) key = "other";
   const s = BY_KEY[key];

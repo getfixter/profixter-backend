@@ -5,3 +5,5 @@
 require("./checkoutRecoveryEmail");
 require("./postFreeVisitSms");
 require("./playbookEmail");
+require("./seoPageUpdate");
+require("./conversationReply");

@@ -51,7 +51,8 @@ const PROHIBITED_ACTION_PATTERNS = [
   /google_?ads/i,
   /campaign_?(budget|bid)/i,
 ];
-const PROHIBITED_FIELDS = /meta|facebook|instagram|ad set|ad account|advertis/i;
+// Text check on label/description: advertising wording, not the HTML "meta description".
+const PROHIBITED_FIELDS = /\bmeta\s+(ads?|campaigns?|ad sets?|business|pixel budget|advertising)\b|facebook|instagram|\bad sets?\b|\bad accounts?\b|advertis|\bad budget|\bcampaign budget/i;
 
 function assertNotAdvertising(def) {
   const text = `${def.type} ${def.label} ${def.description}`;

@@ -573,6 +573,220 @@ Object.assign(TOOL_DEFS, {
   },
 });
 
+/* ------------------------------------------------------------------ */
+/* Organic acquisition: pages, queries, the primary metric             */
+/* ------------------------------------------------------------------ */
+
+function ymdDaysAgo(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+Object.assign(TOOL_DEFS, {
+  get_acquisition: {
+    description:
+      "THE PRIMARY METRIC: new first free-visit bookings (last 7 and 30 days vs the previous periods), visitors and registrations, bookings by first-touch source, the booking funnel (booking page views -> booker started -> slot picked -> signup viewed -> first free visit), and cost per first free visit when ad spend is connected.",
+    input_schema: obj({}),
+    run: async () => require("../growth/commandCenter").acquisitionView(),
+  },
+  get_pages_search_performance: {
+    description:
+      "Every page we optimize, with Search Console clicks, impressions, CTR and average position for the last 28 days vs the 28 before, its top queries, and whether its search wording was changed (and when). Use it to pick pages where a better title/description could win clicks - and to leave pages that already perform alone.",
+    input_schema: obj({}),
+    run: async () => {
+      const { getDefaultStore } = require("../visibility/store");
+      const { ALLOWED_PATH, SITE } = require("../seo/pageData");
+      const SeoOverride = require("../../models/SeoOverride");
+      const store = getDefaultStore();
+      const agg = async (key, from, to) => store.findSnapshots({ source: "search_console", key, from, to });
+      const [cur, prev, pq, overrides] = await Promise.all([
+        agg("pages", ymdDaysAgo(28), ymdDaysAgo(0)),
+        agg("pages", ymdDaysAgo(56), ymdDaysAgo(29)),
+        agg("page_queries", ymdDaysAgo(28), ymdDaysAgo(0)),
+        SeoOverride.find({}).select("path history updatedAt active").lean(),
+      ]);
+      if (!cur.length) return { available: false, reason: "No Search Console page data yet (connection pending or just connected)." };
+      const sum = (docs) => {
+        const m = new Map();
+        for (const d of docs) for (const r of d.metrics?.rows || []) {
+          const path = String(r.page || "").replace(SITE, "").replace(/\/$/, "") || "/";
+          if (!ALLOWED_PATH.test(path)) continue;
+          const x = m.get(path) || { clicks: 0, impressions: 0, pw: 0 };
+          x.clicks += Number(r.clicks || 0);
+          x.impressions += Number(r.impressions || 0);
+          x.pw += Number(r.position || 0) * Number(r.impressions || 0);
+          m.set(path, x);
+        }
+        return m;
+      };
+      const c = sum(cur);
+      const p = sum(prev);
+      const queries = new Map();
+      for (const d of pq) for (const r of d.metrics?.rows || []) {
+        const path = String(r.page || "").replace(SITE, "").replace(/\/$/, "") || "/";
+        const k = `${path}\u0000${r.query}`;
+        const x = queries.get(k) || { path, query: r.query, clicks: 0, impressions: 0, pw: 0 };
+        x.clicks += Number(r.clicks || 0);
+        x.impressions += Number(r.impressions || 0);
+        x.pw += Number(r.position || 0) * Number(r.impressions || 0);
+        queries.set(k, x);
+      }
+      const byPath = new Map(overrides.map((o) => [o.path, o]));
+      const fmt = (x) => (x ? { clicks: x.clicks, impressions: x.impressions, ctr: x.impressions ? Math.round((x.clicks / x.impressions) * 1000) / 10 : null, position: x.impressions ? Math.round((x.pw / x.impressions) * 10) / 10 : null } : null);
+      return {
+        windowDays: 28,
+        pages: [...c.keys()]
+          .map((path) => ({
+            path,
+            last28: fmt(c.get(path)),
+            prev28: fmt(p.get(path)),
+            topQueries: [...queries.values()]
+              .filter((q) => q.path === path)
+              .sort((a, b) => b.impressions - a.impressions)
+              .slice(0, 8)
+              .map((q) => ({ query: q.query, impressions: q.impressions, clicks: q.clicks, position: q.impressions ? Math.round((q.pw / q.impressions) * 10) / 10 : null })),
+            lastChanged: byPath.get(path)?.history?.slice(-1)[0]?.at || null,
+          }))
+          .sort((a, b) => (b.last28?.impressions || 0) - (a.last28?.impressions || 0))
+          .slice(0, 40),
+      };
+    },
+  },
+  get_page_seo: {
+    description: "What one page serves live right now (title, meta description, H1, indexable) and its search-wording change history (each version, why, and by which action).",
+    input_schema: obj({ path: str("Page path, e.g. /services/tv-mounting") }),
+    run: async ({ path }) => {
+      const { livePage } = require("../seo/pageData");
+      const SeoOverride = require("../../models/SeoOverride");
+      const [live, o] = await Promise.all([livePage(path), SeoOverride.findOne({ path }).lean()]);
+      return {
+        live,
+        override: o ? { active: o.active, fields: o.fields, history: (o.history || []).slice(-6).map((h) => ({ at: h.at, fields: h.fields, by: h.by, reason: h.reason })) } : null,
+      };
+    },
+  },
+});
+
+/* ------------------------------------------------------------------ */
+/* Outreach: postal mail to the local list (counts only for the agent)  */
+/* ------------------------------------------------------------------ */
+
+const MAIL_COST_CENTS = () => Number(process.env.MAIL_COST_PER_PIECE_CENTS) || 95;
+const MAIL_WAVE_MAX = () => Number(process.env.MAIL_WAVE_MAX_SIZE) || 2500;
+
+Object.assign(TOOL_DEFS, {
+  get_outreach_audience: {
+    description:
+      "The postal-mail audience built from the GoHighLevel contact list: how many are mailable (inside Nassau/Suffolk, with a street address, not customers, never asked to stop, one per household), why the rest are excluded, and the top towns/ZIPs. Counts only. Text and cold email to this list are not allowed (no consent; GHL/Mailgun policies) - mail is the channel.",
+    input_schema: obj({}),
+    run: async () => require("../outreach/audience").audienceSummary(),
+  },
+  list_mail_waves: {
+    description: "Mail waves planned or sent, with status, size, cost estimate, and results so far (registrations and first free visits from people who used the wave's codes).",
+    input_schema: obj({}),
+    run: async () => {
+      const { OutreachWave } = require("../../models/Outreach");
+      const { waveResults } = require("../outreach/audience");
+      const rows = await OutreachWave.find({}).sort({ createdAt: -1 }).limit(20).lean();
+      const out = [];
+      for (const w of rows) {
+        out.push({
+          key: w.key,
+          name: w.name,
+          status: w.status,
+          targetZips: w.targetZips,
+          size: w.size,
+          estimatedCostCents: w.estimatedCostCents,
+          mailedAt: w.mailedAt,
+          copy: w.copy,
+          statusNote: w.statusNote,
+          results: ["exported", "mailed"].includes(w.status) ? await waveResults(w.key) : null,
+        });
+      }
+      return out;
+    },
+  },
+  plan_mail_wave: {
+    description:
+      "Plan a postcard wave to mailable homeowners in chosen ZIPs: size, the postcard copy, and why. It is saved as a DRAFT; the owner approves the spend before anything is printed or mailed. Each card gets a personal QR/URL so first free visits are attributed to the wave. Start small (e.g. 300-1000 in the towns where Profixter already has customers) and learn before scaling.",
+    input_schema: obj({
+      name: str("Short name, e.g. 'Lindenhurst & West Babylon - fall'"),
+      target_zips: { type: "array", items: { type: "string" }, description: "5-digit ZIPs inside the service area" },
+      size: { type: "integer", description: "Number of postcards" },
+      headline: str("Postcard headline"),
+      body: str("Postcard body: the free first visit, what it covers, local and honest"),
+      call_to_action: str("e.g. 'Scan to book your free first visit'"),
+      rationale: str("Why these towns and this size, with evidence"),
+    }),
+    run: async (input, ctx) => {
+      const { OutreachRecipient, OutreachWave } = require("../../models/Outreach");
+      const { isZipInServiceArea, normalizeZip } = require("../serviceArea");
+      const { checkCopy } = require("./copyRules");
+      const zips = [...new Set((input.target_zips || []).map((z) => normalizeZip(z)).filter(Boolean))];
+      if (!zips.length || zips.some((z) => !isZipInServiceArea(z))) throw new Error("Every ZIP must be inside the Nassau/Suffolk service area.");
+      const size = Math.round(Number(input.size) || 0);
+      if (size < 100 || size > MAIL_WAVE_MAX()) throw new Error(`Size must be 100-${MAIL_WAVE_MAX()}.`);
+      const ninety = new Date(Date.now() - 90 * 864e5);
+      const available = await OutreachRecipient.countDocuments({ eligible: true, zip: { $in: zips }, $or: [{ lastMailedAt: null }, { lastMailedAt: { $lt: ninety } }] });
+      if (available < size) throw new Error(`Only ${available} mailable homeowners in those ZIPs (not mailed in 90 days). Lower the size or add ZIPs.`);
+      const problems = checkCopy([input.headline, input.body, input.call_to_action].join("\n"));
+      if (problems.length) throw new Error(`Rewrite needed: ${problems.join(" ")}`);
+      const key = `w${new Date().toISOString().slice(2, 10).replace(/-/g, "")}${Math.random().toString(36).slice(2, 4)}`;
+      const wave = await OutreachWave.create({
+        key,
+        name: clip(input.name, 80),
+        targetZips: zips,
+        size,
+        copy: { headline: clip(input.headline, 80), body: clip(input.body, 600), callToAction: clip(input.call_to_action, 80) },
+        rationale: clip(input.rationale, 1500),
+        estimatedCostCents: size * MAIL_COST_CENTS(),
+        createdBy: ctx.agentLabel,
+      });
+      console.log(JSON.stringify({ event: "agent_mail_wave_draft", agent: ctx.agent, key, zips, size, estimatedCostCents: wave.estimatedCostCents, copy: wave.copy }));
+      return { key, status: "draft", available, estimatedCost: `$${((size * MAIL_COST_CENTS()) / 100).toFixed(2)}`, note: "Waits for the owner to approve the spend." };
+    },
+  },
+});
+
+/* ------------------------------------------------------------------ */
+/* Conversations (inbound SMS/email replies)                           */
+/* ------------------------------------------------------------------ */
+
+Object.assign(TOOL_DEFS, {
+  get_conversations: {
+    description:
+      "Inbound homeowner conversations (replies by text or email) handled by the reply responder: counts by status and intent for the last N days, how many replies were proposed, approved, sent, escalated or blocked, and the most recent escalations and proposed replies (first name, town, intent, summary, the proposed text). Use it to judge whether replies are accurate, on-policy and leading people to book on the website.",
+    input_schema: obj({ days: { type: ["integer", "null"], description: "Look-back window in days (default 30, max 90)" } }),
+    run: async (input) => {
+      const ConversationThread = require("../../models/ConversationThread");
+      const GrowthAction = require("../../models/GrowthAction");
+      const days = Math.min(90, Math.max(1, Number(input.days) || 30));
+      const since = new Date(Date.now() - days * 864e5);
+      const [byStatus, byIntent, recent, actions] = await Promise.all([
+        ConversationThread.aggregate([{ $match: { lastInboundAt: { $gte: since } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+        ConversationThread.aggregate([{ $match: { lastInboundAt: { $gte: since } } }, { $group: { _id: "$intent", n: { $sum: 1 } } }]),
+        ConversationThread.find({ lastInboundAt: { $gte: since }, status: { $in: ["escalated", "reply_proposed"] } }).sort({ lastInboundAt: -1 }).limit(12).lean(),
+        GrowthAction.aggregate([{ $match: { type: "conversation_reply", createdAt: { $gte: since } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+      ]);
+      return {
+        enabled: process.env.CONVERSATIONS_ENABLED === "true",
+        byStatus: Object.fromEntries(byStatus.map((r) => [r._id || "unknown", r.n])),
+        byIntent: Object.fromEntries(byIntent.map((r) => [r._id || "unknown", r.n])),
+        replyActions: Object.fromEntries(actions.map((r) => [r._id || "unknown", r.n])),
+        recent: recent.map((t) => ({
+          status: t.status,
+          firstName: t.firstName,
+          town: t.town,
+          channel: t.channel,
+          intent: t.intent,
+          summary: t.summary,
+          escalationReason: t.escalationReason,
+          lastInbound: String([...(t.messages || [])].reverse().find((m) => m.direction === "inbound")?.body || "").slice(0, 300),
+        })),
+      };
+    },
+  },
+});
+
 /** The Anthropic tool list for a set of tool names, in a stable order (cache-friendly). */
 function toolsFor(names) {
   return names.map((name) => {

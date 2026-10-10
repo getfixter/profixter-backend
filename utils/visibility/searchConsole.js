@@ -243,15 +243,16 @@ async function syncSearchConsole({
   let requests = 1;
   for (const day of days) {
     if (!totalsByDay.has(day)) continue; // not published yet: write nothing rather than zeros
-    const [queries, pages] = await Promise.all(
-      ["query", "page"].map((dimension) =>
+    // page x query: which searches each page appears for - what an SEO title change is written against.
+    const [queries, pages, pageQueries] = await Promise.all(
+      [["query"], ["page"], ["page", "query"]].map((dimensions) =>
         queryAnalytics({
           ...ctx,
-          body: { startDate: day, endDate: day, dimensions: [dimension], type: "web", rowLimit: TOP_ROWS },
+          body: { startDate: day, endDate: day, dimensions, type: "web", rowLimit: dimensions.length > 1 ? 1000 : TOP_ROWS },
         })
       )
     );
-    requests += 2;
+    requests += 3;
     const fetchedAt = now;
     rows.push({ source: SOURCE, date: day, key: "totals", metrics: totalsByDay.get(day), fetchedAt });
     rows.push({
@@ -266,6 +267,13 @@ async function syncSearchConsole({
       date: day,
       key: "pages",
       metrics: { rows: pages.map((r) => ({ page: String(r.keys?.[0] || ""), ...metricsOf(r) })) },
+      fetchedAt,
+    });
+    rows.push({
+      source: SOURCE,
+      date: day,
+      key: "page_queries",
+      metrics: { rows: pageQueries.map((r) => ({ page: String(r.keys?.[0] || ""), query: String(r.keys?.[1] || ""), ...metricsOf(r) })) },
       fetchedAt,
     });
   }

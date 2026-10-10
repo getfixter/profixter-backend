@@ -248,6 +248,41 @@ const visitLimiter = rateLimit({
 });
 const BOT_UA = /bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexternalhit|pingdom|monitor/i;
 
+/**
+ * One step of the booking funnel (see models/FunnelStep). Public and always
+ * 204, like /visit: a random browser id and a step name, nothing personal.
+ * Counted once per browser, step and New York day, under the browser's
+ * first-touch source when it has one.
+ */
+const stepLimiter = rateLimit({
+  limit: 60,
+  windowMs: 10 * 60 * 1000,
+  keyResolver: (req) => String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null,
+});
+
+router.post("/step", stepLimiter, async (req, res) => {
+  try {
+    const { FunnelStep, FunnelStepSeen, STEPS } = require("../models/FunnelStep");
+    const visitorId = String(req.body?.visitorId || "");
+    const step = String(req.body?.step || "");
+    if (!/^[A-Za-z0-9_-]{12,64}$/.test(visitorId) || !STEPS.includes(step) || BOT_UA.test(String(req.headers["user-agent"] || ""))) {
+      return res.status(204).end();
+    }
+    const date = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    try {
+      await FunnelStepSeen.create({ key: `${visitorId}|${step}|${date}`, expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) });
+    } catch (error) {
+      if (error?.code === 11000) return res.status(204).end(); // already counted today
+      throw error;
+    }
+    const visitor = await SiteVisitor.findOne({ visitorId }).select("source").lean();
+    await FunnelStep.updateOne({ date, step, source: visitor?.source || "direct" }, { $inc: { count: 1 } }, { upsert: true });
+  } catch (error) {
+    console.warn("Funnel step failed:", error.message);
+  }
+  return res.status(204).end();
+});
+
 router.post("/visit", visitLimiter, async (req, res) => {
   try {
     const body = req.body || {};

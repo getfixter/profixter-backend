@@ -264,9 +264,13 @@ async function main() {
 
   console.log("operations");
 
-  await test("the production agents propose nothing: no agent has an allowed action", async () => {
-    for (const a of Object.values(AGENTS)) assert.deepStrictEqual(a.allowedActions, [], a.name);
-    assert.deepStrictEqual(Object.keys(AGENTS).sort(), ["conversion", "growth_intelligence", "visibility"]);
+  await test("agents may propose website-wording changes only - never customer messages", async () => {
+    const ALLOWED = new Set(["seo_page_update", "seo_content_update"]);
+    for (const a of Object.values(AGENTS)) {
+      for (const t of a.allowedActions) assert.ok(ALLOWED.has(t), `${a.name} may propose ${t}`);
+    }
+    assert.deepStrictEqual(Object.keys(AGENTS).sort(), ["conversion", "growth_intelligence", "outreach", "visibility"]);
+    for (const a of Object.values(AGENTS)) for (const t of a.tools) assert.ok(!/(^|_)(book|booking|calendar|appointment|bulk)(_|$)|^send_/i.test(t), `${a.name} has tool ${t}`);
   });
 
   await test("the monthly budget across agents skips further runs", async () => {
@@ -297,7 +301,8 @@ async function main() {
     // Monday-only 09:30 NY from that Friday night -> Mon 2026-10-12 13:30Z.
     assert.strictEqual(nextRun("30 9 * * 1", { from }).toISOString(), "2026-10-12T13:30:00.000Z");
     const gi = nextRunFor(AGENTS.growth_intelligence, { from });
-    assert.strictEqual(gi.mode, "daily");
+    assert.strictEqual(gi.mode, "weekly");
+    assert.strictEqual(gi.at.toISOString(), "2026-10-12T12:10:00.000Z");
     assert.throws(() => nextRun("*/5 * * * *"), /Unsupported/);
   });
 
@@ -329,9 +334,9 @@ async function main() {
     setClientFactory(() => scripted([{ stop_reason: "end_turn", content: [text("first run")] }]).client);
     await firstActivation();
     const runs = await AgentRun.find({ status: "succeeded" }).lean();
-    assert.deepStrictEqual(runs.map((r) => r.agent).sort(), ["conversion", "growth_intelligence", "visibility"]);
+    assert.deepStrictEqual(runs.map((r) => r.agent).sort(), ["conversion", "growth_intelligence", "outreach", "visibility"]);
     await firstActivation();
-    assert.strictEqual(await AgentRun.countDocuments({}), 3);
+    assert.strictEqual(await AgentRun.countDocuments({}), 4);
     delete process.env.AGENTS_ENABLED;
     delete process.env.ANTHROPIC_API_KEY;
   });
