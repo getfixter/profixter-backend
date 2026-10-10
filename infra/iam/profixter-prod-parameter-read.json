@@ -11,11 +11,14 @@
       ]
     },
     {
-      "Sid": "DecryptViaSsmOnly",
+      "Sid": "DecryptOnlyProfixterProdParametersViaSsm",
       "Effect": "Allow",
       "Action": "kms:Decrypt",
-      "Resource": "*",
-      "Condition": { "StringEquals": { "kms:ViaService": "ssm.us-east-1.amazonaws.com" } }
+      "Resource": "arn:aws:kms:us-east-1:213308313346:key/e54ec974-3beb-4456-a900-ef8dd19a5226",
+      "Condition": {
+        "StringEquals": { "kms:ViaService": "ssm.us-east-1.amazonaws.com" },
+        "StringLike": { "kms:EncryptionContext:PARAMETER_ARN": "arn:aws:ssm:us-east-1:213308313346:parameter/profixter/prod/*" }
+      }
     }
   ]
 }
