@@ -322,6 +322,20 @@ async function main() {
     assert.match(denied.error, /access_denied/);
   });
 
+  await test("first activation runs each never-run agent once, then stays quiet", async () => {
+    process.env.AGENTS_ENABLED = "true";
+    process.env.ANTHROPIC_API_KEY = "test-key-not-real";
+    const { firstActivation } = require("../jobs/agents");
+    setClientFactory(() => scripted([{ stop_reason: "end_turn", content: [text("first run")] }]).client);
+    await firstActivation();
+    const runs = await AgentRun.find({ status: "succeeded" }).lean();
+    assert.deepStrictEqual(runs.map((r) => r.agent).sort(), ["conversion", "growth_intelligence", "visibility"]);
+    await firstActivation();
+    assert.strictEqual(await AgentRun.countDocuments({}), 3);
+    delete process.env.AGENTS_ENABLED;
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
   await mongoose.disconnect();
   await mongo.stop();
   console.log(`\n${passed} passed`);

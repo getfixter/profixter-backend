@@ -36,6 +36,39 @@ async function runSlot(name, mode, trigger = "schedule") {
   }
 }
 
+/**
+ * FIRST ACTIVATION. When agents become enabled (or the API key arrives through
+ * the secret store), an agent that has never completed a run runs once within
+ * ~30 minutes instead of waiting up to a week for its slot - which is also the
+ * moment its setup is verified end to end. At most one attempt per agent per
+ * 6 hours, so a failing setup cannot loop or burn budget; Growth Intelligence
+ * runs in weekly mode so its first owner report is produced.
+ */
+const AgentRun = require("../models/AgentRun");
+const FIRST_RUN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+let bootstrapping = false;
+
+async function firstActivation(now = new Date()) {
+  if (bootstrapping || !agentsEnabled()) return;
+  bootstrapping = true;
+  try {
+    for (const def of Object.values(AGENTS)) {
+      const succeeded = await AgentRun.exists({ agent: def.name, status: "succeeded" });
+      if (succeeded) continue;
+      const recent = await AgentRun.exists({
+        agent: def.name,
+        status: { $ne: "skipped" },
+        startedAt: { $gte: new Date(now - FIRST_RUN_COOLDOWN_MS) },
+      });
+      if (recent) continue;
+      const mode = def.name === "growth_intelligence" ? "weekly" : (def.schedules?.[0]?.mode || null);
+      await runSlot(def.name, mode, "schedule");
+    }
+  } finally {
+    bootstrapping = false;
+  }
+}
+
 function startAgentJobs() {
   if (process.env.NODE_ENV === "test") return;
   for (const def of Object.values(AGENTS)) {
@@ -43,7 +76,10 @@ function startAgentJobs() {
       cron.schedule(s.cron, () => runSlot(def.name, s.mode), { timezone: TIMEZONE });
     }
   }
+  // Check 5 minutes after boot (after the secret store's first load), then every 30 minutes.
+  setTimeout(() => firstActivation().catch(() => {}), 5 * 60 * 1000).unref?.();
+  cron.schedule("*/30 * * * *", () => firstActivation().catch(() => {}), { timezone: TIMEZONE });
   console.log(JSON.stringify({ event: "agent_jobs_started", enabled: agentsEnabled(), agents: Object.keys(AGENTS) }));
 }
 
-module.exports = { runSlot, startAgentJobs };
+module.exports = { firstActivation, runSlot, startAgentJobs };
