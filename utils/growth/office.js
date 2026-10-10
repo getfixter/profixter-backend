@@ -9,9 +9,10 @@
  * number is null and the UI says so.
  *
  * Robots map onto the agents in utils/agents/definitions.js:
- *   Lumi  - visibility            (SEO and organic acquisition)
- *   Rover - outreach              (lawful new channels; never mail or Meta)
- *   Echo  - conversion + the live reply responder ("conversation")
+ *   Odysseus        - visibility    (SEO and organic acquisition)
+ *   Leonidas        - outreach      (lawful new channels; never mail or Meta)
+ *   Marcus Aurelius - conversion + the live reply responder ("conversation")
+ * King Arthur (utils/council) manages the three; he is not a robot here.
  * Growth Intelligence has no robot: its weekly report is the wall display.
  */
 const AgentRun = require("../../models/AgentRun");
@@ -32,8 +33,8 @@ const RUNNING_STALE_MS = 30 * 60 * 1000;
 const ROBOTS = [
   {
     key: "visibility",
-    name: "Lumi",
-    role: "Knight of Visibility · Google & search",
+    name: "Odysseus",
+    role: "The Explorer · Google & search",
     agents: ["visibility"],
     actionTypes: ["seo_page_update", "seo_content_update"],
     mission: "Help more Long Island homeowners find Profixter on Google, Maps and AI search - and book their first free visit.",
@@ -44,12 +45,12 @@ const ROBOTS = [
       "Drafts new town pages and guides for your review",
     ],
     cannot: ["Change services, prices, plans, booking rules or the service area", "Publish new pages on its own", "Touch advertising"],
-    personality: "Curious and tidy. Loves a good search result.",
+    personality: "A patient explorer. Always charting where homeowners search.",
   },
   {
     key: "outreach",
-    name: "Rover",
-    role: "Knight of Outreach · new homeowners",
+    name: "Leonidas",
+    role: "The Vanguard · new homeowners",
     agents: ["outreach"],
     actionTypes: [],
     mission: "Find lawful, trackable ways to reach more Long Island homeowners, test them small, and keep what brings first free visits.",
@@ -65,12 +66,12 @@ const ROBOTS = [
       "Spend money, sign up for services or contact anyone",
       "Touch Meta ads (agency only)",
     ],
-    personality: "Restless explorer. Always has a map out.",
+    personality: "Disciplined and direct. Holds the line on the rules.",
   },
   {
     key: "conversation",
-    name: "Echo",
-    role: "Knight of Communication · conversations",
+    name: "Marcus Aurelius",
+    role: "The Messenger · conversations",
     agents: ["conversion", "conversation"],
     actionTypes: ["conversation_reply", "playbook_email"],
     mission: "Turn homeowners who write in or visit the website into first free-visit bookings they make themselves on profixter.com.",
@@ -86,7 +87,7 @@ const ROBOTS = [
       "Reply to thanks, goodbyes, rejections or chatter (business only)",
       "Message an existing Profixter customer through GoHighLevel",
     ],
-    personality: "Warm and quick. Never misses a question.",
+    personality: "Calm and fair. Every message gets a thoughtful answer.",
   },
 ];
 
@@ -317,6 +318,7 @@ async function approvalsList() {
         kind: "action",
         id: String(x._id),
         robot,
+        type: x.type,
         title: explain.redact(shortText(x.summary, 160), { names }),
         detail: explain.redact(shortText(x.rationale, 500), { names }),
         preview: explain.redact(shortText(preview(x), 1500), { names }),
@@ -457,7 +459,7 @@ async function robotDetail(key, { now = new Date() } = {}) {
       fixedRules: [SHARED_RULES, ...scheduled.map((a) => AGENTS[a].instructions)].join("\n\n"),
       note:
         key === "conversation"
-          ? "Guidance steers Echo's twice-weekly review. The live reply rules (never book, facts only, business-only, opt-outs first) are fixed and can't be edited here."
+          ? "Guidance steers Marcus Aurelius's twice-weekly review. The live reply rules (never book, facts only, business-only, opt-outs first) are fixed and can't be edited here."
           : "",
     },
   };

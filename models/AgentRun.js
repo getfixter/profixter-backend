@@ -13,7 +13,7 @@ const mongoose = require("mongoose");
 const agentRunSchema = new mongoose.Schema(
   {
     agent: { type: String, required: true, index: true },
-    trigger: { type: String, enum: ["schedule", "manual", "retry", "event", "test"], default: "schedule" },
+    trigger: { type: String, enum: ["schedule", "manual", "retry", "event", "chat", "test"], default: "schedule" },
     status: {
       type: String,
       enum: ["running", "succeeded", "failed", "budget_stopped", "skipped"],

@@ -724,6 +724,20 @@ Object.assign(TOOL_DEFS, {
   },
 });
 
+Object.assign(TOOL_DEFS, {
+  report_to_arthur: {
+    description:
+      "Report on a task King Arthur gave you in this shift (listed in your instructions with its task_id). Call once per task: 'completed' with what you found or did, with the evidence; or 'blocked' with why (a fixed rule forbids it, or you lack the data or a tool). Arthur checks the report; you cannot mark your own work verified.",
+    input_schema: obj({
+      task_id: str("The task_id from the TASKS FROM KING ARTHUR list"),
+      status: str("Outcome", { enum: ["completed", "blocked"] }),
+      summary: str("What you found or did, with numbers and where they came from - or exactly why it is blocked"),
+    }),
+    run: async ({ task_id, status, summary }, ctx) =>
+      require("../council/tasks").reportTask({ taskId: task_id, agent: ctx.agent, runId: ctx.runId, status, summary }),
+  },
+});
+
 /** The Anthropic tool list for a set of tool names, in a stable order (cache-friendly). */
 function toolsFor(names) {
   return names.map((name) => {

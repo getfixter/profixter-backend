@@ -431,7 +431,7 @@ function robotOr404(req, res) {
   return robot;
 }
 
-/** Pause or resume all of a robot's automatic work (scheduled shifts, and for Echo the reply responder). */
+/** Pause or resume all of a robot's automatic work (scheduled shifts, and for Marcus Aurelius the reply responder). */
 router.post("/office/robots/:key/pause", ownerOnly, async (req, res) => {
   try {
     const robot = robotOr404(req, res);
@@ -504,6 +504,150 @@ router.post("/office/robots/:key/guidance/rollback", ownerOnly, async (req, res)
   } catch (error) {
     if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
     fail(res, error, "Could not restore that version.");
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* The council: the owner <-> King Arthur <-> the specialists           */
+/* ------------------------------------------------------------------ */
+
+const { CouncilDecision, CouncilMessage, CouncilTask } = require("../models/Council");
+const councilTasks = require("../utils/council/tasks");
+
+function publicDecision(d) {
+  return {
+    id: String(d._id),
+    category: d.category,
+    subject: d.subject,
+    simple: d.simple,
+    detail: d.detail,
+    agent: d.agent,
+    hero: d.agent ? councilTasks.HERO[d.agent] || d.agent : null,
+    recommendation: d.recommendation?.choice ? d.recommendation : null,
+    refs: (d.refs || []).map((r) => ({ kind: r.kind, id: r.id })),
+    guidance: d.payload?.type === "guidance" ? { agent: d.payload.agent, text: d.payload.guidance, previous: d.payload.previous, baseVersion: d.payload.baseVersion } : null,
+    status: d.status,
+    resolution: d.resolution?.choice ? d.resolution : null,
+    at: d.updatedAt,
+    createdAt: d.createdAt,
+  };
+}
+
+router.get("/office/council", canRead, async (req, res) => {
+  try {
+    const { settleDecisions } = require("../utils/council/arthur");
+    await settleDecisions();
+    const since = new Date(Date.now() - 14 * 864e5);
+    const [messages, openTasks, closedTasks, open, closed, thinking] = await Promise.all([
+      CouncilMessage.find({}).sort({ createdAt: -1 }).limit(40).lean(),
+      CouncilTask.find({ status: { $in: [...councilTasks.OPEN, "completed"] } }).sort({ createdAt: -1 }).limit(30).lean(),
+      CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled"] }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(15).lean(),
+      CouncilDecision.find({ status: "open" }).sort({ updatedAt: -1 }).limit(40).lean(),
+      CouncilDecision.find({ status: { $ne: "open" }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(20).lean(),
+      require("../models/AgentRun").exists({ agent: "arthur", status: "running", startedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } }),
+    ]);
+    res.json({
+      enabled: agentsEnabled(),
+      thinking: Boolean(thinking),
+      messages: messages.reverse().map((m) => ({ id: String(m._id), role: m.role, kind: m.kind, text: m.text, actions: m.actions || [], at: m.createdAt })),
+      tasks: [...openTasks, ...closedTasks].map(councilTasks.publicTask),
+      decisions: open.map(publicDecision),
+      history: closed.map(publicDecision),
+      counts: {
+        decisions: open.filter((d) => ["decision", "uncertain"].includes(d.category)).length,
+        info: open.filter((d) => d.category === "info").length,
+        tasks: openTasks.length,
+      },
+    });
+  } catch (error) {
+    fail(res, error, "Could not load the council.");
+  }
+});
+
+/** Talk to King Arthur. Returns at once; his answer appears in GET /office/council. */
+router.post("/office/council/chat", ownerOnly, async (req, res) => {
+  try {
+    const text = String(req.body?.message || "").trim();
+    if (!text) return res.status(400).json({ message: "Write a message first." });
+    if (text.length > 2000) return res.status(400).json({ message: "Keep a message under 2,000 characters." });
+    const AgentRun = require("../models/AgentRun");
+    const arthur = require("../utils/council/arthur");
+    if (await AgentRun.exists({ agent: "arthur", status: "running", startedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } })) {
+      return res.status(409).json({ message: "King Arthur is still answering. One moment." });
+    }
+    const today = await CouncilMessage.countDocuments({ role: "owner", createdAt: { $gte: new Date(Date.now() - 864e5) } });
+    if (today >= arthur.MAX_CHATS_PER_DAY) return res.status(429).json({ message: "That's enough council talk for today - King Arthur's daily limit is reached." });
+    const actor = ownerActor(req);
+    const msg = await CouncilMessage.create({ role: "owner", text, kind: "chat" });
+    if (!agentsEnabled()) {
+      await CouncilMessage.create({ role: "arthur", kind: "chat", text: "Boss, the AI team is switched off right now, so I can't think this through. Your message is saved." });
+    } else {
+      arthur.chat({ text, ownerName: actor.name }).catch((error) => {
+        console.error("Arthur chat failed:", error.message);
+        CouncilMessage.create({ role: "arthur", kind: "chat", text: "Boss, something went wrong on my side and I couldn't answer. Please try again in a few minutes." }).catch(() => {});
+      });
+    }
+    res.status(202).json({ id: String(msg._id) });
+  } catch (error) {
+    fail(res, error, "Could not send that.");
+  }
+});
+
+/** The owner's answer to something King Arthur filed. Guidance proposals are saved only here. */
+router.post("/office/council/decisions/:id/resolve", ownerOnly, async (req, res) => {
+  try {
+    const choice = String(req.body?.choice || "");
+    if (!["confirm", "reject", "done"].includes(choice)) return res.status(400).json({ message: "Bad choice" });
+    if (!require("mongoose").Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const actor = ownerActor(req);
+    const { decision: d, saved } = await require("../utils/council/arthur").resolveDecision({ id: req.params.id, choice, by: actor.name, note: req.body?.note });
+    const isGuidance = d.payload?.type === "guidance";
+    await AdminActivityLogModel.create({
+      action: `growth_council.${isGuidance ? `guidance_${choice}` : `decision_${choice}`}`,
+      entityType: "growth_council",
+      entityId: String(d._id),
+      entityName: String(d.subject).slice(0, 120),
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: { category: d.category, agent: d.agent, saved },
+    });
+    office.invalidateOffice();
+    res.json({ ok: true, saved });
+  } catch (error) {
+    if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    fail(res, error, "Could not save that.");
+  }
+});
+
+router.post("/office/council/tasks/:id/cancel", ownerOnly, async (req, res) => {
+  try {
+    const actor = ownerActor(req);
+    const t = await councilTasks.cancelTask({ taskId: String(req.params.id), by: actor.name, asOwner: true, note: String(req.body?.note || "Cancelled by the owner") });
+    res.json({ task: councilTasks.publicTask(t) });
+  } catch (error) {
+    res.status(404).json({ message: error.message });
+  }
+});
+
+router.post("/office/council/tasks/:id/verify", ownerOnly, async (req, res) => {
+  try {
+    const actor = ownerActor(req);
+    const t = await councilTasks.verifyTask({ taskId: String(req.params.id), verdict: String(req.body?.verdict || ""), note: String(req.body?.note || ""), by: actor.name });
+    res.json({ task: councilTasks.publicTask(t) });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+/** "Copy All for ChatGPT" (scope=pending) and the full status report (scope=full). Deterministic; no AI call. */
+router.get("/office/council/report", canRead, async (req, res) => {
+  try {
+    const { buildReport } = require("../utils/council/report");
+    res.json(await buildReport({ scope: req.query.scope === "full" ? "full" : "pending" }));
+  } catch (error) {
+    fail(res, error, "Could not build the report.");
   }
 });
 

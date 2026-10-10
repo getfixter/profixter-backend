@@ -124,7 +124,7 @@ async function main() {
     assert.strictEqual(manual.status, "succeeded");
   });
 
-  await test("pausing Echo also stops the live reply responder", async () => {
+  await test("pausing Marcus Aurelius also stops the live reply responder", async () => {
     await settings.setPaused("conversation", true, "Owner");
     const { processThread } = require("../utils/conversation/service");
     const out = await processThread({ optedOut: false, status: "needs_reply", messages: [] });
@@ -176,7 +176,7 @@ async function main() {
     await AgentRun.create({ agent: "visibility", status: "succeeded", startedAt: new Date(), trigger: "schedule", summary: "Checked 12 pages." });
     await AgentRun.create({ agent: "visibility", status: "failed", startedAt: new Date(Date.now() - 1000), trigger: "schedule", error: "transient: 529" });
     const d = await office.robotDetail("visibility");
-    assert.strictEqual(d.robot.name, "Lumi");
+    assert.strictEqual(d.robot.name, "Odysseus");
     assert.strictEqual(d.runs.length, 2);
     assert.ok(d.mistakes.some((m) => /failed/.test(m.what)));
     assert.match(d.teach.fixedRules, /never book|agents never book/i);

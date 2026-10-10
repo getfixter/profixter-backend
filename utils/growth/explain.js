@@ -17,11 +17,12 @@ const { SEGMENT_DEFS } = require("./segments");
 
 const SITE = "https://www.profixter.com";
 
-const ROBOT_NAMES = { visibility: "Lumi", outreach: "Rover", conversion: "Echo", conversation: "Echo", growth_intelligence: "the weekly report" };
+const ROBOT_NAMES = { visibility: "Odysseus", outreach: "Leonidas", conversion: "Marcus Aurelius", conversation: "Marcus Aurelius", growth_intelligence: "the weekly report", arthur: "King Arthur" };
 const ROBOT_ROLES = {
-  Lumi: "the Knight of Visibility - our search agent (Google, Maps, AI search)",
-  Rover: "the Knight of Outreach - our new-channels agent",
-  Echo: "the Knight of Communication - our conversations & website agent (also drafts replies to homeowners who write in)",
+  Odysseus: "the explorer of the council - our search agent (Google, Maps, AI search)",
+  Leonidas: "the vanguard of the council - our new-channels agent",
+  "Marcus Aurelius": "the messenger of the council - our conversations & website agent (also drafts replies to homeowners who write in)",
+  "King Arthur": "my AI manager - he coordinates the three specialists and recommends, but cannot approve anything",
 };
 
 /* ------------------------------------------------------------------ */
@@ -255,12 +256,12 @@ function explainPlaybook(p) {
   const say = `Boss, I wrote a follow-up email for people who ${who.replace(/^had /, "had ").replace(/^registered/, "signed up")}. If you approve the wording, it can be sent to that group one person at a time - only to people who agreed to get our emails, and never with a discount.`;
   const ask = "Can I use this email?";
   const chatgpt = brief(
-    "My AI agent Echo wrote a follow-up email and wants approval of the wording",
+    "My AI agent Marcus Aurelius wrote a follow-up email and wants approval of the wording",
     [
       {
         heading: "The request",
         body: lines({
-          Agent: "Echo - Conversations & website conversion agent",
+          Agent: "Marcus Aurelius - Conversations & website conversion agent",
           "Task ID": `playbook ${p.key} (version ${p.version || 1})`,
           "Written at": nyTime(p.updatedAt),
           Audience: seg?.label || p.segment,
@@ -433,9 +434,9 @@ function explainRobot(detail) {
   const r = detail.robot;
   const s = detail.state;
   const intro = {
-    visibility: "I'm Lumi, your Knight of Visibility. I help homeowners find Profixter on Google and other search sites, so more of them book a free first visit.",
-    outreach: "I'm Rover, your Knight of Outreach. I look for new, honest ways to reach homeowners on Long Island - and I test them small before anything costs real money.",
-    conversation: "I'm Echo, your Knight of Communication. I help homeowners who write to us or visit our website get to booking their free first visit - they always book it themselves.",
+    visibility: "I'm Odysseus, your explorer. I help homeowners find Profixter on Google and other search sites, so more of them book a free first visit.",
+    outreach: "I'm Leonidas, your vanguard. I look for new, honest ways to reach homeowners on Long Island - and I test them small before anything costs real money.",
+    conversation: "I'm Marcus Aurelius, your messenger. I help homeowners who write to us or visit our website get to booking their free first visit - they always book it themselves.",
   }[r.key];
   const next = s.nextRunAt ? ` My next shift is ${new Date(s.nextRunAt).toLocaleString("en-US", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}.` : "";
   const waiting = s.waiting ? ` ${s.waiting === 1 ? "One thing is" : `${s.waiting} things are`} waiting for you.` : "";
@@ -537,7 +538,9 @@ function explainResults(office) {
 }
 
 module.exports = {
+  ACTION_FACTS,
   CONTEXT,
+  nyTime,
   ROBOT_NAMES,
   explainAction,
   explainDraft,

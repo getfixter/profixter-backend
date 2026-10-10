@@ -134,7 +134,7 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   if (!agentsEnabled(env) && trigger !== "test") {
     return (await AgentRun.create({ ...base, status: "skipped", skipReason: env.ANTHROPIC_API_KEY ? "agents_disabled" : "no_api_key", finishedAt: new Date() })).toObject();
   }
-  if (!["manual", "test"].includes(trigger)) {
+  if (!["manual", "chat", "test"].includes(trigger)) {
     if (await isPaused(def.name)) {
       return (await AgentRun.create({ ...base, status: "skipped", skipReason: "paused_by_owner", finishedAt: new Date() })).toObject();
     }
@@ -153,11 +153,19 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   }
 
   const run = await AgentRun.create({ ...base, status: "running" });
+  // Arthur brings his own toolset (utils/council/tools.js); the specialists use
+  // the shared one plus report_to_arthur for the council tasks they pick up.
+  const toolset = def.toolset || { runTool, toolsFor };
+  const council = require("../council/tasks");
+  const isSpecialist = council.SPECIALISTS.includes(def.name);
+  const toolNames = isSpecialist ? [...def.tools, "report_to_arthur"] : def.tools;
   const ctx = {
+    ...(def.context || {}),
     agent: def.name,
     agentLabel: def.label,
     runId: run._id,
-    toolNames: def.tools,
+    trigger,
+    toolNames,
     allowedActions: def.allowedActions || [],
     findingsThisRun: 0,
     findingIds: [],
@@ -175,12 +183,14 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
   try {
     const client = clientFactory();
     const system = [
-      { type: "text", text: `${SHARED_RULES}\n\n${def.instructions}${guidanceBlock(await getSettings(def.name))}` },
+      { type: "text", text: `${def.rules ?? SHARED_RULES}\n\n${def.instructions}${guidanceBlock(await getSettings(def.name))}` },
       // The date changes daily; it sits after the stable rules so the rules stay cacheable.
       { type: "text", text: `Today is ${now.toISOString().slice(0, 10)} (UTC). Your allowed actions: ${(def.allowedActions || []).join(", ") || "none - findings only"}.`, cache_control: { type: "ephemeral" } },
     ];
-    const tools = toolsFor(def.tools);
-    const messages = [{ role: "user", content: def.kickoff(now, mode) }];
+    const tools = toolset.toolsFor(toolNames);
+    let kickoff = await def.kickoff(now, mode);
+    if (isSpecialist) kickoff += await council.pickUpTasks(def.name, run._id);
+    const messages = [{ role: "user", content: kickoff }];
 
     while (turns < def.maxTurns) {
       if (costCents >= def.budgetCents) {
@@ -236,7 +246,7 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
       for (const use of uses) {
         const started = Date.now();
         try {
-          const out = await runTool(use.name, use.input, ctx);
+          const out = await toolset.runTool(use.name, use.input, ctx);
           const text = JSON.stringify(out ?? null);
           results.push({ type: "tool_result", tool_use_id: use.id, content: text.length > 60000 ? `${text.slice(0, 60000)}…(truncated)` : text });
           toolCalls.push({ name: use.name, ok: true, ms: Date.now() - started });
@@ -259,6 +269,8 @@ async function runAgent(def, { trigger = "schedule", mode = null, now = new Date
     error = isTransient(runError) ? `transient: ${message}` : message;
   } finally {
     await releaseLease(leaseKey).catch(() => {});
+    // A task the specialist picked up but never reported on goes back to "assigned".
+    if (isSpecialist) await council.releaseUnreported(def.name, run._id).catch(() => {});
   }
 
   const finished = await AgentRun.findByIdAndUpdate(

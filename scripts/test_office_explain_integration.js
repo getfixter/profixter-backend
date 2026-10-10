@@ -151,7 +151,7 @@ async function main() {
     assert.match(d.runs[0].chatgpt, /12 pages, 0 proposals/);
     assert.match(d.runs[1].simple.say, /AI service was busy/);
     assert.ok(d.mistakes.length && d.mistakes[0].simple.say);
-    assert.match(d.explained.simple.say, /^Hi Boss! I'm Lumi/);
+    assert.match(d.explained.simple.say, /^Hi Boss! I'm Odysseus/);
     assert.match(d.teach.explained.chatgpt, /Help me write short, clear guidance/);
   });
 
@@ -197,7 +197,7 @@ async function main() {
     assert.strictEqual(calls, 0);
     process.env.AGENTS_ENABLED = "true";
     process.env.ANTHROPIC_API_KEY = "test-key-not-real";
-    const out = await plainExplainer.explainMissing({ findings: [f.toObject(), agentWritten.toObject()], robotName: "Lumi" });
+    const out = await plainExplainer.explainMissing({ findings: [f.toObject(), agentWritten.toObject()], robotName: "Odysseus" });
     assert.strictEqual(out.done, 1);
     assert.strictEqual(calls, 1, "agent-written plain text is never rewritten");
     const after = await AgentFinding.findById(f._id).lean();
