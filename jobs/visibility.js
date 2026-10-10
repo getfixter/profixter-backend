@@ -31,11 +31,31 @@ const SCHEDULES = [
   { collector: "ai_visibility", cron: "40 6 * * 1" },
 ];
 
+/*
+ * CATCH-UP. A collector that is enabled and configured but has never landed
+ * data (just connected, or its access was granted after the last slot) runs
+ * 6 minutes after boot and then hourly until it succeeds once, instead of
+ * waiting up to a day or a week for its slot. Free and cheap collectors only:
+ * local-rank is never caught up (it costs per check).
+ */
+const CATCH_UP = ["search_console", "google_reviews", "ai_visibility"];
+
+async function catchUp() {
+  const { collectorStatuses } = require("../utils/visibility/collectors");
+  const statuses = await collectorStatuses().catch(() => []);
+  for (const s of statuses) {
+    if (!CATCH_UP.includes(s.name) || !s.enabled || !s.configured || s.lastSuccessAt) continue;
+    await runCollector(s.name, { now: new Date() });
+  }
+}
+
 function startVisibilityJobs() {
   if (process.env.NODE_ENV === "test") return false;
   for (const { collector, cron: expression } of SCHEDULES) {
     cron.schedule(expression, () => runCollector(collector, { now: new Date() }), { timezone: TIMEZONE });
   }
+  setTimeout(() => catchUp().catch(() => {}), 6 * 60 * 1000).unref?.();
+  cron.schedule("5 * * * *", () => catchUp().catch(() => {}), { timezone: TIMEZONE });
   console.log(JSON.stringify({ event: "visibility_jobs_started", schedules: SCHEDULES }));
   return true;
 }
