@@ -648,8 +648,8 @@ async function main() {
     const { text, count, waiting } = await buildReport();
     assert.strictEqual(count, 1);
     assert.strictEqual(waiting, 1);
-    assert.match(text, /## Decisions waiting for me \(1\)/);
-    assert.match(text, /## Being worked on - not waiting for me \(1\)[\s\S]*Odysseus is revising the title/);
+    assert.match(text, /## Needs your decision \(1\)/);
+    assert.match(text, /## Being worked on \(1\)[\s\S]*Odysseus is revising the title/);
     assert.ok(text.trim().endsWith(CLOSING));
   });
 
@@ -748,12 +748,13 @@ async function main() {
     await CouncilDecision.create({ category: "decision", subject: "New guidance for Odysseus", simple: "Boss, x", recommendation: { choice: "confirm", reason: "y" }, payload: { type: "guidance", agent: "visibility", guidance: "Focus on Suffolk.", previous: "", baseVersion: 0 } });
     await CouncilDecision.create({ category: "uncertain", subject: "Is Nextdoor worth a test?", simple: "Boss, I am not sure.", detail: "Only two signals so far." });
     const { text, count } = await buildReport({ scope: "pending" });
-    assert.strictEqual(count, 4);
+    assert.strictEqual(count, 3, "exactly the decisions on King Arthur's board");
+    assert.match(text, /## Needs your decision \(3\)/);
+    assert.ok(!text.includes(String(b._id)), "an item Arthur has not reviewed is in Requests, not on his board");
     assert.ok(text.trim().endsWith(CLOSING), "ends with the owner's request");
     assert.strictEqual(CLOSING, "Please review all the decisions above. Explain them in simple English, identify potential problems, and recommend what I should do for each. Do not assume I approve anything.");
-    assert.ok(text.includes(String(a._id)) && text.includes(String(b._id)));
-    assert.match(text, /King Arthur's recommendation: Approve it\. Reason: Low risk and reversible\./);
-    assert.match(text, /King Arthur has not reviewed this yet\./);
+    assert.ok(text.includes(String(a._id)));
+    assert.match(text, /King Arthur's recommendation \(not my approval\): Approve it\. Low risk and reversible\./);
     assert.match(text, /not my approval/);
     assert.match(text, /BEFORE: \(no guidance\)\n\s+AFTER:  Focus on Suffolk\./);
     assert.match(text, /Is Nextdoor worth a test\?/);
@@ -770,7 +771,7 @@ async function main() {
   await test("an empty council still produces a clear report", async () => {
     const { text, count } = await buildReport();
     assert.strictEqual(count, 0);
-    assert.match(text, /Nothing is waiting for my decision right now/);
+    assert.match(text, /Nothing needs my decision right now/);
     assert.ok(text.trim().endsWith(CLOSING));
   });
 

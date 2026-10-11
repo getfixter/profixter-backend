@@ -1,67 +1,25 @@
-const { CouncilDecision, CouncilMessage, CouncilTask } = require("../../models/Council");
+const { CouncilMessage, CouncilTask } = require("../../models/Council");
 const AgentRun = require("../../models/AgentRun");
 const explain = require("../growth/explain");
 const tasks = require("./tasks");
 const { correctedRun } = require("../agents/claims");
+const { decisionBoard } = require("./board");
 
 /**
- * "Copy All for ChatGPT": one plain-text report the owner pastes into ChatGPT.
+ * "Copy All for ChatGPT" and "Copy full status report".
  *
- * Built deterministically from records - no AI call, nothing invented. Every
- * item waiting for the owner, with: who proposed it, King Arthur's
- * recommendation (or that he has not reviewed it), the evidence, cost and
- * risk, the owner's choices, what approving does, the exact change, and the
- * timestamps and ids. scope "full" adds the council's status. Everything
- * passes through explain.redact (no credentials, emails, phone numbers,
- * street addresses or homeowner names), and the report always ends with the
- * owner's fixed closing request.
+ * Both are built from THE DECISIONS BOARD (board.js) - the same sections, the
+ * same order and the same numbers the owner sees in King Arthur's Decisions
+ * tab, from top to bottom: "Decision #1" on screen is "Decision #1" here, each
+ * with its permanent record id. No second list, no second sort.
+ *
+ * Deterministic, from records only - no AI call, nothing invented - and
+ * redacted (no credentials, emails, phone numbers, street addresses or
+ * homeowner names). Always ends with the owner's fixed closing request.
+ * scope "full" adds the council's status after the board.
  */
 const CLOSING =
   "Please review all the decisions above. Explain them in simple English, identify potential problems, and recommend what I should do for each. Do not assume I approve anything.";
-
-const CHOICE_WORDS = {
-  approve: "Approve it",
-  decline: "Decline it",
-  ask_for_changes: "Ask for changes first",
-  wait: "Wait - decide later",
-  acknowledge: "Acknowledge it (noted, no action)",
-  dismiss: "Dismiss it",
-  confirm: "Confirm it",
-  see_reason: "See his reasoning",
-};
-
-const KIND_FACTS = {
-  playbook: {
-    what: "Approve the WORDING of a follow-up email. Approved emails may then be sent one person at a time to people in its audience who agreed to get our emails.",
-    choices: 'Approve the wording ("Yes, use it") · Retire it ("Not now") · More details',
-    ifApproved: "The wording becomes usable by the growth engine; sending is still limited by consent, frequency limits and the engine's trust level.",
-    reversible: "The wording can be retired any time; emails already sent cannot be unsent.",
-  },
-  draft: {
-    what: "A draft (page, guide, post or wording) for review. Nothing is published automatically.",
-    choices: 'Use it (I publish it myself) · Not now (dismiss) · More details',
-    ifApproved: "Nothing is published by the AI. Marking it used only closes the item; publishing is done by a person.",
-    reversible: "Yes - nothing changes until a person publishes it.",
-  },
-  note: {
-    what: "A note from a specialist: an opportunity, risk or unusual pattern worth knowing.",
-    choices: "Acknowledge (noted) · Dismiss · Ask King Arthur to have it investigated",
-    ifApproved: "Acknowledging only records that I saw it. Nothing runs.",
-    reversible: "Yes.",
-  },
-  guidance: {
-    what: "New standing guidance for a specialist, proposed by King Arthur. It steers focus and priorities in the specialist's next shifts; it cannot change fixed rules.",
-    choices: "Confirm (save as a new version) · Reject",
-    ifApproved: "It is saved as a new, numbered guidance version the specialist reads from its next shift. Any earlier version can be restored in one tap.",
-    reversible: "Yes - restore the previous version any time.",
-  },
-  decision: {
-    what: "A question King Arthur says only I can decide.",
-    choices: "Tell King Arthur what I decide (in the council chat) · Mark it handled",
-    ifApproved: "Nothing runs automatically from this record; Arthur acts only within his authority after I tell him.",
-    reversible: "Yes - it is a record, not an action.",
-  },
-};
 
 function ny(d) {
   return d ? `${explain.nyTime(d)} · ${new Date(d).toISOString()}` : "unknown";
@@ -76,100 +34,15 @@ function block(lines) {
   return lines.filter(Boolean).join("\n");
 }
 
-function recommendationText(d) {
-  if (!d) return "King Arthur has not reviewed this yet.";
-  const choice = CHOICE_WORDS[d.recommendation?.choice] || d.recommendation?.choice || "(none)";
-  const label = d.category === "uncertain" ? " (he is NOT confident - the evidence is thin)" : "";
-  return `${choice}${label}. Reason: ${d.recommendation?.reason || d.detail || "(none given)"}${d.simple ? `\n  In his words: "${d.simple}"` : ""}\n  (Recorded ${ny(d.updatedAt)}, record ${d._id}. This is his recommendation only - not my approval.)`;
-}
-
-/** All pending decisions as numbered sections. */
-async function pendingSections() {
-  const { approvalsList } = require("../growth/office");
-  const { settleDecisions, heroOf } = require("./arthur");
-  await settleDecisions();
-  const [approvals, decisions] = await Promise.all([approvalsList(), CouncilDecision.find({ status: "open" }).sort({ createdAt: 1 }).lean()]);
-  const rec = Object.fromEntries(decisions.filter((d) => d.refs?.[0]).map((d) => [`${d.refs[0].kind}:${d.refs[0].id}`, d]));
-  const out = [];
-  const parked = (d) => d && ["waiting", "review"].includes(d.inbox);
-  const stateLine = (d) =>
-    d?.inbox === "review"
-      ? "- State: being worked on - the knight finished; King Arthur is reviewing it (not waiting for me)"
-      : d?.inbox === "waiting"
-      ? `- State: being worked on - ${d.waiting?.reason || "a knight is revising it"} (not waiting for me${d.waiting?.until ? `; back by ${String(d.waiting.until).slice(0, 10)}` : ""})`
-      : null;
-
-  for (const i of [...approvals.items, ...approvals.notes].sort((a, b) => new Date(a.at) - new Date(b.at))) {
-    const facts = i.kind === "action" ? explain.ACTION_FACTS[i.type] || {} : KIND_FACTS[i.kind] || {};
-    const d = rec[`${i.kind}:${i.id}`];
-    out.push({
-      title: i.title,
-      parked: parked(d),
-      body: block([
-        field("Type", i.kind === "action" ? `Approval request (${i.type})` : i.kind === "playbook" ? "Follow-up email wording" : i.kind === "draft" ? "Draft for review" : `Note (${i.severity || "info"})`),
-        field("ID", i.kind === "playbook" ? `playbook ${i.id}` : i.id),
-        field("From", heroOf(i.robot) || "the growth system"),
-        field("Proposed / updated", ny(i.at)),
-        stateLine(d),
-        field("What it is", facts.what || i.title),
-        field("In plain words", i.simple?.say),
-        `- King Arthur's recommendation: ${recommendationText(d)}`,
-        field("Evidence (from the specialist)", i.detail),
-        field("Cost", "No money is spent by this item. Any AI time is within the existing monthly AI cap."),
-        field("Risk (system rating)", i.risk || (i.kind === "note" ? i.severity : null) || "not rated"),
-        field("Reversible?", facts.reversible),
-        field("My choices", i.kind === "action" ? 'Approve ("Yes, do it") · Decline ("Not now") · More details' : facts.choices),
-        field("What approving does", facts.ifApproved),
-        field("If I decline", i.kind === "note" ? null : "Nothing happens. It may be proposed again only if the data changes."),
-        i.preview ? `- Exact change / text:\n${String(i.preview).split("\n").map((l) => `    ${l}`).join("\n")}` : null,
-      ]),
-    });
-  }
-
-  for (const d of decisions.filter((x) => x.payload?.type === "guidance")) {
-    const f = KIND_FACTS.guidance;
-    out.push({
-      title: d.subject,
-      parked: parked(d),
-      body: block([
-        stateLine(d),
-        field("Type", "Guidance change proposed by King Arthur"),
-        field("ID", String(d._id)),
-        field("For", heroOf(d.payload.agent)),
-        field("Proposed", ny(d.createdAt)),
-        field("What it is", f.what),
-        field("In plain words", d.simple),
-        `- King Arthur's recommendation: Confirm. Reason: ${d.recommendation?.reason || d.detail}\n  (His proposal only - nothing changes until I confirm.)`,
-        field("Cost", "None."),
-        field("Reversible?", f.reversible),
-        field("My choices", f.choices),
-        field("What confirming does", f.ifApproved),
-        `- Exact change (guidance version ${d.payload.baseVersion} → ${d.payload.baseVersion + 1}):\n    BEFORE: ${d.payload.previous ? d.payload.previous.replace(/\n/g, "\n            ") : "(no guidance)"}\n    AFTER:  ${d.payload.guidance.replace(/\n/g, "\n            ")}`,
-      ]),
-    });
-  }
-
-  for (const d of decisions.filter((x) => !x.refs?.length && x.payload?.type !== "guidance" && ["decision", "uncertain"].includes(x.category))) {
-    const f = KIND_FACTS.decision;
-    out.push({
-      title: d.subject,
-      parked: parked(d),
-      body: block([
-        stateLine(d),
-        field("Type", d.category === "uncertain" ? "Unclear - King Arthur needs more facts or my view" : "A decision only I can make (raised by King Arthur)"),
-        field("ID", String(d._id)),
-        field("Concerns", d.agent ? heroOf(d.agent) : "the whole council"),
-        field("Raised", ny(d.createdAt)),
-        field("In plain words", d.simple),
-        field("Details and evidence", d.detail),
-        `- King Arthur's recommendation: ${d.recommendation?.reason || "none - he is asking for my view"}`,
-        field("Cost", "This record spends nothing."),
-        field("My choices", f.choices),
-        field("What deciding does", f.ifApproved),
-      ]),
-    });
-  }
-  return out;
+/** The board as text: the three sections in screen order, every decision under its screen number. */
+function boardText(board) {
+  return board.sections
+    .map((sec) => {
+      const head = `## ${sec.title} (${sec.items.length})`;
+      if (!sec.items.length) return `${head}\n${sec.key === "needs_you" ? "Nothing needs my decision right now." : "None."}`;
+      return [head, ...sec.items.map((it) => it.brief)].join("\n\n");
+    })
+    .join("\n\n");
 }
 
 async function statusSection() {
@@ -230,9 +103,6 @@ async function statusSection() {
       ? runs.map((r) => ({ ...r, ...correctedRun(r) })).map((x) => `- ${ny(x.startedAt)} · ${x.agent === "arthur" ? "King Arthur" : heroOf(x.agent)} · ${x.status}${x.skipReason ? ` (${x.skipReason})` : ""} · $${((x.costCents || 0) / 100).toFixed(2)} · run ${x._id}${x.plainSummary || x.summary ? `\n  ${String(x.plainSummary || x.summary).replace(/\s+/g, " ").slice(0, 400)}` : ""}`).join("\n")
       : "No shifts in the last 14 days."
   );
-  const info = await CouncilDecision.find({ category: { $in: ["info", "routine"] } }).sort({ updatedAt: -1 }).limit(12).lean();
-  lines.push("", "## King Arthur's recent records (info and routine)");
-  lines.push(info.length ? info.map((d) => `- ${ny(d.updatedAt)} · ${d.category} · ${d.subject}${d.simple ? ` - "${d.simple}"` : ""}`).join("\n") : "None yet.");
   const chat = await CouncilMessage.find({}).sort({ createdAt: -1 }).limit(8).lean();
   if (chat.length) {
     lines.push("", "## Last messages between me and King Arthur");
@@ -242,36 +112,34 @@ async function statusSection() {
 }
 
 /** The whole report as text. scope: "pending" (decisions only) or "full" (decisions + status). */
-async function buildReport({ scope = "pending", now = new Date() } = {}) {
-  const sections = await pendingSections();
+/** board: pass the board already shown (GET /office/council) so the copy is built from that exact board. */
+async function buildReport({ scope = "pending", now = new Date(), board: given = null } = {}) {
+  const board = given || (await decisionBoard({ now }));
   const head = [
-    `# Profixter AI council - ${scope === "full" ? "full status report" : "everything waiting for my decision"}`,
+    `# Profixter AI council - ${scope === "full" ? "full status report" : "King Arthur's decisions"}`,
     `Generated ${ny(now)} from the system's records (nothing in this report was written by AI except where it quotes an agent).`,
+    "The decisions below are in exactly the order and numbering of King Arthur's Decisions tab on my screen. Refer to them by their number (and record ID).",
     "",
     explain.CONTEXT,
     "",
     "## Who is who",
-    "- King Arthur: my AI manager. He reviews the specialists' work, recommends, assigns tasks and escalates. He cannot approve, send messages, spend money, book visits, change ads, prices, offers, booking rules or permissions. His recommendation is never my approval.",
-    "- Odysseus: search specialist (Google, Maps, AI search, page wording, town pages).",
-    "- Leonidas: outreach specialist (researches lawful new ways to reach homeowners; no mail, no Meta ads, no imported lists).",
-    "- Marcus: conversations and website specialist (follow-up emails, replies to homeowners who write in - business-only).",
+    "- King Arthur: my AI marketing director. He coordinates the knights, reviews their drafts, assigns tasks and recommends. He cannot approve, send messages, spend money, publish, book visits, change ads, prices, offers or permissions. His recommendation is never my approval.",
+    "- Odysseus: organic search & visibility (Google, Google Business Profile, local SEO, AI search, Yelp and other directories).",
+    "- Leonidas: organic social & community (Instagram and Facebook posts, local communities; no paid ads, no mail, no cold lists).",
+    "- Marcus: customer re-engagement (consent-compliant follow-ups for free visits that did not join, registrations that never booked, past members).",
+    "",
+    `Summary: ${board.counts.decisions} decision(s) and ${board.counts.info} note(s) need me now; ${board.counts.beingWorkedOn} being worked on; ${board.counts.history} completed in the last 14 days.`,
   ];
-  const mine = sections.filter((s) => !s.parked);
-  const parkedOnes = sections.filter((s) => s.parked);
-  const body = [
-    mine.length
-      ? [`## Decisions waiting for me (${mine.length})`, ...mine.map((s, n) => `### ${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")
-      : "## Decisions waiting for me\nNothing is waiting for my decision right now.",
-    parkedOnes.length
-      ? [`## Being worked on - not waiting for me (${parkedOnes.length})`, ...parkedOnes.map((s, n) => `### W${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  const parts = [...head, "", body];
+  const parts = [...head, "", boardText(board)];
   if (scope === "full") parts.push("", await statusSection());
   parts.push("", "## My request", CLOSING);
-  return { text: explain.redact(parts.join("\n")), count: mine.length, waiting: parkedOnes.length, generatedAt: now };
+  return {
+    text: explain.redact(parts.join("\n")),
+    count: board.counts.needsYou,
+    waiting: board.counts.beingWorkedOn,
+    order: board.sections.flatMap((sec) => sec.items.map((it) => ({ number: it.number, id: it.id, section: sec.key }))),
+    generatedAt: now,
+  };
 }
 
-module.exports = { CLOSING, buildReport };
+module.exports = { CLOSING, boardText, buildReport };

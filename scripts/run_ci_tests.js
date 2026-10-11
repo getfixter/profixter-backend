@@ -60,6 +60,7 @@ const SUITES = [
   "test_council_integration.js",
   "test_member_reconcile.js",
   "test_marketing_data.js",
+  "test_decision_board.js",
   "test_office_explain_integration.js",
   "test_admin_access.js",
   "test_attribution.js",

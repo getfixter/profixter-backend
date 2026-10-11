@@ -511,46 +511,19 @@ router.post("/office/robots/:key/guidance/rollback", ownerOnly, async (req, res)
 /* The council: the owner <-> King Arthur <-> the specialists           */
 /* ------------------------------------------------------------------ */
 
-const { CouncilDecision, CouncilMessage, CouncilTask } = require("../models/Council");
+const { CouncilMessage, CouncilTask } = require("../models/Council");
 const councilTasks = require("../utils/council/tasks");
-
-function publicDecision(d) {
-  return {
-    id: String(d._id),
-    category: d.category,
-    subject: d.subject,
-    simple: d.simple,
-    detail: d.detail,
-    agent: d.agent,
-    hero: d.agent ? councilTasks.HERO[d.agent] || d.agent : null,
-    recommendation: d.recommendation?.choice ? d.recommendation : null,
-    refs: (d.refs || []).map((r) => ({ kind: r.kind, id: r.id })),
-    guidance: d.payload?.type === "guidance" ? { agent: d.payload.agent, text: d.payload.guidance, previous: d.payload.previous, baseVersion: d.payload.baseVersion } : null,
-    archiveRequest: d.payload?.type === "archive_request" ? { kind: d.payload.kind, id: d.payload.id, reason: d.payload.reason, category: d.payload.category } : null,
-    archive: d.archive?.at ? d.archive : null,
-    inbox: d.inbox || "needs_you",
-    waiting: d.waiting?.since ? { kind: d.waiting.kind, reason: d.waiting.reason, taskId: d.waiting.taskId, since: d.waiting.since, until: d.waiting.until } : null,
-    inboxHistory: (d.inboxHistory || []).slice(-10),
-    status: d.status,
-    resolution: d.resolution?.choice ? d.resolution : null,
-    at: d.updatedAt,
-    createdAt: d.createdAt,
-  };
-}
 
 router.get("/office/council", canRead, async (req, res) => {
   try {
-    const { settleDecisions } = require("../utils/council/arthur");
     await require("../utils/council/mission").ensureMission();
-    await settleDecisions();
-    await require("../utils/council/inbox").sweep();
+    // THE single source of the Decisions tab and of every copy (sections, order, numbers)
+    const board = await require("../utils/council/board").decisionBoard();
     const since = new Date(Date.now() - 14 * 864e5);
-    const [messages, openTasks, closedTasks, open, closed, thinking, mission, archived] = await Promise.all([
+    const [messages, openTasks, closedTasks, thinking, mission, archived] = await Promise.all([
       CouncilMessage.find({}).sort({ createdAt: -1 }).limit(40).lean(),
       CouncilTask.find({ status: { $in: [...councilTasks.OPEN, "completed"] } }).sort({ createdAt: -1 }).limit(30).lean(),
       CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled", "archived"] }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(15).lean(),
-      CouncilDecision.find({ status: "open" }).sort({ updatedAt: -1 }).limit(40).lean(),
-      CouncilDecision.find({ status: { $ne: "open" }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(20).lean(),
       require("../models/AgentRun").exists({ agent: "arthur", status: "running", startedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } }),
       agentSettings.getSettings("arthur"),
       require("../utils/council/archive").archivedList(),
@@ -561,18 +534,19 @@ router.get("/office/council", canRead, async (req, res) => {
       messages: messages.reverse().map((m) => ({ id: String(m._id), role: m.role, kind: m.kind, text: m.text, actions: m.actions || [], at: m.createdAt })),
       tasks: [...openTasks, ...closedTasks].map(councilTasks.publicTask),
       archived,
-      decisions: open.map(publicDecision),
-      history: closed.map(publicDecision),
+      board,
+      // "Copy All for ChatGPT", built from this very board - it always matches what the screen shows
+      copyAll: await require("../utils/council/report").buildReport({ scope: "pending", board }),
       mission: {
         guidance: mission.guidance || "",
         version: mission.version || 0,
         history: (mission.history || []).slice().reverse().map((h) => ({ version: h.version, guidance: h.guidance, by: h.by, at: h.at, note: h.note })),
       },
       counts: {
-        // the badge: ONLY what needs the owner now
-        decisions: open.filter((d) => ["decision", "uncertain"].includes(d.category) && !["waiting", "review"].includes(d.inbox)).length,
-        info: open.filter((d) => d.category === "info" && !["waiting", "review"].includes(d.inbox)).length,
-        waiting: open.filter((d) => ["waiting", "review"].includes(d.inbox)).length,
+        // the badge: ONLY decisions that need the owner now
+        decisions: board.counts.badge,
+        info: board.counts.info,
+        waiting: board.counts.beingWorkedOn,
         tasks: openTasks.length,
       },
     });
