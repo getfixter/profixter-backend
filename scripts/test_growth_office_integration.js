@@ -151,8 +151,9 @@ async function main() {
     await AgentRun.create({ agent: "outreach", status: "failed", startedAt: new Date(), trigger: "schedule", error: "boom" });
     states = Object.fromEntries((await office.robotStates()).map((s) => [s.key, s]));
     assert.strictEqual(states.visibility.status, "working");
-    assert.strictEqual(states.conversation.status, "needs_you");
-    assert.strictEqual(states.conversation.waiting, 1);
+    // ONE RULE: a knight never shows "?" - a pending item is counted once, in King Arthur's Decisions
+    assert.notStrictEqual(states.conversation.status, "needs_you");
+    assert.deepStrictEqual(states.conversation.work, { inDecisions: 0, beingWorkedOn: 0, arthurReviewing: 1 });
     assert.strictEqual(states.outreach.status, "error");
 
     await settings.setPaused("outreach", true, "Owner");

@@ -143,16 +143,14 @@ function capabilities(robot, flags) {
 
 async function robotStates({ now = new Date() } = {}) {
   const agentNames = ROBOTS.flatMap((r) => r.agents);
-  const [latestRuns, running, pending, playbookDrafts, contentDrafts, settings, monthCost] = await Promise.all([
+  const [latestRuns, running, attention, settings, monthCost] = await Promise.all([
     AgentRun.aggregate([
       { $match: { agent: { $in: agentNames }, status: { $ne: "skipped" } } },
       { $sort: { startedAt: -1 } },
       { $group: { _id: "$agent", run: { $first: "$$ROOT" } } },
     ]),
     AgentRun.find({ agent: { $in: agentNames }, status: "running", startedAt: { $gte: new Date(now - RUNNING_STALE_MS) } }).lean(),
-    GrowthAction.find({ status: "awaiting_approval" }).select("type proposedBy").lean(),
-    EmailPlaybook.countDocuments({ status: "draft" }),
-    AgentFinding.aggregate([{ $match: { kind: "content_draft", status: "open" } }, { $group: { _id: "$agent", n: { $sum: 1 } } }]),
+    require("../council/attention").attentionSummary(),
     allSettings(),
     AgentRun.aggregate([
       { $match: { agent: { $in: agentNames }, startedAt: { $gte: new Date(now.getFullYear(), now.getMonth(), 1) } } },
@@ -161,17 +159,16 @@ async function robotStates({ now = new Date() } = {}) {
   ]);
   const last = Object.fromEntries(latestRuns.map((r) => [r._id, r.run]));
   const cost = Object.fromEntries(monthCost.map((c) => [c._id, c.cents || 0]));
-  const drafts = Object.fromEntries(contentDrafts.map((d) => [d._id, d.n]));
   const on = agentsEnabled();
   const conversationsOn = process.env.CONVERSATIONS_ENABLED === "true";
 
   return ROBOTS.map((robot) => {
     const runNow = running.find((r) => robot.agents.includes(r.agent));
     const lastRun = robot.agents.map((a) => last[a]).filter(Boolean).sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0] || null;
-    const waiting =
-      pending.filter((a) => robotOfAction(a) === robot.key).length +
-      robot.agents.reduce((n, a) => n + (drafts[a] || 0), 0) +
-      (robot.key === "conversation" ? playbookDrafts : 0);
+    // ONE RULE: a knight never shows "?" or "waiting for you". What needs the owner is in King
+    // Arthur's Decisions (counted once there); the rest is being worked on or reviewed.
+    const mine = attention.byRobot[robot.key] || { decisions: 0, being_worked_on: 0, arthur_reviewing: 0 };
+    const waiting = mine.decisions;
     const paused = robot.agents.some((a) => settings[a]?.paused);
     const next = robot.agents
       .map((a) => (AGENTS[a] ? nextRunFor(AGENTS[a], { from: now }) : null))
@@ -188,9 +185,6 @@ async function robotStates({ now = new Date() } = {}) {
     } else if (!on) {
       status = "off";
       statusText = "AI agents are switched off";
-    } else if (waiting > 0) {
-      status = "needs_you";
-      statusText = `${waiting} waiting for you`;
     } else if (lastRun && lastRun.status === "failed") {
       status = "error";
       statusText = "Last shift failed";
@@ -211,6 +205,7 @@ async function robotStates({ now = new Date() } = {}) {
       monthCostCents: Math.round(robot.agents.reduce((n, a) => n + (cost[a] || 0), 0) * 100) / 100,
       guidanceVersion: Math.max(0, ...robot.agents.map((a) => settings[a]?.version || 0)),
       liveReplies: robot.key === "conversation" ? conversationsOn : undefined,
+      work: { inDecisions: mine.decisions, beingWorkedOn: mine.being_worked_on, arthurReviewing: mine.arthur_reviewing },
     };
   });
 }
@@ -220,6 +215,8 @@ let cache = { at: 0, value: null };
 /** The whole office in one small payload. Cached 45s per instance. */
 async function buildOffice({ now = new Date(), fresh = false } = {}) {
   if (!fresh && cache.value && Date.now() - cache.at < 45 * 1000) return cache.value;
+  // one moment for every count: waiting items move on, unreviewed/time-sensitive ones join Arthur's inbox
+  await require("../council/inbox").sweep({ now }).catch((e) => console.warn("attention sweep failed:", e.message));
   const { acquisitionView } = require("./commandCenter");
   const { buildVisibilitySummary } = require("../visibility/summary");
   const Booking = require("../../models/Booking");
@@ -274,19 +271,24 @@ function invalidateOffice() {
 }
 
 async function approvalCounts() {
-  const [actions, playbooks, drafts, notes, waiting] = await Promise.all([
-    GrowthAction.find({ status: "awaiting_approval" }).select("_id").lean(),
-    EmailPlaybook.find({ status: "draft" }).select("key").lean(),
-    AgentFinding.find({ kind: "content_draft", status: "open" }).select("_id").lean(),
+  const [att, notes] = await Promise.all([
+    require("../council/attention").attentionSummary(),
     AgentFinding.countDocuments({ kind: { $in: ["opportunity", "risk", "anomaly", "experiment"] }, status: "open", severity: { $in: ["medium", "high"] } }),
-    require("../council/inbox").waitingRefs(),
   ]);
-  // an item a knight is still revising (King Arthur parked it) is not something the owner can act on now
-  const now = (kind, ids) => ids.filter((id) => !waiting.has(`${kind}:${id}`)).length;
-  const a = now("action", actions.map((x) => String(x._id)));
-  const p = now("playbook", playbooks.map((x) => x.key));
-  const d = now("draft", drafts.map((x) => String(x._id)));
-  return { actions: a, playbooks: p, drafts: d, notes, waiting: actions.length + playbooks.length + drafts.length - a - p - d, total: a + p + d };
+  const inDecisions = (kind) => att.items.filter((i) => i.kind === kind && i.place === "decisions").length;
+  return {
+    // pending items that need the owner - each is ALSO the one entry in Arthur's Decisions (never counted twice)
+    actions: inDecisions("action"),
+    playbooks: inDecisions("playbook"),
+    drafts: inDecisions("draft"),
+    total: att.inDecisions,
+    notes,
+    beingWorkedOn: att.beingWorkedOn,
+    arthurReviewing: att.arthurReviewing,
+    pending: att.pending,
+    // THE one number that may notify: decisions in Arthur's inbox that need the owner now
+    needsYou: att.needsYou,
+  };
 }
 
 /** Everything waiting for the owner, newest first. */
@@ -335,10 +337,11 @@ async function approvalsList() {
       };
     })
   );
-  const waiting = await require("../council/inbox").waitingRefs();
+  const places = new Map((await require("../council/attention").placeOf(await require("../council/attention").pendingItems())).map((i) => [`${i.kind}:${i.id}`, i]));
   const tag = (x) => {
-    const w = waiting.get(`${x.kind}:${x.id}`);
-    return w ? { ...x, waiting: { inbox: w.inbox, reason: w.reason, since: w.since } } : x;
+    const p = places.get(`${x.kind}:${x.id}`);
+    if (!p || p.place === "decisions") return { ...x, place: p?.place || "decisions" };
+    return { ...x, place: p.place, waiting: { inbox: p.place === "arthur_reviewing" ? "arthur" : "waiting", reason: p.place === "arthur_reviewing" ? "King Arthur reviews new work before it comes to you" : p.reason, since: null } };
   };
   return {
     items: [

@@ -95,6 +95,8 @@ async function ownerDefer(id, { by }) {
 
 /** Moves waiting and review records along. Safe to run any time; idempotent. */
 async function sweep({ now = new Date() } = {}) {
+  // first close records whose item was decided anywhere (Requests, a knight panel), so every view agrees
+  await require("./arthur").settleDecisions();
   const moved = { toReview: 0, toYou: 0 };
   const open = await CouncilDecision.find({ status: "open", inbox: { $in: ["waiting", "review"] } }).lean();
   for (const d of open) {
@@ -121,6 +123,7 @@ async function sweep({ now = new Date() } = {}) {
       }
     }
   }
+  await require("./attention").syncAttention({ now });
   return moved;
 }
 

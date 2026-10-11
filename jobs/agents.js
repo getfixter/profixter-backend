@@ -120,6 +120,9 @@ function startAgentJobs() {
       await require("../utils/council/refocus").retireBusinessRecords();
       await require("../utils/council/inbox").classifyExisting();
       await require("../utils/council/inbox").sweep();
+      // Audit of what the hall shows (counts only): where each pending item belongs
+      const att = await require("../utils/council/attention").attentionSummary();
+      console.log(JSON.stringify({ event: "attention_audit", needsYou: att.needsYou, inDecisions: att.inDecisions, beingWorkedOn: att.beingWorkedOn, arthurReviewing: att.arthurReviewing, byRobot: att.byRobot }));
       // Self-check on real data (counts only): do the marketing numbers add up?
       const m = await require("../utils/agents/marketingData").marketingResults();
       const sourcesTotal = (m.bySource30 || []).reduce((n, x) => n + (x.firstFreeVisits || 0), 0);
