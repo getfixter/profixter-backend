@@ -1,17 +1,19 @@
 const mongoose = require("mongoose");
-const AdSpendDaily = require("../../models/AdSpendDaily");
 const AgentFinding = require("../../models/AgentFinding");
 const AgentMemory = require("../../models/AgentMemory");
 const AgentRun = require("../../models/AgentRun");
-const { buildOverview } = require("../analytics/overview");
-const { buildCommandCenter } = require("../growth/commandCenter");
 const { buildVisibilitySummary } = require("../visibility/summary");
-const { latestAudit } = require("../analytics/metaCampaignAudit");
 const { propose } = require("../growth/actionEngine");
 const { getDefinition } = require("../growth/actionRegistry");
 
 /**
  * The tools a growth agent may call, and nothing else.
+ *
+ * MARKETING DATA ONLY (Oct 2026): the owner runs the business; the agents
+ * market it. There is no tool for revenue, MRR, Stripe, billing, prices,
+ * subscription statistics, cancellation analysis, ad spend or calendar
+ * operations - those tools were removed, not hidden. The business data an
+ * agent gets comes from marketingData.js, built field by field.
  *
  * READ tools return aggregates only. No customer name, email, phone number or
  * street address is ever handed to the model: the Overview is reduced to its
@@ -66,139 +68,16 @@ function clip(value, max) {
 /* Read tools                                                          */
 /* ------------------------------------------------------------------ */
 
-/** Overview without anything personal: KPIs, funnel, plans, sources, campaigns, towns. */
-function overviewForAgents(o) {
-  const stripCampaign = (c) => ({
-    label: c.label,
-    id: c.id,
-    visitors: c.visitors,
-    registrations: c.registrations,
-    freeVisits: c.freeVisits,
-    members: c.members,
-    revenueCents: c.revenueCents,
-    spendCents: c.spendCents ?? null,
-    cacCents: c.cacCents ?? null,
-    roas: c.roas ?? null,
-    adsets: (c.adsets || []).map((s) => ({
-      label: s.label,
-      registrations: s.registrations,
-      members: s.members,
-      spendCents: s.spendCents ?? null,
-      cacCents: s.cacCents ?? null,
-    })),
-  });
-  return {
-    period: o.period ? { label: o.period.label, from: o.period.fromYmd, to: o.period.toYmd, days: o.period.days } : null,
-    kpis: o.kpis,
-    plans: o.plans,
-    funnel: o.funnel,
-    sources: (o.sources || []).map(({ key, label, group, visitors, registrations, freeVisits, members, revenueCents, spendCents, cacCents, roas, newPayingCustomers }) => ({
-      key, label, group, visitors, registrations, freeVisits, members, revenueCents,
-      spendCents: spendCents ?? null, cacCents: cacCents ?? null, roas: roas ?? null, newPayingCustomers: newPayingCustomers ?? null,
-    })),
-    sourceGroups: o.sourceGroups,
-    campaigns: (o.campaigns || []).map(stripCampaign),
-    spend: o.spend,
-    topAreas: o.topAreas,
-    attention: (o.attention || []).map(({ key, count, tone }) => ({ key, count, tone })),
-    notes:
-      "First-touch attribution. Visitors counted only since 2026-10-07. No-shows are not recorded. MEMBERS: kpis.activeMembers.value is the number of active member homes; its paying + comped + gifts + manual (admin grants, no Stripe) + notBilling always add up to it. kpis.mrr counts Stripe subscriptions, which also include kpis.activeMembers.stripeOnly (billing in Stripe with no member record) - so mrr.payingMembers can differ from activeMembers.paying; that is the known record mismatch, not two different truths.",
-  };
-}
-
-async function adPerformance({ days = 28, now = new Date() } = {}) {
-  const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const rows = await AdSpendDaily.aggregate([
-    { $match: { platform: "meta", level: "ad", date: { $gte: since } } },
-    {
-      $group: {
-        _id: { campaignId: "$campaignId", adsetId: "$adsetId" },
-        campaignName: { $last: "$campaignName" },
-        adsetName: { $last: "$adsetName" },
-        spendCents: { $sum: "$spendCents" },
-        impressions: { $sum: "$impressions" },
-        clicks: { $sum: "$clicks" },
-        metaLeads: { $sum: { $ifNull: ["$actions.lead", 0] } },
-        metaRegistrations: { $sum: { $ifNull: ["$actions.complete_registration", 0] } },
-        firstDate: { $min: "$date" },
-        lastDate: { $max: "$date" },
-      },
-    },
-    { $sort: { spendCents: -1 } },
-    { $limit: 60 },
-  ]);
-  const audit = await latestAudit();
-  return {
-    windowDays: days,
-    spendRows: rows.map((r) => ({
-      campaignId: r._id.campaignId,
-      campaign: r.campaignName,
-      adsetId: r._id.adsetId,
-      adset: r.adsetName,
-      spendCents: r.spendCents,
-      impressions: r.impressions,
-      clicks: r.clicks,
-      metaReportedLeads: r.metaLeads,
-      metaReportedRegistrations: r.metaRegistrations,
-      from: r.firstDate,
-      to: r.lastDate,
-    })),
-    campaignSettings: audit
-      ? { ok: audit.ok, reason: audit.reason || null, at: audit.at, accounts: audit.accounts || [], risks: audit.risks || [] }
-      : { ok: false, reason: "no_audit_yet" },
-    note:
-      rows.length === 0
-        ? "No spend rows: Meta ad spend is not connected yet (META_ADS_SYNC_ENABLED / ads_read token), so spend-based conclusions are impossible."
-        : "Meta-reported leads use Meta's attribution windows; our members/CAC in the Overview use first touch. Expect them to differ.",
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Definitions                                                         */
 /* ------------------------------------------------------------------ */
 
 const TOOL_DEFS = {
-  get_business_overview: {
-    description:
-      "The business numbers for a date range: members, MRR, revenue (ex tax), new customers, free visits and their conversion to members, the visitor->member funnel, acquisition by first-touch source and Meta campaign (with spend, CAC and ROAS when ad spend is connected), and top towns. Aggregates only.",
-    input_schema: obj({ range: str("Date range", { enum: ["7d", "30d", "month", "lastmonth"] }) }),
-    run: async ({ range }) => overviewForAgents(await buildOverview({ range })),
-  },
-  get_growth_status: {
-    description:
-      "Growth Command Center state: calendar capacity for the next 21 days (utilization and signal), automations and their trust level, the approval queue (counts and summaries), automation outcomes, the out-of-area waitlist by ZIP, deterministic alerts, and the visibility summary.",
-    input_schema: obj({}),
-    run: async () => {
-      const cc = await buildCommandCenter();
-      return {
-        engineEnabled: cc.engineEnabled,
-        capacity: cc.capacity,
-        policies: cc.policies,
-        queue: { pending: cc.queue.pending.map((a) => ({ type: a.type, summary: a.summary, createdAt: a.createdAt })), last7Days: cc.queue.last7Days },
-        outcomes: cc.outcomes,
-        waitlist: cc.waitlist,
-        alerts: cc.alerts,
-      };
-    },
-  },
   get_visibility_details: {
     description:
       "Local visibility details: Google review count/rating trend, Search Console clicks and queries by family with rising local queries, Google Maps local-pack rank per keyword and town with top competitors, and how often AI assistants name or cite Profixter. Each part says if it is not connected yet.",
     input_schema: obj({}),
     run: async () => buildVisibilitySummary(),
-  },
-  get_ad_performance: {
-    description:
-      "Meta ad spend per campaign and ad set (spend, impressions, clicks, Meta-reported leads) for the last N days, plus the live campaign settings (optimization goal and conversion event per active ad set, custom conversions) from the read-only campaign audit.",
-    // Clamped in code: strict schemas do not take numeric bounds.
-    input_schema: obj({ days: { type: "integer", description: "Window in days, 7 to 90" } }),
-    run: async ({ days }) => adPerformance({ days: Math.max(7, Math.min(90, Number(days) || 28)) }),
-  },
-  get_conversion_details: {
-    description:
-      "Profixter's own funnel in aggregates: registrations and how many booked a free visit or joined; free visit -> member conversion with time-to-join and the not-yet-converted by age; retention (active, scheduled to cancel, past due, cancellations and their most common reasons, tenure); the consent-reachable audience; what the automations proposed or did; lifecycle emails sent; the out-of-area waitlist.",
-    input_schema: obj({}),
-    run: async () => require("./conversionData").conversionDetails(),
   },
   list_findings: {
     description:
@@ -387,103 +266,15 @@ const TOOL_DEFS = {
   },
 };
 
-/* ------------------------------------------------------------------ */
-/* Owner-facing outputs (internal: they reach the owner, never a customer) */
-/* ------------------------------------------------------------------ */
-
-function escapeHtml(v) {
-  return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-function isoWeek(date) {
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return `${d.getUTCFullYear()}-W${String(Math.ceil(((d - yearStart) / 86400000 + 1) / 7)).padStart(2, "0")}`;
-}
-
-/** Owner email, unless AGENT_OWNER_EMAILS_ENABLED is "false". Lazy-required so tests can stub it. */
-async function emailOwner({ subject, sections, headline }) {
-  if (process.env.AGENT_OWNER_EMAILS_ENABLED === "false") return { emailed: false, reason: "owner_emails_disabled" };
-  const { sendRaw } = require("../emailService");
-  const to = process.env.MAIL_ADMIN || "getfixter@gmail.com";
-  const html = `<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#0f172a;max-width:640px;margin:0 auto;padding:16px">
-<h2 style="margin:0 0 12px">${escapeHtml(headline)}</h2>
-${sections
-  .map(
-    (s) => `<h3 style="margin:18px 0 6px;font-size:15px">${escapeHtml(s.heading)}</h3><ul style="margin:0;padding-left:18px">${s.lines
-      .map((l) => `<li style="margin:3px 0">${escapeHtml(l)}</li>`)
-      .join("")}</ul>`
-  )
-  .join("")}
-<p style="margin-top:20px;font-size:12px;color:#64748b">Written by the Profixter Growth Intelligence agent from your own data. Details and approvals: Admin &rarr; Growth.</p>
-</body></html>`;
-  const text = `${headline}\n\n${sections.map((s) => `${s.heading}\n${s.lines.map((l) => `- ${l}`).join("\n")}`).join("\n\n")}`;
-  await sendRaw({ to, subject, html, text, logContext: { templateKey: "agent:owner_report", emailType: "operational", source: "growth_agents" } });
-  return { emailed: true };
-}
-
-const sectionSchema = {
-  type: "array",
-  description: "Sections, each a heading and short lines",
-  items: obj({ heading: str("Section heading"), lines: { type: "array", items: { type: "string" }, description: "Short lines, one fact or decision each" } }),
-};
 
 Object.assign(TOOL_DEFS, {
-  publish_owner_report: {
-    description:
-      "Publish this week's owner report: saved in the Command Center and emailed to the owner once per ISO week. Keep it readable in 30 seconds: paying customers vs last week, CAC where known, capacity, what the system did, what needs the owner, and the 1-3 most valuable next moves. Calling it again in the same week updates the saved report without a second email.",
-    input_schema: obj({
-      headline: str("One-sentence verdict, e.g. '3 new members, CAC unknown (spend not connected), calendar 30% booked'"),
-      sections: sectionSchema,
-    }),
-    run: async ({ headline, sections }, ctx) => {
-      const week = isoWeek(new Date());
-      const key = `report:${week}`;
-      const existing = await AgentFinding.findOne({ agent: ctx.agent, dedupeKey: key }).lean();
-      const clean = (sections || []).slice(0, 8).map((s) => ({ heading: clip(s.heading, 80), lines: (s.lines || []).slice(0, 8).map((l) => clip(l, 300)) }));
-      const doc = await AgentFinding.findOneAndUpdate(
-        { agent: ctx.agent, dedupeKey: key },
-        {
-          $set: { kind: "report", severity: "info", title: clip(headline, 160), body: JSON.stringify(clean), run: ctx.runId, lastSeenAt: new Date() },
-          $setOnInsert: { status: "open" },
-        },
-        { upsert: true, new: true }
-      );
-      ctx.findingIds.push(doc._id);
-      if (existing?.evidence?.emailedAt) return { saved: true, emailed: false, reason: "already_emailed_this_week" };
-      const sent = await emailOwner({ subject: `Profixter growth, week ${week}: ${clip(headline, 90)}`, headline, sections: clean });
-      if (sent.emailed) await AgentFinding.updateOne({ _id: doc._id }, { $set: { evidence: { emailedAt: new Date() } } });
-      return { saved: true, ...sent };
-    },
-  },
-  alert_owner: {
-    description:
-      "Email the owner immediately about something that cannot wait for the weekly report (e.g. bookings stopped, payments failing, spend running with zero customers). At most 2 per day across all agents; use rarely.",
-    input_schema: obj({ subject: str("Short subject"), lines: { type: "array", items: { type: "string" }, description: "What happened, the evidence, and what to do" } }),
-    run: async ({ subject, lines }, ctx) => {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const recent = await AgentFinding.countDocuments({ kind: "anomaly", "evidence.alertedAt": { $gte: since } });
-      if (recent >= 2) throw new Error("Alert limit reached (2 per day). Record a finding instead.");
-      const doc = await AgentFinding.create({
-        agent: ctx.agent,
-        run: ctx.runId,
-        kind: "anomaly",
-        severity: "high",
-        title: clip(subject, 160),
-        detail: (lines || []).map((l) => clip(l, 300)).join("\n"),
-        evidence: { alertedAt: new Date() },
-      });
-      ctx.findingIds.push(doc._id);
-      return emailOwner({ subject: `Profixter alert: ${clip(subject, 100)}`, headline: clip(subject, 160), sections: [{ heading: "Details", lines: (lines || []).slice(0, 10) }] });
-    },
-  },
   save_content_draft: {
     description:
       "Save a publish-ready draft (town page, service page, guide, FAQ entry, Google Business Profile post, website conversion copy, or follow-up message wording) for review. Nothing is published or sent by this tool. Only write what is true about Profixter; follow the business rules exactly; no invented reviews, statistics or claims.",
     input_schema: obj({
-      page_type: str("Kind of draft", { enum: ["town_page", "service_page", "guide", "faq", "gbp_post", "website_copy", "message_copy"] }),
+      page_type: str("Kind of draft", {
+        enum: ["town_page", "service_page", "guide", "faq", "gbp_post", "website_copy", "message_copy", "instagram_post", "facebook_post", "community_post", "directory_listing"],
+      }),
       target: str("Target URL path or query, e.g. '/locations/levittown' or 'handyman membership cost'"),
       title: str("Page title (under 70 characters)"),
       why: str("The evidence: the queries, ranks, waitlist ZIPs or gaps this addresses"),
@@ -562,7 +353,7 @@ Object.assign(TOOL_DEFS, {
     input_schema: obj({
       key: str("Stable slug, lowercase, e.g. 'free-visit-undecided-v1'"),
       name: str("Short name the owner will see"),
-      segment: str("Who receives it", { enum: ["free_visit_undecided", "registered_never_booked", "cancellation_scheduled", "former_member_recent"] }),
+      segment: str("Who receives it", { enum: ["free_visit_undecided", "registered_never_booked", "former_member_recent"] }),
       purpose: str("What this email should achieve and why, with the evidence"),
       measure: str("How success will be measured, e.g. 'members joining within 14 days of the email'"),
       subject: str("Subject line, under 70 characters"),
@@ -619,9 +410,15 @@ function ymdDaysAgo(days) {
 Object.assign(TOOL_DEFS, {
   get_acquisition: {
     description:
-      "THE PRIMARY METRIC: new first free-visit bookings (last 7 and 30 days vs the previous periods), visitors and registrations, bookings by first-touch source, the booking funnel (booking page views -> booker started -> slot picked -> signup viewed -> first free visit), and cost per first free visit when ad spend is connected.",
+      "THE MARKETING RESULT: new first free-visit bookings (last 7 and 30 days vs the previous periods), website visitors and registrations, all of them by first-touch source (Google, Instagram, Facebook, direct, referral...), the booking funnel (booking page -> booker started -> slot chosen -> sign-up -> first free visit), and the towns customers live in. No financial data.",
     input_schema: obj({}),
-    run: async () => require("../growth/commandCenter").acquisitionView(),
+    run: async () => require("./marketingData").marketingResults(),
+  },
+  get_reengagement_audiences: {
+    description:
+      "For follow-up planning: how many people are in each follow-up audience (had the free visit but did not join; registered but never booked; past members), and how many of them may lawfully receive marketing email, opted in to marketing texts, or opted out. Counts only - no names, contact details, plans or amounts.",
+    input_schema: obj({}),
+    run: async () => require("./marketingData").reengagementAudiences(),
   },
   get_pages_search_performance: {
     description:
@@ -756,8 +553,11 @@ Object.assign(TOOL_DEFS, {
 });
 
 /** The Anthropic tool list for a set of tool names, in a stable order (cache-friendly). */
+const WEB_SEARCH = { type: "web_search_20260209", name: "web_search", max_uses: 4 };
+
 function toolsFor(names) {
   return names.map((name) => {
+    if (name === "web_search") return { ...WEB_SEARCH };
     const def = TOOL_DEFS[name];
     if (!def) throw new Error(`Unknown agent tool ${name}`);
     return { name, description: def.description, input_schema: def.input_schema, strict: true };
@@ -770,4 +570,4 @@ async function runTool(name, input, ctx) {
   return def.run(input || {}, ctx);
 }
 
-module.exports = { POSTAL_RE, TOOL_DEFS, adPerformance, overviewForAgents, runTool, toolsFor };
+module.exports = { POSTAL_RE, TOOL_DEFS, WEB_SEARCH, runTool, toolsFor };

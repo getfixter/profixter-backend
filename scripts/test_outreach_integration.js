@@ -116,7 +116,7 @@ async function main() {
   await test("postcards are the owner's: no agent has any mail tool, and no mail tool exists", async () => {
     for (const name of ["plan_mail_wave", "list_mail_waves", "get_outreach_audience"]) assert.ok(!(name in TOOL_DEFS), name);
     for (const a of Object.values(AGENTS)) for (const t of a.tools) assert.ok(!/mail_wave|outreach_audience|postcard/i.test(t), `${a.name}: ${t}`);
-    assert.match(AGENTS.outreach.instructions, /POSTAL MAIL AND POSTCARDS ARE NOT YOUR RESPONSIBILITY/);
+    assert.match(AGENTS.outreach.instructions, /No postcards or mail \(the owner's own project\)/);
     assert.strictEqual(await OutreachWave.countDocuments({}), 0);
   });
 

@@ -110,12 +110,15 @@ async function main() {
   await test("Arthur has no tool that approves, sends, spends, books, touches ads or switches anything on", async () => {
     const names = arthur.ARTHUR_TOOL_NAMES;
     assert.deepStrictEqual(names.slice().sort(), [
-      "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_business_overview", "get_council_state", "get_growth_status",
+      "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_council_state",
       "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "write_memory",
     ]);
-    // His business numbers are the very same read-only, aggregate-only tools the specialists use.
+    // His only business data is the marketing view the specialists use; no revenue, membership or scheduling tool exists.
     const { TOOL_DEFS } = require("../utils/agents/tools");
-    for (const t of ["get_business_overview", "get_acquisition", "get_growth_status"]) assert.strictEqual(arthur.ARTHUR_TOOLS[t], TOOL_DEFS[t], t);
+    assert.strictEqual(arthur.ARTHUR_TOOLS.get_acquisition, TOOL_DEFS.get_acquisition);
+    for (const gone of ["get_business_overview", "get_growth_status", "get_ad_performance", "get_conversion_details"]) {
+      assert.ok(!TOOL_DEFS[gone] && !arthur.ARTHUR_TOOLS[gone], gone);
+    }
     // Per-answer limits: $0.80 and 16 steps, inside the shared daily/monthly caps.
     const def = arthur.arthurDef("chat", { kickoff: () => "", context: {} });
     assert.strictEqual(def.budgetCents, 80);
@@ -329,7 +332,7 @@ async function main() {
 
   console.log("mission");
 
-  await test("Arthur's growth mission is standing guidance: saved once as version 1, in his prompt after the fixed rules", async () => {
+  await test("Arthur's marketing mission is standing guidance: saved once as version 1, in his prompt after the fixed rules", async () => {
     assert.deepStrictEqual(settings.validateGuidance(mission.MISSION), []);
     script = ["Boss, ready."];
     await arthur.chat({ text: "Hello" });
@@ -337,10 +340,10 @@ async function main() {
     assert.strictEqual(s1.version, 1);
     assert.strictEqual(s1.guidance, mission.MISSION);
     assert.strictEqual(s1.history[0].by, "Owner");
-    assert.match(s1.history[0].note, /approved by the owner on 2026-10-10/);
+    assert.match(s1.history[0].note, /Marketing-only mission approved by the owner on 2026-10-11/);
     const system = calls[0].system.map((b) => b.text).join("\n");
     const rulesAt = system.indexOf("WHAT YOU CANNOT DO");
-    const missionAt = system.indexOf("increase profitable paying memberships");
+    const missionAt = system.indexOf("bring more local homeowners to Profixter through organic marketing");
     assert.ok(rulesAt > -1 && missionAt > rulesAt, "the mission follows the fixed rules");
     assert.match(system, /the rule above wins/);
   });

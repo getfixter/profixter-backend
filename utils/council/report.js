@@ -138,7 +138,7 @@ async function pendingSections() {
     });
   }
 
-  for (const d of decisions.filter((x) => !x.refs?.length && !x.payload && ["decision", "uncertain"].includes(x.category))) {
+  for (const d of decisions.filter((x) => !x.refs?.length && x.payload?.type !== "guidance" && ["decision", "uncertain"].includes(x.category))) {
     const f = KIND_FACTS.decision;
     out.push({
       title: d.subject,

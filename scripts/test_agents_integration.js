@@ -28,7 +28,7 @@ const AgentMemory = require("../models/AgentMemory");
 const GrowthAction = require("../models/GrowthAction");
 require("../utils/growth/actions");
 const { runAgent, setClientFactory, costOf } = require("../utils/agents/runtime");
-const { TOOL_DEFS, overviewForAgents, toolsFor } = require("../utils/agents/tools");
+const { TOOL_DEFS, toolsFor } = require("../utils/agents/tools");
 const { AGENTS } = require("../utils/agents/definitions");
 const registry = require("../utils/growth/actionRegistry");
 const { nextRun, nextRunFor } = require("../utils/agents/schedule");
@@ -221,47 +221,6 @@ async function main() {
     assert.match(run.error, /refusal: cyber/);
   });
 
-  await test("the weekly owner report is saved and emailed once per week", async () => {
-    const report = { headline: "2 new members; spend not connected", sections: [{ heading: "Customers", lines: ["2 new members vs 1"] }] };
-    const { client } = scripted([
-      { stop_reason: "tool_use", content: [use("t1", "publish_owner_report", report)] },
-      { stop_reason: "tool_use", content: [use("t2", "publish_owner_report", report)] },
-      { stop_reason: "end_turn", content: [text("done")] },
-    ]);
-    setClientFactory(() => client);
-    await runAgent({ ...AGENTS.growth_intelligence, budgetCents: 50 }, { trigger: "test", mode: "weekly" });
-    assert.strictEqual(mails.length, 1);
-    assert.match(mails[0].subject, /2 new members/);
-    assert.strictEqual(await AgentFinding.countDocuments({ kind: "report" }), 1);
-  });
-
-  await test("alerts to the owner are capped at 2 a day", async () => {
-    const a = (id) => use(id, "alert_owner", { subject: "Bookings stopped", lines: ["0 bookings in 72h"] });
-    const { client } = scripted([
-      { stop_reason: "tool_use", content: [a("1")] },
-      { stop_reason: "tool_use", content: [a("2")] },
-      { stop_reason: "tool_use", content: [a("3")] },
-      { stop_reason: "end_turn", content: [text("done")] },
-    ]);
-    setClientFactory(() => client);
-    const run = await runAgent({ ...AGENTS.growth_intelligence, budgetCents: 50 }, { trigger: "test" });
-    assert.strictEqual(mails.length, 2);
-    assert.strictEqual(run.toolCalls[2].ok, false);
-  });
-
-  await test("the Overview handed to agents carries no personal data", async () => {
-    const out = overviewForAgents({
-      kpis: { activeMembers: { value: 40 } },
-      activity: [{ text: "Jane Doe joined", who: "jane@x.com", userId: "u1" }],
-      attention: [{ key: "free_visit_undecided", count: 2, tone: "info", text: "Jane Doe and 1 other" }],
-      sources: [{ key: "meta_facebook", label: "Facebook", visitors: 10 }],
-      campaigns: [],
-    });
-    const s = JSON.stringify(out);
-    assert.ok(!/Jane|jane@|u1/.test(s), s);
-    assert.strictEqual(out.attention[0].count, 2);
-  });
-
   console.log("operations");
 
   await test("agents may propose website-wording changes only - never customer messages", async () => {
@@ -269,7 +228,7 @@ async function main() {
     for (const a of Object.values(AGENTS)) {
       for (const t of a.allowedActions) assert.ok(ALLOWED.has(t), `${a.name} may propose ${t}`);
     }
-    assert.deepStrictEqual(Object.keys(AGENTS).sort(), ["conversion", "growth_intelligence", "outreach", "visibility"]);
+    assert.deepStrictEqual(Object.keys(AGENTS).sort(), ["conversion", "outreach", "visibility"]);
     for (const a of Object.values(AGENTS)) for (const t of a.tools) assert.ok(!/(^|_)(book|booking|calendar|appointment|bulk)(_|$)|^send_/i.test(t), `${a.name} has tool ${t}`);
   });
 
@@ -300,9 +259,9 @@ async function main() {
     assert.strictEqual(nextRun("40 7 * * 0,2-6", { from }).toISOString(), "2026-10-10T11:40:00.000Z");
     // Monday-only 09:30 NY from that Friday night -> Mon 2026-10-12 13:30Z.
     assert.strictEqual(nextRun("30 9 * * 1", { from }).toISOString(), "2026-10-12T13:30:00.000Z");
-    const gi = nextRunFor(AGENTS.growth_intelligence, { from });
-    assert.strictEqual(gi.mode, "weekly");
-    assert.strictEqual(gi.at.toISOString(), "2026-10-12T12:10:00.000Z");
+    const leo = nextRunFor(AGENTS.outreach, { from });
+    assert.strictEqual(leo.mode, "weekly");
+    assert.strictEqual(leo.at.toISOString(), "2026-10-13T14:00:00.000Z");
     assert.throws(() => nextRun("*/5 * * * *"), /Unsupported/);
   });
 
@@ -334,9 +293,9 @@ async function main() {
     setClientFactory(() => scripted([{ stop_reason: "end_turn", content: [text("first run")] }]).client);
     await firstActivation();
     const runs = await AgentRun.find({ status: "succeeded" }).lean();
-    assert.deepStrictEqual(runs.map((r) => r.agent).sort(), ["conversion", "growth_intelligence", "outreach", "visibility"]);
+    assert.deepStrictEqual(runs.map((r) => r.agent).sort(), ["conversion", "outreach", "visibility"]);
     await firstActivation();
-    assert.strictEqual(await AgentRun.countDocuments({}), 4);
+    assert.strictEqual(await AgentRun.countDocuments({}), 3);
     delete process.env.AGENTS_ENABLED;
     delete process.env.ANTHROPIC_API_KEY;
   });

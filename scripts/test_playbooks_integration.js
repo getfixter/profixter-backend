@@ -221,13 +221,9 @@ async function main() {
       assert.strictEqual(sub.cancellationFeedback.category, "not_using_enough");
       assert.match(sub.cancellationFeedback.note, /^Didn't have many jobs\. Call me/);
       assert.strictEqual(sub.cancellationReason, null, "the system field is untouched");
-      // The agents' view scrubs contact details from notes.
-      const { conversionDetails } = require("../utils/agents/conversionData");
-      const view = await conversionDetails();
-      const leaver = view.retention.leavers.detail[0];
-      assert.strictEqual(leaver.reason, "not_using_enough");
-      assert.ok(!/631/.test(leaver.note), leaver.note);
-      assert.strictEqual(view.retention.leavers.byStatedReason.not_using_enough, 1);
+      // The marketing agents never see cancellation reasons or notes at all (Oct 2026).
+      const { TOOL_DEFS } = require("../utils/agents/tools");
+      assert.ok(!TOOL_DEFS.get_conversion_details && !TOOL_DEFS.get_business_overview, "no cancellation analysis tool exists");
     } finally {
       server.close();
     }

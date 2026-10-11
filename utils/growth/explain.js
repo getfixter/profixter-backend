@@ -19,9 +19,9 @@ const SITE = "https://www.profixter.com";
 
 const ROBOT_NAMES = { visibility: "Odysseus", outreach: "Leonidas", conversion: "Marcus", conversation: "Marcus", growth_intelligence: "the weekly report", arthur: "King Arthur" };
 const ROBOT_ROLES = {
-  Odysseus: "the explorer of the council - our search agent (Google, Maps, AI search)",
-  Leonidas: "the vanguard of the council - our new-channels agent",
-  "Marcus": "the messenger of the council - our conversations & website agent (also drafts replies to homeowners who write in)",
+  Odysseus: "our organic search & visibility agent (Google, Maps, AI search, directories)",
+  Leonidas: "our organic social & community agent (Instagram, Facebook, local community)",
+  "Marcus": "our customer re-engagement agent (consent-compliant follow-ups; also drafts replies to homeowners who write in)",
   "King Arthur": "my AI manager - he coordinates the three specialists and recommends, but cannot approve anything",
 };
 
@@ -285,7 +285,19 @@ function explainPlaybook(p) {
   return { simple: { say, ask, details: [`Subject: "${p.subject}"`] }, chatgpt };
 }
 
-const DRAFT_WORDS = { town_page: "a new town page", service_page: "a service page", guide: "a helpful guide", faq: "a question-and-answer", gbp_post: "a Google Business Profile post", website_copy: "new wording for the website", message_copy: "message wording" };
+const DRAFT_WORDS = {
+  town_page: "a new town page",
+  service_page: "a service page",
+  guide: "a helpful guide",
+  faq: "a question-and-answer",
+  gbp_post: "a Google Business Profile post",
+  website_copy: "new wording for the website",
+  message_copy: "message wording",
+  instagram_post: "an Instagram post",
+  facebook_post: "a Facebook post",
+  community_post: "a community post",
+  directory_listing: "a directory profile",
+};
 
 function explainDraft(f) {
   const type = String(f.title || "").split(":")[0];
@@ -435,9 +447,9 @@ function explainRobot(detail) {
   const r = detail.robot;
   const s = detail.state;
   const intro = {
-    visibility: "I'm Odysseus, your explorer. I help homeowners find Profixter on Google and other search sites, so more of them book a free first visit.",
-    outreach: "I'm Leonidas, your vanguard. I look for new, honest ways to reach homeowners on Long Island - and I test them small before anything costs real money.",
-    conversation: "I'm Marcus, your messenger. I help homeowners who write to us or visit our website get to booking their free first visit - they always book it themselves.",
+    visibility: "I'm Odysseus, your search and visibility knight. I help homeowners find Profixter on Google, Maps, AI assistants and directories, so more of them book a free first visit.",
+    outreach: "I'm Leonidas, your social and community knight. I prepare Instagram and Facebook posts and find local places where Profixter can be seen - for free, and you publish.",
+    conversation: "I'm Marcus, your re-engagement knight. I prepare friendly, consent-compliant follow-ups for homeowners who already know us - you approve before anything is sent.",
   }[r.key];
   const next = s.nextRunAt ? ` My next shift is ${new Date(s.nextRunAt).toLocaleString("en-US", { weekday: "long", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}.` : "";
   const waiting = s.waiting ? ` ${s.waiting === 1 ? "One thing is" : `${s.waiting} things are`} waiting for you.` : "";

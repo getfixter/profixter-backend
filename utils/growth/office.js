@@ -13,7 +13,7 @@
  *   Leonidas        - outreach      (lawful new channels; never mail or Meta)
  *   Marcus - conversion + the live reply responder ("conversation")
  * King Arthur (utils/council) manages the three; he is not a robot here.
- * Growth Intelligence has no robot: its weekly report is the wall display.
+ * King Arthur (utils/council) directs the three as the Kingdom's marketing director.
  */
 const AgentRun = require("../../models/AgentRun");
 const AgentFinding = require("../../models/AgentFinding");
@@ -35,58 +35,58 @@ const ROBOTS = [
   {
     key: "visibility",
     name: "Odysseus",
-    role: "The Explorer · Google & search",
+    role: "Organic search & visibility",
     agents: ["visibility"],
     actionTypes: ["seo_page_update", "seo_content_update"],
-    mission: "Help more Long Island homeowners find Profixter on Google, Maps and AI search - and book their first free visit.",
+    mission: "Make Profixter easy to find for Long Island homeowners on Google, Google Maps, AI assistants, Yelp and other directories - so more of them book a free first visit.",
     does: [
-      "Reads Search Console: which pages and searches bring people, and where clicks are lost",
-      "Proposes better page titles, descriptions and intros (you approve until it has earned trust)",
-      "Checks each change on the live page and measures it 28 days later",
-      "Drafts new town pages and guides for your review",
+      "Watches Google: which pages and searches bring homeowners, and Maps rankings by town",
+      "Proposes better page titles, descriptions and intros (you approve)",
+      "Drafts service-area pages, guides, Google Business Profile posts and directory profiles",
+      "Researches competitors, directories and what homeowners ask AI assistants",
     ],
-    cannot: ["Change services, prices, plans, booking rules or the service area", "Publish new pages on its own", "Touch advertising"],
+    cannot: ["Publish anything on its own", "Change services, prices, plans, booking rules or the service area", "See revenue, billing or membership data", "Touch advertising"],
     personality: "A patient explorer. Always charting where homeowners search.",
   },
   {
     key: "outreach",
     name: "Leonidas",
-    role: "The Vanguard · new homeowners",
+    role: "Organic social & community",
     agents: ["outreach"],
     actionTypes: [],
-    mission: "Find lawful, trackable ways to reach more Long Island homeowners, test them small, and keep what brings first free visits.",
+    mission: "Grow Profixter's organic presence on Instagram, Facebook and in Long Island communities - with posts and local visibility that bring homeowners to book.",
     does: [
-      "Keeps a ranked scorecard of channels: referrals, local partners, community, Local Services Ads, opted-in registrants",
-      "Designs small, cheap tests with a tracking link and a success threshold",
-      "Drafts the wording a test needs, for your review",
-      "Measures channels being tested and says keep, change or stop",
+      "Prepares ready-to-publish Instagram and Facebook posts with tracked links",
+      "Keeps a content calendar of seasonal, local home tips",
+      "Finds local groups, pages, events and partners where Profixter may legitimately appear",
+      "Measures visits and bookings from Instagram and Facebook",
     ],
     cannot: [
-      "Postcards or any mail (your own project)",
-      "Text, email or call the imported GoHighLevel list",
-      "Spend money, sign up for services or contact anyone",
-      "Touch Meta ads (agency only)",
+      "Post or publish - you do",
+      "Paid campaigns or boosting - Meta Ads are the agency's",
+      "Postcards, mail or cold lists",
+      "Contact anyone or spend money",
     ],
     personality: "Disciplined and direct. Holds the line on the rules.",
   },
   {
     key: "conversation",
     name: "Marcus",
-    role: "The Messenger · conversations",
+    role: "Customer re-engagement",
     agents: ["conversion", "conversation"],
     actionTypes: ["conversation_reply", "playbook_email"],
-    mission: "Turn homeowners who write in or visit the website into first free-visit bookings they make themselves on profixter.com.",
+    mission: "Bring back homeowners who already know Profixter - free visits that did not join, registrations that never booked, past members - with consent-compliant follow-ups.",
     does: [
-      "Answers homeowners who text or email Profixter - once live replies are approved",
-      "Explains the free first visit and links to the booking page; never books",
-      "Hands complaints, billing and anything unusual to a person",
-      "Finds where the website loses people and drafts better wording and follow-up emails",
+      "Drafts follow-up email workflows for each audience (you approve the wording)",
+      "Works from counts and consent only - never names, contact details or amounts",
+      "Respects unsubscribes, opt-outs, frequency caps and cool-downs",
+      "Learns from what homeowners ask when they write in",
     ],
     cannot: [
-      "Book, schedule or promise a time",
-      "Offer discounts, prices or guarantees that are not on the website",
-      "Reply to thanks, goodbyes, rejections or chatter (business only)",
-      "Message an existing Profixter customer through GoHighLevel",
+      "Send anything without your approval",
+      "Text anyone who did not opt in; GoHighLevel is out of scope",
+      "Offer discounts, prices or guarantees",
+      "See revenue, billing or subscription data",
     ],
     personality: "Calm and fair. Every message gets a thoughtful answer.",
   },
@@ -127,14 +127,15 @@ function capabilities(robot, flags) {
   }
   if (robot.key === "outreach") {
     return [
-      { label: "Channel research", state: "on", note: "Weekly scorecard from your own data" },
+      { label: "Social posts & community research", state: "on", note: "Drafts only - you publish" },
+      { label: "Paid ads or boosting", state: "never", note: "The agency runs Meta Ads" },
       { label: "Spending or contacting anyone", state: "never", note: "Always your decision" },
       { label: "Postcards / mail", state: "never", note: "Your own project" },
     ];
   }
   return [
     { label: "Live replies to homeowners", state: flags.conversations ? "approval" : "off", note: flags.conversations ? pending : "Off until you approve going live" },
-    { label: "Website & follow-up review", state: "on", note: "Twice a week" },
+    { label: "Re-engagement workflows", state: "on", note: "Drafts twice a week" },
     { label: "Follow-up emails", state: flags.engine ? "approval" : "off", note: flags.engine ? "You approve the wording" : "Watch-only" },
     { label: "Booking visits", state: "never", note: "Homeowners book on profixter.com" },
   ];
