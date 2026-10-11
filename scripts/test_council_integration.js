@@ -111,7 +111,7 @@ async function main() {
     const names = arthur.ARTHUR_TOOL_NAMES;
     assert.deepStrictEqual(names.slice().sort(), [
       "archive_item", "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_council_state",
-      "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "write_memory",
+      "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "wait_on", "write_memory",
     ]);
     // His only business data is the marketing view the specialists use; no revenue, membership or scheduling tool exists.
     const { TOOL_DEFS } = require("../utils/agents/tools");
@@ -547,6 +547,110 @@ async function main() {
     const r2 = await arch.archiveItem({ kind: "task", id: String(other._id), category: "business_management", reason: "Revenue analysis is the owner's now." });
     await arthur.resolveDecision({ id: r2.decisionId, choice: "reject", by: "Owner" });
     assert.strictEqual((await CouncilTask.findById(other._id).lean()).status, "assigned");
+  });
+
+  console.log("the owner's inbox: only what needs them now");
+
+  await test("Arthur's 'wait' takes an item out of the owner's inbox while the knight revises; it comes back to HIM, then to the owner when ready", async () => {
+    const inbox = require("../utils/council/inbox");
+    const draft = await AgentFinding.create({ agent: "outreach", kind: "content_draft", severity: "info", title: "instagram_post: fall gutters", detail: "x", status: "open" });
+    const task = (await tasks.assignTask({ agent: "outreach", instruction: "Revise the fall gutters Instagram post with a clearer local hook" })).task;
+    script = [use("recommend", { item_kind: "draft", item_id: String(draft._id), choice: "wait", reason: "Leonidas is revising the hook.", simple: "Boss, Leonidas is improving this post.", uncertain: false, waiting_on_task: String(task._id) }), "NOTHING NEW"];
+    await arthur.review({ force: true });
+    let d = await CouncilDecision.findOne({ "refs.id": String(draft._id) }).lean();
+    assert.strictEqual(d.inbox, "waiting");
+    assert.strictEqual(d.waiting.taskId, String(task._id));
+    assert.strictEqual(d.waiting.kind, "knight");
+    // the Requests badge does not count it either; the draft itself is untouched
+    assert.strictEqual((await office.buildOffice({ fresh: true })).approvals.drafts, 0);
+    assert.strictEqual((await AgentFinding.findById(draft._id).lean()).status, "open");
+    // the knight finishes -> Arthur's review, still not the owner's inbox
+    await CouncilTask.updateOne({ _id: task._id }, { $set: { status: "completed" } });
+    await inbox.sweep();
+    d = await CouncilDecision.findById(d._id).lean();
+    assert.strictEqual(d.inbox, "review");
+    const state = await arthur.councilState();
+    assert.deepStrictEqual(state.toReview.map((x) => x.id), [String(d._id)]);
+    // Arthur reviews and recommends -> now it needs the owner
+    script = [use("recommend", { item_kind: "draft", item_id: String(draft._id), choice: "approve", reason: "The new hook is local and clear.", simple: "Boss, the post is ready. I recommend it.", uncertain: false, waiting_on_task: null }), "NOTHING NEW"];
+    await arthur.review({ force: true });
+    d = await CouncilDecision.findById(d._id).lean();
+    assert.strictEqual(d.inbox, "needs_you");
+    assert.strictEqual(d.recommendation.choice, "approve");
+    assert.deepStrictEqual(d.inboxHistory.map((h) => h.to), ["waiting", "review", "needs_you"], "every move recorded");
+    assert.strictEqual(await CouncilDecision.countDocuments({ "refs.id": String(draft._id) }), 1, "one record, no duplicate notifications");
+    office.invalidateOffice();
+    assert.strictEqual((await office.buildOffice({ fresh: true })).approvals.drafts, 1, "back in the badge only when ready");
+  });
+
+  await test("'Wait - remind me when ready' sets an item aside without approving, dismissing or stopping anything; it always comes back", async () => {
+    const inbox = require("../utils/council/inbox");
+    const a = await pendingAction();
+    const d = await CouncilDecision.create({ category: "decision", subject: "Page title change", simple: "Boss, x", recommendation: { choice: "approve", reason: "x" }, refs: [{ kind: "action", id: String(a._id) }] });
+    const w = await inbox.ownerDefer(String(d._id), { by: "Owner" });
+    assert.strictEqual(w.inbox, "waiting");
+    assert.strictEqual(w.waiting.kind, "owner");
+    assert.strictEqual((await GrowthAction.findById(a._id).lean()).status, "awaiting_approval", "nothing approved or dismissed");
+    // its reminder comes due -> back in the inbox
+    await inbox.sweep({ now: new Date(Date.now() + 4 * 864e5) });
+    const back = await CouncilDecision.findById(d._id).lean();
+    assert.strictEqual(back.inbox, "needs_you");
+    assert.match(back.inboxHistory.at(-1).note, /Your reminder/);
+    // the owner can also bring anything back at once
+    await inbox.ownerDefer(String(d._id), { by: "Owner" });
+    await inbox.setNeedsYou(String(d._id), { by: "Owner", note: "You brought it back" });
+    assert.strictEqual((await CouncilDecision.findById(d._id).lean()).inbox, "needs_you");
+  });
+
+  await test("nothing gets stuck: a knight's wait ends after 7 days, an unreviewed item after 2", async () => {
+    const inbox = require("../utils/council/inbox");
+    const a = await CouncilDecision.create({ category: "info", subject: "A", simple: "x" });
+    const b = await CouncilDecision.create({ category: "decision", subject: "B", simple: "x" });
+    await inbox.setWaiting(String(a._id), { kind: "knight", reason: "revising", by: "King Arthur" });
+    await CouncilDecision.updateOne({ _id: b._id }, { $set: { inbox: "review", waiting: { kind: "knight", since: new Date(Date.now() - 3 * 864e5) } } });
+    await inbox.sweep({ now: new Date(Date.now() + 8 * 864e5) });
+    assert.match((await CouncilDecision.findById(a._id).lean()).inboxHistory.at(-1).note, /Still waiting after 7 days/);
+    const bb = await CouncilDecision.findById(b._id).lean();
+    assert.strictEqual(bb.inbox, "needs_you");
+    assert.match(bb.inboxHistory.at(-1).note, /has not reviewed it yet/);
+  });
+
+  await test("records already open are sorted once by their real state - nothing approved, sent or discarded", async () => {
+    const inbox = require("../utils/council/inbox");
+    const task = (await tasks.assignTask({ agent: "conversion", instruction: "Rewrite the registered-never-booked follow-up email" })).task;
+    const a = await pendingAction();
+    const ids = (
+      await CouncilDecision.collection.insertMany([
+        { category: "decision", subject: "Follow-up email wording", simple: "x", agent: "conversion", recommendation: { choice: "wait", reason: "Marcus is rewriting it" }, refs: [], status: "open", createdAt: new Date(), updatedAt: new Date() },
+        { category: "decision", subject: "Page title", simple: "x", recommendation: { choice: "approve", reason: "x" }, refs: [{ kind: "action", id: String(a._id) }], status: "open", createdAt: new Date(), updatedAt: new Date() },
+        { category: "info", subject: "Search data flows", simple: "x", status: "open", createdAt: new Date(), updatedAt: new Date() },
+      ])
+    ).insertedIds;
+    const r = await inbox.classifyExisting();
+    assert.deepStrictEqual(r, { waiting: 1, needsYou: 2 });
+    const w = await CouncilDecision.findById(ids[0]).lean();
+    assert.strictEqual(w.inbox, "waiting");
+    assert.strictEqual(w.waiting.taskId, String(task._id), "waits on Marcus's open task");
+    assert.strictEqual((await CouncilDecision.findById(ids[1]).lean()).inbox, "needs_you");
+    assert.strictEqual((await GrowthAction.findById(a._id).lean()).status, "awaiting_approval");
+    assert.strictEqual(await CouncilDecision.countDocuments({ status: "open" }), 3, "nothing discarded");
+    assert.deepStrictEqual(await inbox.classifyExisting(), { waiting: 0, needsYou: 0 }, "once");
+  });
+
+  await test("Copy All lists what is being worked on apart from what needs me", async () => {
+    const inbox = require("../utils/council/inbox");
+    const a = await pendingAction();
+    const b = await pendingAction({ summary: "New title for /services/painting", payload: { path: "/services/painting", changes: { metaTitle: "Painting | Profixter" } } });
+    const da = await CouncilDecision.create({ category: "decision", subject: "x", simple: "Boss, approve it.", recommendation: { choice: "approve", reason: "Ready." }, refs: [{ kind: "action", id: String(a._id) }] });
+    const db = await CouncilDecision.create({ category: "decision", subject: "y", simple: "Boss, wait.", recommendation: { choice: "wait", reason: "Odysseus is revising." }, refs: [{ kind: "action", id: String(b._id) }] });
+    await inbox.setWaiting(String(db._id), { kind: "knight", reason: "Odysseus is revising the title", by: "King Arthur" });
+    void da;
+    const { text, count, waiting } = await buildReport();
+    assert.strictEqual(count, 1);
+    assert.strictEqual(waiting, 1);
+    assert.match(text, /## Decisions waiting for me \(1\)/);
+    assert.match(text, /## Being worked on - not waiting for me \(1\)[\s\S]*Odysseus is revising the title/);
+    assert.ok(text.trim().endsWith(CLOSING));
   });
 
   console.log("big requests");

@@ -83,6 +83,23 @@ const decisionSchema = new mongoose.Schema(
     archive: { type: archiveSchema, default: null },
     resolution: { choice: String, by: String, at: Date, note: String },
     dedupeKey: { type: String, default: null, index: true },
+    /*
+     * WHERE AN OPEN RECORD STANDS (utils/council/inbox.js). Only "needs_you"
+     * is the owner's inbox and badge; the rest keep working without them:
+     *   needs_you  the owner can and should act now
+     *   waiting    a knight is revising it, or the owner asked to wait
+     *   review     the knight finished - King Arthur reviews before it returns
+     */
+    inbox: { type: String, enum: ["needs_you", "waiting", "review"], default: "needs_you", index: true },
+    waiting: {
+      kind: { type: String, enum: ["knight", "owner", null], default: null }, // who is it waiting for
+      reason: String,
+      taskId: String, // the council task it waits on, if any
+      since: Date,
+      until: Date, // the latest it may wait: then it comes back, never stuck
+      by: String,
+    },
+    inboxHistory: [{ _id: false, at: Date, to: String, by: String, note: String }],
   },
   { timestamps: true }
 );

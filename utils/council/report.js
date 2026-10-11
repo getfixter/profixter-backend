@@ -91,17 +91,26 @@ async function pendingSections() {
   const [approvals, decisions] = await Promise.all([approvalsList(), CouncilDecision.find({ status: "open" }).sort({ createdAt: 1 }).lean()]);
   const rec = Object.fromEntries(decisions.filter((d) => d.refs?.[0]).map((d) => [`${d.refs[0].kind}:${d.refs[0].id}`, d]));
   const out = [];
+  const parked = (d) => d && ["waiting", "review"].includes(d.inbox);
+  const stateLine = (d) =>
+    d?.inbox === "review"
+      ? "- State: being worked on - the knight finished; King Arthur is reviewing it (not waiting for me)"
+      : d?.inbox === "waiting"
+      ? `- State: being worked on - ${d.waiting?.reason || "a knight is revising it"} (not waiting for me${d.waiting?.until ? `; back by ${String(d.waiting.until).slice(0, 10)}` : ""})`
+      : null;
 
   for (const i of [...approvals.items, ...approvals.notes].sort((a, b) => new Date(a.at) - new Date(b.at))) {
     const facts = i.kind === "action" ? explain.ACTION_FACTS[i.type] || {} : KIND_FACTS[i.kind] || {};
     const d = rec[`${i.kind}:${i.id}`];
     out.push({
       title: i.title,
+      parked: parked(d),
       body: block([
         field("Type", i.kind === "action" ? `Approval request (${i.type})` : i.kind === "playbook" ? "Follow-up email wording" : i.kind === "draft" ? "Draft for review" : `Note (${i.severity || "info"})`),
         field("ID", i.kind === "playbook" ? `playbook ${i.id}` : i.id),
         field("From", heroOf(i.robot) || "the growth system"),
         field("Proposed / updated", ny(i.at)),
+        stateLine(d),
         field("What it is", facts.what || i.title),
         field("In plain words", i.simple?.say),
         `- King Arthur's recommendation: ${recommendationText(d)}`,
@@ -121,7 +130,9 @@ async function pendingSections() {
     const f = KIND_FACTS.guidance;
     out.push({
       title: d.subject,
+      parked: parked(d),
       body: block([
+        stateLine(d),
         field("Type", "Guidance change proposed by King Arthur"),
         field("ID", String(d._id)),
         field("For", heroOf(d.payload.agent)),
@@ -142,7 +153,9 @@ async function pendingSections() {
     const f = KIND_FACTS.decision;
     out.push({
       title: d.subject,
+      parked: parked(d),
       body: block([
+        stateLine(d),
         field("Type", d.category === "uncertain" ? "Unclear - King Arthur needs more facts or my view" : "A decision only I can make (raised by King Arthur)"),
         field("ID", String(d._id)),
         field("Concerns", d.agent ? heroOf(d.agent) : "the whole council"),
@@ -243,13 +256,22 @@ async function buildReport({ scope = "pending", now = new Date() } = {}) {
     "- Leonidas: outreach specialist (researches lawful new ways to reach homeowners; no mail, no Meta ads, no imported lists).",
     "- Marcus: conversations and website specialist (follow-up emails, replies to homeowners who write in - business-only).",
   ];
-  const body = sections.length
-    ? [`## Decisions waiting for me (${sections.length})`, ...sections.map((s, n) => `### ${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")
-    : "## Decisions waiting for me\nNothing is waiting for my decision right now.";
+  const mine = sections.filter((s) => !s.parked);
+  const parkedOnes = sections.filter((s) => s.parked);
+  const body = [
+    mine.length
+      ? [`## Decisions waiting for me (${mine.length})`, ...mine.map((s, n) => `### ${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")
+      : "## Decisions waiting for me\nNothing is waiting for my decision right now.",
+    parkedOnes.length
+      ? [`## Being worked on - not waiting for me (${parkedOnes.length})`, ...parkedOnes.map((s, n) => `### W${n + 1}. ${s.title}\n${s.body}`)].join("\n\n")
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const parts = [...head, "", body];
   if (scope === "full") parts.push("", await statusSection());
   parts.push("", "## My request", CLOSING);
-  return { text: explain.redact(parts.join("\n")), count: sections.length, generatedAt: now };
+  return { text: explain.redact(parts.join("\n")), count: mine.length, waiting: parkedOnes.length, generatedAt: now };
 }
 
 module.exports = { CLOSING, buildReport };

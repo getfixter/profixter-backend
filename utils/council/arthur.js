@@ -60,6 +60,7 @@ YOUR JOB (marketing only - you have no revenue, billing, membership or schedulin
 - Reject recommendations that are not supported by evidence: say so to the owner and, if useful, ask the specialist for the missing evidence.
 - Never let the same thing reach the owner twice: merge duplicate notes and refresh your own records (same dedupe key) instead of repeating them.
 - Keep work moving: give clear, small, checkable tasks to the right specialist; check reports of completed tasks.
+- THE OWNER'S INBOX IS ONLY FOR WHAT NEEDS THEM NOW. If a knight is still revising something (or the owner can do nothing yet), do not leave it in their inbox: recommend "wait" naming the knight's task (waiting_on_task), or use wait_on. When the knight finishes, it comes back to you (toReview): check the new version, then recommend again - only then does it return to the owner. Never ask the owner to "wait" - that is your job.
 - COUNCIL HOUSEKEEPING is yours: archive (archive_item) work that is outside the marketing mission (business management), duplicated, or stale - without asking the owner. Never archive active, relevant marketing work just to tidy up; when in doubt, keep it. Archiving never deletes anything and the owner can restore it. Tasks the owner asked for go to the owner as an archive request.
 
 WHAT YOU CANNOT DO (your tools make these impossible; never pretend otherwise)
@@ -158,6 +159,7 @@ async function logDecision(ctx, fields) {
 async function councilState({ now = new Date() } = {}) {
   const office = require("../growth/office");
   await settleDecisions();
+  await require("./inbox").sweep({ now });
   const [robots, approvals, openTasks, recentTasks, decisions, runs, built] = await Promise.all([
     office.robotStates({ now }),
     office.approvalsList(),
@@ -238,8 +240,12 @@ async function councilState({ now = new Date() } = {}) {
       recommendation: d.recommendation?.choice || null,
       refs: d.refs,
       guidanceProposal: d.payload?.type === "guidance" ? { agent: d.payload.agent } : undefined,
+      inbox: d.inbox || "needs_you",
+      waiting: d.waiting?.since ? { kind: d.waiting.kind, reason: d.waiting.reason, taskId: d.waiting.taskId, until: d.waiting.until } : undefined,
       at: d.updatedAt,
     })),
+    // the knight finished: review the new version, then recommend (back to the owner) or wait again
+    toReview: decisions.filter((d) => d.inbox === "review").map((d) => ({ id: String(d._id), subject: d.subject, refs: d.refs, taskId: d.waiting?.taskId || null })),
     recentShifts: runs.map((r) => ({
       id: String(r._id),
       hero: heroOf(r.agent),
@@ -378,8 +384,9 @@ const ARTHUR_TOOLS = {
       reason: str("Why, from the evidence - including what could go wrong"),
       simple: str("What you tell the owner, starting with 'Boss,' - very simple English, 1-3 short sentences, ending with the fact that the owner decides"),
       uncertain: { type: "boolean", description: "True if the evidence is too thin for a confident recommendation (category D)" },
+      waiting_on_task: nstr("For choice 'wait': the id of the open council task a knight is doing that this waits on (it comes back to you for review when that task is done); otherwise null"),
     }),
-    run: async ({ item_kind, item_id, choice, reason, simple, uncertain }, ctx) => {
+    run: async ({ item_kind, item_id, choice, reason, simple, uncertain, waiting_on_task }, ctx) => {
       const item = await pendingItem(item_kind, item_id);
       if (!item) throw new Error("That item is not waiting for the owner (it may already be decided).");
       if (["approve", "decline", "ask_for_changes"].includes(choice) && item_kind === "note") throw new Error("Notes are acknowledged or dismissed, not approved.");
@@ -395,7 +402,14 @@ const ARTHUR_TOOLS = {
         refs: [{ kind: item_kind, id: String(item_id) }],
         dedupeKey: `rec:${item_kind}:${item_id}`,
       });
-      return { id: String(d._id), recorded: true, note: "Recorded as your recommendation. The owner decides." };
+      const inbox = require("./inbox");
+      if (choice === "wait") {
+        // waiting is not the owner's job: it leaves their inbox until the work is ready
+        const w = await inbox.setWaiting(d._id, { kind: "knight", reason, taskId: waiting_on_task || null, by: "King Arthur" });
+        return { id: String(d._id), recorded: true, inbox: "waiting", until: w.waiting.until, note: "Out of the owner's inbox while the work continues. It comes back to you to review when the task is done (or after 7 days)." };
+      }
+      await inbox.setNeedsYou(d._id, { by: "King Arthur", note: `Ready: ${choice}` });
+      return { id: String(d._id), recorded: true, inbox: "needs_you", note: "Recorded as your recommendation and in the owner's inbox. The owner decides." };
     },
   },
   file_for_owner: {
@@ -511,6 +525,20 @@ const ARTHUR_TOOLS = {
       return { started: true };
     },
   },
+  wait_on: {
+    description:
+      "Take one of your open records out of the owner's inbox while a knight works on it (e.g. a draft being revised). Name the open council task it waits on: when that task is done it comes back to YOU to review; otherwise it waits up to 7 days. Use it whenever the owner can do nothing yet - the owner's inbox is only for what needs them now.",
+    input_schema: obj({
+      record_id: str("Your open record's id (yourOpenRecords)"),
+      task_id: nstr("The open council task it waits on, or null"),
+      reason: str("What is being done, in one sentence the owner can read"),
+    }),
+    run: async ({ record_id, task_id, reason }, ctx) => {
+      const w = await require("./inbox").setWaiting(record_id, { kind: "knight", reason, taskId: task_id || null, by: "King Arthur" });
+      ctx.log?.push({ type: "decision.waiting", ref: String(record_id), label: clip(reason, 140), ok: true });
+      return { record_id, inbox: "waiting", until: w.waiting.until };
+    },
+  },
   archive_item: {
     description:
       "Council housekeeping - archive (never delete) an outdated, irrelevant or duplicate item: a task, a specialist note, or one of your own records. Give the reason and a category: 'business_management' (about revenue, billing, memberships, cancellations, prices or scheduling - outside the marketing mission), 'duplicate' (name the open item it repeats in duplicate_of; that one is kept) or 'stale' (untouched 30+ days). Refused in code for active marketing work, tasks a hero is working on, drafts/approval items, and fresh items. A task the OWNER asked for is not archived: an archive request goes to the owner instead. Everything archived stays in history and the owner can restore it with one tap.",
@@ -567,6 +595,7 @@ const CHAT_INSTRUCTIONS = `THIS RUN: the owner is talking to you. Read the conve
 
 const REVIEW_INSTRUCTIONS = `THIS RUN: your council review. Call get_council_state, then:
 1. Check every task reported "completed": verify or not_verify it (get_item for the details).
+1b. Review everything in toReview (a knight finished the work it waited on): read the new version and recommend - it returns to the owner only when it is ready for their approval or input; otherwise wait again.
 2. For each item waiting for the owner that has no recommendation from you yet, read it (get_item) and record a recommendation.
 3. Merge duplicate notes. Ask for missing evidence where a recommendation is unsupported (assign_task).
 3b. If this is your WEEKLY PLANNING review (the kickoff says so): plan the Kingdom's marketing week. Check marketing results (get_acquisition: visits and first free-visit bookings by source) against your mission and last week's notebook; review the drafts waiting (quality: true, local, specific, ready to publish - recommend on each); then give each hero the one or two tasks most likely to grow organic visibility, social reach, community presence or re-engagement - without repeating open tasks. Note the marketing goals you are tracking in your notebook.
@@ -659,14 +688,16 @@ async function chat({ text, ownerName = "Owner", now = new Date(), limits = null
 
 /** A stable fingerprint of what Arthur reviews; an unchanged council costs nothing. */
 async function reviewFingerprint() {
-  const [runs, actions, findings, taskRows, playbooks] = await Promise.all([
+  const [runs, actions, findings, taskRows, playbooks, toReview] = await Promise.all([
     AgentRun.find({ agent: { $in: tasks.SPECIALISTS }, status: { $nin: ["running", "skipped"] } }).sort({ startedAt: -1 }).limit(3).select("_id").lean(),
     GrowthAction.find({ status: "awaiting_approval" }).select("_id").lean(),
     AgentFinding.find({ status: "open" }).select("_id updatedAt").lean(),
     CouncilTask.find({ status: { $in: ["completed", "blocked"] } }).select("_id status").lean(),
     EmailPlaybook.find({ status: "draft" }).select("key").lean(),
+    CouncilDecision.find({ status: "open", inbox: "review" }).select("_id").lean(),
   ]);
   return [
+    toReview.map((d) => d._id).sort().join(","),
     runs.map((r) => r._id).join(","),
     actions.map((a) => a._id).sort().join(","),
     findings.map((f) => `${f._id}@${new Date(f.updatedAt).getTime()}`).sort().join(","),

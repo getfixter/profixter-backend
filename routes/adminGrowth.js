@@ -528,6 +528,9 @@ function publicDecision(d) {
     guidance: d.payload?.type === "guidance" ? { agent: d.payload.agent, text: d.payload.guidance, previous: d.payload.previous, baseVersion: d.payload.baseVersion } : null,
     archiveRequest: d.payload?.type === "archive_request" ? { kind: d.payload.kind, id: d.payload.id, reason: d.payload.reason, category: d.payload.category } : null,
     archive: d.archive?.at ? d.archive : null,
+    inbox: d.inbox || "needs_you",
+    waiting: d.waiting?.since ? { kind: d.waiting.kind, reason: d.waiting.reason, taskId: d.waiting.taskId, since: d.waiting.since, until: d.waiting.until } : null,
+    inboxHistory: (d.inboxHistory || []).slice(-10),
     status: d.status,
     resolution: d.resolution?.choice ? d.resolution : null,
     at: d.updatedAt,
@@ -540,6 +543,7 @@ router.get("/office/council", canRead, async (req, res) => {
     const { settleDecisions } = require("../utils/council/arthur");
     await require("../utils/council/mission").ensureMission();
     await settleDecisions();
+    await require("../utils/council/inbox").sweep();
     const since = new Date(Date.now() - 14 * 864e5);
     const [messages, openTasks, closedTasks, open, closed, thinking, mission, archived] = await Promise.all([
       CouncilMessage.find({}).sort({ createdAt: -1 }).limit(40).lean(),
@@ -565,8 +569,10 @@ router.get("/office/council", canRead, async (req, res) => {
         history: (mission.history || []).slice().reverse().map((h) => ({ version: h.version, guidance: h.guidance, by: h.by, at: h.at, note: h.note })),
       },
       counts: {
-        decisions: open.filter((d) => ["decision", "uncertain"].includes(d.category)).length,
-        info: open.filter((d) => d.category === "info").length,
+        // the badge: ONLY what needs the owner now
+        decisions: open.filter((d) => ["decision", "uncertain"].includes(d.category) && !["waiting", "review"].includes(d.inbox)).length,
+        info: open.filter((d) => d.category === "info" && !["waiting", "review"].includes(d.inbox)).length,
+        waiting: open.filter((d) => ["waiting", "review"].includes(d.inbox)).length,
         tasks: openTasks.length,
       },
     });
@@ -601,6 +607,27 @@ router.post("/office/council/mission/rollback", ownerOnly, async (req, res) => {
   } catch (error) {
     if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
     fail(res, error, "Could not restore that version.");
+  }
+});
+
+/** "Wait - remind me when ready": out of the inbox, nothing approved, dismissed or stopped. */
+router.post("/office/council/decisions/:id/wait", ownerOnly, async (req, res) => {
+  try {
+    const r = await require("../utils/council/inbox").ownerDefer(String(req.params.id), { by: ownerActor(req).name });
+    res.json(r);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    fail(res, error, "Could not set that aside.");
+  }
+});
+
+/** Bring a waiting item back to the inbox now. */
+router.post("/office/council/decisions/:id/bring-back", ownerOnly, async (req, res) => {
+  try {
+    await require("../utils/council/inbox").setNeedsYou(String(req.params.id), { by: ownerActor(req).name, note: "You brought it back" });
+    res.json({ inbox: "needs_you" });
+  } catch (error) {
+    fail(res, error, "Could not bring that back.");
   }
 });
 

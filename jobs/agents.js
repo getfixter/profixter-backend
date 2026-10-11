@@ -118,6 +118,8 @@ function startAgentJobs() {
       await require("../utils/council/mission").ensureMission();
       await require("../utils/council/refocus").reviewForRefocus();
       await require("../utils/council/refocus").retireBusinessRecords();
+      await require("../utils/council/inbox").classifyExisting();
+      await require("../utils/council/inbox").sweep();
       // Self-check on real data (counts only): do the marketing numbers add up?
       const m = await require("../utils/agents/marketingData").marketingResults();
       const sourcesTotal = (m.bySource30 || []).reduce((n, x) => n + (x.firstFreeVisits || 0), 0);

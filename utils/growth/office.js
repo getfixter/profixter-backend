@@ -274,13 +274,19 @@ function invalidateOffice() {
 }
 
 async function approvalCounts() {
-  const [actions, playbooks, drafts, notes] = await Promise.all([
-    GrowthAction.countDocuments({ status: "awaiting_approval" }),
-    EmailPlaybook.countDocuments({ status: "draft" }),
-    AgentFinding.countDocuments({ kind: "content_draft", status: "open" }),
+  const [actions, playbooks, drafts, notes, waiting] = await Promise.all([
+    GrowthAction.find({ status: "awaiting_approval" }).select("_id").lean(),
+    EmailPlaybook.find({ status: "draft" }).select("key").lean(),
+    AgentFinding.find({ kind: "content_draft", status: "open" }).select("_id").lean(),
     AgentFinding.countDocuments({ kind: { $in: ["opportunity", "risk", "anomaly", "experiment"] }, status: "open", severity: { $in: ["medium", "high"] } }),
+    require("../council/inbox").waitingRefs(),
   ]);
-  return { actions, playbooks, drafts, notes, total: actions + playbooks + drafts };
+  // an item a knight is still revising (King Arthur parked it) is not something the owner can act on now
+  const now = (kind, ids) => ids.filter((id) => !waiting.has(`${kind}:${id}`)).length;
+  const a = now("action", actions.map((x) => String(x._id)));
+  const p = now("playbook", playbooks.map((x) => x.key));
+  const d = now("draft", drafts.map((x) => String(x._id)));
+  return { actions: a, playbooks: p, drafts: d, notes, waiting: actions.length + playbooks.length + drafts.length - a - p - d, total: a + p + d };
 }
 
 /** Everything waiting for the owner, newest first. */
@@ -329,6 +335,11 @@ async function approvalsList() {
       };
     })
   );
+  const waiting = await require("../council/inbox").waitingRefs();
+  const tag = (x) => {
+    const w = waiting.get(`${x.kind}:${x.id}`);
+    return w ? { ...x, waiting: { inbox: w.inbox, reason: w.reason, since: w.since } } : x;
+  };
   return {
     items: [
       ...actionItems,
@@ -360,7 +371,9 @@ async function approvalsList() {
           chatgpt: e.chatgpt,
         };
       }),
-    ].sort((x, y) => new Date(y.at) - new Date(x.at)),
+    ]
+      .map(tag)
+      .sort((x, y) => new Date(y.at) - new Date(x.at)),
     notes: notes.map((f) => {
       const e = explain.explainFinding(f);
       return {
