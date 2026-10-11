@@ -60,6 +60,7 @@ YOUR JOB (marketing only - you have no revenue, billing, membership or schedulin
 - Reject recommendations that are not supported by evidence: say so to the owner and, if useful, ask the specialist for the missing evidence.
 - Never let the same thing reach the owner twice: merge duplicate notes and refresh your own records (same dedupe key) instead of repeating them.
 - Keep work moving: give clear, small, checkable tasks to the right specialist; check reports of completed tasks.
+- COUNCIL HOUSEKEEPING is yours: archive (archive_item) work that is outside the marketing mission (business management), duplicated, or stale - without asking the owner. Never archive active, relevant marketing work just to tidy up; when in doubt, keep it. Archiving never deletes anything and the owner can restore it. Tasks the owner asked for go to the owner as an archive request.
 
 WHAT YOU CANNOT DO (your tools make these impossible; never pretend otherwise)
 You cannot approve or decline anything, send any message to a customer or anyone else, spend money or authorise paid campaigns, book visits, change Meta ads (the outside agency runs them), switch on any automation, change prices, offers, plans or booking rules, publish website changes, change permissions or approvals, or change a specialist's guidance without the owner confirming it. Your recommendation is never the owner's approval. You cannot retrain a specialist: guidance you propose becomes a saved note the specialist reads in its next shift, and only after the owner confirms it.
@@ -161,7 +162,7 @@ async function councilState({ now = new Date() } = {}) {
     office.robotStates({ now }),
     office.approvalsList(),
     CouncilTask.find({ status: { $in: tasks.OPEN.concat(["completed"]) } }).sort({ createdAt: -1 }).limit(30).lean(),
-    CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled"] }, updatedAt: { $gte: new Date(now - 14 * 864e5) } }).sort({ updatedAt: -1 }).limit(10).lean(),
+    CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled", "archived"] }, updatedAt: { $gte: new Date(now - 14 * 864e5) } }).sort({ updatedAt: -1 }).limit(10).lean(),
     CouncilDecision.find({ status: "open" }).sort({ updatedAt: -1 }).limit(40).lean(),
     AgentRun.find({ agent: { $in: [...tasks.SPECIALISTS, "conversation"] }, startedAt: { $gte: new Date(now - 10 * 864e5) }, status: { $ne: "running" } })
       .sort({ startedAt: -1 })
@@ -510,6 +511,27 @@ const ARTHUR_TOOLS = {
       return { started: true };
     },
   },
+  archive_item: {
+    description:
+      "Council housekeeping - archive (never delete) an outdated, irrelevant or duplicate item: a task, a specialist note, or one of your own records. Give the reason and a category: 'business_management' (about revenue, billing, memberships, cancellations, prices or scheduling - outside the marketing mission), 'duplicate' (name the open item it repeats in duplicate_of; that one is kept) or 'stale' (untouched 30+ days). Refused in code for active marketing work, tasks a hero is working on, drafts/approval items, and fresh items. A task the OWNER asked for is not archived: an archive request goes to the owner instead. Everything archived stays in history and the owner can restore it with one tap.",
+    input_schema: obj({
+      kind: str("What to archive", { enum: ["task", "note", "record"] }),
+      id: str("Its id (from get_council_state)"),
+      category: str("Why", { enum: ["business_management", "duplicate", "stale"] }),
+      reason: str("One or two sentences the owner will read"),
+      duplicate_of: nstr("For 'duplicate': the id of the open item that is kept; otherwise null"),
+    }),
+    run: async ({ kind, id, category, reason, duplicate_of }, ctx) => {
+      try {
+        const r = await require("./archive").archiveItem({ kind, id, category, reason, duplicateOf: duplicate_of, by: "King Arthur" });
+        ctx.log?.push({ type: r.requested ? "archive.requested" : "archive.done", ref: String(id), label: `${kind}: ${clip(reason, 120)}`, ok: true });
+        return r.requested ? { ...r, note: "The owner asked for this task, so an archive request is waiting for their OK. Nothing changed yet." } : r;
+      } catch (error) {
+        ctx.log?.push({ type: "archive.refused", ref: String(id), label: `${kind}: ${clip(error.message, 120)}`, ok: false });
+        return { refused: true, why: error.message };
+      }
+    },
+  },
   // Marketing results only - the same field-by-field view the specialists read.
   // There is no revenue, membership, billing or scheduling tool (marketingData.js).
   get_acquisition: TOOL_DEFS.get_acquisition,
@@ -555,7 +577,7 @@ Your final message is your briefing for the owner: start with "Boss,", 2-5 short
 const ARTHUR_TOOL_NAMES = Object.keys(ARTHUR_TOOLS);
 
 /** What he may do in every run (replaces the specialists' growth-engine action list). */
-const ARTHUR_AUTHORITY = `Your authority in this run: every tool you have is switched on and needs no approval - assign and cancel your own tasks, check reports (verify), recommend, file records for the owner, propose guidance, merge duplicate notes, start an extra shift (within its daily cap), keep your notebook, and read the marketing results. Use them whenever they serve the mission; routine internal coordination never waits for the owner. You have no growth-engine actions on purpose: anything that sends, spends, publishes, changes the site, prices or ads stays the owner's decision.`;
+const ARTHUR_AUTHORITY = `Your authority in this run: every tool you have is switched on and needs no approval - assign and cancel your own tasks, archive outdated, duplicate or stale work (housekeeping), check reports (verify), recommend, file records for the owner, propose guidance, merge duplicate notes, start an extra shift (within its daily cap), keep your notebook, and read the marketing results. Use them whenever they serve the mission; routine internal coordination never waits for the owner. You have no growth-engine actions on purpose: anything that sends, spends, publishes, changes the site, prices or ads stays the owner's decision.`;
 
 const WRAP_UP_CHAT = `LIMIT REACHED: this answer has used its budget, so you have no more tool calls. Write your final reply to the owner now, starting with "Boss,": what you actually did (only what your tools confirmed - tasks assigned, records filed), what you could not finish yet, and that the owner can reply "continue" for the rest. Do not claim anything you did not do.`;
 const WRAP_UP_REVIEW = `LIMIT REACHED: no more tool calls in this review. Write your briefing for the owner now, starting with "Boss,": what you did and what you will pick up in your next review.`;
@@ -691,9 +713,13 @@ async function resolveDecision({ id, choice, by, note = "" }) {
   const d = await CouncilDecision.findOne({ _id: id, status: "open" }).lean();
   if (!d) throw fail(404, "That is no longer open.");
   const isGuidance = d.payload?.type === "guidance";
-  if (choice === "confirm" && !isGuidance) throw fail(400, "Only a guidance proposal can be confirmed here. Use the item's own approve button.");
+  const isArchiveRequest = d.payload?.type === "archive_request";
+  if (choice === "confirm" && !isGuidance && !isArchiveRequest) throw fail(400, "Only a guidance proposal or an archive request can be confirmed here. Use the item's own approve button.");
   let saved = null;
-  if (choice === "confirm") {
+  if (choice === "confirm" && isArchiveRequest) {
+    const r = await require("./archive").archiveItem({ kind: d.payload.kind, id: d.payload.id, reason: `${d.payload.reason} (confirmed by ${by})`, category: d.payload.category, by, asOwner: true });
+    saved = { archived: r.archived === true };
+  } else if (choice === "confirm") {
     const current = await getSettings(d.payload.agent);
     if ((current.version || 0) !== d.payload.baseVersion) throw fail(409, "The guidance changed since King Arthur proposed this. Ask him for a fresh proposal.");
     const result = await saveGuidance(d.payload.agent, d.payload.guidance, { by, note: `Proposed by King Arthur (${d._id}), confirmed by ${by}` });

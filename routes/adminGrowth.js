@@ -526,6 +526,8 @@ function publicDecision(d) {
     recommendation: d.recommendation?.choice ? d.recommendation : null,
     refs: (d.refs || []).map((r) => ({ kind: r.kind, id: r.id })),
     guidance: d.payload?.type === "guidance" ? { agent: d.payload.agent, text: d.payload.guidance, previous: d.payload.previous, baseVersion: d.payload.baseVersion } : null,
+    archiveRequest: d.payload?.type === "archive_request" ? { kind: d.payload.kind, id: d.payload.id, reason: d.payload.reason, category: d.payload.category } : null,
+    archive: d.archive?.at ? d.archive : null,
     status: d.status,
     resolution: d.resolution?.choice ? d.resolution : null,
     at: d.updatedAt,
@@ -539,20 +541,22 @@ router.get("/office/council", canRead, async (req, res) => {
     await require("../utils/council/mission").ensureMission();
     await settleDecisions();
     const since = new Date(Date.now() - 14 * 864e5);
-    const [messages, openTasks, closedTasks, open, closed, thinking, mission] = await Promise.all([
+    const [messages, openTasks, closedTasks, open, closed, thinking, mission, archived] = await Promise.all([
       CouncilMessage.find({}).sort({ createdAt: -1 }).limit(40).lean(),
       CouncilTask.find({ status: { $in: [...councilTasks.OPEN, "completed"] } }).sort({ createdAt: -1 }).limit(30).lean(),
-      CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled"] }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(15).lean(),
+      CouncilTask.find({ status: { $in: ["verified", "not_verified", "cancelled", "archived"] }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(15).lean(),
       CouncilDecision.find({ status: "open" }).sort({ updatedAt: -1 }).limit(40).lean(),
       CouncilDecision.find({ status: { $ne: "open" }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(20).lean(),
       require("../models/AgentRun").exists({ agent: "arthur", status: "running", startedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } }),
       agentSettings.getSettings("arthur"),
+      require("../utils/council/archive").archivedList(),
     ]);
     res.json({
       enabled: agentsEnabled(),
       thinking: Boolean(thinking),
       messages: messages.reverse().map((m) => ({ id: String(m._id), role: m.role, kind: m.kind, text: m.text, actions: m.actions || [], at: m.createdAt })),
       tasks: [...openTasks, ...closedTasks].map(councilTasks.publicTask),
+      archived,
       decisions: open.map(publicDecision),
       history: closed.map(publicDecision),
       mission: {
@@ -597,6 +601,29 @@ router.post("/office/council/mission/rollback", ownerOnly, async (req, res) => {
   } catch (error) {
     if (error.problems) return res.status(422).json({ message: error.problems[0], problems: error.problems });
     fail(res, error, "Could not restore that version.");
+  }
+});
+
+/** Restore anything King Arthur archived (owner only). Nothing was ever deleted. */
+router.post("/office/council/archive/:kind/:id/restore", ownerOnly, async (req, res) => {
+  try {
+    const actor = ownerActor(req);
+    const r = await require("../utils/council/archive").restoreItem({ kind: String(req.params.kind), id: String(req.params.id), by: actor.name });
+    await AdminActivityLogModel.create({
+      action: "growth_council.archive_restored",
+      entityType: "growth_council",
+      entityId: r.id,
+      entityName: r.kind,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: "owner",
+      details: r,
+    });
+    office.invalidateOffice();
+    res.json(r);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    fail(res, error, "Could not restore that.");
   }
 });
 

@@ -208,6 +208,7 @@ function publicTask(t) {
     result: t.result?.summary ? { summary: t.result.summary, at: t.result.at } : null,
     verification: t.verification?.verdict ? { verdict: t.verification.verdict, note: t.verification.note, by: t.verification.by, at: t.verification.at } : null,
     history: (t.history || []).map((h) => ({ at: h.at, status: h.status, by: h.by, note: h.note })),
+    archive: t.archive?.at ? t.archive : null,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };

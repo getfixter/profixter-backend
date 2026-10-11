@@ -36,11 +36,13 @@ const agentFindingSchema = new mongoose.Schema(
     dedupeKey: { type: String, default: null },
     status: {
       type: String,
-      enum: ["open", "acknowledged", "resolved", "dismissed", "superseded"],
+      enum: ["open", "acknowledged", "resolved", "dismissed", "superseded", "archived"],
       default: "open",
       index: true,
     },
     statusNote: { type: String, default: "" },
+    /* Set when King Arthur archives the note (utils/council/archive.js); restoring clears nothing - it is the record. */
+    archive: { by: String, at: Date, reason: String, category: String, previousStatus: String, restoredBy: String, restoredAt: Date },
     statusBy: { type: String, default: "" },
     seenCount: { type: Number, default: 1 },
     lastSeenAt: { type: Date, default: null },

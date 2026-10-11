@@ -15,8 +15,9 @@ const { CouncilDecision, CouncilTask } = require("../../models/Council");
  * chamber (or tells Arthur). Runs once (a marker in Arthur's notebook).
  */
 const MARKER = "system:refocus-2026-10-11-reviewed";
+// Money and operations - NOT marketing words like "content calendar" or "scheduling posts".
 const BUSINESS_RE =
-  /\b(revenue|mrr|recurring revenue|stripe|billing|invoices?|subscriptions? (?:stat|count|number|revenue)|cancell?ations?|churn|retention|paying members?|member(?:ship)? (?:count|numbers?|statistics|growth)|pric(?:e|es|ing)|calendar|capacity|scheduling|profit(?:able)?)\b/i;
+  /\b(revenue|mrr|recurring revenue|stripe|billing|invoices?|subscriptions? (?:stat|count|number|revenue)|cancell?ations?|churn|retention|paying members?|member(?:ship)? (?:count|numbers?|statistics|growth)|pric(?:e|es|ing) (?:change|increase|cut|test|analysis)|calendar capacity|capacity|(?:visit|appointment|booking) scheduling|scheduling capacity|profit(?:able|ability)?|(?:members?|customers?|people) (?:who )?(?:cancel|leave|quit)\w*)\b/i;
 
 function lineOf(kind, id, text, extra = "") {
   return `- ${kind} ${id}: ${String(text).replace(/\s+/g, " ").slice(0, 160)}${extra}`;

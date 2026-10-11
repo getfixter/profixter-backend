@@ -24,6 +24,12 @@ const historySchema = new mongoose.Schema(
   { _id: false }
 );
 
+/** An archive is never a deletion: who archived what, why, from which state - and its restore. */
+const archiveSchema = new mongoose.Schema(
+  { by: String, at: Date, reason: String, category: String, previousStatus: String, restoredBy: String, restoredAt: Date },
+  { _id: false }
+);
+
 const taskSchema = new mongoose.Schema(
   {
     agent: { type: String, required: true, index: true }, // visibility | outreach | conversion
@@ -32,7 +38,7 @@ const taskSchema = new mongoose.Schema(
     origin: { type: String, enum: ["owner", "arthur"], default: "arthur" },
     status: {
       type: String,
-      enum: ["received", "assigned", "in_progress", "completed", "blocked", "verified", "not_verified", "cancelled"],
+      enum: ["received", "assigned", "in_progress", "completed", "blocked", "verified", "not_verified", "cancelled", "archived"],
       default: "assigned",
       index: true,
     },
@@ -41,6 +47,7 @@ const taskSchema = new mongoose.Schema(
     result: { summary: String, by: String, at: Date },
     verification: { verdict: String, note: String, by: String, at: Date },
     dedupeKey: { type: String, default: null },
+    archive: { type: archiveSchema, default: null },
   },
   { timestamps: true }
 );
@@ -72,7 +79,8 @@ const decisionSchema = new mongoose.Schema(
     recommendation: { choice: String, reason: String },
     refs: [{ kind: String, id: String }],
     payload: { type: mongoose.Schema.Types.Mixed, default: null }, // e.g. { type: "guidance", agent, guidance }
-    status: { type: String, enum: ["open", "resolved", "superseded"], default: "open", index: true },
+    status: { type: String, enum: ["open", "resolved", "superseded", "archived"], default: "open", index: true },
+    archive: { type: archiveSchema, default: null },
     resolution: { choice: String, by: String, at: Date, note: String },
     dedupeKey: { type: String, default: null, index: true },
   },

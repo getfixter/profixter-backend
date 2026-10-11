@@ -110,7 +110,7 @@ async function main() {
   await test("Arthur has no tool that approves, sends, spends, books, touches ads or switches anything on", async () => {
     const names = arthur.ARTHUR_TOOL_NAMES;
     assert.deepStrictEqual(names.slice().sort(), [
-      "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_council_state",
+      "archive_item", "assign_task", "cancel_task", "file_for_owner", "get_acquisition", "get_council_state",
       "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "start_shift", "verify_task", "write_memory",
     ]);
     // His only business data is the marketing view the specialists use; no revenue, membership or scheduling tool exists.
@@ -463,6 +463,90 @@ async function main() {
     assert.match((await arthur.ARTHUR_TOOLS.get_item.run({ kind: "action", id: String(a._id) }, {})).delivery, /^applied at 2026-10-10T15:00/);
     const msg = await GrowthAction.create({ type: "conversation_reply", idempotencyKey: "cr1", status: "awaiting_approval", riskTier: "medium", modeAtProposal: "supervised", summary: "Reply", payload: { reply: "Hi" } });
     assert.match((await arthur.ARTHUR_TOOLS.get_item.run({ kind: "action", id: String(msg._id) }, {})).delivery, /^not sent - waiting for approval/);
+  });
+
+  console.log("housekeeping: the archive");
+
+  await test("Arthur archives outdated business work, duplicates and stale items himself - nothing is deleted, every archive is recorded", async () => {
+    const arch = require("../utils/council/archive");
+    const biz = await CouncilTask.create({ agent: "conversion", instruction: "Analyse cancellations by plan and tenure", origin: "arthur", status: "assigned", history: [] });
+    const keep = await AgentFinding.create({ agent: "outreach", kind: "opportunity", severity: "medium", title: "Nextdoor business page", detail: "x", status: "open" });
+    const dup = await AgentFinding.create({ agent: "outreach", kind: "opportunity", severity: "medium", title: "Nextdoor page for Profixter", detail: "x", status: "open" });
+    const rec = await CouncilDecision.create({ category: "info", subject: "MRR fell 4% this month", simple: "Boss, x" });
+    script = [
+      [
+        use("archive_item", { kind: "task", id: String(biz._id), category: "business_management", reason: "Cancellation analysis is the owner's now, not marketing.", duplicate_of: null }),
+        use("archive_item", { kind: "note", id: String(dup._id), category: "duplicate", reason: "Same Nextdoor idea as the other note.", duplicate_of: String(keep._id) }),
+        use("archive_item", { kind: "record", id: String(rec._id), category: "business_management", reason: "Revenue reporting is outside the marketing mission.", duplicate_of: null }),
+      ],
+      "Boss, I archived three outdated items.",
+    ];
+    const msg = await arthur.chat({ text: "Process the refocus review" });
+    assert.ok(lastResults().every((r) => r.body.archived === true), JSON.stringify(lastResults()));
+    assert.deepStrictEqual(msg.actions.map((a) => a.type), ["archive.done", "archive.done", "archive.done"]);
+    const t = await CouncilTask.findById(biz._id).lean();
+    assert.strictEqual(t.status, "archived");
+    assert.strictEqual(t.archive.by, "King Arthur");
+    assert.strictEqual(t.archive.previousStatus, "assigned");
+    assert.match(t.archive.reason, /owner's now/);
+    assert.ok(t.archive.at instanceof Date);
+    assert.strictEqual(t.history.at(-1).status, "archived");
+    assert.strictEqual((await AgentFinding.findById(dup._id).lean()).status, "archived");
+    assert.strictEqual((await AgentFinding.findById(keep._id).lean()).status, "open", "the kept one stays");
+    assert.strictEqual((await CouncilDecision.findById(rec._id).lean()).status, "archived");
+    assert.strictEqual(await CouncilTask.countDocuments({}), 1, "nothing deleted");
+    assert.strictEqual((await arch.archivedList()).length, 3, "visible in history");
+    // one tap restores each to where it was
+    const r = await arch.restoreItem({ kind: "task", id: String(biz._id), by: "Owner" });
+    assert.strictEqual(r.status, "assigned");
+    const back = await CouncilTask.findById(biz._id).lean();
+    assert.strictEqual(back.status, "assigned");
+    assert.strictEqual(back.archive.restoredBy, "Owner");
+    assert.strictEqual((await arch.restoreItem({ kind: "note", id: String(dup._id), by: "Owner" })).status, "open");
+    assert.strictEqual((await arch.restoreItem({ kind: "record", id: String(rec._id), by: "Owner" })).status, "open");
+  });
+
+  await test("active marketing work cannot be archived to tidy up; nor work in progress, drafts, or fresh items", async () => {
+    const arch = require("../utils/council/archive");
+    const insta = await CouncilTask.create({ agent: "outreach", instruction: "Draft this week's Instagram and Facebook posts with a content calendar", origin: "arthur", status: "assigned", history: [] });
+    const working = await CouncilTask.create({ agent: "visibility", instruction: "Fix the drywall page title", origin: "arthur", status: "in_progress", history: [] });
+    const draft = await AgentFinding.create({ agent: "outreach", kind: "content_draft", severity: "info", title: "instagram_post: fall gutters", detail: "x", status: "open" });
+    const fresh = await AgentFinding.create({ agent: "visibility", kind: "opportunity", severity: "medium", title: "Bing Places listing is missing", detail: "x", status: "open" });
+    const tries = [
+      [{ kind: "task", id: String(insta._id), category: "business_management", reason: "Cleaning up the dashboard today." }, /may be active marketing work/],
+      [{ kind: "task", id: String(insta._id), category: "stale", reason: "Cleaning up the dashboard today." }, /untouched for 30\+ days/],
+      [{ kind: "task", id: String(insta._id), category: "duplicate", reason: "Cleaning up the dashboard today.", duplicateOf: String(insta._id) }, /Name the other open item/],
+      [{ kind: "task", id: String(working._id), category: "stale", reason: "Cleaning up the dashboard today." }, /working on it right now|working on this task right now/],
+      [{ kind: "note", id: String(draft._id), category: "stale", reason: "Cleaning up the dashboard today." }, /owner's decisions/],
+      [{ kind: "note", id: String(fresh._id), category: "duplicate", reason: "Cleaning up the dashboard today.", duplicateOf: String(new mongoose.Types.ObjectId()) }, /OPEN item of the same kind/],
+      [{ kind: "task", id: String(insta._id), category: "business_management", reason: "short" }, /real reason/],
+    ];
+    for (const [input, why] of tries) await assert.rejects(arch.archiveItem(input), (e) => why.test(e.message), JSON.stringify(input));
+    assert.strictEqual((await CouncilTask.findById(insta._id).lean()).status, "assigned");
+    assert.strictEqual((await AgentFinding.findById(draft._id).lean()).status, "open");
+    // a stale item may go: 31 days untouched
+    await AgentFinding.collection.updateOne({ _id: fresh._id }, { $set: { updatedAt: new Date(Date.now() - 31 * 864e5) } });
+    assert.strictEqual((await arch.archiveItem({ kind: "note", id: String(fresh._id), category: "stale", reason: "Nobody has looked at this in a month." })).archived, true);
+  });
+
+  await test("a task the owner asked for is never archived by Arthur: an archive request waits for the owner's one tap", async () => {
+    const arch = require("../utils/council/archive");
+    const mine = await CouncilTask.create({ agent: "conversion", instruction: "Look into why members cancel", origin: "owner", status: "assigned", history: [] });
+    const r = await arch.archiveItem({ kind: "task", id: String(mine._id), category: "business_management", reason: "Cancellations are the owner's now." });
+    assert.strictEqual(r.requested, true);
+    assert.strictEqual((await CouncilTask.findById(mine._id).lean()).status, "assigned", "untouched until the owner says yes");
+    const again = await arch.archiveItem({ kind: "task", id: String(mine._id), category: "business_management", reason: "Cancellations are the owner's now." });
+    assert.strictEqual(again.duplicate, true, "one request, not two");
+    const resolved = await arthur.resolveDecision({ id: r.decisionId, choice: "confirm", by: "Owner" });
+    assert.deepStrictEqual(resolved.saved, { archived: true });
+    const t = await CouncilTask.findById(mine._id).lean();
+    assert.strictEqual(t.status, "archived");
+    assert.match(t.archive.reason, /confirmed by Owner/);
+    // and "keep it" changes nothing
+    const other = await CouncilTask.create({ agent: "outreach", instruction: "Compare MRR by plan", origin: "owner", status: "assigned", history: [] });
+    const r2 = await arch.archiveItem({ kind: "task", id: String(other._id), category: "business_management", reason: "Revenue analysis is the owner's now." });
+    await arthur.resolveDecision({ id: r2.decisionId, choice: "reject", by: "Owner" });
+    assert.strictEqual((await CouncilTask.findById(other._id).lean()).status, "assigned");
   });
 
   console.log("big requests");
