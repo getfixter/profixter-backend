@@ -113,6 +113,8 @@ function startAgentJobs() {
     }
   }
   cron.schedule("15 8 * * *", () => councilReview("daily"), { timezone: TIMEZONE });
+  // Old postcard/mail notes from before the mail tools were removed: retire them (idempotent).
+  setTimeout(() => require("../utils/agents/retirePostal").retirePostalRecords().catch((e) => console.error("retirePostalRecords failed:", e.message)), 60 * 1000).unref?.();
   // Check 5 minutes after boot (after the secret store's first load), then every 30 minutes.
   setTimeout(() => firstActivation().catch(() => {}), 5 * 60 * 1000).unref?.();
   cron.schedule("*/30 * * * *", () => firstActivation().catch(() => {}), { timezone: TIMEZONE });

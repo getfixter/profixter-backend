@@ -118,6 +118,7 @@ async function main() {
       currentPeriodEnd: new Date(now + 20 * DAY),
       nextPaymentDate: new Date(now + 20 * DAY),
       latestPaymentDate: extra.startDate || ago(1),
+      stripeSubscriptionId: `sub_${key}`, // linked to Stripe like every checkout-made membership
       ...extra,
     });
   await sub("A", { subscriptionType: "plus", startDate: ago(10), planPrice: 249 });
@@ -217,6 +218,10 @@ async function main() {
     assert.strictEqual(k.activeMembers.value, 3);
     assert.strictEqual(k.activeMembers.gifts, 1);
     assert.strictEqual(k.activeMembers.paying, 2);
+    // every active member lands in exactly one bucket
+    assert.strictEqual(k.activeMembers.paying + k.activeMembers.comped + k.activeMembers.gifts + k.activeMembers.manual + k.activeMembers.notBilling, k.activeMembers.value);
+    assert.strictEqual(k.activeMembers.reconciled, true);
+    assert.deepStrictEqual(k.activeMembers.stripeOnly, { count: 0, paying: 0, netCents: 0 });
   });
   await test("active members at period start reconstructed from dates", async () => assert.strictEqual(k.activeMembers.prev, 2));
   await test("new members in period: Plus + gift Elite", async () => assert.strictEqual(k.newMembers.value, 2));

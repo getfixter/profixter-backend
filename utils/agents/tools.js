@@ -45,6 +45,19 @@ const PLAIN_HELP =
 const plainField = () => str(PLAIN_HELP);
 const ownerQuestionField = () => nstr("The one question the owner must answer, in everyday words (e.g. 'Can I change the title of the bathroom repair page?'), or null if nothing is needed");
 
+/**
+ * POSTCARDS AND MAIL ARE THE OWNER'S PROJECT, NEVER AN AGENT'S. No agent tool
+ * plans, sizes or exports mail; and no agent may record a finding, a draft or
+ * a notebook note about it either - so a postcard idea can neither reach the
+ * owner nor survive in a notebook to be recommended again.
+ */
+const POSTAL_RE = /\b(post[ -]?cards?|postal|direct[- ]mail|mailers?|mail(?:ing)?[ _-](?:list|wave|campaign|drop|piece)s?|eddm|every door)\b/i;
+function refusePostal(...texts) {
+  if (texts.some((t) => POSTAL_RE.test(String(t || "")))) {
+    throw new Error("Postcards and mail are the owner's own project, not an agent's. Leave them out entirely - do not record, draft or note them.");
+  }
+}
+
 function clip(value, max) {
   return String(value ?? "").slice(0, max);
 }
@@ -88,7 +101,8 @@ function overviewForAgents(o) {
     spend: o.spend,
     topAreas: o.topAreas,
     attention: (o.attention || []).map(({ key, count, tone }) => ({ key, count, tone })),
-    notes: "First-touch attribution. Visitors counted only since 2026-10-07. No-shows are not recorded.",
+    notes:
+      "First-touch attribution. Visitors counted only since 2026-10-07. No-shows are not recorded. MEMBERS: kpis.activeMembers.value is the number of active member homes; its paying + comped + gifts + manual (admin grants, no Stripe) + notBilling always add up to it. kpis.mrr counts Stripe subscriptions, which also include kpis.activeMembers.stripeOnly (billing in Stripe with no member record) - so mrr.payingMembers can differ from activeMembers.paying; that is the known record mismatch, not two different truths.",
   };
 }
 
@@ -242,7 +256,7 @@ const TOOL_DEFS = {
         .sort({ startedAt: -1 })
         .limit(6)
         .lean();
-      return rows.map((r) => ({ at: r.startedAt, status: r.status, summary: clip(r.summary, 1500), costCents: r.costCents }));
+      return rows.map((r) => ({ at: r.startedAt, status: r.status, summary: clip(require("./claims").correctedRun(r).summary, 1500), costCents: r.costCents }));
     },
   },
   read_memory: {
@@ -260,6 +274,7 @@ const TOOL_DEFS = {
     run: async ({ key, content }, ctx) => {
       const k = clip(key, 80).trim();
       if (!k) throw new Error("key is required");
+      if (content !== null) refusePostal(k, content);
       if (content === null) {
         await AgentMemory.deleteOne({ agent: ctx.agent, key: k });
         return { deleted: k };
@@ -292,6 +307,7 @@ const TOOL_DEFS = {
     }),
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
+      refusePostal(input.title, input.detail, input.expected_impact, input.plain, input.owner_question, input.dedupe_key);
       const now = new Date();
       const doc = await AgentFinding.findOneAndUpdate(
         { agent: ctx.agent, dedupeKey: clip(input.dedupe_key, 120) },
@@ -477,6 +493,7 @@ Object.assign(TOOL_DEFS, {
     }),
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
+      refusePostal(input.title, input.why, input.body_markdown, input.plain, input.target);
       const draftProblems = require("./copyRules").checkCopy(`${input.title}
 ${input.body_markdown}`);
       if (draftProblems.length) throw new Error(`Rewrite needed: ${draftProblems.join(" ")}`);
@@ -753,4 +770,4 @@ async function runTool(name, input, ctx) {
   return def.run(input || {}, ctx);
 }
 
-module.exports = { TOOL_DEFS, adPerformance, overviewForAgents, runTool, toolsFor };
+module.exports = { POSTAL_RE, TOOL_DEFS, adPerformance, overviewForAgents, runTool, toolsFor };

@@ -14,7 +14,8 @@ const mongoose = require("mongoose");
  * see counts. Each recipient gets a short code that becomes the tracked URL /
  * QR on their postcard (www.profixter.com/m/<wave>-<code>).
  *
- * OutreachWave: an agent-planned mailing (towns, size, copy, cost estimate).
+ * OutreachWave: a mailing the OWNER plans (towns, size, copy, cost estimate).
+ * No agent can create, plan or export one - mail is the owner's own project.
  * Mailing costs money, so a wave is exported only after the owner approves it.
  */
 const recipientSchema = new mongoose.Schema(

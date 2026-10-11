@@ -358,7 +358,8 @@ const SKIP_WORDS = {
   already_running: "I was already working",
 };
 
-function explainRun(r, { robotName } = {}) {
+function explainRun(run, { robotName } = {}) {
+  const r = { ...run, ...require("../agents/claims").correctedRun(run) };
   const robot = robotName || ROBOT_NAMES[r.agent] || r.agent;
   let say;
   if (r.status === "skipped") {

@@ -46,6 +46,7 @@ const { placeZipCluster } = require("../membershipMap/publicPoint");
 const { classifySource, campaignOf, originOf, displayName, SOURCES, GROUPS } = require("./attribution");
 const { collectedRevenue } = require("./stripeRevenue");
 const { currentMrr } = require("./stripeMrr");
+const { reconcileMembers } = require("./memberReconcile");
 const { adSpendForPeriod } = require("./metaAdSpend");
 
 const TZ = "America/New_York";
@@ -224,6 +225,8 @@ async function loadData({ now = new Date() } = {}) {
       failing: sub.status === "past_due" || sub.status === "unpaid",
       cancelScheduled: !!sub.cancelAtPeriodEnd && !ended,
       monthlyCents: Math.round(monthly * 100),
+      stripeSubscriptionId: sub.stripeSubscriptionId || null,
+      stripeCustomerId: userById.get(userId)?.stripeCustomerId || null,
     });
   }
   const paidHomes = new Set(memberships.map((m) => m.home));
@@ -843,6 +846,8 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
   const revenuePrev = summarizeRevenue(prevRevenueRows);
 
   const activeNow = data.memberships.filter((m) => m.activeNow);
+  // Every active member matched to what Stripe bills: the categories always add up (memberReconcile.js).
+  const members = reconcileMembers(activeNow, mrr);
   const activeAtStart = data.memberships.filter((m) => activeAt(m, period.from)).length;
   const mrrNow = mrrAt(data, now, true);
   const mrrStart = mrrAt(data, period.from, false);
@@ -886,10 +891,16 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
         value: activeNow.length,
         prev: activeAtStart,
         delta: delta(activeNow.length, activeAtStart),
-        // From Stripe when it answered: a 100%-off membership is active but not paying.
-        paying: mrr.available ? mrr.payingMembers : activeNow.filter((m) => m.paying).length,
-        comped: mrr.available ? mrr.compedMembers : 0,
-        gifts: activeNow.filter((m) => m.kind === "gift").length,
+        // Active members only, each matched to its Stripe subscription, so
+        // paying + comped + gifts + manual + notBilling = value. Stripe
+        // subscriptions with no member behind them are reported apart (stripeOnly).
+        paying: members.available ? members.paying : activeNow.filter((m) => m.paying).length,
+        comped: members.available ? members.comped : 0,
+        gifts: members.gifts,
+        manual: members.manual,
+        notBilling: members.available ? members.notBilling : 0,
+        stripeOnly: members.stripeOnly,
+        reconciled: members.available ? members.balanced : null,
       },
       newMembers: { value: cur.newMemberships.length, prev: prev.newMemberships.length, delta: delta(cur.newMemberships.length, prev.newMemberships.length) },
       cancellations: { value: cur.cancellations.length, prev: prev.cancellations.length, delta: delta(cur.cancellations.length, prev.cancellations.length), scheduled: data.memberships.filter((m) => m.cancelScheduled && m.activeNow).length },

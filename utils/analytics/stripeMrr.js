@@ -94,6 +94,7 @@ function subscriptionMonthly(sub, nowSec) {
   const plan = getPlanAndBillingFromPrice(items[0]?.priceId).plan || sub.metadata?.plan || null;
   return {
     id: sub.id,
+    customer: typeof sub.customer === "string" ? sub.customer : sub.customer?.id || null,
     status: sub.status,
     plan: plan ? String(plan).toLowerCase() : null,
     annual: items.some((it) => it.months >= 12),
@@ -137,6 +138,8 @@ function computeMrr(subscriptions, now = new Date()) {
     endingMembers: ending.length,
     endingCents: sum(ending, "netCents"),
     byPlan,
+    // per subscription (ids and cents only), so members can be matched to what Stripe bills
+    rows: rows.map((r) => ({ id: r.id, customer: r.customer, status: r.status, netCents: r.netCents, listCents: r.listCents })),
   };
 }
 

@@ -2,6 +2,7 @@ const { CouncilDecision, CouncilMessage, CouncilTask } = require("../../models/C
 const AgentRun = require("../../models/AgentRun");
 const explain = require("../growth/explain");
 const tasks = require("./tasks");
+const { correctedRun } = require("../agents/claims");
 
 /**
  * "Copy All for ChatGPT": one plain-text report the owner pastes into ChatGPT.
@@ -213,7 +214,7 @@ async function statusSection() {
   lines.push("", "## Recent shifts (14 days)");
   lines.push(
     runs.length
-      ? runs.map((x) => `- ${ny(x.startedAt)} · ${x.agent === "arthur" ? "King Arthur" : heroOf(x.agent)} · ${x.status}${x.skipReason ? ` (${x.skipReason})` : ""} · $${((x.costCents || 0) / 100).toFixed(2)} · run ${x._id}${x.plainSummary || x.summary ? `\n  ${String(x.plainSummary || x.summary).replace(/\s+/g, " ").slice(0, 400)}` : ""}`).join("\n")
+      ? runs.map((r) => ({ ...r, ...correctedRun(r) })).map((x) => `- ${ny(x.startedAt)} · ${x.agent === "arthur" ? "King Arthur" : heroOf(x.agent)} · ${x.status}${x.skipReason ? ` (${x.skipReason})` : ""} · $${((x.costCents || 0) / 100).toFixed(2)} · run ${x._id}${x.plainSummary || x.summary ? `\n  ${String(x.plainSummary || x.summary).replace(/\s+/g, " ").slice(0, 400)}` : ""}`).join("\n")
       : "No shifts in the last 14 days."
   );
   const info = await CouncilDecision.find({ category: { $in: ["info", "routine"] } }).sort({ updatedAt: -1 }).limit(12).lean();

@@ -27,6 +27,7 @@ const { allSettings, getSettings } = require("../agents/settings");
 const { agentsEnabled, dailyBudgetCents, monthlyBudgetCents, spentThisMonthCents, spentTodayCents, SHARED_RULES } = require("../agents/runtime");
 
 const explain = require("./explain");
+const { correctedRun } = require("../agents/claims");
 
 const RUNNING_STALE_MS = 30 * 60 * 1000;
 
@@ -204,7 +205,7 @@ async function robotStates({ now = new Date() } = {}) {
       nextRunAt: next?.at || null,
       nextRunLabel: next?.label || null,
       lastRun: lastRun
-        ? { at: lastRun.startedAt, status: lastRun.status, summary: shortText(lastRun.summary, 260), costCents: lastRun.costCents || 0, agent: lastRun.agent }
+        ? { at: lastRun.startedAt, status: lastRun.status, summary: shortText(correctedRun(lastRun).summary, 260), costCents: lastRun.costCents || 0, agent: lastRun.agent }
         : null,
       monthCostCents: Math.round(robot.agents.reduce((n, a) => n + (cost[a] || 0), 0) * 100) / 100,
       guidanceVersion: Math.max(0, ...robot.agents.map((a) => settings[a]?.version || 0)),
@@ -430,7 +431,7 @@ async function robotDetail(key, { now = new Date() } = {}) {
       trigger: r.trigger,
       skipReason: r.skipReason,
       costCents: r.costCents || 0,
-      summary: shortText(r.summary, 900),
+      summary: shortText(correctedRun(r).summary, 900),
       error: shortText(r.error, 300),
       findings: r.findings?.length || 0,
       actions: r.actions?.length || 0,

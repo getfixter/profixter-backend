@@ -375,6 +375,93 @@ async function main() {
     assert.match(calls.at(-1).system[0].text, /3b\. If this is your WEEKLY PLANNING review/);
   });
 
+  console.log("fixes from Arthur's first investigation");
+
+  await test("Arthur is told his tools are on - never 'findings only' - and specialists keep their action list", async () => {
+    script = ["Boss, ready."];
+    await arthur.chat({ text: "Hello" });
+    const arthurPrompt = calls[0].system.map((b) => b.text).join("\n");
+    assert.doesNotMatch(arthurPrompt, /findings only/);
+    assert.match(arthurPrompt, /every tool you have is switched on and needs no approval/);
+    assert.match(arthurPrompt, /anything that sends, spends, publishes, changes the site, prices or ads stays the owner's decision/);
+    script = ["FOR THE OWNER: x DETAILS: y"];
+    await runAgent({ ...AGENTS.outreach, budgetCents: 50 }, { trigger: "test" });
+    assert.match(calls.at(-1).system[1].text, /Your allowed actions: none - findings only/);
+  });
+
+  await test("no agent has a postcard or mail tool, and none can record, draft or note one", async () => {
+    const MAILISH = /(^|_)(postcard|postcards|postal|mail|mailing|wave|waves|audience)(_|$)/;
+    for (const def of Object.values(AGENTS)) for (const t of def.tools) assert.doesNotMatch(t, MAILISH, `${def.name}: ${t}`);
+    for (const t of arthur.ARTHUR_TOOL_NAMES) assert.doesNotMatch(t, MAILISH, t);
+    script = [
+      [
+        use("record_finding", { kind: "opportunity", severity: "high", title: "Postcards are our best shot", detail: "Mail 2,000 homes", expected_impact: "x", evidence: "x", dedupe_key: "mail:wave1", plain: "Boss, postcards", owner_question: null }),
+        use("write_memory", { key: "channels", content: "1. Every Door Direct Mail in Levittown" }),
+        use("save_content_draft", { page_type: "message_copy", target: "postcard", title: "Postcard copy", why: "x", body_markdown: "Hello neighbor", dedupe_key: "draft:postcard", plain: "Boss, x" }),
+        use("record_finding", { kind: "opportunity", severity: "medium", title: "Member referrals beat directories", detail: "x", expected_impact: "x", evidence: "x", dedupe_key: "ref:1", plain: "Boss, referrals", owner_question: null }),
+      ],
+      "FOR THE OWNER: x DETAILS: y",
+    ];
+    await runAgent({ ...AGENTS.outreach, budgetCents: 50 }, { trigger: "test" });
+    const r = lastResults();
+    assert.ok(r[0].error && /owner's own project/.test(r[0].body), "postcard finding refused");
+    assert.ok(r[1].error, "postcard note refused");
+    assert.ok(r[2].error, "postcard draft refused");
+    assert.ok(!r[3].error, "other channels still recorded");
+    assert.strictEqual(await AgentFinding.countDocuments({}), 1);
+    const spec = await arthur.ARTHUR_TOOLS.get_specialist.run({ agent: "outreach" }, {});
+    assert.ok(spec.currentTools.includes("get_acquisition") && !spec.currentTools.some((t) => MAILISH.test(t)));
+    assert.match(spec.historyNote, /ONLY tools this specialist has now/);
+  });
+
+  await test("old postcard findings and notebook lines from before the removal are retired; everything else stays", async () => {
+    const { retirePostalRecords } = require("../utils/agents/retirePostal");
+    const AgentMemory = require("../models/AgentMemory");
+    const old = await AgentFinding.create({ agent: "outreach", kind: "opportunity", severity: "high", title: "Postcards are our best shot", detail: "EDDM in Levittown", status: "open" });
+    const keep = await AgentFinding.create({ agent: "outreach", kind: "opportunity", severity: "medium", title: "Member referrals", detail: "x", status: "open" });
+    await AgentMemory.create({ agent: "outreach", key: "channels", content: "1. Postcards - best shot\n2. Member referrals - next test\n3. Local partners" });
+    await AgentMemory.create({ agent: "outreach", key: "mail-wave-plan", content: "2,000 pieces" });
+    const r1 = await retirePostalRecords();
+    assert.deepStrictEqual(r1, { findings: 1, notesEdited: 1, notesDeleted: 1 });
+    const o = await AgentFinding.findById(old._id).lean();
+    assert.strictEqual(o.status, "superseded");
+    assert.match(o.statusNote, /owner's own project/);
+    assert.strictEqual((await AgentFinding.findById(keep._id).lean()).status, "open");
+    assert.strictEqual((await AgentMemory.findOne({ key: "channels" }).lean()).content, "2. Member referrals - next test\n3. Local partners");
+    assert.deepStrictEqual(await retirePostalRecords(), { findings: 0, notesEdited: 0, notesDeleted: 0 }, "idempotent");
+  });
+
+  await test("a draft is never reported as sent: false 'I sent' claims are corrected when saved and when shown", async () => {
+    const { correctSendClaims } = require("../utils/agents/claims");
+    assert.strictEqual(correctSendClaims("Boss, I sent the cancellation message.").text, "Boss, I drafted (not sent) the cancellation message.");
+    assert.strictEqual(correctSendClaims("I sent it", { sentCount: 1 }).corrected, false, "a real delivery record allows it");
+    assert.strictEqual(correctSendClaims("The responder sent 4 replies last week.").corrected, false, "system facts are left alone");
+    // saved: the specialist wrote "I sent", nothing was delivered
+    script = ["FOR THE OWNER: Boss, I sent the cancellation save message to the member. DETAILS: Drafted message_copy for cancellation save."];
+    const run = await runAgent({ ...AGENTS.conversion, budgetCents: 50 }, { trigger: "test" });
+    assert.match(run.plainSummary, /I drafted \(not sent\) the cancellation save message/);
+    // shown: an old run saved before this fix is corrected for the owner and for Arthur
+    const oldRun = await AgentRun.create({ agent: "conversion", trigger: "schedule", status: "succeeded", startedAt: new Date(), plainSummary: "Boss, I emailed the member a save offer.", summary: "draft only" });
+    const explain = require("../utils/growth/explain");
+    assert.match(explain.explainRun(oldRun.toObject(), { robotName: "Marcus" }).simple.say, /I drafted \(not emailed\)/);
+    const state = await arthur.councilState();
+    assert.match(state.recentShifts.find((x) => x.id === String(oldRun._id)).summary, /drafted \(not emailed\)/);
+    const item = await arthur.ARTHUR_TOOLS.get_item.run({ kind: "run", id: String(oldRun._id) }, {});
+    assert.match(item.forOwner, /drafted \(not emailed\)/);
+  });
+
+  await test("Arthur sees each waiting item's real state and an action's delivery record", async () => {
+    const a = await pendingAction();
+    const state = await arthur.councilState();
+    assert.match(state.waitingForOwner.find((x) => x.id === String(a._id)).state, /nothing has been sent or changed/);
+    const item = await arthur.ARTHUR_TOOLS.get_item.run({ kind: "action", id: String(a._id) }, {});
+    assert.match(item.delivery, /^not applied - waiting for approval/);
+    await GrowthAction.updateOne({ _id: a._id }, { $set: { status: "succeeded", executedAt: new Date("2026-10-10T15:00:00Z") } });
+    assert.match((await arthur.ARTHUR_TOOLS.get_item.run({ kind: "action", id: String(a._id) }, {})).delivery, /^applied at 2026-10-10T15:00/);
+    const msg = await GrowthAction.create({ type: "conversation_reply", idempotencyKey: "cr1", status: "awaiting_approval", riskTier: "medium", modeAtProposal: "supervised", summary: "Reply", payload: { reply: "Hi" } });
+    assert.match((await arthur.ARTHUR_TOOLS.get_item.run({ kind: "action", id: String(msg._id) }, {})).delivery, /^not sent - waiting for approval/);
+  });
+
   console.log("big requests");
 
   await test("at the limit the tools are taken away for one last turn: completed work is kept and he says what remains", async () => {
