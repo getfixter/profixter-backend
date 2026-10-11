@@ -90,7 +90,8 @@ const TOOL_DEFS = {
       const filter = {};
       if (scope === "mine") filter.agent = ctx.agent;
       if (status === "open") filter.status = "open";
-      const rows = await AgentFinding.find(filter).sort({ updatedAt: -1 }).limit(40).lean();
+      // never the retired business report, never anything archived
+      const rows = await AgentFinding.find({ status: { $ne: "archived" }, ...filter, kind: { $ne: "report" } }).sort({ updatedAt: -1 }).limit(40).lean();
       return rows.map((f) => ({
         id: String(f._id),
         agent: f.agent,

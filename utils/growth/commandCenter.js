@@ -238,13 +238,28 @@ function buildAlerts({ capacity, queue, policies, registrationsLast72h, now }) {
  * Counts come from the Overview (one definition), the funnel steps from the
  * site's anonymous step beacon (models/FunnelStep).
  */
+const nyDay = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+const shiftDay = (ymd, days) => new Date(new Date(`${ymd}T12:00:00Z`).getTime() + days * 864e5).toISOString().slice(0, 10);
+
 async function acquisitionView({ now = new Date() } = {}) {
   const { buildOverview } = require("../analytics/overview");
   const { FunnelStep, STEPS } = require("../../models/FunnelStep");
   const [o7, o30] = await Promise.all([buildOverview({ range: "7d", now }), buildOverview({ range: "30d", now })]);
-  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  /*
+   * ONE WINDOW FOR THE WHOLE FUNNEL. Page-step tracking began recently, so the
+   * funnel covers the last 30 days OR the days since tracking began, whichever
+   * is shorter - and the first free visits at its end are counted over exactly
+   * the same days. (Comparing a few days of page views with 30 days of
+   * bookings made the step rates meaningless.)
+   */
+  const today = nyDay(now);
+  const start30 = shiftDay(today, -29);
+  const firstTracked = (await FunnelStep.findOne({}).sort({ date: 1 }).select("date").lean())?.date || null;
+  const since = firstTracked && firstTracked > start30 ? firstTracked : start30;
+  const days = Math.round((new Date(`${today}T12:00:00Z`) - new Date(`${since}T12:00:00Z`)) / 864e5) + 1;
+  const oFunnel = since === start30 ? o30 : await buildOverview({ range: "custom", from: since, to: today, now });
   const steps = await FunnelStep.aggregate([
-    { $match: { date: { $gte: since } } },
+    { $match: { date: { $gte: since, $lte: today } } },
     { $group: { _id: { step: "$step", source: "$source" }, n: { $sum: "$count" } } },
   ]);
   const byStep = Object.fromEntries(STEPS.map((s) => [s, steps.filter((x) => x._id.step === s).reduce((a, x) => a + x.n, 0)]));
@@ -259,12 +274,17 @@ async function acquisitionView({ now = new Date() } = {}) {
     visitors30: o30?.funnel?.visitors ?? null,
     registrations30: o30?.funnel?.registered ?? null,
     bySource30: (o30?.sources || [])
-      .filter((s) => s.visitors || s.freeVisits || s.registrations)
-      .map((s) => ({ key: s.key, label: s.label, visitors: s.visitors, registrations: s.registrations, freeVisits: s.freeVisits })),
+      .filter((s) => s.visitors || s.freeVisits || s.firstFreeVisits || s.registrations)
+      // first free visits once per home, so the sources add up to the headline number
+      .map((s) => ({ key: s.key, label: s.label, visitors: s.visitors, registrations: s.registrations, freeVisits: s.firstFreeVisits ?? s.freeVisits })),
     funnel30: {
       ...byStep,
-      firstFreeVisits: fv(o30).firstBooked ?? null,
-      trackingSince: "2026-10-10",
+      firstFreeVisits: fv(oFunnel).firstBooked ?? null,
+      since,
+      through: today,
+      days,
+      trackingSince: firstTracked,
+      fullWindow: since === start30,
     },
     costPerFirstFreeVisitCents:
       o30?.spend?.connected && o30.spend.totalCents != null && fv(o30).firstBooked ? Math.round(o30.spend.totalCents / fv(o30).firstBooked) : null,

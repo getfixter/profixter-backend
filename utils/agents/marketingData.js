@@ -21,6 +21,42 @@ const { isMarketableAccount, isUnsubscribed } = require("../marketing/marketingE
  *                            lawfully be emailed or texted - counts only
  */
 
+const MIN_DAYS_FOR_RATES = 14;
+
+/**
+ * The booking funnel over ONE window (the last 30 days, or the days since page
+ * tracking began if fewer), with the first free visits of those same days.
+ * Step rates are given only with 14+ days of tracking; before that they are
+ * null with the reason, so nobody reads a few days of data as a trend.
+ */
+function funnelView(f) {
+  const n = (v) => (typeof v === "number" ? v : null);
+  const steps = {
+    bookingPageViews: n(f.booking_page_view),
+    bookerStarted: n(f.booker_started),
+    slotChosen: n(f.slot_selected),
+    signupViewed: n(f.signup_view),
+    firstFreeVisits: n(f.firstFreeVisits),
+  };
+  const rate = (a, b) => (a && b != null ? Math.round((b / a) * 1000) / 10 : null);
+  const enough = (f.days || 0) >= MIN_DAYS_FOR_RATES;
+  return {
+    window: { from: f.since || null, through: f.through || null, days: f.days ?? null, trackingBegan: f.trackingSince || null },
+    ...steps,
+    stepRatesPct: enough
+      ? {
+          startedOfPageViews: rate(steps.bookingPageViews, steps.bookerStarted),
+          slotOfStarted: rate(steps.bookerStarted, steps.slotChosen),
+          signupOfSlot: rate(steps.slotChosen, steps.signupViewed),
+          bookedOfSignup: rate(steps.signupViewed, steps.firstFreeVisits),
+        }
+      : null,
+    caution: enough
+      ? null
+      : `Page tracking began ${f.trackingSince || "recently"}: only ${f.days ?? "a few"} day(s) of data. Step and conversion rates are withheld until there are ${MIN_DAYS_FOR_RATES}+ days.`,
+  };
+}
+
 /** Organic acquisition, nothing financial. */
 async function marketingResults({ now = new Date() } = {}) {
   const { acquisitionView } = require("../growth/commandCenter");
@@ -37,16 +73,7 @@ async function marketingResults({ now = new Date() } = {}) {
     visitors30: n(a.visitors30),
     registrations30: n(a.registrations30),
     bySource30: (a.bySource30 || []).map((s) => ({ source: s.label || s.key, key: s.key, visitors: n(s.visitors), registrations: n(s.registrations), firstFreeVisits: n(s.freeVisits) })),
-    bookingFunnel30: a.funnel30
-      ? {
-          bookingPageViews: n(a.funnel30.booking_page_view),
-          bookerStarted: n(a.funnel30.booker_started),
-          slotChosen: n(a.funnel30.slot_selected),
-          signupViewed: n(a.funnel30.signup_view),
-          firstFreeVisits: n(a.funnel30.firstFreeVisits),
-          trackingSince: a.funnel30.trackingSince || null,
-        }
-      : null,
+    bookingFunnel: a.funnel30 ? funnelView(a.funnel30) : null,
     // where customers live: town names and how many customers, for local marketing - nothing else
     customerTowns: (o30?.topAreas || []).map((t) => ({ town: t.city || t.label || t.name || null, customers: n(t.customers) })).filter((t) => t.town),
     notes:

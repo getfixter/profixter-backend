@@ -545,7 +545,6 @@ function explainResults(office) {
       body: (office.robots || []).map((r) => `- ${r.name} (${r.role}): ${r.statusText}`).join("\n"),
     },
     { heading: "Waiting for my decision", body: `${office.approvals?.total || 0} approvals, ${office.approvals?.notes || 0} open notes` },
-    { heading: "Latest weekly report", body: office.report ? `${office.report.headline} (${nyTime(office.report.at)})` : "None yet." },
   ]);
   return { simple: { say }, chatgpt };
 }

@@ -224,14 +224,13 @@ async function buildOffice({ now = new Date(), fresh = false } = {}) {
   const { buildVisibilitySummary } = require("../visibility/summary");
   const Booking = require("../../models/Booking");
   const since30 = new Date(now - 30 * 864e5);
-  const [robots, acquisition, visibility, spentToday, spentMonth, lastFirstVisit, report, approvalsCount, threads30] = await Promise.all([
+  const [robots, acquisition, visibility, spentToday, spentMonth, lastFirstVisit, approvalsCount, threads30] = await Promise.all([
     robotStates({ now }),
     acquisitionView({ now }).catch(() => null),
     buildVisibilitySummary().catch(() => null),
     spentTodayCents(now),
     spentThisMonthCents(now),
     Booking.findOne({ isFreeFirstVisit: true }).sort({ createdAt: -1 }).select("createdAt").lean(),
-    AgentFinding.findOne({ kind: "report" }).sort({ updatedAt: -1 }).select("title updatedAt").lean(),
     approvalCounts(),
     ConversationThread.aggregate([{ $match: { lastInboundAt: { $gte: since30 } } }, { $group: { _id: "$intent", n: { $sum: 1 } } }]).catch(() => []),
   ]);
@@ -264,7 +263,6 @@ async function buildOffice({ now = new Date(), fresh = false } = {}) {
     },
     approvals: approvalsCount,
     lastFirstFreeVisitAt: lastFirstVisit?.createdAt || null,
-    report: report ? { headline: report.title, at: report.updatedAt } : null,
   };
   value.explained = explain.explainResults(value);
   cache = { at: Date.now(), value };

@@ -577,7 +577,7 @@ function withSpend(row, spendCents) {
 
 function buildSources(data, period, counts, revenueRows, visitors, spend = null, newPaying = []) {
   const rows = new Map(
-    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, members: 0, newPayingCustomers: 0, revenueCents: 0, spendCents: null }])
+    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, firstFreeVisits: 0, members: 0, newPayingCustomers: 0, revenueCents: 0, spendCents: null }])
   );
   const bump = (user, field, by = 1) => {
     const row = rows.get(sourceOf(user)) || rows.get("other");
@@ -585,6 +585,9 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
   };
   for (const u of counts.newCustomers) bump(u, "registrations");
   for (const b of counts.fvBooked) bump(data.userById.get(String(b.user)), "freeVisits");
+  // NEW FIRST free visits (once per home, its earliest booking) - these add up to kpis.freeVisits.firstBooked;
+  // freeVisits above counts every free-visit booking, rebookings included.
+  for (const b of counts.firstFv) bump(data.userById.get(String(b.user)), "firstFreeVisits");
   for (const m of counts.newMemberships) bump(data.userById.get(m.userId), "members");
   for (const u of newPaying) bump(u, "newPayingCustomers");
   let unmatchedRevenueCents = 0;

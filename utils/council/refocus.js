@@ -17,7 +17,7 @@ const { CouncilDecision, CouncilTask } = require("../../models/Council");
 const MARKER = "system:refocus-2026-10-11-reviewed";
 // Money and operations - NOT marketing words like "content calendar" or "scheduling posts".
 const BUSINESS_RE =
-  /\b(revenue|mrr|recurring revenue|stripe|billing|invoices?|subscriptions? (?:stat|count|number|revenue)|cancell?ations?|churn|retention|paying members?|member(?:ship)? (?:count|numbers?|statistics|growth)|pric(?:e|es|ing) (?:change|increase|cut|test|analysis)|calendar capacity|capacity|(?:visit|appointment|booking) scheduling|scheduling capacity|profit(?:able|ability)?|(?:members?|customers?|people) (?:who )?(?:cancel|leave|quit)\w*)\b/i;
+  /\b(revenue|mrr|recurring revenue|stripe|billing|invoices?|subscriptions? (?:stat|count|number|revenue)|cancell?ations?|churn|retention|paying members?|member(?:ship)? (?:count|numbers?|statistics|growth)|pric(?:e|es|ing) (?:change|increase|cut|test|analysis)|calendar capacity|capacity|(?:visit|appointment|booking) scheduling|scheduling capacity|profit(?:able|ability)?|(?:members?|customers?|people) (?:who )?(?:cancel|leave|quit)\w*|(?:failed|declined|late|missed) payments?|payments? (?:failed|failures?|declined|issues?)|past[- ]due|card (?:declined|failed|expired))\b/i;
 
 function lineOf(kind, id, text, extra = "") {
   return `- ${kind} ${id}: ${String(text).replace(/\s+/g, " ").slice(0, 160)}${extra}`;
@@ -62,4 +62,51 @@ async function reviewForRefocus({ now = new Date() } = {}) {
   return result;
 }
 
-module.exports = { BUSINESS_RE, reviewForRefocus };
+const BILLING_RE = /\b(billing|invoices?|stripe|(?:failed|declined|late|missed) payments?|payments? (?:failed|failures?|declined|issues?)|past[- ]due|card (?:declined|failed|expired)|refunds?|chargebacks?)\b/i;
+
+/**
+ * Keep the marketing view marketing-only - without deleting history:
+ *  - the retired weekly business report(s) of the old "Growth Intelligence"
+ *    digest (members, revenue, cancellations) are archived;
+ *  - any open specialist note about billing or payments (e.g. failed
+ *    payments) is archived - billing is the owner's and no agent needs it.
+ * Both keep their full record and appear in the chamber's Archived list,
+ * restorable by the owner. Idempotent: only OPEN items are touched.
+ */
+async function retireBusinessRecords({ now = new Date() } = {}) {
+  const at = now;
+  const reports = await AgentFinding.find({ kind: "report", status: { $ne: "archived" } }).select("_id status").lean();
+  for (const r of reports) {
+    await AgentFinding.updateOne(
+      { _id: r._id, status: r.status },
+      {
+        $set: {
+          status: "archived",
+          statusBy: "system",
+          statusNote: "Retired weekly business report (from before the marketing refocus) - kept in history",
+          archive: { by: "system", at, reason: "Retired weekly business report from before the marketing refocus: members, revenue and cancellations are the owner's. Kept in history.", category: "retired_report", previousStatus: r.status },
+        },
+      }
+    );
+  }
+  const open = await AgentFinding.find({ status: "open", kind: { $ne: "report" } }).select("title detail plain").lean();
+  const billing = open.filter((f) => BILLING_RE.test(`${f.title} ${f.detail || ""} ${f.plain || ""}`));
+  for (const f of billing) {
+    await AgentFinding.updateOne(
+      { _id: f._id, status: "open" },
+      {
+        $set: {
+          status: "archived",
+          statusBy: "system",
+          statusNote: "Billing information is the owner's - archived out of the marketing view, kept in history",
+          archive: { by: "system", at, reason: "Billing and payment information is the owner's, not the marketing Kingdom's. Kept in history.", category: "business_management", previousStatus: "open" },
+        },
+      }
+    );
+  }
+  const result = { reports: reports.length, billingNotes: billing.length };
+  if (reports.length || billing.length) console.log(JSON.stringify({ event: "business_records_retired", ...result }));
+  return result;
+}
+
+module.exports = { BILLING_RE, BUSINESS_RE, retireBusinessRecords, reviewForRefocus };

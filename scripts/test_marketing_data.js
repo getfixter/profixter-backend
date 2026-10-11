@@ -126,7 +126,7 @@ async function main() {
   await test("the marketing results carry no financial fields and no personal data", async () => {
     const out = await TOOL_DEFS.get_acquisition.run({});
     scan(out);
-    assert.ok("firstFreeVisitBookings" in out && "bySource30" in out && "bookingFunnel30" in out);
+    assert.ok("firstFreeVisitBookings" in out && "bySource30" in out && "bookingFunnel" in out);
     assert.ok(!("costPerFirstFreeVisitCents" in out));
   });
 
@@ -186,6 +186,76 @@ async function main() {
     assert.strictEqual((await AgentFinding.findById(note._id).lean()).status, "open", "not closed");
     assert.deepStrictEqual(await reviewForRefocus(), { skipped: "done" }, "runs once");
     assert.ok(await AgentMemory.exists({ agent: "arthur", key: "system:refocus-2026-10-11-reviewed" }));
+  });
+
+  console.log("reporting accuracy");
+
+  await test("every first free-visit booking is counted once, under one source: the sources add up to the total", async () => {
+    const { clearOverviewCache } = require("../utils/analytics/overview");
+    // A cancels and rebooks (same home) - a second booking, NOT a second first visit; C books for the first time.
+    await Booking.collection.insertMany([
+      { ...visit("A", 0), status: "cancelled", completedAt: null, createdAt: new Date(now - 2 * DAY) },
+      { ...visit("C", 0), status: "booked", completedAt: null, createdAt: new Date(now - 1 * DAY) },
+    ]);
+    clearOverviewCache();
+    const out = await TOOL_DEFS.get_acquisition.run({});
+    const total = out.firstFreeVisitBookings.last30;
+    const bySource = out.bySource30.reduce((n, x) => n + (x.firstFreeVisits || 0), 0);
+    assert.strictEqual(total, 3, "A, B and C - A's rebooking is not a new first visit");
+    assert.strictEqual(bySource, total, "the source breakdown adds up to the total");
+  });
+
+  await test("the funnel counts every step over the same days - since tracking began - and withholds rates until there is enough data", async () => {
+    const { FunnelStep } = require("../models/FunnelStep");
+    const { clearOverviewCache } = require("../utils/analytics/overview");
+    const day = (d) => new Date(now - d * DAY).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    await FunnelStep.collection.insertMany([
+      { date: day(2), step: "booking_page_view", source: "direct", count: 20 },
+      { date: day(1), step: "booker_started", source: "direct", count: 6 },
+      { date: day(1), step: "slot_selected", source: "direct", count: 3 },
+      { date: day(0), step: "signup_view", source: "direct", count: 2 },
+    ]);
+    clearOverviewCache();
+    const f = (await TOOL_DEFS.get_acquisition.run({})).bookingFunnel;
+    assert.strictEqual(f.window.from, day(2), "starts when tracking began, not 30 days ago");
+    assert.strictEqual(f.window.days, 3);
+    assert.strictEqual(f.window.trackingBegan, day(2));
+    assert.strictEqual(f.bookingPageViews, 20);
+    assert.strictEqual(f.firstFreeVisits, 1, "only C's first visit falls in the same 3 days (A's rebooking does not count, B's was before)");
+    assert.strictEqual(f.stepRatesPct, null, "no rates from 3 days of data");
+    assert.match(f.caution, /only 3 day\(s\) of data/);
+  });
+
+  await test("the old weekly business report and billing notes leave the marketing view - archived, never deleted", async () => {
+    const { retireBusinessRecords } = require("../utils/council/refocus");
+    const report = await AgentFinding.create({ agent: "growth_intelligence", kind: "report", severity: "info", title: "2 new members; MRR $5,703", detail: "x", status: "acknowledged" });
+    const billing = await AgentFinding.create({ agent: "conversion", kind: "risk", severity: "medium", title: "Two members have a failed payment", detail: "x", status: "open" });
+    const marketing = await AgentFinding.create({ agent: "outreach", kind: "opportunity", severity: "medium", title: "Massapequa Facebook group allows business posts on Fridays", detail: "x", status: "open" });
+    const r = await retireBusinessRecords();
+    assert.deepStrictEqual(r, { reports: 1, billingNotes: 1 });
+    const rp = await AgentFinding.findById(report._id).lean();
+    assert.strictEqual(rp.status, "archived");
+    assert.strictEqual(rp.archive.previousStatus, "acknowledged");
+    assert.strictEqual(rp.archive.category, "retired_report");
+    const b = await AgentFinding.findById(billing._id).lean();
+    assert.strictEqual(b.status, "archived");
+    assert.strictEqual(b.archive.by, "system");
+    assert.ok(b.title.includes("failed payment"), "the record itself is kept intact");
+    assert.strictEqual((await AgentFinding.findById(marketing._id).lean()).status, "open", "marketing work untouched");
+    assert.deepStrictEqual(await retireBusinessRecords(), { reports: 0, billingNotes: 0 }, "idempotent");
+    // not visible to the heroes, and restorable by the owner
+    const seen = await TOOL_DEFS.list_findings.run({ scope: "all", status: "open" }, { agent: "outreach" });
+    assert.ok(!JSON.stringify(seen).includes("failed payment") && !JSON.stringify(seen).includes("MRR $5,703"), "neither the billing note nor the old report");
+    const { restoreItem } = require("../utils/council/archive");
+    assert.strictEqual((await restoreItem({ kind: "note", id: String(billing._id), by: "Owner" })).status, "open");
+  });
+
+  await test("the office no longer carries the weekly report", async () => {
+    const office = require("../utils/growth/office");
+    office.invalidateOffice();
+    const o = await office.buildOffice({ fresh: true });
+    assert.ok(!("report" in o));
+    assert.doesNotMatch(o.explained.chatgpt, /weekly report/i);
   });
 
   await mongoose.disconnect();
