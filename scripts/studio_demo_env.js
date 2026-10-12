@@ -1,0 +1,232 @@
+/**
+ * Shower Studio isolated demo / QA stack. NOTHING here touches production:
+ *
+ *   in-memory MongoDB  -> seeded TEST staff, a test customer, the researched
+ *                         starter catalog (published, with TEST prices)
+ *   real backend       -> server.js with no .env, private Studio storage in a
+ *                         temporary folder, email to a local SMTP catcher that
+ *                         records messages and never relays them
+ *   frontend           -> next dev against that backend
+ *
+ *   node scripts/studio_demo_env.js          # start and keep running (prints logins)
+ *   require("./studio_demo_env").start()     # used by the end-to-end test
+ *
+ * Refuses to start if a port is busy (a stale server would make results lie).
+ */
+const { spawn } = require("child_process");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+const net = require("net");
+const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
+const { MongoMemoryServer } = require("mongodb-memory-server");
+
+const BACKEND_PORT = Number(process.env.STUDIO_QA_BACKEND_PORT || 5098);
+const FRONTEND_PORT = Number(process.env.STUDIO_QA_FRONTEND_PORT || 3098);
+const SMTP_PORT = Number(process.env.STUDIO_QA_SMTP_PORT || 2598);
+const S3_PORT = Number(process.env.STUDIO_QA_S3_PORT || 9098);
+const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
+const FRONTEND_DIR = path.join(__dirname, "..", "..", "FrontEnd");
+const SECRET = "studio-qa-only-secret-not-for-production";
+const OWNER_EMAIL = "owner@studio-qa.test";
+
+const children = [];
+const mail = [];
+let mongo = null;
+let smtp = null;
+let s3 = null;
+const s3Objects = new Map();
+const s3Log = [];
+
+/**
+ * A storing S3 stub (path-style): every AWS SDK call from the demo backend
+ * lands here, never on AWS. Objects live in memory.
+ */
+function startS3Stub() {
+  s3 = require("http").createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const key = decodeURIComponent(req.url.split("?")[0]);
+      s3Log.push(`${req.method} ${key}`);
+      if (req.method === "PUT") { s3Objects.set(key, Buffer.concat(chunks)); res.writeHead(200, { ETag: '"qa"' }); return res.end(); }
+      if (req.method === "GET" || req.method === "HEAD") {
+        if (!s3Objects.has(key)) { res.writeHead(404, { "Content-Type": "application/xml" }); return res.end('<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>not found</Message></Error>'); }
+        const body = s3Objects.get(key);
+        res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": body.length });
+        return res.end(req.method === "HEAD" ? undefined : body);
+      }
+      if (req.method === "DELETE") { s3Objects.delete(key); res.writeHead(204); return res.end(); }
+      if (req.method === "POST" && /[?&]delete/.test(req.url)) {
+        for (const m of Buffer.concat(chunks).toString().matchAll(/<Key>([^<]+)<\/Key>/g)) s3Objects.delete(key.replace(/\/$/, "") + "/" + m[1]);
+        res.writeHead(200, { "Content-Type": "application/xml" }); return res.end('<?xml version="1.0"?><DeleteResult></DeleteResult>');
+      }
+      res.writeHead(200, { "Content-Type": "application/xml" }); res.end("");
+    });
+  });
+  return new Promise((resolve) => s3.listen(S3_PORT, "127.0.0.1", resolve));
+}
+
+function log(step, detail = "") { console.log(`  ${step}${detail ? " - " + detail : ""}`); }
+
+async function assertPortFree(port, label) {
+  await new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once("error", () => reject(new Error(`Port ${port} (${label}) is busy. Stop that process first.`)));
+    s.once("listening", () => s.close(resolve));
+    s.listen(port, "127.0.0.1");
+  });
+}
+
+async function waitForHttp(url, label, ms = 240000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try { const r = await fetch(url, { signal: AbortSignal.timeout(5000) }); if (r.status < 500) return; } catch { /* not yet */ }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error(`${label} did not come up at ${url}`);
+}
+
+/** A minimal SMTP server: accepts every message, records it, relays nothing. */
+function startSmtpCatcher() {
+  smtp = net.createServer((sock) => {
+    let data = false, buf = "", current = { from: "", to: [], body: "" };
+    const say = (l) => sock.write(l + "\r\n");
+    say("220 studio-qa smtp catcher");
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\r\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (data) {
+          if (line === ".") {
+            data = false;
+            const subject = /^Subject: (.*)$/im.exec(current.body)?.[1] || "";
+            mail.push({ ...current, subject, at: new Date().toISOString() });
+            current = { from: "", to: [], body: "" };
+            say("250 queued (not delivered - QA catcher)");
+          } else current.body += line + "\n";
+          continue;
+        }
+        const cmd = line.slice(0, 4).toUpperCase();
+        if (cmd === "EHLO" || cmd === "HELO") { sock.write("250-studio-qa\r\n250 AUTH PLAIN LOGIN\r\n"); }
+        else if (cmd === "AUTH") say("235 ok");
+        else if (cmd === "MAIL") { current.from = line; say("250 ok"); }
+        else if (cmd === "RCPT") { current.to.push(line); say("250 ok"); }
+        else if (cmd === "DATA") { data = true; say("354 go"); }
+        else if (cmd === "QUIT") { say("221 bye"); sock.end(); }
+        else say("250 ok");
+      }
+    });
+    sock.on("error", () => {});
+  });
+  return new Promise((resolve) => smtp.listen(SMTP_PORT, "127.0.0.1", resolve));
+}
+
+function spawnChild(label, cmd, args, opts) {
+  const child = spawn(cmd, args, { shell: true, ...opts, stdio: ["ignore", "pipe", "pipe"] });
+  const logFile = path.join(os.tmpdir(), `studio-qa-${label}.log`);
+  const out = fs.createWriteStream(logFile);
+  child.stdout.pipe(out); child.stderr.pipe(out);
+  children.push(child);
+  return child;
+}
+
+async function seed() {
+  const User = require("../models/User");
+  const StudioProduct = require("../models/studio/StudioProduct");
+  const StudioPricing = require("../models/studio/StudioPricing");
+  const mk = (name, email, role, extra = {}) => User.create({ userId: `qa-${email}`, name, email, role, ...extra });
+  const users = {
+    owner: await mk("QA Owner", OWNER_EMAIL, "admin"),
+    seller: await mk("Sam Seller", "sam@studio-qa.test", "employee", { adminSections: ["studio", "projects", "leads"] }),
+    pricer: await mk("Pat Pricer", "pat@studio-qa.test", "employee", { adminSections: ["studio", "studio-pricing", "projects"] }),
+    cataloger: await mk("Cat Alog", "cat@studio-qa.test", "employee", { adminSections: ["studio-catalog"] }),
+    outsider: await mk("Otto Outsider", "otto@studio-qa.test", "employee", { adminSections: ["leads"] }),
+    customer: await mk("Carla Customer", "carla@studio-qa.test", "customer", { phone: "6315550199" }),
+  };
+  const starter = require("../data/studio/starter-catalog.json");
+  // TEST prices only (the owner sets real ones). Round numbers make totals easy to check.
+  const PRICES = {
+    wall: 120000, base: 90000, fixture: 35000, enclosure: 95000, accessory: 12000,
+  };
+  await StudioProduct.insertMany(starter.products.map((p) => ({ ...p, status: "published", pricing: { priceCents: PRICES[p.category], installCents: 0, internalNote: "QA test price" } })));
+  const pricing = await StudioPricing.current();
+  for (const t of pricing.projectTypes) t.basePriceCents = { "tub-to-shower": 450000, "shower-replacement": 400000, "tub-replacement": 380000 }[t.key];
+  for (const a of pricing.adders) a.priceCents = { "paint-above": 60000, "door-install": 25000, "grab-bar-blocking": 15000, "seat-backing": 20000, "valve-relocation": 50000 }[a.key];
+  await pricing.save();
+  return Object.fromEntries(Object.entries(users).map(([k, u]) => [k, { id: String(u._id), email: u.email, token: jwt.sign({ id: String(u._id) }, SECRET, { expiresIn: "12h" }) }]));
+}
+
+async function start({ frontend = true } = {}) {
+  await assertPortFree(BACKEND_PORT, "backend");
+  if (frontend) await assertPortFree(FRONTEND_PORT, "frontend");
+  await assertPortFree(SMTP_PORT, "smtp");
+  await assertPortFree(S3_PORT, "s3 stub");
+  mongo = await MongoMemoryServer.create();
+  const mongoUri = mongo.getUri();
+  await mongoose.connect(mongoUri);
+  log("mongo (in memory)", "isolated");
+  const users = await seed();
+  log("seeded", "test staff, test customer, starter catalog with TEST prices");
+  await startSmtpCatcher();
+  await startS3Stub();
+  log("s3 stub", `127.0.0.1:${S3_PORT} (no request can reach AWS)`);
+  const noCreds = path.join(os.tmpdir(), "studio-qa-no-aws-credentials");
+  log("smtp catcher", `127.0.0.1:${SMTP_PORT} (records, never relays)`);
+  const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "studio-qa-private-"));
+  spawnChild("backend", "node", ["server.js"], {
+    cwd: path.join(__dirname, ".."),
+    env: {
+      PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      NODE_ENV: "test", PORT: String(BACKEND_PORT), MONGO_URI: mongoUri, JWT_SECRET: SECRET, JWT_RESET_SECRET: SECRET + "-reset",
+      MAIL_ADMIN: OWNER_EMAIL, LEADS_EMAIL: "leads@studio-qa.test", S3_BUCKET: "studio-qa-bucket", STUDIO_STORAGE: "local", STUDIO_LOCAL_DIR: storageDir,
+      // every AWS SDK client goes to the local stub; this machine's own AWS credentials are never read
+      AWS_ENDPOINT_URL: `http://127.0.0.1:${S3_PORT}`, AWS_ACCESS_KEY_ID: "qa", AWS_SECRET_ACCESS_KEY: "qa", AWS_REGION: "us-east-1", S3_REGION: "us-east-1",
+      AWS_SHARED_CREDENTIALS_FILE: noCreds, AWS_CONFIG_FILE: noCreds, AWS_EC2_METADATA_DISABLED: "true", AWS_PROFILE: "",
+      HOME: os.tmpdir(), USERPROFILE: os.tmpdir(),
+      AWS_SES_SMTP_HOST: "127.0.0.1", AWS_SES_SMTP_PORT: String(SMTP_PORT), AWS_SES_SMTP_USER: "qa", AWS_SES_SMTP_PASS: "qa",
+      BOOKING_REMINDERS_ENABLED: "false", BOOKING_REVIEW_REQUESTS_ENABLED: "false", ESIGN_ADOBE_STARTUP: "false", ESIGN_ALLOW_UNSIGNED_COMPANY: "true",
+      SMS_ENABLED: "false", PUBLIC_API_BASE_URL: BACKEND_URL, PUBLIC_SITE_BASE_URL: FRONTEND_URL,
+      EXTRA_CORS_ORIGINS: `${FRONTEND_URL},http://localhost:${FRONTEND_PORT}`,
+    },
+  });
+  await waitForHttp(`${BACKEND_URL}/api/studio/catalog`, "backend");
+  log("backend", BACKEND_URL);
+  if (frontend) {
+    spawnChild("frontend", "npx", ["next", "dev", "-p", String(FRONTEND_PORT), "-H", "127.0.0.1"], {
+      cwd: FRONTEND_DIR,
+      env: { ...process.env, NEXT_PUBLIC_API_URL: BACKEND_URL, PORT: String(FRONTEND_PORT), NEXT_TELEMETRY_DISABLED: "1" },
+    });
+    await waitForHttp(`${FRONTEND_URL}/shower-studio`, "frontend", 300000);
+    log("frontend", FRONTEND_URL);
+  }
+  return { BACKEND_URL, FRONTEND_URL, users, mail, storageDir, secret: SECRET, s3Log };
+}
+
+async function stop() {
+  for (const c of children) {
+    try {
+      if (process.platform === "win32") spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { shell: true, stdio: "ignore" });
+      else c.kill("SIGTERM");
+    } catch { /* gone */ }
+  }
+  smtp?.close();
+  s3?.close();
+  await mongoose.disconnect().catch(() => {});
+  await mongo?.stop().catch(() => {});
+}
+
+module.exports = { start, stop, OWNER_EMAIL };
+
+if (require.main === module) {
+  start().then((env) => {
+    console.log("\nShower Studio demo is running (Ctrl+C to stop):");
+    console.log(`  Public Studio:  ${env.FRONTEND_URL}/shower-studio`);
+    console.log(`  Admin:          ${env.FRONTEND_URL}/admin?tab=studio  (sign in by pasting a token below into localStorage "token")`);
+    for (const [k, u] of Object.entries(env.users)) console.log(`  ${k.padEnd(10)} ${u.email}\n             token: ${u.token}`);
+  }).catch(async (e) => { console.error(e.message); await stop(); process.exit(1); });
+  process.on("SIGINT", async () => { await stop(); process.exit(0); });
+}

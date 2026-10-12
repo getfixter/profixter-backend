@@ -64,6 +64,7 @@ const SUITES = [
   "test_attention.js",
   "test_office_explain_integration.js",
   "test_admin_access.js",
+  "test_studio_engine_sync.js",
   "test_attribution.js",
   "test_transactional_email_system.js",
   "test_admin_customer_calendar_integration.js",
