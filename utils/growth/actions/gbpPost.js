@@ -18,12 +18,17 @@ const { defineAction } = require("../actionRegistry");
  * Re-checked at run time, with at most one post every 3 days and never the
  * same text twice.
  *
- * Trust: starts supervised (the owner approves each), runs on its own after 3
- * verified publications, drops back on any failure. Verified by reading the
- * post's status back from the Social Planner; rollback deletes the post.
+ * Trust: the owner gave STANDING APPROVAL (2026-10-12) - it starts autonomous,
+ * no per-post approval. It acts only while the owner has turned this one type
+ * on (GROWTH_ACTIONS_ENABLED_TYPES=gbp_post; customer messages and website
+ * changes stay off). Verified by reading the post's status back from the
+ * Social Planner; a post not published within 6 hours, or reported failed,
+ * fails verification - and the FIRST failure suspends posting completely
+ * (shadow) until the owner resumes it. Rollback deletes the post.
  */
 const TYPE = "gbp_post";
 const MIN_GAP_DAYS = 3;
+const PUBLISH_DEADLINE_MS = 6 * 60 * 60 * 1000;
 const LINK_RE = /^https:\/\/www\.profixter\.com\/book\/free\?(?=[^\s]*utm_source=google)(?=[^\s]*utm_medium=organic)[^\s]*$/;
 
 function fingerprint(text) {
@@ -67,11 +72,13 @@ async function execute(payload, { action, now }) {
 }
 
 /** Published = verified (with its public link when the Social Planner reports one); failed = failed. */
-async function verify(action) {
+async function verify(action, { now = new Date() } = {}) {
   const social = require("../../ghl/socialPlanner");
   const s = await social.postStatus(action.result?.postId);
   if (s.status === "published") return { passed: true, detail: `published${s.link ? ` at ${s.link}` : " (the Social Planner reported no public link)"}` };
   if (["failed", "deleted"].includes(s.status)) return { passed: false, detail: `Social Planner status ${s.status}${s.error ? `: ${String(s.error).slice(0, 200)}` : ""}` };
+  // a post that has not gone out within 6 hours is a failure, not "still waiting" for a week
+  if (action.executedAt && now - new Date(action.executedAt) > PUBLISH_DEADLINE_MS) return { passed: false, detail: `not published within 6 hours (Social Planner status ${s.status})` };
   return { passed: null, detail: `still ${s.status}` };
 }
 
@@ -87,9 +94,12 @@ defineAction({
     "Publish one organic post on Profixter's Google Business Profile with a Book button to the free first visit. Copy rules, organic-only and acquisition-only checks; at most one post every 3 days, never the same text twice; verified by reading the post back; rollback deletes it.",
   platform: "google_business_profile",
   riskTier: "medium",
-  defaultMode: "supervised",
+  // owner's standing approval (2026-10-12): no per-post approval; the first failure suspends
+  defaultMode: "autonomous",
   maxMode: "autonomous",
-  promoteAfter: 3,
+  promoteAfter: null,
+  suspendAfterFailures: 1,
+  overLimit: "record",
   limits: { perDay: 1 },
   approvalTtlMs: 3 * 864e5,
   verifyAfterMs: 30 * 60 * 1000,

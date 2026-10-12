@@ -36,6 +36,27 @@ function engineEnabled() {
   return process.env.GROWTH_ACTIONS_ENABLED === "true";
 }
 
+/*
+ * PER-TYPE SWITCH. With the global switch off, a type may still act when the
+ * owner has turned on just that type: GROWTH_ACTIONS_ENABLED_TYPES lists them
+ * (comma-separated). Only types in SELECTIVELY_ENABLEABLE can be turned on this
+ * way - organic Google Business Profile posting (owner's standing approval,
+ * 2026-10-12). Customer messages and website changes can never be switched on
+ * by this list; they need the global switch.
+ */
+const SELECTIVELY_ENABLEABLE = new Set(["gbp_post"]);
+
+function enabledTypes(env = process.env) {
+  return String(env.GROWTH_ACTIONS_ENABLED_TYPES || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => SELECTIVELY_ENABLEABLE.has(t));
+}
+
+function typeEnabled(type, env = process.env) {
+  return engineEnabled() || enabledTypes(env).includes(type);
+}
+
 function actorRole(actor) {
   return actor?.kind || "system";
 }
@@ -91,7 +112,7 @@ async function propose(type, payload, { idempotencyKey, rationale = "", proposed
 
   let status;
   let heldReason = null;
-  if (!engineEnabled()) {
+  if (!typeEnabled(def.type)) {
     status = "shadow";
     heldReason = mode === "shadow" ? null : "engine_disabled";
   } else if (mode === "shadow") {
@@ -101,7 +122,8 @@ async function propose(type, payload, { idempotencyKey, rationale = "", proposed
   } else {
     const perDay = def.limits?.perDay;
     if (perDay && (await usedToday(type, now)) >= perDay) {
-      status = "awaiting_approval";
+      // a type the owner pre-approved never lands in their inbox: over the limit it is recorded, not done
+      status = def.overLimit === "record" ? "shadow" : "awaiting_approval";
       heldReason = "daily_limit";
     } else {
       status = "approved";
@@ -315,7 +337,7 @@ async function recordFailure(def, reason) {
     updatedAt: { $gte: since },
     $or: [{ status: "failed" }, { "verification.status": "failed" }],
   });
-  if (recentFailures >= SUSPEND_AFTER_FAILURES) {
+  if (recentFailures >= (def.suspendAfterFailures || SUSPEND_AFTER_FAILURES)) {
     const suspended = await GrowthPolicy.findOneAndUpdate(
       { type: def.type, mode: { $in: ["supervised", "autonomous"] } },
       {
@@ -383,7 +405,7 @@ async function approve(actionId, actor, note = "") {
   );
   if (!action) throw httpError("This action is no longer waiting for approval.", 409);
   await audit("approved", action, actor, { note });
-  if (!engineEnabled()) return action.toObject();
+  if (!typeEnabled(action.type)) return action.toObject();
   return (await execute(action._id)) || action.toObject();
 }
 
@@ -431,9 +453,11 @@ async function rollback(actionId, actor) {
 /* ------------------------------------------------------------------ */
 
 async function executionSweep({ now = new Date(), limit = 20 } = {}) {
-  if (!engineEnabled()) return { executed: 0 };
+  const only = engineEnabled() ? null : enabledTypes();
+  if (only && !only.length) return { executed: 0 };
   const due = await GrowthAction.find({
     status: "approved",
+    ...(only ? { type: { $in: only } } : {}),
     $or: [{ nextAttemptAt: null }, { nextAttemptAt: { $lte: now } }],
   })
     .sort({ createdAt: 1 })
@@ -561,6 +585,9 @@ async function runSweeps({ now = new Date() } = {}) {
 module.exports = {
   approve,
   engineEnabled,
+  enabledTypes,
+  typeEnabled,
+  SELECTIVELY_ENABLEABLE,
   execute,
   executionSweep,
   expirySweep,

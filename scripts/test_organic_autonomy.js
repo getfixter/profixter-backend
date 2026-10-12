@@ -204,11 +204,63 @@ async function main() {
     assert.ok(!posts[r.result.postId], "deleted");
   });
 
-  await test("Odysseus may propose Google Business Profile posts; it starts supervised and earns autonomy after 3 verified posts", () => {
+  await test("Odysseus may propose Google Business Profile posts; standing approval = autonomous, first failure suspends", () => {
     assert.ok(AGENTS.visibility.allowedActions.includes("gbp_post"));
     for (const a of ["outreach", "conversion"]) assert.ok(!AGENTS[a].allowedActions.includes("gbp_post"));
     const def = registry.getDefinition("gbp_post");
-    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.promoteAfter, def.limits.perDay], ["supervised", "autonomous", 3, 1]);
+    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.suspendAfterFailures, def.overLimit, def.limits.perDay], ["autonomous", "autonomous", 1, "record", 1]);
+    assert.match(AGENTS.visibility.instructions, /EVERY SHIFT, if no post went out in the last 3 days, propose exactly one strong post/);
+  });
+
+  await test("only Google Business Profile posting can be switched on by itself; customer messages and website changes stay shadow", async () => {
+    await GrowthAction.deleteMany({});
+    await GrowthPolicy.deleteMany({});
+    delete process.env.GROWTH_ACTIONS_ENABLED;
+    process.env.GROWTH_ACTIONS_ENABLED_TYPES = "gbp_post, playbook_email, seo_page_update, post_free_visit_sms";
+    assert.deepStrictEqual(engine.enabledTypes(), ["gbp_post"], "the list cannot switch on anything else");
+    assert.strictEqual(engine.typeEnabled("playbook_email"), false);
+    assert.strictEqual(engine.typeEnabled("seo_page_update"), false);
+    const post = await engine.propose("gbp_post", GOOD, { idempotencyKey: "gbp-1", rationale: "x", proposedBy: { kind: "agent", name: "Odysseus" } });
+    assert.strictEqual(post.action.status, "approved", "pre-approved: no approval item");
+    const seo = await engine.propose("seo_page_update", { path: "/services/drywall-repair", changes: { metaTitle: "Drywall Repair on Long Island | Profixter" }, targetQueries: ["drywall repair"], reason: "x" }, { idempotencyKey: "seo-1", rationale: "x" }).catch((e) => ({ error: e.message }));
+    if (seo.action) assert.strictEqual(seo.action.status, "shadow", "website changes stay recorded only");
+    // the sweep executes only the enabled type
+    accounts = [GOOGLE, FACEBOOK, INSTAGRAM];
+    posts = {};
+    await GrowthAction.create({ type: "playbook_email", idempotencyKey: "pb-approved", status: "approved", riskTier: "medium", modeAtProposal: "supervised", payload: { userId: String(new mongoose.Types.ObjectId()), playbookKey: "x" } });
+    const r = await engine.executionSweep({ now: new Date() });
+    assert.strictEqual(r.executed, 1);
+    assert.strictEqual((await GrowthAction.findOne({ idempotencyKey: "gbp-1" }).lean()).status, "succeeded");
+    assert.strictEqual((await GrowthAction.findOne({ idempotencyKey: "pb-approved" }).lean()).status, "approved", "an email is never executed by this switch");
+    // over the daily limit: recorded, never parked in the owner's approvals
+    const extra = await engine.propose("gbp_post", { ...GOOD, summary: `${GOOD.summary} Second.` }, { idempotencyKey: "gbp-2", rationale: "x" });
+    assert.deepStrictEqual([extra.action.status, extra.action.heldReason], ["shadow", "daily_limit"]);
+    delete process.env.GROWTH_ACTIONS_ENABLED_TYPES;
+    const off = await engine.propose("gbp_post", { ...GOOD, summary: `${GOOD.summary} Third.` }, { idempotencyKey: "gbp-3", rationale: "x" });
+    assert.strictEqual(off.action.status, "shadow", "switched off = recorded only");
+  });
+
+  await test("verification: the first failure suspends posting completely; unpublished after 6 hours is a failure", async () => {
+    await GrowthPolicy.deleteMany({});
+    await GrowthAction.deleteMany({});
+    const def = registry.getDefinition("gbp_post");
+    posts = { "post-late": { _id: "post-late", status: "scheduled" } };
+    const late = await gbp.verify({ executedAt: new Date(Date.now() - 7 * 3600e3), result: { postId: "post-late" } });
+    assert.strictEqual(late.passed, false);
+    assert.match(late.detail, /not published within 6 hours/);
+    await GrowthAction.create({ type: "gbp_post", idempotencyKey: "fail-1", status: "succeeded", riskTier: "medium", modeAtProposal: "autonomous", verification: { status: "failed" } });
+    await engine._internal.recordFailure(def, "verification failed: not published");
+    const p = await GrowthPolicy.findOne({ type: "gbp_post" }).lean();
+    assert.deepStrictEqual([p.mode, p.setBy.kind], ["shadow", "auto_suspension"], "one failure stops posting");
+  });
+
+  await test("the Growth tab shows each post's text and, once verified, its public link", () => {
+    const { publicAction } = require("../utils/growth/commandCenter");
+    const base = { _id: new mongoose.Types.ObjectId(), type: "gbp_post", status: "succeeded", payload: { ...GOOD }, result: { postId: "p1" } };
+    assert.match(publicAction({ ...base, verification: { status: "pending" } }).result.to, /checking that it published/);
+    assert.strictEqual(publicAction({ ...base, verification: { status: "passed", detail: "published at https://g.page/r/x/post/1" } }).result.to, "Google Business Profile - https://g.page/r/x/post/1");
+    assert.match(publicAction({ ...base, verification: { status: "failed", detail: "not published within 6 hours" } }).result.to, /NOT published/);
+    assert.match(publicAction(base).preview, /Get your home ready for fall[\s\S]*Book button: https:\/\/www\.profixter\.com\/book\/free\?utm_source=google/);
   });
 
   await test("the read-only connection check: token, auth, accounts - no post, no token in the output", async () => {
@@ -236,19 +288,19 @@ async function main() {
 
   await test("a second failure within 7 days suspends the action type completely", async () => {
     await GrowthPolicy.deleteMany({});
-    await GrowthPolicy.create({ type: "gbp_post", mode: "autonomous" });
-    const def = registry.getDefinition("gbp_post");
-    const fail = (k) => GrowthAction.create({ type: "gbp_post", idempotencyKey: k, status: "failed", riskTier: "medium", modeAtProposal: "autonomous" });
+    await GrowthPolicy.create({ type: "seo_page_update", mode: "autonomous" });
+    const def = registry.getDefinition("seo_page_update");
+    const fail = (k) => GrowthAction.create({ type: "seo_page_update", idempotencyKey: k, status: "failed", riskTier: "medium", modeAtProposal: "autonomous" });
     await fail("f1");
     await engine._internal.recordFailure(def, "run failed: boom");
-    assert.strictEqual((await GrowthPolicy.findOne({ type: "gbp_post" }).lean()).mode, "supervised", "one failure: demoted");
+    assert.strictEqual((await GrowthPolicy.findOne({ type: "seo_page_update" }).lean()).mode, "supervised", "one failure: demoted");
     await fail("f2");
     await engine._internal.recordFailure(def, "run failed: boom again");
-    const p = await GrowthPolicy.findOne({ type: "gbp_post" }).lean();
+    const p = await GrowthPolicy.findOne({ type: "seo_page_update" }).lean();
     assert.strictEqual(p.mode, "shadow", "two in 7 days: suspended");
     assert.strictEqual(p.setBy.kind, "auto_suspension");
     const { suspendedTypes } = require("../utils/growth/actionLog");
-    assert.deepStrictEqual((await suspendedTypes()).map((s) => s.type), ["gbp_post"]);
+    assert.deepStrictEqual((await suspendedTypes()).map((s) => s.type), ["seo_page_update"]);
   });
 
   await test("Marcus's follow-up emails start supervised", () => {

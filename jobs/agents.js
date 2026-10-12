@@ -142,7 +142,7 @@ function startAgentJobs() {
   setTimeout(async () => {
     try {
       const c = await require("../utils/ghl/socialPlanner").connectionCheck();
-      console.log(JSON.stringify({ event: "ghl_social_check", ...c, actionEngine: require("../utils/growth/actionEngine").engineEnabled() ? "on" : "off" }));
+      console.log(JSON.stringify({ event: "ghl_social_check", ...c, actionEngine: require("../utils/growth/actionEngine").engineEnabled() ? "on" : "off", enabledTypes: require("../utils/growth/actionEngine").enabledTypes() }));
     } catch (e) {
       console.error(JSON.stringify({ event: "ghl_social_check", auth: "error", error: String(e.message).slice(0, 200) }));
     }
