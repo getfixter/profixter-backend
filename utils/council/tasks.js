@@ -126,26 +126,92 @@ async function assignTask({ agent, instruction, why = "", origin = "arthur", own
   return { task: task.toObject(), duplicate: false };
 }
 
-/** Called by the runtime when a specialist's shift starts: hand it its open tasks. */
-async function pickUpTasks(agent, runId) {
-  const tasks = await CouncilTask.find({ agent, status: "assigned" }).sort({ createdAt: 1 }).limit(MAX_PICKUP).lean();
-  if (!tasks.length) return "";
-  await CouncilTask.updateMany(
-    { _id: { $in: tasks.map((t) => t._id) }, status: "assigned" },
-    { $set: { status: "in_progress", lastRun: runId }, $push: { history: entry("in_progress", HERO[agent], "Picked up in a shift") } }
-  );
-  const list = tasks
-    .map((t) => `- task_id ${t._id} (${t.origin === "owner" ? "the owner asked" : "King Arthur asked"}): ${t.instruction}${t.why ? `\n  Why: ${t.why}` : ""}`)
-    .join("\n");
-  return `\n\nTASKS FROM KING ARTHUR (the owner's council manager). Do them in this shift where your tools and rules allow, alongside your normal review. For EACH task call report_to_arthur once: "completed" with what you found or did (evidence, numbers), or "blocked" with why (a rule forbids it, you lack the data or tool). Your fixed rules always win over a task - if one asks for something you may not do, report it blocked and say which rule.\n${list}`;
+const FOCUS_KEY = "team-focus";
+
+/**
+ * What the whole team is working toward this week, written by King Arthur
+ * (set_team_focus) and read at the start of EVERY specialist shift - so the
+ * three knights pull the same way between his reviews. Null when unset.
+ */
+async function teamFocus() {
+  const AgentMemory = require("../../models/AgentMemory");
+  const row = await AgentMemory.findOne({ agent: "arthur", key: FOCUS_KEY }).lean();
+  return row?.content ? { text: row.content, at: row.updatedAt } : null;
 }
 
-/** Called after the shift: anything picked up but not reported returns to "assigned". */
+async function setTeamFocus(text) {
+  const AgentMemory = require("../../models/AgentMemory");
+  const clean = String(text || "").trim();
+  if (clean.length < 20) throw Object.assign(new Error("focus_refused"), { problems: ["Say the focus in a few sentences."] });
+  if (clean.length > 900) throw Object.assign(new Error("focus_refused"), { problems: ["Keep the focus under 900 characters."] });
+  const problems = validateGuidance(clean).filter((p) => !/under 1500 characters/.test(p));
+  for (const rule of NEEDS_OWNER) if (rule.re.test(clean)) problems.push(rule.why);
+  if (problems.length) throw Object.assign(new Error("focus_refused"), { problems });
+  await AgentMemory.updateOne({ agent: "arthur", key: FOCUS_KEY }, { $set: { content: clean } }, { upsert: true });
+  return clean;
+}
+
+/**
+ * Called by the runtime when a specialist's shift starts: King Arthur's
+ * current focus, what the other knights are doing (so nobody duplicates or
+ * contradicts them), and this knight's own open tasks - with the reason when
+ * a task was sent back.
+ */
+async function pickUpTasks(agent, runId) {
+  const [mine, others, focus] = await Promise.all([
+    CouncilTask.find({ agent, status: "assigned" }).sort({ createdAt: 1 }).limit(MAX_PICKUP).lean(),
+    CouncilTask.find({ agent: { $ne: agent, $in: SPECIALISTS }, status: { $in: OPEN } }).sort({ createdAt: 1 }).limit(10).lean(),
+    teamFocus(),
+  ]);
+  const parts = [];
+  if (focus) parts.push(`\n\nKING ARTHUR'S FOCUS FOR THE TEAM (set ${new Date(focus.at).toISOString().slice(0, 10)}): ${focus.text}\nLet it decide what you do first this shift.`);
+  if (others.length) {
+    parts.push(
+      `\n\nWHAT THE OTHER KNIGHTS ARE ON (do not duplicate it; build on it where it helps your own work):\n${others
+        .map((t) => `- ${HERO[t.agent]} (${t.status.replace("_", " ")}): ${t.instruction.slice(0, 200)}`)
+        .join("\n")}`
+    );
+  }
+  if (mine.length) {
+    await CouncilTask.updateMany(
+      { _id: { $in: mine.map((t) => t._id) }, status: "assigned" },
+      { $set: { status: "in_progress", lastRun: runId }, $push: { history: entry("in_progress", HERO[agent], "Picked up in a shift") } }
+    );
+    const list = mine
+      .map((t) => {
+        const sentBack = t.verification?.verdict === "not_verified" ? `\n  SENT BACK after a check - fix this before reporting again: ${t.verification.note}` : "";
+        return `- task_id ${t._id} (${t.origin === "owner" ? "the owner asked" : "King Arthur asked"}): ${t.instruction}${t.why ? `\n  Why: ${t.why}` : ""}${sentBack}`;
+      })
+      .join("\n");
+    parts.push(
+      `\n\nTASKS FROM KING ARTHUR (the owner's council manager). Do them in this shift where your tools and rules allow, alongside your normal review. For EACH task call report_to_arthur once: "completed" ONLY when the task's result is actually achieved, with the evidence (numbers, what you re-checked); "blocked" with why (a rule forbids it, you lack the data or tool, or it needs the owner). A draft waiting for the owner is "drafted", not a fixed problem - say so. Your fixed rules always win over a task - if one asks for something you may not do, report it blocked and say which rule.\n${list}`
+    );
+  }
+  return parts.join("");
+}
+
+const MISSED_NOTE = "The shift ended without a report - waiting for the next shift";
+const MAX_MISSED_SHIFTS = 2;
+const MAX_FAILED_CHECKS = 3;
+const countHistory = (t, test) => (t.history || []).filter(test).length;
+
+/**
+ * Called after the shift: anything picked up but not reported returns to
+ * "assigned" - until it has slipped MAX_MISSED_SHIFTS shifts, when it becomes
+ * "blocked" so King Arthur must deal with it instead of it looping quietly.
+ */
 async function releaseUnreported(agent, runId) {
-  await CouncilTask.updateMany(
-    { agent, status: "in_progress", lastRun: runId },
-    { $set: { status: "assigned" }, $push: { history: entry("assigned", "system", "The shift ended without a report - waiting for the next shift") } }
-  );
+  const rows = await CouncilTask.find({ agent, status: "in_progress", lastRun: runId }).lean();
+  for (const t of rows) {
+    const missed = countHistory(t, (h) => h.note === MISSED_NOTE) + 1;
+    const stuck = missed >= MAX_MISSED_SHIFTS;
+    await CouncilTask.updateOne(
+      { _id: t._id, status: "in_progress" },
+      stuck
+        ? { $set: { status: "blocked", result: { summary: `${HERO[agent]} picked this up in ${missed} shifts without reporting on it.`, by: "system", at: new Date() } }, $push: { history: entry("blocked", "system", `${MISSED_NOTE.split(" - ")[0]} (${missed} shifts in a row) - back to King Arthur`) } }
+        : { $set: { status: "assigned" }, $push: { history: entry("assigned", "system", MISSED_NOTE) } }
+    );
+  }
 }
 
 /** The specialist's report (tool report_to_arthur). Only its own task, only while in progress. */
@@ -166,18 +232,30 @@ async function reportTask({ taskId, agent, runId, status, summary }) {
   return { id: String(task._id), status: task.status };
 }
 
-/** Arthur's or the owner's check of a completed task. */
+/**
+ * Arthur's or the owner's check of a completed task.
+ * "not_verified" SENDS IT BACK: the task returns to the specialist with the
+ * reason (it is not finished, so it must not look finished). After
+ * MAX_FAILED_CHECKS failed checks it becomes "blocked" for Arthur to rethink.
+ */
 async function verifyTask({ taskId, verdict, note, by }) {
   if (!mongoose.Types.ObjectId.isValid(taskId)) throw new Error("bad task_id");
   if (!["verified", "not_verified"].includes(verdict)) throw new Error("verdict must be verified or not_verified");
-  const task = await CouncilTask.findOneAndUpdate(
-    { _id: taskId, status: "completed" },
-    {
-      $set: { status: verdict, verification: { verdict, note: String(note || "").slice(0, 800), by, at: new Date() } },
-      $push: { history: entry(verdict, by, note) },
-    },
-    { new: true }
-  ).lean();
+  const current = await CouncilTask.findOne({ _id: taskId, status: "completed" }).lean();
+  if (!current) throw new Error("Only a task the specialist reported as completed can be checked.");
+  const verification = { verdict, note: String(note || "").slice(0, 800), by, at: new Date() };
+  let update;
+  if (verdict === "verified") {
+    update = { $set: { status: "verified", verification }, $push: { history: entry("verified", by, note) } };
+  } else {
+    const failed = countHistory(current, (h) => h.status === "not_verified") + 1;
+    const giveUp = failed >= MAX_FAILED_CHECKS;
+    const back = giveUp
+      ? entry("blocked", "system", `Failed the check ${failed} times - back to King Arthur to rethink or cancel`)
+      : entry("assigned", "system", `Sent back to ${HERO[current.agent]}: ${String(note || "").slice(0, 200)}`);
+    update = { $set: { status: giveUp ? "blocked" : "assigned", verification }, $push: { history: { $each: [entry("not_verified", by, note), back] } } };
+  }
+  const task = await CouncilTask.findOneAndUpdate({ _id: taskId, status: "completed" }, update, { new: true }).lean();
   if (!task) throw new Error("Only a task the specialist reported as completed can be checked.");
   return task;
 }
@@ -216,6 +294,10 @@ function publicTask(t) {
 
 module.exports = {
   HERO,
+  MAX_FAILED_CHECKS,
+  MAX_MISSED_SHIFTS,
+  setTeamFocus,
+  teamFocus,
   MAX_NEW_PER_DAY,
   MAX_OPEN_PER_AGENT,
   NEEDS_OWNER,

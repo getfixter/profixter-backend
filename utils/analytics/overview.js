@@ -256,7 +256,9 @@ async function loadData({ now = new Date() } = {}) {
     });
   }
 
-  const freeVisits = bookings.filter((b) => b.isFreeFirstVisit || b.accessType === "free_first_visit");
+  // Homeowners only: a staff/QA account's test booking (or one whose user no
+  // longer exists) is not a new customer, and the sources could not place it.
+  const freeVisits = bookings.filter((b) => (b.isFreeFirstVisit || b.accessType === "free_first_visit") && userById.has(String(b.user)));
   const earliestByHome = new Map();
   for (const b of freeVisits) {
     const home = `${b.user}:${b.addressId || "-"}`;
@@ -1230,6 +1232,63 @@ async function buildMap({ now = new Date() } = {}) {
   return { generatedAt: now, total: data.customers.length, placed: points.length, points };
 }
 
+/** Did the browser that signed up leave any first-touch record at all? */
+function hasFirstTouch(user) {
+  const a = user?.attribution || {};
+  return Object.values(a).some((v) => v != null && v !== "");
+}
+
+/*
+ * A real change, or the usual swing? Bookings are small counts, so two
+ * periods differ by a few just by chance. "up"/"down" only when the gap is
+ * beyond about two standard deviations of that chance swing (Poisson:
+ * sqrt(a + b)); with fewer than 6 bookings in both periods, "too_few".
+ */
+function trendVerdict(recent, before) {
+  const total = recent + before;
+  if (total < 6) return "too_few";
+  const gap = recent - before;
+  if (Math.abs(gap) <= 2 * Math.sqrt(total)) return "steady";
+  return gap > 0 ? "up" : "down";
+}
+
+/**
+ * New first free-visit bookings in COMPLETE days only - for every trend the
+ * growth screens and the Kingdom show. A window that includes today compares
+ * a half-finished day with a whole one, so in the morning every week looked
+ * "down". Also says how many of the 30 days' bookings have no first-touch
+ * record at all (attribution was not captured), apart from true Direct.
+ */
+async function firstFreeVisitTrend({ now = new Date(), weeks = 6 } = {}) {
+  const data = await loadData({ now });
+  const today = nyYmd(now);
+  const count = (fromYmd, toYmdExclusive) =>
+    data.firstFreeVisitByHome.filter((b) => inRange(b.createdAt, nyMidnight(fromYmd), nyMidnight(toYmdExclusive)));
+  const weekly = [];
+  for (let i = weeks; i >= 1; i -= 1) {
+    const from = shiftYmd(today, -7 * i);
+    const rows = count(from, shiftYmd(from, 7));
+    weekly.push({ from, through: shiftYmd(from, 6), firstFreeVisits: rows.length, canceledSince: rows.filter(isCanceled).length });
+  }
+  const last7 = count(shiftYmd(today, -7), today);
+  const last14 = count(shiftYmd(today, -14), today).length;
+  const prev14 = count(shiftYmd(today, -28), shiftYmd(today, -14)).length;
+  const last30 = count(shiftYmd(today, -30), today);
+  const noRecord = last30.filter((b) => !hasFirstTouch(data.userById.get(String(b.user))));
+  return {
+    through: shiftYmd(today, -1),
+    last7: last7.length,
+    prev7: count(shiftYmd(today, -14), shiftYmd(today, -7)).length,
+    last30: last30.length,
+    prev30: count(shiftYmd(today, -60), shiftYmd(today, -30)).length,
+    todaySoFar: count(today, shiftYmd(today, 1)).length,
+    canceledOfLast30: last30.filter(isCanceled).length,
+    weekly,
+    trend: { last14, prev14, verdict: trendVerdict(last14, prev14) },
+    noFirstTouchRecord30: noRecord.length,
+  };
+}
+
 function clearOverviewCache() {
   cache.clear();
 }
@@ -1241,5 +1300,6 @@ module.exports = {
   buildList,
   buildMap,
   clearOverviewCache,
-  _internal: { activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName, costPer, roasOf, withSpend, spendBySource },
+  firstFreeVisitTrend,
+  _internal: { trendVerdict, activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName, costPer, roasOf, withSpend, spendBySource },
 };

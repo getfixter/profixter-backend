@@ -242,9 +242,18 @@ const nyDay = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: "Americ
 const shiftDay = (ymd, days) => new Date(new Date(`${ymd}T12:00:00Z`).getTime() + days * 864e5).toISOString().slice(0, 10);
 
 async function acquisitionView({ now = new Date() } = {}) {
-  const { buildOverview } = require("../analytics/overview");
+  const { buildOverview, firstFreeVisitTrend } = require("../analytics/overview");
   const { FunnelStep, STEPS } = require("../../models/FunnelStep");
-  const [o7, o30] = await Promise.all([buildOverview({ range: "7d", now }), buildOverview({ range: "30d", now })]);
+  const today = nyDay(now);
+  /*
+   * COMPLETE DAYS for every comparison (through yesterday): counting today's
+   * unfinished day against a whole earlier day made each morning's report
+   * show a decline. Sources cover the same 30 days, so they add up to last30.
+   */
+  const [trend, o30] = await Promise.all([
+    firstFreeVisitTrend({ now }),
+    buildOverview({ range: "custom", from: shiftDay(today, -30), to: shiftDay(today, -1), now }),
+  ]);
   /*
    * ONE WINDOW FOR THE WHOLE FUNNEL. Page-step tracking began recently, so the
    * funnel covers the last 30 days OR the days since tracking began, whichever
@@ -252,12 +261,11 @@ async function acquisitionView({ now = new Date() } = {}) {
    * the same days. (Comparing a few days of page views with 30 days of
    * bookings made the step rates meaningless.)
    */
-  const today = nyDay(now);
   const start30 = shiftDay(today, -29);
   const firstTracked = (await FunnelStep.findOne({}).sort({ date: 1 }).select("date").lean())?.date || null;
   const since = firstTracked && firstTracked > start30 ? firstTracked : start30;
   const days = Math.round((new Date(`${today}T12:00:00Z`) - new Date(`${since}T12:00:00Z`)) / 864e5) + 1;
-  const oFunnel = since === start30 ? o30 : await buildOverview({ range: "custom", from: since, to: today, now });
+  const oFunnel = await buildOverview({ range: "custom", from: since, to: today, now });
   const steps = await FunnelStep.aggregate([
     { $match: { date: { $gte: since, $lte: today } } },
     { $group: { _id: { step: "$step", source: "$source" }, n: { $sum: "$count" } } },
@@ -266,10 +274,16 @@ async function acquisitionView({ now = new Date() } = {}) {
   const fv = (o) => o?.kpis?.freeVisits || {};
   return {
     firstFreeVisits: {
-      last7: fv(o7).firstBooked ?? null,
-      prev7: fv(o7).prevFirstBooked ?? null,
-      last30: fv(o30).firstBooked ?? null,
-      prev30: fv(o30).prevFirstBooked ?? null,
+      last7: trend.last7,
+      prev7: trend.prev7,
+      last30: trend.last30,
+      prev30: trend.prev30,
+      through: trend.through,
+      todaySoFar: trend.todaySoFar,
+      canceledOfLast30: trend.canceledOfLast30,
+      weekly: trend.weekly,
+      trend: trend.trend,
+      noFirstTouchRecord30: trend.noFirstTouchRecord30,
     },
     visitors30: o30?.funnel?.visitors ?? null,
     registrations30: o30?.funnel?.registered ?? null,

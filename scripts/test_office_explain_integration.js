@@ -164,7 +164,7 @@ async function main() {
       conversationsEnabled: false,
     };
     const e = explain.explainResults(fake);
-    assert.match(e.simple.say, /This week, 2 homeowners booked their first free visit - 1 more than last week\./);
+    assert.match(e.simple.say, /In the last 7 full days, 2 homeowners booked their first free visit - 1 more than the 7 days before\./);
     assert.match(e.chatgpt, /Google clicks: not available \(not connected\)/);
     const none = explain.explainResults({ ...fake, kpis: { ...fake.kpis, firstFreeVisits: null } });
     assert.match(none.simple.say, /can't see this week's bookings/);

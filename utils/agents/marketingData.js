@@ -63,12 +63,30 @@ async function marketingResults({ now = new Date() } = {}) {
   const { buildOverview } = require("../analytics/overview");
   const [a, o30] = await Promise.all([acquisitionView({ now }), buildOverview({ range: "30d", now }).catch(() => null)]);
   const n = (v) => (typeof v === "number" ? v : null);
+  const f = a.firstFreeVisits || {};
+  const TREND_WORDS = {
+    up: "UP - more than normal week-to-week chance",
+    down: "DOWN - fewer than normal week-to-week chance",
+    steady: "STEADY - the difference is within the normal swing for numbers this small; do not call it a rise or a decline",
+    too_few: "TOO FEW to call a trend either way",
+  };
   return {
     firstFreeVisitBookings: {
-      last7: n(a.firstFreeVisits?.last7),
-      prev7: n(a.firstFreeVisits?.prev7),
-      last30: n(a.firstFreeVisits?.last30),
-      prev30: n(a.firstFreeVisits?.prev30),
+      countedThrough: f.through || null,
+      last7: n(f.last7),
+      prev7: n(f.prev7),
+      last30: n(f.last30),
+      prev30: n(f.prev30),
+      todaySoFar: n(f.todaySoFar),
+      weekly: (f.weekly || []).map((w) => ({ from: w.from, through: w.through, firstFreeVisits: n(w.firstFreeVisits) })),
+      trend: f.trend ? { last14Days: n(f.trend.last14), previous14Days: n(f.trend.prev14), verdict: TREND_WORDS[f.trend.verdict] || null } : null,
+      howCounted:
+        "Once per home at its earliest free-visit booking, homeowner accounts only (staff and test accounts excluded). Complete days only, through yesterday - today's unfinished day is shown apart as todaySoFar. Quote the trend verdict; never call a change a decline when it says STEADY or TOO FEW.",
+    },
+    trackingQuality: {
+      firstFreeVisits30WithNoFirstTouchRecord: n(f.noFirstTouchRecord30),
+      meaning:
+        "Bookings by accounts whose browser left no first-touch record (usually accounts created before first-touch tracking began on 2026-10-06, or a browser that blocked it). They are counted under Direct / Unknown but are UNTRACKED, not proof of direct traffic. This share shrinks as older accounts age out; it is not a tracking failure to fix.",
     },
     visitors30: n(a.visitors30),
     registrations30: n(a.registrations30),

@@ -44,6 +44,14 @@ const agentFindingSchema = new mongoose.Schema(
     /* Set when King Arthur archives the note (utils/council/archive.js); restoring clears nothing - it is the record. */
     archive: { by: String, at: Date, reason: String, category: String, previousStatus: String, restoredBy: String, restoredAt: Date },
     statusBy: { type: String, default: "" },
+    /*
+     * A PROBLEM (risk or anomaly) is never closed on the word of the knight
+     * who raised it: close_finding records the claim here and the problem
+     * stays open until King Arthur checks it (check_fix). A problem marked
+     * resolved that is recorded again reopens (reopenedAt).
+     */
+    fixClaim: { by: String, at: Date, note: String, status: String },
+    reopenedAt: { type: Date, default: null },
     seenCount: { type: Number, default: 1 },
     lastSeenAt: { type: Date, default: null },
   },

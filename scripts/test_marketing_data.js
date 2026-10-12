@@ -154,7 +154,7 @@ async function main() {
     const s = await settings.getSettings("arthur");
     assert.strictEqual(s.version, 2);
     assert.strictEqual(s.guidance, mission.MISSION);
-    assert.match(s.history[1].note, /Marketing-only mission approved by the owner on 2026-10-11/);
+    assert.match(s.history[1].note, /Acquisition-first mission requested by the owner on 2026-10-12/);
     assert.strictEqual(s.history[0].guidance, mission.MISSION_V1);
     assert.deepStrictEqual(settings.validateGuidance(mission.MISSION), []);
     mission.resetForTests();
