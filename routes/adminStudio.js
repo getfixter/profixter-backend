@@ -325,6 +325,7 @@ async function fullView(d, req) {
       revisions: (d.revisions || []).map((r) => ({ id: String(r._id), at: r.at, note: r.note, totalCents: r.priceSnapshot?.totalCents ?? null })),
       createdAt: d.createdAt, updatedAt: d.updatedAt,
       photo: await photoView(d.photo),
+      preview: await photoView(d.preview),
     },
     live: live?.result || null,
     compat,
@@ -499,6 +500,90 @@ router.delete("/designs/:id/adjustments/:adjId", ...sellPerm, handle(async (req,
   d.priceSnapshot = await snapshotFor(d);
   await d.save();
   res.json(await fullView(d, req));
+}));
+
+/** A rendered preview of the design (stored privately; shown to staff and in the lead). */
+router.post("/designs/:id/preview", ...sellPerm, (req, res) => {
+  upload.single("preview")(req, res, (uploadError) => handle(async () => {
+    if (uploadError) throw fail(400, "Upload one image.");
+    const d = await designOr404(req.params.id);
+    if (!req.file) throw fail(400, "No preview image.");
+    await storePreview(d, req.file.buffer);
+    res.status(201).json({ ok: true });
+  })(req, res));
+});
+
+async function storePreview(d, buffer) {
+  let clean;
+  try { clean = await sanitizeImageBuffer(buffer); } catch (e) { throw fail(400, e.message); }
+  const meta = await require("sharp")(clean.buffer).metadata();
+  const key = storage.newKey("previews");
+  await storage.put(key, clean.buffer, "image/jpeg");
+  const p = await StudioPhoto.create({
+    publicId: randomId(18), designId: d._id, kind: "preview", storageKey: key, contentType: "image/jpeg", bytes: clean.buffer.length,
+    width: meta.width, height: meta.height, sha256: crypto.createHash("sha256").update(clean.buffer).digest("hex"),
+  });
+  const old = d.preview;
+  d.preview = p._id;
+  await d.save();
+  if (old) {
+    const o = await StudioPhoto.findById(old);
+    if (o && !o.deletedAt) { await storage.remove(o.storageKey).catch(() => {}); o.deletedAt = new Date(); await o.save(); }
+  }
+}
+
+/**
+ * Create the proposal: a Bathroom Project (or the design's existing one) and an
+ * Estimate reproducing the design's price exactly. The contract and signature
+ * then follow the existing Projects workflow.
+ */
+router.post("/designs/:id/proposal", ...sellPerm, json, handle(async (req, res) => {
+  if (!hasPermission(req, PERMISSIONS.PROJECTS_MANAGE)) throw fail(403, "Creating a proposal needs access to Projects.");
+  const Project = require("../models/Project");
+  const Estimate = require("../models/Estimate");
+  const { estimateFromSnapshot, scopeText, TYPE_LABEL } = require("../utils/studio/proposal");
+  const d = await designOr404(req.params.id);
+  if (d.origin === "public" && d.status === "draft") throw fail(404, "Design not found.");
+  if (!d.state?.design) throw fail(400, "Finish the design first.");
+  const compat = await checkDesign(d.state.design, d.projectType);
+  const block = blockingErrors(compat);
+  if (block.length) throw fail(400, `Fix the design first: ${block[0].message}`);
+  const c = d.customer || {};
+  if (!c.name || !(c.address || c.zip)) throw fail(400, "Add the customer's name and address first.");
+  d.priceSnapshot = await snapshotFor(d); // freeze the current price
+  const est = estimateFromSnapshot(d.priceSnapshot);
+
+  let project = d.projectId ? await Project.findOne({ _id: d.projectId, isDeleted: { $ne: true } }) : null;
+  if (!project) {
+    project = await Project.create({
+      customerName: c.name, phone: c.phone || "", email: c.email || "",
+      address: c.address ? `${c.address}${c.zip && !c.address.includes(c.zip) ? ` ${c.zip}` : ""}` : `ZIP ${c.zip}`,
+      customerId: d.customerId || null, projectType: "Bathroom", status: "Lead",
+      customerSnapshot: { fullName: c.name, email: c.email || "", phone: c.phone || "" },
+      notes: `Created from Shower Studio design ${d.publicId}.`,
+    });
+  }
+  const estimate = await Estimate.create({
+    projectId: project._id, status: "Draft",
+    title: `${TYPE_LABEL[d.projectType]} - Shower Studio design`,
+    description: scopeText(d),
+    lineItems: est.lineItems, discount: est.discount, tax: 0,
+    notes: `Price frozen from Shower Studio design ${d.publicId} on ${new Date().toISOString().slice(0, 10)}.`,
+    createdBy: actorId(req),
+  });
+  project.estimateAmount = estimate.total;
+  await project.save();
+  d.projectId = project._id;
+  d.estimateId = estimate._id;
+  d.status = "proposal";
+  d.revisions.push({ by: actorId(req), note: `Proposal created: ${project.projectNumber} / ${estimate.estimateNumber}`, state: d.state, priceSnapshot: d.priceSnapshot });
+  d.updatedBy = actorId(req);
+  await d.save();
+  res.status(201).json({
+    projectId: String(project._id), projectNumber: project.projectNumber,
+    estimateId: String(estimate._id), estimateNumber: estimate.estimateNumber, total: estimate.total,
+    next: "Open the project in Projects to attach the contract and send it for signature.",
+  });
 }));
 
 /** Delete a design's private data (photos), keeping a minimal record of the request. */

@@ -174,6 +174,33 @@ router.post("/designs/:id/photo", limit("photo", 30, 60 * 60_000), (req, res) =>
   });
 });
 
+/** The rendered preview of the visitor's design, sent with the request (private). */
+router.post("/designs/:id/preview", limit("preview", 60, 60 * 60_000), (req, res) => {
+  upload.single("preview")(req, res, async (uploadError) => {
+    try {
+      if (uploadError) return err(res, 400, "Upload one image.");
+      const d = await ownDesign(req, res);
+      if (!d) return null;
+      if (d.status !== "draft") return err(res, 409, "This design was already sent.");
+      if (!req.file) return err(res, 400, "No preview image.");
+      const clean = await sanitizeImageBuffer(req.file.buffer);
+      const meta = await require("sharp")(clean.buffer).metadata();
+      const key = storage.newKey("previews");
+      await storage.put(key, clean.buffer, "image/jpeg");
+      const p = await StudioPhoto.create({
+        publicId: randomId(18), designId: d._id, kind: "preview", storageKey: key, contentType: "image/jpeg",
+        bytes: clean.buffer.length, width: meta.width, height: meta.height, sha256: crypto.createHash("sha256").update(clean.buffer).digest("hex"),
+      });
+      if (d.preview) await deletePhoto(d.preview);
+      d.preview = p._id;
+      await d.save();
+      return res.status(201).json({ ok: true });
+    } catch (e) {
+      return err(res, e.statusCode || e.status || 500, e.statusCode || e.status ? e.message : "Could not save the preview.");
+    }
+  });
+});
+
 async function deletePhoto(photoId) {
   const p = await StudioPhoto.findById(photoId);
   if (!p || p.deletedAt) return;

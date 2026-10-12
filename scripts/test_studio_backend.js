@@ -375,6 +375,28 @@ async function main() {
     assert.strictEqual(up.status, 201);
   });
 
+  console.log("retention");
+  await test("abandoned drafts are deleted with their photos; old requests keep the record but lose the photos", async () => {
+    const { sweepStudioRetention } = require("../utils/studio/retention");
+    const r = await call("POST", "/api/studio/designs", { body: {} });
+    await call("POST", `/api/studio/designs/${r.body.id}/photo`, { headers: { "x-studio-token": r.body.token }, form: fileForm("photo", await jpeg()) });
+    const draft = await StudioDesign.findOne({ publicId: r.body.id }).lean();
+    const draftPhoto = await StudioPhoto.findById(draft.photo).lean();
+    await StudioDesign.collection.updateOne({ _id: draft._id }, { $set: { deleteAfter: new Date(Date.now() - 1000) } });
+    const old = await StudioDesign.findOne({ publicId: pub.id }).lean();
+    const oldPhoto = await StudioPhoto.findById(old.photo).lean();
+    await StudioDesign.collection.updateOne({ _id: old._id }, { $set: { deleteAfter: new Date(Date.now() - 1000) } });
+    const out = await sweepStudioRetention();
+    assert.ok(out.draftsDeleted >= 1);
+    assert.strictEqual(await StudioDesign.countDocuments({ _id: draft._id }), 0);
+    assert.ok(!storage._memory.has(draftPhoto.storageKey));
+    const kept = await StudioDesign.findById(old._id).lean();
+    assert.ok(kept && kept.customer.email === "hannah@example.com" && kept.priceSnapshot, "the request record stays");
+    assert.strictEqual(kept.photo, null);
+    assert.ok(!storage._memory.has(oldPhoto.storageKey));
+    assert.ok(await EstimateLead.exists({ studioDesignId: old._id }), "the lead stays");
+  });
+
   server.close();
   await mongoose.disconnect();
   await mongo.stop();

@@ -359,6 +359,15 @@ app.use((err, req, res, next) => {
 
 /* ============================================================================ */
 
+/* ================= Nightly Shower Studio data retention ================= */
+cron.schedule("40 6 * * *", async () => {
+  try {
+    await require("./utils/studio/retention").sweepStudioRetention();
+  } catch (err) {
+    console.error("studio retention sweep failed:", err.message);
+  }
+});
+
 /* ================= Nightly DB-only subscription auto-cancel ================= */
 cron.schedule(
   "0 6 * * *", // 6:00 AM UTC = 1-2 AM Eastern (after NY midnight)
