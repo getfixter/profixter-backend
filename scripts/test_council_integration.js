@@ -340,10 +340,10 @@ async function main() {
     assert.strictEqual(s1.version, 1);
     assert.strictEqual(s1.guidance, mission.MISSION);
     assert.strictEqual(s1.history[0].by, "Owner");
-    assert.match(s1.history[0].note, /Acquisition-first mission requested by the owner on 2026-10-12/);
+    assert.match(s1.history[0].note, /New-customer acquisition mission \(owner, 2026-10-12\)/);
     const system = calls[0].system.map((b) => b.text).join("\n");
     const rulesAt = system.indexOf("WHAT YOU CANNOT DO");
-    const missionAt = system.indexOf("get more NEW local homeowners to book their FIRST FREE VISIT");
+    const missionAt = system.indexOf("MISSION: NEW CUSTOMER ACQUISITION");
     assert.ok(rulesAt > -1 && missionAt > rulesAt, "the mission follows the fixed rules");
     assert.match(system, /the rule above wins/);
   });

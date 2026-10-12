@@ -103,6 +103,8 @@ async function execute(payload, { action, now }) {
 
   const { audience } = await resolveAudience(user, now);
   if (audience === "member") return { outcome: "skip", reason: "already_member" };
+  // acquisition ends at a membership: someone who has had one (even if it ended) is not chased
+  if (await require("../acquisitionScope").hasMembership(user._id)) return { outcome: "skip", reason: "membership_purchased" };
   if (await remindedRecently(user._id, action._id, now)) {
     return { outcome: "skip", reason: "reminded_recently" };
   }

@@ -74,7 +74,7 @@ function archivable(kind, doc) {
 
 async function checkReason(kind, doc, { category, duplicateOf }) {
   if (!CATEGORIES.includes(category)) return `category must be one of ${CATEGORIES.join(", ")}`;
-  if (category === "business_management" && !BUSINESS_RE.test(textOf(kind, doc))) {
+  if (category === "business_management" && !BUSINESS_RE.test(textOf(kind, doc)) && !require("../growth/acquisitionScope").outOfScope(textOf(kind, doc))) {
     return "This item is not about revenue, billing, memberships, cancellations, prices or scheduling - it may be active marketing work. Do not archive it to tidy up.";
   }
   if (category === "duplicate") {

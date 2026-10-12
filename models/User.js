@@ -82,6 +82,11 @@ const UserSchema = new mongoose.Schema(
      */
     employeeTitle: { type: String, trim: true, default: "", maxlength: 80 },
     adminSections: { type: [String], default: [] },
+    /*
+     * The SECTIONS_VERSION adminSections were last written under. Absent means
+     * saved before versioning; no default, so an old record never looks current.
+     */
+    adminSectionsVersion: { type: Number },
     /**
      * Explicitly keep this account out of lifecycle marketing.
      *

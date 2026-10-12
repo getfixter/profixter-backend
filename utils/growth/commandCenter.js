@@ -285,6 +285,7 @@ async function acquisitionView({ now = new Date() } = {}) {
       trend: trend.trend,
       noFirstTouchRecord30: trend.noFirstTouchRecord30,
     },
+    newMembershipPurchases: trend.newMembershipPurchases,
     visitors30: o30?.funnel?.visitors ?? null,
     registrations30: o30?.funnel?.registered ?? null,
     bySource30: (o30?.sources || [])

@@ -31,6 +31,9 @@ const PERMISSIONS = Object.freeze({
   ANALYTICS_READ: "analytics.read",
   ANALYTICS_MAP: "analytics.map",
 
+  /* The Growth tab: automations, agents, capacity and approvals (read only). */
+  GROWTH_READ: "growth.read",
+
   BOOKINGS_READ: "bookings.read",
   BOOKINGS_WRITE: "bookings.write",
   BOOKINGS_ASSIGN: "bookings.assign",
@@ -112,6 +115,18 @@ const SECTIONS = Object.freeze([
     description: "Customer locations on the Overview map",
     permissions: [PERMISSIONS.ANALYTICS_MAP],
     requires: "overview",
+  },
+  {
+    /*
+     * Until 2026-10 Growth rode on Overview's permission. Employees saved
+     * before the split got this section added once (utils/adminAccessMigration.js),
+     * so nobody lost access; from then on the two are independent.
+     */
+    id: "growth",
+    group: "business",
+    label: "Growth",
+    description: "Growth automations, agents, capacity and approvals (view only)",
+    permissions: [PERMISSIONS.GROWTH_READ],
   },
   {
     id: "members",
@@ -214,6 +229,14 @@ const SECTIONS = Object.freeze([
   },
 ]);
 
+/*
+ * Bumped when a change to SECTIONS needs existing employees' sections
+ * rewritten once (see utils/adminAccessMigration.js). Every save of an
+ * employee stamps the current value, so the owner's later choices are final.
+ *   2 - Growth split from Overview
+ */
+const SECTIONS_VERSION = 2;
+
 const SECTION_BY_ID = new Map(SECTIONS.map((s) => [s.id, s]));
 
 /** Keep only known section ids, once each, and drop a section whose prerequisite is off. */
@@ -262,6 +285,7 @@ module.exports = {
   POSITIONS,
   GROUPS,
   SECTIONS,
+  SECTIONS_VERSION,
   cleanSections,
   permissionsForSections,
   positionPermissions,

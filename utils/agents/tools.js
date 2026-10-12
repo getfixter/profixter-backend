@@ -39,6 +39,12 @@ const PROBLEM_KINDS = ["risk", "anomaly"];
 /** Unpublished drafts per knight before it must revise instead of adding more. */
 const MAX_OPEN_DRAFTS = 6;
 
+/** Existing members' operations are not the Kingdom's (utils/growth/acquisitionScope.js). */
+function refuseOutOfScope(...texts) {
+  const { outOfScope, SCOPE_WHY } = require("../growth/acquisitionScope");
+  if (outOfScope(texts.join(" "))) throw new Error(`${SCOPE_WHY} Do not record or investigate it; move on to new-customer acquisition.`);
+}
+
 function obj(properties) {
   return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
 }
@@ -192,6 +198,7 @@ const TOOL_DEFS = {
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
       refusePostal(input.title, input.detail, input.expected_impact, input.plain, input.owner_question, input.dedupe_key);
+      refuseOutOfScope(input.title, input.detail, input.plain);
       const now = new Date();
       const doc = await AgentFinding.findOneAndUpdate(
         { agent: ctx.agent, dedupeKey: clip(input.dedupe_key, 120) },
@@ -384,7 +391,8 @@ Object.assign(TOOL_DEFS, {
     input_schema: obj({
       key: str("Stable slug, lowercase, e.g. 'free-visit-undecided-v1'"),
       name: str("Short name the owner will see"),
-      segment: str("Who receives it", { enum: ["free_visit_undecided", "registered_never_booked", "former_member_recent"] }),
+      // acquisition audiences only: nobody who already bought a membership (acquisitionScope)
+      segment: str("Who receives it", { enum: ["free_visit_undecided", "registered_never_booked"] }),
       purpose: str("What this email should achieve and why, with the evidence"),
       measure: str("How success will be measured, e.g. 'members joining within 14 days of the email'"),
       subject: str("Subject line, under 70 characters"),
@@ -441,13 +449,13 @@ function ymdDaysAgo(days) {
 Object.assign(TOOL_DEFS, {
   get_acquisition: {
     description:
-      "THE MARKETING RESULT: new first free-visit bookings (last 7 and 30 days vs the previous periods), website visitors and registrations, all of them by first-touch source (Google, Instagram, Facebook, direct, referral...), the booking funnel (booking page -> booker started -> slot chosen -> sign-up -> first free visit), and the towns customers live in. No financial data.",
+      "THE MARKETING RESULT: new first free-visit bookings (last 7 and 30 days vs the previous periods; members' bookings never count), new membership purchases (the final conversion, once per customer, aggregate only), website visitors and registrations, all of them by first-touch source (Google, Instagram, Facebook, direct, referral...), the booking funnel (booking page -> booker started -> slot chosen -> sign-up -> first free visit), and the towns customers live in. No financial data.",
     input_schema: obj({}),
     run: async () => require("./marketingData").marketingResults(),
   },
   get_reengagement_audiences: {
     description:
-      "For follow-up planning: how many people are in each follow-up audience (had the free visit but did not join; registered but never booked; past members), and how many of them may lawfully receive marketing email, opted in to marketing texts, or opted out. Counts only - no names, contact details, plans or amounts.",
+      "For follow-up planning: how many people are in each acquisition follow-up audience (had the free visit but never bought a membership; registered but never booked), and how many of them may lawfully receive marketing email, opted in to marketing texts, or opted out. Counts only - no names, contact details, plans or amounts.",
     input_schema: obj({}),
     run: async () => require("./marketingData").reengagementAudiences(),
   },

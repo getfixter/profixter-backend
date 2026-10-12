@@ -39,6 +39,8 @@ async function councilReview(reason = "daily") {
   try {
     // Mondays (New York) are his weekly planning review: it runs even when nothing new came in.
     const monday = new Date().toLocaleString("en-US", { weekday: "long", timeZone: TIMEZONE }) === "Monday";
+    // out-of-scope (existing-member) work is archived first, so he never spends a review on it
+    await require("../utils/council/scopeSweep").archiveOutOfScope().catch((e) => console.error("scope sweep failed:", e.message));
     const result = await require("../utils/council/arthur").review({ planning: reason === "daily" && monday });
     console.log(JSON.stringify({ event: "council_review", reason, ...result, run: result.run ? String(result.run) : undefined }));
     if (!result.skipped) await require("../utils/council/health").logCouncilHealth();
@@ -119,6 +121,7 @@ function startAgentJobs() {
       await require("../utils/council/mission").ensureMission();
       await require("../utils/council/refocus").reviewForRefocus();
       await require("../utils/council/refocus").retireBusinessRecords();
+      await require("../utils/council/scopeSweep").archiveOutOfScope();
       await require("../utils/council/inbox").classifyExisting();
       await require("../utils/council/inbox").sweep();
       // Audit of what the hall shows (counts only): where each pending item belongs
@@ -127,7 +130,7 @@ function startAgentJobs() {
       // Self-check on real data (counts only): do the marketing numbers add up?
       const m = await require("../utils/agents/marketingData").marketingResults();
       const sourcesTotal = (m.bySource30 || []).reduce((n, x) => n + (x.firstFreeVisits || 0), 0);
-      console.log(JSON.stringify({ event: "marketing_report_check", firstFreeVisits30: m.firstFreeVisitBookings.last30, sourcesTotal30: sourcesTotal, adds_up: sourcesTotal === m.firstFreeVisitBookings.last30, funnelWindow: m.bookingFunnel?.window || null, funnelFirstFreeVisits: m.bookingFunnel?.firstFreeVisits ?? null, ratesShown: Boolean(m.bookingFunnel?.stepRatesPct), countedThrough: m.firstFreeVisitBookings.countedThrough ?? null, trend: m.firstFreeVisitBookings.trend?.verdict?.split(" - ")[0] || null, noFirstTouchRecord30: m.trackingQuality?.firstFreeVisits30WithNoFirstTouchRecord ?? null }));
+      console.log(JSON.stringify({ event: "marketing_report_check", firstFreeVisits30: m.firstFreeVisitBookings.last30, sourcesTotal30: sourcesTotal, adds_up: sourcesTotal === m.firstFreeVisitBookings.last30, funnelWindow: m.bookingFunnel?.window || null, funnelFirstFreeVisits: m.bookingFunnel?.firstFreeVisits ?? null, ratesShown: Boolean(m.bookingFunnel?.stepRatesPct), newMembershipPurchases30: m.newMembershipPurchases?.last30 ?? null, countedThrough: m.firstFreeVisitBookings.countedThrough ?? null, trend: m.firstFreeVisitBookings.trend?.verdict?.split(" - ")[0] || null, noFirstTouchRecord30: m.trackingQuality?.firstFreeVisits30WithNoFirstTouchRecord ?? null }));
       await require("../utils/council/health").logCouncilHealth();
     } catch (e) {
       console.error("refocus start-up failed:", e.message);

@@ -83,6 +83,18 @@ async function marketingResults({ now = new Date() } = {}) {
       howCounted:
         "Once per home at its earliest free-visit booking, homeowner accounts only (staff and test accounts excluded). Complete days only, through yesterday - today's unfinished day is shown apart as todaySoFar. Quote the trend verdict; never call a change a decline when it says STEADY or TOO FEW.",
     },
+    // the acquisition's final step, counted once per customer - aggregate only, nothing about members
+    newMembershipPurchases: a.newMembershipPurchases
+      ? {
+          last7: n(a.newMembershipPurchases.last7),
+          prev7: n(a.newMembershipPurchases.prev7),
+          last30: n(a.newMembershipPurchases.last30),
+          prev30: n(a.newMembershipPurchases.prev30),
+          weekly: (f.weekly || []).map((w) => ({ from: w.from, newMembershipPurchases: n(w.newMembershipPurchases) })),
+          howCounted:
+            "A customer's FIRST paid membership, once per customer (renewals, re-joins and gifts are not new conversions). This is where the Kingdom's work for that customer ends.",
+        }
+      : null,
     trackingQuality: {
       firstFreeVisits30WithNoFirstTouchRecord: n(f.noFirstTouchRecord30),
       meaning:
@@ -103,7 +115,6 @@ const DAY = 24 * 60 * 60 * 1000;
 const AUDIENCES = {
   free_visit_undecided: { segment: "free_visit_undecided", label: "Had the free visit 3-60 days ago and did not join" },
   registered_never_booked: { segment: "registered_never_booked", label: "Registered 2-60 days ago and never booked" },
-  former_member_recent: { segment: "former_member_recent", label: "Membership ended 14-120 days ago (past members)" },
 };
 
 /**
@@ -140,7 +151,7 @@ async function reengagementAudiences({ now = new Date(), sample = 150 } = {}) {
     audiences: out,
     completedFreeVisitsLast90d: completed90,
     rules:
-      "Follow-ups go only through approved email playbooks (the engine checks consent, unsubscribes, frequency caps and that the person is still in the audience at send time). Texts need marketing-text opt-in and are not available to you; GoHighLevel is out of scope. Never use more personal data than these counts.",
+      "Acquisition follow-ups only: a person who has ever had a membership is never in these audiences, and the engine re-checks membership and consent at the moment of sending. Follow-ups go only through approved email playbooks (the engine checks consent, unsubscribes, frequency caps and that the person is still in the audience at send time). Texts need marketing-text opt-in and are not available to you; GoHighLevel is out of scope. Never use more personal data than these counts.",
   };
 }
 

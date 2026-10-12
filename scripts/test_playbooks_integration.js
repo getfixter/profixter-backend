@@ -166,7 +166,7 @@ async function main() {
     assert.strictEqual(outcomes[String(ok._id)], "sent");
     assert.strictEqual(outcomes[String(unsub._id)], "unsubscribed");
     assert.strictEqual(outcomes[String(busy._id)], "emailed_recently");
-    assert.strictEqual(outcomes[String(joined._id)], "no_longer_in_segment");
+    assert.strictEqual(outcomes[String(joined._id)], "membership_purchased", "a membership stops follow-ups at the moment of sending");
     assert.strictEqual(sent.length, 1);
     assert.ok(sent[0].headers["List-Unsubscribe"]);
     assert.strictEqual(sent[0].logContext.templateKey, "playbook:free-visit-undecided-v1");

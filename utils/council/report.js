@@ -149,7 +149,7 @@ async function buildReport({ scope = "pending", now = new Date(), board: given =
     "- King Arthur: my AI marketing director. He coordinates the knights, reviews their drafts, assigns tasks and recommends. He cannot approve, send messages, spend money, publish, book visits, change ads, prices, offers or permissions. His recommendation is never my approval.",
     "- Odysseus: organic search & visibility (Google, Google Business Profile, local SEO, AI search, Yelp and other directories).",
     "- Leonidas: organic social & community (Instagram and Facebook posts, local communities; no paid ads, no mail, no cold lists).",
-    "- Marcus: customer re-engagement (consent-compliant follow-ups for free visits that did not join, registrations that never booked, past members).",
+    "- Marcus: prospect follow-ups (consent-compliant follow-ups for registrations that never booked and free visits that did not join; they stop when someone buys a membership).",
     "",
     `Summary: ${board.counts.decisions} decision(s) and ${board.counts.info} note(s) need me now; ${board.counts.beingWorkedOn} being worked on; ${board.counts.history} completed in the last 14 days.`,
   ];

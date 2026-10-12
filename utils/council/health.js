@@ -24,7 +24,10 @@ async function councilHealth({ now = new Date() } = {}) {
   const byStatus = await CouncilTask.aggregate([{ $group: { _id: "$status", n: { $sum: 1 } } }]);
   const sentBack = await CouncilTask.countDocuments({ status: { $in: tasks.OPEN }, "verification.verdict": "not_verified" });
   const open = { kind: { $in: PROBLEM_KINDS }, status: { $in: ["open", "acknowledged"] } };
-  const [unresolved, awaitingCheck, reopened, focus] = await Promise.all([
+  const scoped = { "archive.by": "system", "archive.category": "business_management", "archive.reason": /acquisition mission/ };
+  const [archivedOutOfScope, archivedNotes, unresolved, awaitingCheck, reopened, focus] = await Promise.all([
+    CouncilTask.countDocuments({ status: "archived", ...scoped }),
+    AgentFinding.countDocuments({ status: "archived", ...scoped }),
     AgentFinding.countDocuments(open),
     AgentFinding.countDocuments({ ...open, "fixClaim.at": { $exists: true } }),
     AgentFinding.countDocuments({ ...open, reopenedAt: { $ne: null } }),
@@ -37,6 +40,8 @@ async function councilHealth({ now = new Date() } = {}) {
     tasks: { ...Object.fromEntries(byStatus.map((s) => [s._id, s.n])), sentBackOpen: sentBack },
     problems: { unresolved, awaitingCheck, reopened },
     focus: focus ? { set: true, at: focus.at } : { set: false },
+    // existing-member work kept out of the Kingdom (archived, never deleted)
+    outOfScopeArchived: { tasks: archivedOutOfScope, notes: archivedNotes },
   };
 }
 

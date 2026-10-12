@@ -8,6 +8,7 @@ const { renderMarketingEmail } = require("../../marketing/marketingRenderer");
 const { isMarketableAccount, isUnsubscribed } = require("../../marketing/marketingEligibility");
 const { checkCopy } = require("../../agents/copyRules");
 const { segmentDef } = require("../segments");
+const { ACQUISITION_SEGMENTS, hasMembership } = require("../acquisitionScope");
 const { defineAction } = require("../actionRegistry");
 
 /**
@@ -68,6 +69,8 @@ async function execute(payload, { action, now }) {
   if (!pb || pb.status !== "approved") return { outcome: "skip", reason: "playbook_not_approved" };
   if (pb.approvedVersion !== pb.version) return { outcome: "skip", reason: "playbook_changed_since_approval" };
   if (checkCopy(playbookText(pb)).length) return { outcome: "skip", reason: "copy_rules_failed" };
+  // acquisition follow-ups only: never to an audience of people who already bought a membership
+  if (!ACQUISITION_SEGMENTS.includes(pb.segment)) return { outcome: "skip", reason: "outside_acquisition_scope" };
 
   const user = await User.findById(payload.userId).select(
     "_id userId email name firstName role isActive employeePosition excludeFromMarketing createdAt"
@@ -75,6 +78,8 @@ async function execute(payload, { action, now }) {
   if (!user) return { outcome: "skip", reason: "user_not_found" };
   if (!isMarketableAccount(user)) return { outcome: "skip", reason: "not_marketable" };
   if (await isUnsubscribed(user.email)) return { outcome: "skip", reason: "unsubscribed" };
+  // re-checked at the moment of sending: a membership ends the follow-ups, immediately
+  if (await hasMembership(user._id)) return { outcome: "skip", reason: "membership_purchased" };
   const seg = segmentDef(pb.segment);
   if (!seg || !(await seg.includes(user, { now }))) return { outcome: "skip", reason: "no_longer_in_segment" };
   if (await recentlyEmailed(user, action._id, now)) return { outcome: "skip", reason: "emailed_recently" };

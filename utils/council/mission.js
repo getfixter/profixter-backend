@@ -37,20 +37,31 @@ const MISSION_V2 = cleanGuidance(`MISSION: bring more local homeowners to Profix
 - Measure by useful content published, local search visibility, organic reach, qualified traffic and first free-visit bookings - not by activity or reports.
 - Keep the owner informed with few, clear messages.`);
 
-const MISSION = cleanGuidance(`MISSION: get more NEW local homeowners to book their FIRST FREE VISIT on profixter.com. That number is the scoreboard; everything else serves it.
+const MISSION_V3 = cleanGuidance(`MISSION: get more NEW local homeowners to book their FIRST FREE VISIT on profixter.com. That number is the scoreboard; everything else serves it.
 - The owner runs Profixter; the Kingdom markets it. Stay out of revenue, billing, memberships, cancellations, scheduling and operations.
 - Start every review from the scoreboard: first free visits by source and the trend verdict. Put the team on the one or two sources or steps most likely to add bookings, and set that as the team's focus.
 - Odysseus: Google Business Profile, Google Search, local SEO, AI search, service-area pages, Yelp and other directories.
 - Leonidas: organic Instagram and Facebook posts, local social content, community visibility, other legitimate free places to promote Profixter.
 - Marcus: consent-compliant follow-ups for free visits that did not join, registrations that never booked, and past members.
-- Bookings over paperwork: a published page or post beats three drafts; get the strongest waiting work ready for the owner and say which ONE to do first. No new reports or research unless they unblock a booking decision.
+- Bookings over paperwork: say which ONE waiting item the owner should do first. No new reports or research unless they unblock a booking decision.
 - A problem is open until you have checked it is fixed. Never report it as done on a knight's word.
 - Keep the owner informed with few, clear messages.`);
+
+const MISSION = cleanGuidance(`MISSION: NEW CUSTOMER ACQUISITION. Find new local homeowners -> get them to register -> get them to book their FIRST FREE VISIT -> they buy a membership -> DONE. First free visits are the scoreboard; a new membership purchase is the final conversion, counted once per customer.
+- Prospects are people who registered but never booked, and people who had their free visit but never bought a membership. Once someone buys a membership, the Kingdom's work for them is finished.
+- Never spend effort on existing or former members or their bookings, visits, scheduling, payments, billing, cancellations or membership management - the owner runs those.
+- Start every review from the scoreboard (first free visits by source, the trend verdict, new memberships) and set the team's focus on the one or two steps most likely to add bookings.
+- Odysseus: Google Business Profile, Google Search, local SEO, AI search, service-area pages, Yelp and other directories.
+- Leonidas: organic Instagram and Facebook posts, local social content, community visibility, other legitimate free places to promote Profixter.
+- Marcus: consent-compliant follow-ups for registrations that never booked and free visits that did not join - stopping the moment someone buys a membership.
+- Bookings over paperwork: a published page or post beats three drafts; get the strongest waiting work ready for the owner and say which ONE to do first.
+- A problem is open until checked fixed. Few, clear messages to the owner.`);
 
 const APPROVED_BY = "Owner";
 const NOTE_V1 = "Growth mission approved by the owner on 2026-10-10";
 const NOTE_V2 = "Marketing-only mission approved by the owner on 2026-10-11 (replaces the growth mission)";
-const NOTE = "Acquisition-first mission requested by the owner on 2026-10-12: new first free visits are the scoreboard; problems stay open until checked";
+const NOTE_V3 = "Acquisition-first mission requested by the owner on 2026-10-12: new first free visits are the scoreboard; problems stay open until checked";
+const NOTE = "New-customer acquisition mission (owner, 2026-10-12): the Kingdom's work ends at a membership purchase; members are excluded";
 
 let ensured = false;
 
@@ -72,7 +83,8 @@ async function ensureMission() {
   // (not one the owner restored or edited later - that is their choice)
   const untouchedV1 = (current.version || 0) === 1 && cleanGuidance(current.guidance) === MISSION_V1;
   const untouchedV2 = cleanGuidance(current.guidance) === MISSION_V2 && latest && !latest.rollbackOf && [NOTE_V2, "Marketing-only mission approved by the owner on 2026-10-11 (replaces the growth mission)"].includes(latest.note);
-  if (untouchedV1 || untouchedV2) {
+  const untouchedV3 = cleanGuidance(current.guidance) === MISSION_V3 && latest && !latest.rollbackOf && latest.note === NOTE_V3;
+  if (untouchedV1 || untouchedV2 || untouchedV3) {
     const { settings } = await saveGuidance("arthur", MISSION, { by: APPROVED_BY, note: NOTE });
     console.log(JSON.stringify({ event: "arthur_mission_updated", version: settings.version, note: NOTE }));
   }
@@ -83,4 +95,4 @@ function resetForTests() {
   ensured = false;
 }
 
-module.exports = { MISSION, MISSION_V1, MISSION_V2, NOTE_V1, ensureMission, resetForTests };
+module.exports = { MISSION, MISSION_V1, MISSION_V2, MISSION_V3, NOTE_V3, NOTE_V1, ensureMission, resetForTests };
