@@ -487,7 +487,8 @@ async function main() {
   });
 
   await test("only the owner sees the new sections at first: an employee with EVERY existing section is refused", async () => {
-    const legacy = ["overview", "customer-map", "members", "customers", "leads", "projects", "jobs", "schedule", "recent-work", "communications", "promotion", "blacklist", "activity"];
+    // every section that is not a Studio one, read from the registry (covers sections added later)
+    const legacy = require("../utils/adminAccess").SECTIONS.map((x) => x.id).filter((id) => !id.startsWith("studio"));
     const veteran = await mk("Vera Veteran", "vera@test.local", "employee", { adminSections: legacy });
     for (const u of ["/api/admin/studio/designs", "/api/admin/studio/products", "/api/admin/studio/pricing", "/api/admin/studio/catalog/completeness"]) {
       assert.strictEqual((await call("GET", u, { user: veteran })).status, 403, u);
