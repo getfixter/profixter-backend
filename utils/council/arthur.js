@@ -710,6 +710,7 @@ const REVIEW_INSTRUCTIONS = `THIS RUN: your council review. Acquisition first - 
 3b. Review everything in toReview (a knight finished the work it waited on): read the new version and recommend - it returns to the owner only when it is ready for their approval or input; otherwise wait again.
 4. WAITING FOR THE OWNER: for each item with no recommendation from you yet, read it (get_item) and recommend. Rank them by how many homeowners they can bring and make it clear which ONE the owner should do first.
 5. Merge duplicate notes. Ask for missing evidence where a recommendation is unsupported (assign_task).
+5a. If teamFocus is not set, set it in THIS review (set_team_focus) from the scoreboard - the knights read it every shift.
 5b. If this is your WEEKLY PLANNING review (the kickoff says so): compare the scoreboard with last week's notebook; set_team_focus with the one or two acquisition goals for this week (which source or step to move, where); then give each hero at most one or two tasks that move that focus - each naming the source/step it should move and how you will see the result - without repeating open tasks. No research or report tasks unless they unblock a booking decision.
 6. File what the owner should know (info), anything only the owner can decide (decision), and anything unclear (uncertain). Reuse dedupe keys so nothing repeats.
 7. Save anything you need to remember to your notebook (the scoreboard numbers you saw, so next week can compare).
@@ -799,8 +800,15 @@ async function chat({ text, ownerName = "Owner", now = new Date(), limits = null
   return msg.toObject();
 }
 
-/** A stable fingerprint of what Arthur reviews; an unchanged council costs nothing. */
-async function reviewFingerprint() {
+/**
+ * A stable fingerprint of what Arthur reviews; an unchanged council costs nothing.
+ * BUT while work waits on HIS check (a task reported done, a blocked task, a
+ * knight's fix report, a finished wait) or the team has no focus, the day is
+ * part of it - so the daily review runs until he deals with it, instead of
+ * "nothing new" leaving it unchecked forever. (At most one extra review a day.)
+ */
+async function reviewFingerprint({ now = new Date() } = {}) {
+  const [fixReports, focus] = await Promise.all([AgentFinding.countDocuments({ status: { $in: ["open", "acknowledged"] }, "fixClaim.at": { $exists: true } }), tasks.teamFocus()]);
   const [runs, actions, findings, taskRows, playbooks, toReview] = await Promise.all([
     AgentRun.find({ agent: { $in: tasks.SPECIALISTS }, status: { $nin: ["running", "skipped"] } }).sort({ startedAt: -1 }).limit(3).select("_id").lean(),
     GrowthAction.find({ status: "awaiting_approval" }).select("_id").lean(),
@@ -816,6 +824,7 @@ async function reviewFingerprint() {
     findings.map((f) => `${f._id}@${new Date(f.updatedAt).getTime()}`).sort().join(","),
     taskRows.map((t) => `${t._id}:${t.status}`).sort().join(","),
     playbooks.map((p) => p.key).sort().join(","),
+    taskRows.length || toReview.length || fixReports || !focus ? `pending-on-arthur:${now.toLocaleDateString("en-CA", { timeZone: "America/New_York" })}` : "",
   ].join("|");
 }
 
@@ -824,7 +833,7 @@ async function review({ now = new Date(), force = false, planning = false } = {}
   const { runAgent, agentsEnabled } = require("../agents/runtime");
   const AgentMemory = require("../../models/AgentMemory");
   if (!agentsEnabled()) return { skipped: "agents_disabled" };
-  const fp = await reviewFingerprint();
+  const fp = await reviewFingerprint({ now });
   const last = await AgentMemory.findOne({ agent: ARTHUR, key: "system:last-review-fingerprint" }).lean();
   if (!force && !planning && last?.content === fp) return { skipped: "nothing_new" };
   await require("./mission").ensureMission();

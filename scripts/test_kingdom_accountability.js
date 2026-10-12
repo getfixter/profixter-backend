@@ -324,6 +324,20 @@ async function main() {
     assert.doesNotMatch(JSON.stringify(h), /SECRET/, "no titles, notes, instructions or focus text reach the log");
   });
 
+  await test("work waiting on Arthur's check keeps the daily review running; a quiet council with a focus still costs nothing", async () => {
+    await clean();
+    const mon = new Date("2026-10-12T12:15:00Z");
+    const tue = new Date("2026-10-13T12:15:00Z");
+    // no focus yet: each day reviews (so he sets one)
+    assert.notStrictEqual(await arthur.reviewFingerprint({ now: mon }), await arthur.reviewFingerprint({ now: tue }));
+    await tasks.setTeamFocus("More Google Maps bookings in Levittown and Hicksville this week, every knight.");
+    assert.strictEqual(await arthur.reviewFingerprint({ now: mon }), await arthur.reviewFingerprint({ now: tue }), "nothing pending: skip, no AI cost");
+    await completedTask();
+    assert.notStrictEqual(await arthur.reviewFingerprint({ now: mon }), await arthur.reviewFingerprint({ now: tue }), "a report waiting for his check: the next day's review runs");
+    assert.strictEqual(await arthur.reviewFingerprint({ now: tue }), await arthur.reviewFingerprint({ now: new Date("2026-10-13T20:00:00Z") }), "but at most once a day");
+    assert.match(arthur.arthurDef("review", { kickoff: () => "", context: {} }).instructions, /If teamFocus is not set, set it in THIS review/);
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("mission");
 

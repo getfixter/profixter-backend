@@ -127,7 +127,7 @@ function startAgentJobs() {
       // Self-check on real data (counts only): do the marketing numbers add up?
       const m = await require("../utils/agents/marketingData").marketingResults();
       const sourcesTotal = (m.bySource30 || []).reduce((n, x) => n + (x.firstFreeVisits || 0), 0);
-      console.log(JSON.stringify({ event: "marketing_report_check", firstFreeVisits30: m.firstFreeVisitBookings.last30, sourcesTotal30: sourcesTotal, adds_up: sourcesTotal === m.firstFreeVisitBookings.last30, funnelWindow: m.bookingFunnel?.window || null, funnelFirstFreeVisits: m.bookingFunnel?.firstFreeVisits ?? null, ratesShown: Boolean(m.bookingFunnel?.stepRatesPct), countedThrough: m.firstFreeVisitBookings.countedThrough ?? null, trend: m.firstFreeVisitBookings.trend?.verdict?.split(" ")[0] || null, noFirstTouchRecord30: m.trackingQuality?.firstFreeVisits30WithNoFirstTouchRecord ?? null }));
+      console.log(JSON.stringify({ event: "marketing_report_check", firstFreeVisits30: m.firstFreeVisitBookings.last30, sourcesTotal30: sourcesTotal, adds_up: sourcesTotal === m.firstFreeVisitBookings.last30, funnelWindow: m.bookingFunnel?.window || null, funnelFirstFreeVisits: m.bookingFunnel?.firstFreeVisits ?? null, ratesShown: Boolean(m.bookingFunnel?.stepRatesPct), countedThrough: m.firstFreeVisitBookings.countedThrough ?? null, trend: m.firstFreeVisitBookings.trend?.verdict?.split(" - ")[0] || null, noFirstTouchRecord30: m.trackingQuality?.firstFreeVisits30WithNoFirstTouchRecord ?? null }));
       await require("../utils/council/health").logCouncilHealth();
     } catch (e) {
       console.error("refocus start-up failed:", e.message);
