@@ -85,6 +85,16 @@ async function capacityOutlook({ now = new Date(), days = CAPACITY_DAYS, monthLo
   };
 }
 
+/** Where a Google Business Profile post went: its public link once verified, else its state. */
+function gbpWhere(a) {
+  if (a.status !== "succeeded") return null;
+  const detail = String(a.verification?.detail || "");
+  const link = detail.match(/https?:\/\/\S+/)?.[0];
+  if (a.verification?.status === "passed") return `Google Business Profile - ${link || "published (no public link reported)"}`;
+  if (a.verification?.status === "failed") return `Google Business Profile - NOT published: ${detail.slice(0, 120)}`;
+  return "Google Business Profile - checking that it published";
+}
+
 function publicAction(a) {
   return {
     id: String(a._id),
@@ -102,7 +112,7 @@ function publicAction(a) {
     decidedBy: a.decidedBy?.name || null,
     expiresAt: a.expiresAt,
     lastError: a.lastError,
-    result: a.result ? { reason: a.result.reason || null, to: a.result.to || null } : null,
+    result: a.result ? { reason: a.result.reason || null, to: a.type === "gbp_post" ? gbpWhere(a) : a.result.to || null } : null,
     verification: a.verification?.status || null,
     // What the owner approves: the exact reply text, page wording, or playbook.
     preview:
@@ -112,6 +122,8 @@ function publicAction(a) {
         ? JSON.stringify(a.payload?.changes || {})
         : a.type === "playbook_email"
         ? `playbook ${a.payload?.playbookKey}`
+        : a.type === "gbp_post"
+        ? `${a.payload?.title ? `${a.payload.title}\n\n` : ""}${String(a.payload?.summary || "").slice(0, 1400)}\n\nBook button: ${a.payload?.url || ""}`
         : null,
   };
 }
@@ -355,4 +367,4 @@ async function buildCommandCenter({ now = new Date() } = {}) {
   };
 }
 
-module.exports = { acquisitionView, buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts };
+module.exports = { acquisitionView, buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts, publicAction };

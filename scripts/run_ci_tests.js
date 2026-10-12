@@ -64,6 +64,7 @@ const SUITES = [
   "test_attention.js",
   "test_kingdom_accountability.js",
   "test_acquisition_scope.js",
+  "test_organic_autonomy.js",
   "test_office_explain_integration.js",
   "test_admin_access.js",
   "test_studio_engine_sync.js",

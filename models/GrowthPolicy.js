@@ -25,7 +25,7 @@ const growthPolicySchema = new mongoose.Schema(
     setBy: {
       kind: {
         type: String,
-        enum: ["owner", "auto_promotion", "auto_demotion"],
+        enum: ["owner", "auto_promotion", "auto_demotion", "auto_suspension"],
         default: "owner",
       },
       userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

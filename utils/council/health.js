@@ -42,7 +42,21 @@ async function councilHealth({ now = new Date() } = {}) {
     focus: focus ? { set: true, at: focus.at } : { set: false },
     // existing-member work kept out of the Kingdom (archived, never deleted)
     outOfScopeArchived: { tasks: archivedOutOfScope, notes: archivedNotes },
+    actions7d: await actionCounts(now),
+    suspendedActionTypes: (await require("../growth/actionLog").suspendedTypes()).map((s) => s.type),
   };
+}
+
+/** Growth actions in the last 7 days by type and status (counts only). */
+async function actionCounts(now) {
+  const GrowthAction = require("../../models/GrowthAction");
+  const rows = await GrowthAction.aggregate([
+    { $match: { createdAt: { $gte: new Date(now.getTime() - 7 * 864e5) } } },
+    { $group: { _id: { type: "$type", status: "$status" }, n: { $sum: 1 } } },
+  ]);
+  const out = {};
+  for (const r of rows) (out[r._id.type] = out[r._id.type] || {})[r._id.status] = r.n;
+  return out;
 }
 
 async function logCouncilHealth() {

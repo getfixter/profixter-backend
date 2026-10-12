@@ -7,3 +7,4 @@ require("./postFreeVisitSms");
 require("./playbookEmail");
 require("./seoPageUpdate");
 require("./conversationReply");
+require("./gbpPost");
