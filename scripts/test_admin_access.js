@@ -19,6 +19,8 @@
  * - a permission removed or added takes effect on the very next request
  * - All Users acts on customers only, never the owner or staff
  * - Overview access does not reveal customer emails
+ * - Overview and Growth are independent: all four combinations, and employees
+ *   saved before the split keep Growth exactly once (the migration)
  * - changes are written to the activity log with before and after
  */
 const assert = require("assert");
@@ -53,7 +55,7 @@ async function main() {
 
   const User = require("../models/User");
   const AdminActivityLog = require("../models/AdminActivityLog");
-  const { PERMISSIONS, SECTIONS, POSITIONS } = require("../utils/adminAccess");
+  const { PERMISSIONS, SECTIONS, SECTIONS_VERSION, POSITIONS } = require("../utils/adminAccess");
   const { permissionsForUser } = require("../middleware/authorize");
 
   const app = express();
@@ -62,6 +64,7 @@ async function main() {
   app.use("/api/auth", require("../routes/auth"));
   app.use("/api", require("../routes/promotionPopup"));
   app.use("/api/admin/overview", require("../routes/adminOverview"));
+  app.use("/api/admin/growth", require("../routes/adminGrowth"));
   app.use("/api/admin/calendar", require("../routes/adminCalendarShadow"));
   app.use("/api/admin/projects", require("../routes/projects"));
   app.use("/api/admin/invoices", require("../routes/adminInvoices"));
@@ -92,13 +95,19 @@ async function main() {
   const customer = await mk({ name: "Casey Customer", email: "casey@example.com" });
   const fixter = await mk({ name: "Fred Fixter", role: "employee", employeePosition: "Fixter" });
   const general = await mk({ name: "Gina General", role: "employee", employeePosition: "General Fixter" });
-  const emp = (name, sections, extra = {}) => mk({ name, role: "employee", employeePosition: null, employeeTitle: "Marketing Manager", adminSections: sections, ...extra });
+  // Saved through today's editor, so stamped with the current sections version.
+  const emp = (name, sections, extra = {}) =>
+    mk({ name, role: "employee", employeePosition: null, employeeTitle: "Marketing Manager", adminSections: sections, adminSectionsVersion: SECTIONS_VERSION, ...extra });
   const overviewOnly = await emp("Olive Overview", ["overview"]);
   const photosOnly = await emp("Pat Photos", ["recent-work"]);
   const both = await emp("Bo Both", ["overview", "customer-map", "recent-work"]);
   const zero = await emp("Zed Zero", []);
   const disabled = await emp("Dee Disabled", ["overview", "customers"], { isActive: false });
   const allSections = await emp("Al All", SECTIONS.map((s) => s.id));
+  /* The four Overview x Growth combinations (overviewOnly above is Overview ON, Growth OFF). */
+  const growthOnly = await emp("Gus Growth", ["growth"]);
+  const overviewGrowth = await emp("Ova Growth", ["overview", "growth"]);
+  const neither = await emp("Nell Neither", ["recent-work"]);
 
   const token = (u) => jwt.sign({ id: String(u._id) }, process.env.JWT_SECRET);
   const call = (method, path, user, body) =>
@@ -113,6 +122,10 @@ async function main() {
   const MATRIX = [
     [PERMISSIONS.ANALYTICS_READ, "GET", "/api/admin/overview?range=30d"],
     [PERMISSIONS.ANALYTICS_MAP, "GET", "/api/admin/overview/map"],
+    [PERMISSIONS.GROWTH_READ, "GET", "/api/admin/growth/actions"],
+    [PERMISSIONS.GROWTH_READ, "GET", "/api/admin/growth/findings"],
+    [PERMISSIONS.GROWTH_READ, "GET", "/api/admin/growth/playbooks"],
+    [PERMISSIONS.GROWTH_READ, "GET", "/api/admin/growth/office/council/report"],
     [PERMISSIONS.MEMBERS_READ, "GET", "/api/admin/members"],
     [PERMISSIONS.CUSTOMERS_MANAGE, "GET", "/api/admin/users"],
     [PERMISSIONS.CUSTOMERS_MANAGE, "GET", `/api/admin/users/${customer._id}/sms-consent`],
@@ -140,6 +153,8 @@ async function main() {
     [PERMISSIONS.ADMIN, "DELETE", `/api/admin/users/${fakeId}`],
     [PERMISSIONS.ADMIN, "GET", "/api/admin/gifts"],
     [PERMISSIONS.ADMIN, "GET", "/api/admin/bookings/reminders/debug"],
+    [PERMISSIONS.ADMIN, "POST", `/api/admin/growth/actions/${fakeId}/reject`, { reason: "x" }],
+    [PERMISSIONS.ADMIN, "PUT", "/api/admin/growth/office/council/mission", { text: "x" }],
   ];
 
   const expectFor = (user, permission) => {
@@ -163,7 +178,10 @@ async function main() {
 
   section("Who reaches what (every section, through the real routes)");
   await test("owner: every section and every owner-only tool", () => sweep("owner", owner));
-  await test("Overview-only employee: Overview, nothing else", () => sweep("overview", overviewOnly));
+  await test("Overview-only employee: Overview, nothing else (not Growth)", () => sweep("overview", overviewOnly));
+  await test("Growth-only employee: Growth, nothing else (not Overview)", () => sweep("growth", growthOnly));
+  await test("Overview + Growth employee: both, nothing else", () => sweep("overview+growth", overviewGrowth));
+  await test("neither Overview nor Growth: both denied", () => sweep("neither", neither));
   await test("Photos-only employee: Recent Work, not Overview, nothing else", () => sweep("photos", photosOnly));
   await test("Overview + Customer Map + Photos: exactly those", () => sweep("both", both));
   await test("zero sections: no section at all", () => sweep("zero", zero));
@@ -177,6 +195,45 @@ async function main() {
     const old = jwt.sign({ id: String(overviewOnly._id) }, process.env.JWT_SECRET, { expiresIn: -10 });
     const res = await fetch(`${base}/api/admin/overview`, { headers: { Authorization: `Bearer ${old}` } });
     assert.strictEqual(res.status, 401);
+  });
+
+  section("Overview and Growth are separate permissions");
+  const status = async (u, path) => (await call("GET", path, u)).status;
+  const OV = "/api/admin/overview?range=30d";
+  const GR = "/api/admin/growth/actions";
+  for (const [label, u, ov, gr] of [
+    ["Overview ON, Growth OFF", overviewOnly, true, false],
+    ["Overview OFF, Growth ON", growthOnly, false, true],
+    ["Overview ON, Growth ON", overviewGrowth, true, true],
+    ["Overview OFF, Growth OFF", neither, false, false],
+  ]) {
+    await test(`${label}: direct API calls and /me answer accordingly`, async () => {
+      const [o, g] = [await status(u, OV), await status(u, GR)];
+      assert.strictEqual(o === 403, !ov, `overview -> ${o}`);
+      assert.strictEqual(g === 403, !gr, `growth -> ${g}`);
+      const me = await (await call("GET", "/api/auth/me", u)).json();
+      assert.strictEqual(me.permissions.includes("analytics.read"), ov);
+      assert.strictEqual(me.permissions.includes("growth.read"), gr);
+    });
+  }
+  await test("Growth-only: no Overview drill-down or map either", async () => {
+    assert.strictEqual(await status(growthOnly, "/api/admin/overview/list?range=30d&metric=newCustomers"), 403);
+    assert.strictEqual(await status(growthOnly, "/api/admin/overview/map"), 403);
+  });
+  await test("Growth is read only: approving, policies, chat and runs stay the owner's", async () => {
+    for (const [m, path, body] of [
+      ["POST", `/api/admin/growth/actions/${fakeId}/approve`, {}],
+      ["PUT", "/api/admin/growth/policies/checkout_recovery_email", { mode: "autonomous" }],
+      ["POST", "/api/admin/growth/office/council/chat", { message: "hi" }],
+      ["POST", "/api/admin/growth/agents/arthur/run", {}],
+    ]) assert.strictEqual((await call(m, path, overviewGrowth, body)).status, 403, `${m} ${path}`);
+  });
+  await test("the editor registry lists Overview and Growth as two switches", async () => {
+    const reg = await (await call("GET", "/api/admin/fixters/access-registry", owner)).json();
+    const list = reg.sections || reg.registry?.sections || [];
+    const ids = list.map((x) => x.id);
+    assert.ok(ids.includes("overview") && ids.includes("growth"), ids.join(","));
+    assert.strictEqual(list.find((x) => x.id === "growth").requires, null, "Growth does not require Overview");
   });
 
   section("Existing staff kept exactly what they had (no migration, no new access)");
@@ -324,6 +381,48 @@ async function main() {
     for (const u of [allSections, both, general]) {
       assert.strictEqual((await call("PUT", `/api/admin/fixters/${u._id}`, u, { firstName: "A", lastName: "B", adminSections: SECTIONS.map((s) => s.id) })).status, 403);
     }
+  });
+
+  section("Migration: who had Overview before the split keeps Growth, once");
+  const { migrateAdminSections } = require("../utils/adminAccessMigration");
+  const raw = async (doc) => (await User.collection.insertOne({ password: "x", role: "employee", employeePosition: null, isActive: true, ...doc })).insertedId;
+  const legacyOverview = await raw({ userId: "99999990", name: "Old Overview", email: "oldov@example.com", adminSections: ["overview", "customer-map"] });
+  const legacyPhotos = await raw({ userId: "99999991", name: "Old Photos", email: "oldph@example.com", adminSections: ["recent-work"] });
+  const legacyNone = await raw({ userId: "99999992", name: "Old None", email: "oldno@example.com" });
+  const legacyFixter = await raw({ userId: "99999993", name: "Old Fixter", email: "oldfx@example.com", employeePosition: "Fixter" });
+  const legacyCustomer = (await User.collection.insertOne({ userId: "99999994", name: "Cust", email: "oldcu@example.com", password: "x", role: "customer", adminSections: ["overview"] })).insertedId;
+  const lean = (id) => User.findById(id).lean();
+  const sectionsOf = async (id) => (await lean(id)).adminSections || [];
+  await test("before the migration a legacy Overview employee has Overview only", async () => {
+    assert.strictEqual(await status(await lean(legacyOverview), OV), 200);
+    assert.strictEqual(await status(await lean(legacyOverview), GR), 403);
+  });
+  await test("migration adds Growth to Overview holders only; all other access unchanged", async () => {
+    const r = await migrateAdminSections();
+    assert.strictEqual(r.growthAdded, 1, JSON.stringify(r));
+    assert.deepStrictEqual(await sectionsOf(legacyOverview), ["overview", "customer-map", "growth"]);
+    assert.deepStrictEqual(await sectionsOf(legacyPhotos), ["recent-work"]);
+    assert.deepStrictEqual(await sectionsOf(legacyNone), []);
+    assert.deepStrictEqual(permissionsForUser(await lean(legacyFixter)).sort(), ["bookings.read", "bookings.write", "tips.read"]);
+    assert.deepStrictEqual(await sectionsOf(legacyCustomer), ["overview"], "customers are never touched");
+    const u = await lean(legacyOverview);
+    assert.strictEqual(await status(u, OV), 200);
+    assert.notStrictEqual(await status(u, GR), 403);
+    assert.notStrictEqual(await status(u, "/api/admin/overview/map"), 403, "Customer Map kept");
+  });
+  await test("employees saved after the split are never rewritten (Overview ON + Growth OFF sticks)", async () => {
+    assert.deepStrictEqual(await sectionsOf(overviewOnly._id), ["overview"]);
+    assert.deepStrictEqual(await sectionsOf(john.id), ["customers", "recent-work"]);
+  });
+  await test("owner turns Growth off for a migrated employee; a redeploy (second run) leaves it off", async () => {
+    const res = await call("PUT", `/api/admin/fixters/${legacyOverview}`, owner, {
+      firstName: "Old", lastName: "Overview", phone: "", employeePosition: "", employeeTitle: "Analyst", adminSections: ["overview", "customer-map"],
+    });
+    assert.strictEqual(res.status, 200, await res.clone().text());
+    assert.deepStrictEqual(await migrateAdminSections(), { growthAdded: 0, stamped: 0 });
+    assert.deepStrictEqual(await sectionsOf(legacyOverview), ["overview", "customer-map"]);
+    assert.strictEqual(await status(await lean(legacyOverview), GR), 403);
+    assert.strictEqual(await status(await lean(legacyOverview), OV), 200);
   });
 
   server.close();

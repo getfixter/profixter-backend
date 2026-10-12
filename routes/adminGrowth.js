@@ -10,11 +10,11 @@ const { buildCommandCenter } = require("../utils/growth/commandCenter");
 /**
  * Growth Command Center API.
  *
- * Reading is the Overview permission: whoever may see the business numbers may
- * see what the growth system is doing. Deciding is the owner's alone - approving
- * an action sends something to a customer or spends money, and changing a
- * policy decides what will run unattended from then on - so those routes need
- * the owner key, which no employee section grants.
+ * Reading is the Growth permission, its own section, independent of Overview.
+ * Deciding is the owner's alone - approving an action sends something to a
+ * customer or spends money, and changing a policy decides what will run
+ * unattended from then on - so those routes need the owner key, which no
+ * employee section grants.
  */
 const router = express.Router();
 
@@ -24,7 +24,7 @@ router.use((req, res, next) => {
   next();
 });
 
-const canRead = requirePermission(PERMISSIONS.ANALYTICS_READ);
+const canRead = requirePermission(PERMISSIONS.GROWTH_READ);
 const ownerOnly = requirePermission(PERMISSIONS.ADMIN);
 
 function ownerActor(req) {

@@ -10,7 +10,7 @@ const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailability
 const AvailabilityOverride = require("../models/AvailabilityOverride");
 const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
-const { SECTIONS, cleanSections, isFieldPosition, registryForEditor } = require("../utils/adminAccess");
+const { SECTIONS, SECTIONS_VERSION, cleanSections, isFieldPosition, registryForEditor } = require("../utils/adminAccess");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 const {
   createAdminActivityLog,
@@ -265,6 +265,7 @@ router.post("/", async (req, res) => {
       employeePosition,
       employeeTitle,
       adminSections,
+      adminSectionsVersion: SECTIONS_VERSION,
       isActive: true,
       mustChangePassword: true,
       employeeAvailabilityStatus: "Available",
@@ -334,6 +335,7 @@ router.put("/:id", async (req, res) => {
     user.employeePosition = employeePosition;
     user.employeeTitle = employeeTitle;
     user.adminSections = adminSections;
+    user.adminSectionsVersion = SECTIONS_VERSION;
     if (!employeePosition) user.isDefaultFixter = false;
     await user.save();
     if (employeePosition && !before.fieldWork) {

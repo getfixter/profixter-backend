@@ -153,6 +153,10 @@ mongoose
       .then(() => console.log("✅ User indexes in sync"))
       .catch(e => console.warn("⚠️ Could not sync User indexes:", e.message));
 
+    // Before Admin traffic matters: an employee who had Overview keeps Growth.
+    await require("./utils/adminAccessMigration").migrateAdminSections()
+      .catch(e => console.error("❌ Admin sections migration failed:", e.message));
+
     await ensureCapacityOverrideIndexes();
     await ensureVisitEntitlementIndexesOnce();
     try {
