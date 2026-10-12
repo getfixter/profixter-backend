@@ -43,6 +43,7 @@ async function publicCatalog() {
     catalog: toEngineCatalog(products, { assetUrl }),
     projectTypes: pricing.projectTypes.filter((t) => t.enabled !== false).map((t) => ({ key: t.key, label: t.label, includes: t.includes })),
     disclaimer: pricing.disclaimer,
+    privacyNote: pricing.privacyNote,
     packages: pricing.packages.filter((p) => p.enabled !== false && p.isPublic && p.priceCents != null).map((p) => ({ key: p.key, name: p.name, description: p.description, skus: p.skus })),
     version: `${pricing.version}-${products.reduce((m, p) => Math.max(m, new Date(p.updatedAt).getTime()), 0)}`,
   };

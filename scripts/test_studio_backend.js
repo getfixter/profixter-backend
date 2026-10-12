@@ -10,6 +10,7 @@ process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "studio-test-secret";
 process.env.MAIL_ADMIN = "owner@test.local";
 process.env.STUDIO_STORAGE = "memory";
+process.env.STUDIO_PUBLIC_ENABLED = "true";
 process.env.S3_BUCKET = "";
 
 const path = require("path");
@@ -449,6 +450,69 @@ async function main() {
     const put = await call("PUT", `/api/admin/studio/designs/${exampleId}`, { user: seller, body: { state, measureSource: "verified", note: "Measured on site" } });
     assert.strictEqual(put.status, 200, JSON.stringify(put.body));
     assert.strictEqual(put.body.design.measureLabel, "Verified on site by Profixter");
+  });
+
+  console.log("dark launch and access");
+  await test("public Studio switched OFF: empty disabled catalog, and nothing can be created, quoted or sent", async () => {
+    process.env.STUDIO_PUBLIC_ENABLED = "false";
+    try {
+      const c = await call("GET", "/api/studio/catalog");
+      assert.strictEqual(c.status, 200);
+      assert.strictEqual(c.body.enabled, false);
+      assert.strictEqual(c.body.catalog.finishes.length, 0);
+      for (const [m, u, body] of [["POST", "/api/studio/designs", {}], ["POST", "/api/studio/quote", { design: baseDesign }], ["POST", `/api/studio/designs/${pub.id}/submit`, {}], ["PUT", `/api/studio/designs/${pub.id}`, {}]]) {
+        const r = await call(m, u, { body });
+        assert.strictEqual(r.status, 404, `${m} ${u} -> ${r.status}`);
+      }
+      // Admin keeps working while the public side is off
+      assert.strictEqual((await call("GET", "/api/admin/studio/designs", { user: seller })).status, 200);
+      assert.strictEqual((await call("GET", "/api/admin/studio/products", { user: owner })).status, 200);
+    } finally {
+      process.env.STUDIO_PUBLIC_ENABLED = "true";
+    }
+  });
+
+  await test("an unpublished product can never be priced or used from outside", async () => {
+    const draft = await StudioProduct.create({ sku: "secret-draft-bar", category: "accessory", type: "grabBar", name: "Secret draft bar", status: "draft", engine: { length: 24, diameter: 1.25, clearance: 1.5, flange: 3, finishColor: "#cccccc", roughness: 0.3 }, pricing: { priceCents: 123456 } });
+    const design = { ...baseDesign, accessories: [{ key: "s", productId: draft.sku, wall: "left", u: 30, y: 35.5 }] };
+    const q = await call("POST", "/api/studio/quote", { body: { design, projectType: "tub-to-shower" } });
+    assert.strictEqual(q.status, 400);
+    assert.ok(!JSON.stringify(q.body).includes("1234"), "no price leaked");
+    const hidden = await StudioProduct.create({ sku: "staff-only-bar", category: "accessory", type: "grabBar", name: "Staff only", status: "published", isPublic: false, engine: draft.engine, pricing: { priceCents: 5000 } });
+    const q2 = await call("POST", "/api/studio/quote", { body: { design: { ...baseDesign, accessories: [{ key: "s", productId: hidden.sku, wall: "left", u: 30, y: 35.5 }] }, projectType: "tub-to-shower" } });
+    assert.strictEqual(q2.status, 400, "published but hidden from the website is not public either");
+    const r = await call("POST", "/api/studio/designs", { body: {} });
+    const s = await call("PUT", `/api/studio/designs/${r.body.id}`, { headers: { "x-studio-token": r.body.token }, body: { state: stateFor({ width: 1, height: 1 }, design) } });
+    assert.ok(s.status === 400, `save with a draft product -> ${s.status}`);
+  });
+
+  await test("only the owner sees the new sections at first: an employee with EVERY existing section is refused", async () => {
+    const legacy = ["overview", "customer-map", "members", "customers", "leads", "projects", "jobs", "schedule", "recent-work", "communications", "promotion", "blacklist", "activity"];
+    const veteran = await mk("Vera Veteran", "vera@test.local", "employee", { adminSections: legacy });
+    for (const u of ["/api/admin/studio/designs", "/api/admin/studio/products", "/api/admin/studio/pricing", "/api/admin/studio/catalog/completeness"]) {
+      assert.strictEqual((await call("GET", u, { user: veteran })).status, 403, u);
+    }
+    const { permissionsForSections } = require("../utils/adminAccess");
+    const perms = [...permissionsForSections(legacy)];
+    assert.ok(!perms.some((p) => p.startsWith("studio.")), perms.join());
+  });
+
+  await test("the photo-link key: dedicated secret preferred, too-short refused, never logged", async () => {
+    const sl = require("../utils/studio/signedLinks");
+    const keep = process.env.STUDIO_LINK_SECRET;
+    try {
+      delete process.env.STUDIO_LINK_SECRET;
+      assert.strictEqual(sl.secretSource(), "derived-from-jwt-secret");
+      process.env.STUDIO_LINK_SECRET = "short";
+      assert.strictEqual(sl.secretSource(), "dedicated-too-short");
+      assert.throws(() => sl.photoUrl("abc"), /at least 32/);
+      process.env.STUDIO_LINK_SECRET = "x".repeat(40);
+      assert.strictEqual(sl.secretSource(), "dedicated");
+      const url = sl.photoUrl("abc");
+      assert.ok(!url.includes("xxxx"));
+    } finally {
+      if (keep === undefined) delete process.env.STUDIO_LINK_SECRET; else process.env.STUDIO_LINK_SECRET = keep;
+    }
   });
 
   console.log("retention");

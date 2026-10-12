@@ -69,6 +69,13 @@ const StudioPricingSchema = new mongoose.Schema(
       maxlength: 1000,
       default: "Estimated total. Your final price is confirmed after an in-home measurement and inspection.",
     },
+    /* shown to customers where they add a photo and where they send a request */
+    privacyNote: {
+      type: String,
+      trim: true,
+      maxlength: 1500,
+      default: "Your photo and design are private: only you and the Profixter team can see them, and camera location data is removed. Unsent designs are deleted after 30 days.",
+    },
     version: { type: Number, default: 1 },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },

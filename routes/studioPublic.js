@@ -34,6 +34,19 @@ const { EXAMPLE_SCENES, isExampleScene, MEASURE_LABEL } = require("../utils/stud
 const PUBLIC_MEASURE = (v) => (v === "customer" ? "customer" : "standard");
 
 const router = express.Router();
+
+/**
+ * The public Studio is OFF unless STUDIO_PUBLIC_ENABLED=true. While off (the
+ * "dark" launch), the catalog answers with an empty, disabled catalog (the
+ * page shows "coming soon") and every design, quote and submission route
+ * answers 404 - nothing can be created or sent, even by a script. Catalog
+ * images and signed photo links stay available because Admin uses them.
+ */
+const publicEnabled = () => process.env.STUDIO_PUBLIC_ENABLED === "true";
+function requirePublic(req, res, next) {
+  if (publicEnabled()) return next();
+  return res.status(404).json({ message: "The Shower Studio is not available yet." });
+}
 const json = express.json({ limit: "512kb" });
 const DRAFT_DAYS = Number(process.env.STUDIO_DRAFT_RETENTION_DAYS || 30);
 const SUBMITTED_DAYS = Number(process.env.STUDIO_SUBMITTED_RETENTION_DAYS || 730);
@@ -89,7 +102,10 @@ async function view(d) {
 router.get("/catalog", limit("catalog", 120, 60_000), async (_req, res) => {
   try {
     res.set("Cache-Control", "public, max-age=30");
-    return res.json(await publicCatalog());
+    if (!publicEnabled()) {
+      return res.json({ enabled: false, catalog: { finishes: [], bases: [], fixtures: [], enclosures: [], accessories: [], specs: {} }, projectTypes: [], packages: [], disclaimer: "", version: "off" });
+    }
+    return res.json({ enabled: true, ...(await publicCatalog()) });
   } catch (e) {
     console.error("studio catalog failed:", e.message);
     return err(res, 500, "The product catalog is unavailable right now.");
@@ -110,7 +126,7 @@ router.get("/assets/:publicId", limit("asset", 600, 60_000), async (req, res) =>
 });
 
 // ---------------------------------------------------------------- designs
-router.post("/designs", limit("create", 20, 60 * 60_000), json, async (req, res) => {
+router.post("/designs", requirePublic, limit("create", 20, 60 * 60_000), json, async (req, res) => {
   try {
     const token = randomId(24);
     const d = await StudioDesign.create({
@@ -129,13 +145,13 @@ router.post("/designs", limit("create", 20, 60 * 60_000), json, async (req, res)
   }
 });
 
-router.get("/designs/:id", limit("read", 120, 60_000), async (req, res) => {
+router.get("/designs/:id", requirePublic, limit("read", 120, 60_000), async (req, res) => {
   const d = await ownDesign(req, res);
   if (!d) return null;
   return res.json(await view(d));
 });
 
-router.put("/designs/:id", limit("save", 120, 60_000), json, async (req, res) => {
+router.put("/designs/:id", requirePublic, limit("save", 120, 60_000), json, async (req, res) => {
   try {
     const d = await ownDesign(req, res);
     if (!d) return null;
@@ -146,7 +162,10 @@ router.put("/designs/:id", limit("save", 120, 60_000), json, async (req, res) =>
     }
     if (req.body?.measureSource !== undefined) d.measureSource = PUBLIC_MEASURE(req.body.measureSource);
     const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : d.exampleScene ? EXAMPLE_SCENES[d.exampleScene] : null;
-    if (req.body?.state) d.state = validateState(req.body.state, photo);
+    if (req.body?.state) {
+      d.state = validateState(req.body.state, photo);
+      await assertPublicProducts(d.state.design);
+    }
     if (["tub-to-shower", "shower-replacement", "tub-replacement"].includes(req.body?.projectType)) d.projectType = req.body.projectType;
     d.deleteAfter = new Date(Date.now() + DRAFT_DAYS * DAY);
     await d.save();
@@ -156,7 +175,7 @@ router.put("/designs/:id", limit("save", 120, 60_000), json, async (req, res) =>
   }
 });
 
-router.post("/designs/:id/photo", limit("photo", 30, 60 * 60_000), (req, res) => {
+router.post("/designs/:id/photo", requirePublic, limit("photo", 30, 60 * 60_000), (req, res) => {
   upload.single("photo")(req, res, async (uploadError) => {
     try {
       if (uploadError) return err(res, 400, uploadError.code === "LIMIT_FILE_SIZE" ? "Photos must be 20 MB or smaller." : "Upload one photo.");
@@ -188,7 +207,7 @@ router.post("/designs/:id/photo", limit("photo", 30, 60 * 60_000), (req, res) =>
 });
 
 /** The rendered preview of the visitor's design, sent with the request (private). */
-router.post("/designs/:id/preview", limit("preview", 60, 60 * 60_000), (req, res) => {
+router.post("/designs/:id/preview", requirePublic, limit("preview", 60, 60 * 60_000), (req, res) => {
   upload.single("preview")(req, res, async (uploadError) => {
     try {
       if (uploadError) return err(res, 400, "Upload one image.");
@@ -223,7 +242,7 @@ async function deletePhoto(photoId) {
 }
 
 /** The visitor can delete their own (unsent) design and its photo at any time. */
-router.delete("/designs/:id", limit("delete", 30, 60 * 60_000), async (req, res) => {
+router.delete("/designs/:id", requirePublic, limit("delete", 30, 60 * 60_000), async (req, res) => {
   const d = await ownDesign(req, res);
   if (!d) return null;
   if (d.status !== "draft") return err(res, 409, "This design was already sent to Profixter. Ask us and we will delete it.");
@@ -248,16 +267,29 @@ router.get("/photos/:publicId", limit("photoRead", 300, 60_000), async (req, res
 });
 
 // ---------------------------------------------------------------- price
-router.post("/quote", limit("quote", 240, 60_000), json, async (req, res) => {
+router.post("/quote", requirePublic, limit("quote", 240, 60_000), json, async (req, res) => {
   try {
     const state = validateState({ marks: dummyMarks, points: dummyPoints, design: req.body?.design }, null);
     const projectType = String(req.body?.projectType || "tub-to-shower");
+    await assertPublicProducts(state.design);
     const { result, pricing } = await quoteDesign(state.design, projectType);
     return res.json(publicQuote(result, pricing, { measureSource: PUBLIC_MEASURE(req.body?.measureSource) }));
   } catch (e) {
     return err(res, e.status || 500, e.status ? e.message : "Could not price this design.");
   }
 });
+/**
+ * Visitors may only design with products that are published and shown on the
+ * website: an unpublished product's price must never be computable from outside.
+ */
+async function assertPublicProducts(design) {
+  const skus = [design?.baseId, design?.finishId, design?.fixtureId, design?.enclosureId, ...((design?.accessories || []).map((a) => a.productId))].filter((s) => s && s !== "none");
+  if (!skus.length) return;
+  const StudioProduct = require("../models/studio/StudioProduct");
+  const ok = await StudioProduct.countDocuments({ sku: { $in: [...new Set(skus)] }, status: "published", isPublic: true });
+  if (ok !== new Set(skus).size) throw Object.assign(new Error("Some of the chosen products are no longer available. Please choose again."), { status: 400 });
+}
+
 const dummyMarks = { wallTL: [0, 0], wallTR: [1, 0], wallBL: [0, 1], wallBR: [1, 1] };
 const dummyPoints = { valve: [0, 0], head: [0, 0] };
 
@@ -269,6 +301,7 @@ const submitLimitByEmail = (req) => `studio:submit-email:${String(req.body?.emai
 
 router.post(
   "/designs/:id/submit",
+  requirePublic,
   limit("submit", 10, 60 * 60_000),
   json,
   rateLimit({ limit: 5, windowMs: DAY, keyResolver: submitLimitByEmail, message: "We already have several requests from this email today. Our team will be in touch." }),
@@ -297,6 +330,7 @@ router.post(
       // a real person takes more than a few seconds from starting a design to sending it
       if (Date.now() - new Date(d.createdAt).getTime() < 8000) return err(res, 400, "Please review your design before sending it.");
 
+      await assertPublicProducts(d.state.design);
       const compat = await checkDesign(d.state.design, d.projectType);
       const block = blockingErrors(compat);
       if (block.length) return err(res, 400, `This combination can't be installed as chosen: ${block[0].message}`, { errors: block });

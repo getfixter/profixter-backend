@@ -282,6 +282,7 @@ router.put("/pricing", ...catalogPerm, json, handle(async (req, res) => {
     else pricing.maxDiscountPercent = m;
   }
   if (b.disclaimer !== undefined) pricing.disclaimer = String(b.disclaimer).trim().slice(0, 1000) || pricing.disclaimer;
+  if (b.privacyNote !== undefined) pricing.privacyNote = String(b.privacyNote).trim().slice(0, 1500) || pricing.privacyNote;
   if (errors.length) throw fail(400, errors[0].message, { errors });
   pricing.version += 1;
   pricing.updatedBy = actorId(req);
