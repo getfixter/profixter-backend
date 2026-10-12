@@ -22,7 +22,7 @@ const StudioPhoto = require("../models/studio/StudioPhoto");
 const { sanitizeImageBuffer } = require("../utils/imageSanitizer");
 const storage = require("../utils/studio/storage");
 const { photoUrl, randomId } = require("../utils/studio/signedLinks");
-const { TYPES, fieldsFor, validateEngine, validateProduct, completeness } = require("../utils/studio/catalogFields");
+const { TYPES, fieldsFor, validateEngine, validateProduct, completeness, publishBlockers } = require("../utils/studio/catalogFields");
 const { staffCatalog, invalidate } = require("../utils/studio/catalogService");
 const { validateState } = require("../utils/studio/designState");
 const { checkDesign, quoteDesign, blockingErrors, skusOf } = require("../utils/studio/designService");
@@ -39,6 +39,9 @@ const isOwner = (req) => req.accessRole === "admin";
 const fail = (status, message, extra) => Object.assign(new Error(message), { status, extra });
 
 router.use(auth);
+
+// Manufacturer catalogs (Swan, ...): imports, browsing, adding variants as drafts.
+router.use("/manufacturers", require("./adminStudioManufacturers"));
 
 function handle(fn) {
   return async (req, res) => {
@@ -117,6 +120,10 @@ router.put("/products/:id", ...catalogPerm, json, handle(async (req, res) => {
   const all = [...errors, ...eng.errors];
   if (all.length) throw fail(400, all[0].message, { errors: all });
   delete value.sku; delete value.category;
+  if (value.compatibility) {
+    const was = p.compatibility?.status;
+    value.compatibility = { ...value.compatibility, reviewedBy: value.compatibility.status === "reviewed" ? (was === "reviewed" ? p.compatibility.reviewedBy : actorId(req)) : null, reviewedAt: value.compatibility.status === "reviewed" ? (was === "reviewed" ? p.compatibility.reviewedAt : new Date()) : null };
+  }
   Object.assign(p, value, { engine: eng.engine, type, updatedBy: actorId(req) });
   p.version = (p.version || 1) + 1;
   p.markModified("engine");
@@ -132,13 +139,18 @@ router.post("/products/:id/status", ...catalogPerm, json, handle(async (req, res
   if (!p) throw fail(404, "Product not found.");
   const status = String(req.body?.status || "");
   if (!["draft", "published", "archived"].includes(status)) throw fail(400, "Unknown status.");
+  if (p.source?.unitSku) throw fail(400, "These walls are part of a one-piece unit: they are published, hidden or archived with the unit.");
   if (status === "published") {
     const { errors } = validateEngine(p.category, p.type, p.engine);
     if (errors.length) throw fail(400, `Finish the visualization details first: ${errors[0].message}`, { errors });
+    const blockers = publishBlockers(p);
+    if (blockers.length) throw fail(400, blockers[0], { errors: blockers.map((message) => ({ field: "status", message })) });
   }
   p.status = status;
   p.updatedBy = actorId(req);
   await p.save();
+  // A one-piece unit's integral walls always share the unit's status.
+  if (p.source?.manufacturer) await StudioProduct.updateMany({ "source.unitSku": p.sku }, { $set: { status, updatedBy: actorId(req) } });
   invalidate();
   res.json({ product: serializeProduct(p.toObject(), await assetMapFor([p])) });
 }));
@@ -148,6 +160,40 @@ router.post("/products/reorder", ...catalogPerm, json, handle(async (req, res) =
   await Promise.all(ids.map((id, i) => StudioProduct.updateOne({ _id: id }, { $set: { sortOrder: (i + 1) * 10 } })));
   invalidate();
   res.json({ ok: true });
+}));
+
+/**
+ * Copy a manufacturer image (from the product's manufacturer links) into the
+ * product's own photos. Only allowed once the owner has confirmed the
+ * manufacturer's image rights; otherwise those images stay Admin previews.
+ */
+router.post("/products/:id/media/copy", ...catalogPerm, json, handle(async (req, res) => {
+  if (!validId(req.params.id)) throw fail(404, "Product not found.");
+  const p = await StudioProduct.findById(req.params.id);
+  if (!p) throw fail(404, "Product not found.");
+  const url = String(req.body?.url || "");
+  if (!p.source?.manufacturer || !(p.externalMedia || []).some((m) => m.url === url && m.kind === "photo")) throw fail(400, "Choose one of this product's manufacturer photos.");
+  const { copyManufacturerImage } = require("../utils/studio/manufacturers/media");
+  const { asset, reused } = await copyManufacturerImage({ key: p.source.manufacturer, url, actorId: actorId(req) });
+  if (!p.assets.photos.some((x) => String(x.assetId) === String(asset._id))) {
+    if (p.assets.photos.length >= 8) throw fail(400, "Up to 8 photos per product.");
+    p.assets.photos.push({ assetId: asset._id, alt: p.name.slice(0, 200) });
+    p.version += 1;
+    await p.save();
+    invalidate();
+  }
+  res.status(reused ? 200 : 201).json({ product: serializeProduct(p.toObject(), await assetMapFor([p])) });
+}));
+
+/** The owner has looked at the manufacturer's changes (list price, availability): clear the notes. */
+router.post("/products/:id/source/reviewed", ...catalogPerm, handle(async (req, res) => {
+  if (!validId(req.params.id)) throw fail(404, "Product not found.");
+  const p = await StudioProduct.findById(req.params.id);
+  if (!p) throw fail(404, "Product not found.");
+  if (p.source) p.source.pendingReview = [];
+  p.updatedBy = actorId(req);
+  await p.save();
+  res.json({ product: serializeProduct(p.toObject(), await assetMapFor([p])) });
 }));
 
 /** Upload a product photo or texture (re-encoded; stored privately; served by an unguessable id). */

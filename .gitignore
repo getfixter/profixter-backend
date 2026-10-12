@@ -39,3 +39,6 @@ __MACOSX/
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
 .studio-private/
+
+# Manufacturer price files (owner uploads them in Admin; never committed)
+catalog-imports/

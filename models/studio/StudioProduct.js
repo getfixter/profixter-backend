@@ -68,9 +68,51 @@ const StudioProductSchema = new mongoose.Schema(
     isPublic: { type: Boolean, default: true },
     featured: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
+    /*
+     * Set for products added from a manufacturer's catalog (StudioSupplierItem).
+     * Imports refresh the manufacturer's facts here (list price, availability)
+     * and add `pendingReview` notes; they never touch `pricing`, `status` or
+     * anything else the owner sets.
+     */
+    source: {
+      manufacturer: { type: String, default: null, index: true },
+      partNumber: { type: String, default: null },
+      modelNumber: { type: String, default: "" },
+      seriesName: { type: String, default: "" },
+      colorCode: { type: String, default: null },
+      /* the manufacturer's LIST price - not Profixter's cost */
+      listPriceCents: { type: Number, default: null },
+      listPriceEffective: { type: String, default: "" },
+      availability: { type: String, default: "" },
+      /* the one-piece unit whose integral walls this wall finish is (only selectable with it, included in its price) */
+      unitSku: { type: String, default: null },
+      approximations: { type: [String], default: [] },
+      lastImportId: { type: mongoose.Schema.Types.ObjectId, default: null },
+      pendingReview: {
+        type: [{ _id: false, kind: String, message: String, from: String, to: String, at: Date }],
+        default: [],
+      },
+    },
+    /* Manufacturer links (photos, drawings, guides, CAD). Previewed in Admin only; never sent to the public Studio. */
+    externalMedia: {
+      type: [{ _id: false, kind: { type: String }, url: { type: String, maxlength: 1000 } }],
+      default: [],
+    },
+    /*
+     * Has the owner checked what this product fits and pairs with? Manufacturer
+     * products start "unverified"; they cannot be published until reviewed.
+     */
+    compatibility: {
+      status: { type: String, enum: ["unverified", "reviewed"], default: "reviewed" },
+      note: { type: String, trim: true, maxlength: 1000, default: "" },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      reviewedAt: { type: Date, default: null },
+    },
     pricing: {
       /* null = not priced: the product may still be designed with, but no estimate is shown */
       priceCents: { type: Number, min: 0, default: null },
+      /* what the product costs Profixter (internal; never shown to customers, never used in a quote) */
+      costCents: { type: Number, min: 0, default: null },
       /* installation adder specific to this product (e.g. glass door install) */
       installCents: { type: Number, min: 0, default: 0 },
       internalNote: { type: String, trim: true, maxlength: 1000, default: "" },

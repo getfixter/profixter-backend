@@ -55,7 +55,7 @@ async function publicCatalog() {
 async function staffCatalog(keepSkus = []) {
   const products = await StudioProduct.find({ $or: [{ status: { $ne: "archived" } }, { sku: { $in: keepSkus } }] }).lean();
   const assetUrl = await assetUrlResolver(products);
-  return { catalog: toEngineCatalog(products, { assetUrl }), products };
+  return { catalog: toEngineCatalog(products, { assetUrl, manufacturerPhotos: true }), products };
 }
 
 /** sku -> product (with pricing), for pricing. Includes archived products so old designs still price. */

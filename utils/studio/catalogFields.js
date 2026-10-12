@@ -39,7 +39,7 @@ const choice = (key, label, options, opts = {}) => ({ key, label, kind: "choice"
 const bool = (key, label, opts = {}) => ({ key, label, kind: "bool", required: false, help: opts.help || "", default: opts.default ?? false });
 const text = (key, label, opts = {}) => ({ key, label, kind: "text", required: Boolean(opts.required), max: opts.max ?? 400, help: opts.help || "", default: opts.default ?? "" });
 const skus = (key, label, opts = {}) => ({ key, label, kind: "skus", required: false, help: opts.help || "", default: [] });
-const kinds = (key, label) => ({ key, label, kind: "kinds", required: true, help: "Which base types it can be installed with", default: ["pan"] });
+const kinds = (key, label, opts = {}) => ({ key, label, kind: "kinds", required: opts.required !== false, help: opts.help || "Which base types it can be installed with", default: opts.default ?? ["pan"] });
 const drains = (key, label) => ({ key, label, kind: "drains", required: true, help: "Drain positions this base is sold with", default: [{ id: "end", name: "Drain at the valve end", along: 0.12, across: 0.5 }] });
 
 /** Field definitions by category and type. Keys are paths inside `engine`. */
@@ -66,6 +66,7 @@ function fieldsFor(category, type) {
         n("kit.fitsWidthMax", "Fits alcove depth to", 20, 72, { default: 32 }),
         skus("kit.requiresBase", "Only with these bases (SKUs)", { help: "Leave empty when any fitting base works" }),
         skus("kit.preferredBase", "Designed around these bases (SKUs)", { help: "Shows a check-the-pairing warning with other bases" }),
+        kinds("kit.forKinds", "Kit works over", { required: false, default: [], help: "Leave empty for the product type only; tick both for kits sold for showers and tubs" }),
       ];
     case "base":
       return [
@@ -169,7 +170,7 @@ function validateEngine(category, type, input) {
   const engine = {};
   for (const f of fieldsFor(category, type)) {
     let v = get(input || {}, f.key);
-    const empty = v === undefined || v === null || v === "";
+    const empty = v === undefined || v === null || v === "" || (f.kind === "kinds" && !f.required && Array.isArray(v) && !v.length);
     if (empty) {
       if (f.required) errors.push({ field: f.key, message: `${f.label} is required.` });
       continue;
@@ -259,9 +260,14 @@ function validateProduct(body, { creating }) {
     };
     out.pricing = {
       priceCents: cents(p.priceCents, "Price", "priceCents"),
+      costCents: cents(p.costCents, "Material cost", "costCents"),
       installCents: cents(p.installCents, "Installation adder", "installCents") ?? 0,
       internalNote: String(p.internalNote || "").trim().slice(0, 1000),
     };
+  }
+  if (body.compatibility !== undefined) {
+    const c = body.compatibility || {};
+    out.compatibility = { status: c.status === "reviewed" ? "reviewed" : "unverified", note: String(c.note || "").trim().slice(0, 1000) };
   }
   return { value: out, errors };
 }
@@ -272,14 +278,20 @@ const hexToNum = (h) => (typeof h === "string" && HEX.test(h) ? parseInt(h.slice
  * Products -> the visualization engine's catalog shape.
  * `assetUrl(assetId)` turns an asset id into a URL. Pricing is never included.
  */
-function toEngineCatalog(products, { assetUrl = () => null } = {}) {
+function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos = false } = {}) {
   const cat = { finishes: [], bases: [], fixtures: [], enclosures: [], accessories: [], specs: {} };
   for (const p of products) {
     const e = p.engine || {};
+    // Manufacturer photos are previews for staff only (rights unconfirmed); the public catalog never gets them.
+    // (Cloudinary-hosted ones are shrunk to a small modern-format thumbnail by the manufacturer's CDN.)
+    const extRaw = manufacturerPhotos ? (p.externalMedia || []).find((m) => m.kind === "photo")?.url || null : null;
+    const extPhoto = extRaw ? extRaw.replace(/^(https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/)/, "$1c_limit,w_480,f_auto,q_auto/") : null;
+    const ownPhoto = p.assets?.photos?.[0]?.assetId ? assetUrl(p.assets.photos[0].assetId) : null;
     const common = {
       id: p.sku, name: p.name, manufacturer: p.manufacturer, model: p.model, specsId: p.sku,
       note: p.description || "", visualStatus: p.visualStatus || "illustrative", status: p.status,
-      photo: p.assets?.photos?.[0]?.assetId ? assetUrl(p.assets.photos[0].assetId) : null,
+      photo: ownPhoto || extPhoto,
+      ...(!ownPhoto && extPhoto ? { photoSource: "manufacturer-preview" } : {}),
       photos: (p.assets?.photos || []).map((x) => ({ url: assetUrl(x.assetId), alt: x.alt || p.name })),
       featured: Boolean(p.featured), sortOrder: p.sortOrder || 0,
     };
@@ -290,15 +302,16 @@ function toEngineCatalog(products, { assetUrl = () => null } = {}) {
     };
     if (p.category === "wall") {
       const k = e.kit || {};
+      const kitKinds = Array.isArray(k.forKinds) && k.forKinds.length ? k.forKinds : [p.type];
       cat.finishes.push({
         ...common, material: e.material || "acrylic", color: e.color, gloss: e.gloss ?? 0.7,
         pattern: e.pattern?.type === "smooth" ? { type: "smooth" } : { ...e.pattern },
-        kits: [{
-          for: p.type, model: p.model, height: k.height,
+        kits: kitKinds.map((kind) => ({
+          for: kind, model: p.model, height: k.height,
           fits: { length: [k.fitsLengthMin, k.fitsLengthMax], width: [k.fitsWidthMin, k.fitsWidthMax] },
           ...(k.requiresBase?.length ? { requiresBase: k.requiresBase } : {}),
           ...(k.preferredBase?.length ? { preferredBase: k.preferredBase } : {}),
-        }],
+        })),
         texture: p.assets?.texture?.assetId ? { url: assetUrl(p.assets.texture.assetId), widthIn: p.assets.texture.widthIn || 12, heightIn: p.assets.texture.heightIn || 12 } : null,
       });
     } else if (p.category === "base") {
@@ -346,7 +359,25 @@ function completeness(p) {
   if (p.pricing?.priceCents == null) issues.push({ level: "warn", message: "No price: designs using it show no estimate." });
   if (!(p.specs || []).length) issues.push({ level: "info", message: "No specifications listed." });
   if (!(p.specs || []).some((s) => s.status === "VERIFIED")) issues.push({ level: "info", message: "No VERIFIED specification." });
+  if (p.source?.manufacturer) {
+    for (const why of publishBlockers(p)) issues.push({ level: "warn", message: why });
+    if ((p.source.pendingReview || []).length) issues.push({ level: "warn", message: `${p.source.pendingReview.length} manufacturer change(s) to review.` });
+    if ((p.externalMedia || []).some((m) => m.kind === "photo") && !p.assets?.photos?.length) issues.push({ level: "info", message: "Manufacturer photos are Admin previews only until image rights are confirmed." });
+  }
   return issues;
 }
 
-module.exports = { TYPES, fieldsFor, validateEngine, validateProduct, toEngineCatalog, completeness, SKU_PATTERN: SKU };
+/**
+ * Why a manufacturer product cannot be published yet (empty = it can).
+ * Owner-made products are not limited by these rules.
+ */
+function publishBlockers(p) {
+  if (!p.source?.manufacturer) return [];
+  const out = [];
+  if (p.pricing?.priceCents == null) out.push("Set your selling price before publishing.");
+  if (p.compatibility?.status !== "reviewed") out.push("Compatibility is unverified: review what it fits and pairs with, then mark it reviewed.");
+  if (p.source.availability === "discontinued" || p.source.availability === "unlisted") out.push(`The manufacturer lists it as ${p.source.availability}.`);
+  return out;
+}
+
+module.exports = { publishBlockers, TYPES, fieldsFor, validateEngine, validateProduct, toEngineCatalog, completeness, SKU_PATTERN: SKU };
