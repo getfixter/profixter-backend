@@ -82,7 +82,7 @@ async function main() {
           continue;
         }
         if (!(row.event in KEEP)) continue;
-        const stamp = line.slice(0, at).trim().slice(0, 40);
+        const stamp = (line.slice(0, at).match(/^w{3}s+d+s+[d:]+/) || [line.slice(0, 15)])[0];
         const key = `${stamp}|${JSON.stringify(row).length}|${row.event}`; // bundles can repeat a log
         if (seen.has(key)) continue;
         seen.add(key);
