@@ -349,8 +349,8 @@ router.get("/designs", ...sellPerm, handle(async (req, res) => {
     const rx = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     q.$and = [{ $or: [{ "customer.name": rx }, { "customer.email": rx }, { "customer.phone": rx }, { "customer.zip": rx }] }];
   }
-  const list = await StudioDesign.find(q).sort({ updatedAt: -1 }).limit(200).select("publicId origin status projectType exampleScene measureSource customer.name customer.email customer.phone customer.zip priceSnapshot.totalCents priceSnapshot.complete submittedAt updatedAt createdAt photo leadId projectId").lean();
-  const photos = await StudioPhoto.find({ _id: { $in: list.map((d) => d.photo).filter(Boolean) }, deletedAt: null }).select("publicId").lean();
+  const list = await StudioDesign.find(q).sort({ updatedAt: -1 }).limit(200).select("publicId origin status projectType exampleScene measureSource customer.name customer.email customer.phone customer.zip priceSnapshot.totalCents priceSnapshot.complete submittedAt updatedAt createdAt photo preview leadId projectId").lean();
+  const photos = await StudioPhoto.find({ _id: { $in: list.flatMap((d) => [d.preview, d.photo]).filter(Boolean) }, deletedAt: null }).select("publicId").lean();
   const pmap = new Map(photos.map((p) => [String(p._id), p.publicId]));
   res.json({
     designs: list.map((d) => ({
@@ -358,7 +358,8 @@ router.get("/designs", ...sellPerm, handle(async (req, res) => {
       exampleScene: d.exampleScene, measureSource: d.measureSource,
       customer: d.customer, totalCents: d.priceSnapshot?.totalCents ?? null, priceComplete: d.priceSnapshot?.complete ?? null,
       submittedAt: d.submittedAt, updatedAt: d.updatedAt, createdAt: d.createdAt,
-      thumb: d.photo && pmap.get(String(d.photo)) ? photoUrl(pmap.get(String(d.photo))) : null,
+      // the rendered design first (requests without a photo have one), else the customer photo
+      thumb: [d.preview, d.photo].map((x) => x && pmap.get(String(x))).find(Boolean) ? photoUrl([d.preview, d.photo].map((x) => x && pmap.get(String(x))).find(Boolean)) : null,
       leadId: d.leadId, projectId: d.projectId,
     })),
   });

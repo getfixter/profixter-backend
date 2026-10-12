@@ -39,7 +39,8 @@ const DRAFT_DAYS = Number(process.env.STUDIO_DRAFT_RETENTION_DAYS || 30);
 const SUBMITTED_DAYS = Number(process.env.STUDIO_SUBMITTED_RETENTION_DAYS || 730);
 const DAY = 864e5;
 
-const ip = (req) => req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip || req.socket?.remoteAddress || "unknown";
+const { clientIp } = require("../utils/studio/clientIp");
+const ip = (req) => clientIp(req); // spoof-resistant behind the load balancer
 const limit = (name, n, windowMs, by = ip) => rateLimit({ limit: n, windowMs, keyResolver: (req) => `studio:${name}:${by(req)}`, message: "Too many requests. Please wait a moment and try again." });
 
 const upload = multer({

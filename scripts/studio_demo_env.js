@@ -31,6 +31,8 @@ const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
 const FRONTEND_DIR = path.join(__dirname, "..", "..", "FrontEnd");
 const SECRET = "studio-qa-only-secret-not-for-production";
 const OWNER_EMAIL = "owner@studio-qa.test";
+/** Demo-only password for the seeded TEST accounts (in-memory database, gone when the demo stops). */
+const DEMO_PASSWORD = "studio-demo";
 
 const children = [];
 const mail = [];
@@ -138,7 +140,8 @@ async function seed() {
   const User = require("../models/User");
   const StudioProduct = require("../models/studio/StudioProduct");
   const StudioPricing = require("../models/studio/StudioPricing");
-  const mk = (name, email, role, extra = {}) => User.create({ userId: `qa-${email}`, name, email, role, ...extra });
+  const hash = require("bcryptjs").hashSync(DEMO_PASSWORD, 8);
+  const mk = (name, email, role, extra = {}) => User.create({ userId: `qa-${email}`, name, email, role, password: hash, ...extra });
   const users = {
     owner: await mk("QA Owner", OWNER_EMAIL, "admin"),
     seller: await mk("Sam Seller", "sam@studio-qa.test", "employee", { adminSections: ["studio", "projects", "leads"] }),
@@ -226,8 +229,11 @@ if (require.main === module) {
     console.log("\nShower Studio demo is running (Ctrl+C to stop):");
     if (process.argv.includes("--open")) spawn("cmd", ["/c", "start", "", `${env.FRONTEND_URL}/shower-studio`], { stdio: "ignore", detached: true });
     console.log(`  Public Studio:  ${env.FRONTEND_URL}/shower-studio`);
-    console.log(`  Admin:          ${env.FRONTEND_URL}/admin?tab=studio  (sign in by pasting a token below into localStorage "token")`);
-    for (const [k, u] of Object.entries(env.users)) console.log(`  ${k.padEnd(10)} ${u.email}\n             token: ${u.token}`);
+    console.log(`  Admin sign-in:  ${env.FRONTEND_URL}/signin   (password for every test account: ${DEMO_PASSWORD})`);
+    const who = { owner: "you (owner): everything", seller: "salesperson: Shower Studio + Projects + Leads", pricer: "salesperson who may also give discounts", cataloger: "catalog & prices only", outsider: "Leads only (no Studio)", customer: "a customer account" };
+    for (const [k, u] of Object.entries(env.users)) console.log(`    ${u.email.padEnd(26)} ${who[k] || ""}`);
+    console.log("  Staff notification emails are caught on this computer, never sent.");
+    console.log("  Everything here is test data in memory: closing this window erases it.");
   }).catch(async (e) => { console.error(e.message); await stop(); process.exit(1); });
   process.on("SIGINT", async () => { await stop(); process.exit(0); });
 }

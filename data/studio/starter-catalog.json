@@ -11,7 +11,48 @@
    "model": "SHBW-1560760-00",
    "description": "Vertical subway pattern (VERIFIED wording). Tile 4×12″, grout ⅛″ and the 28–32″ depth range are ESTIMATES; colour APPROXIMATE.",
    "colorName": "",
-   "specs": [],
+   "specs": [
+    {
+     "key": "panel_height",
+     "label": "Panel height",
+     "value": "76",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
+    },
+    {
+     "key": "pattern",
+     "label": "Pattern",
+     "value": "Vertical subway",
+     "unit": "",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
+    },
+    {
+     "key": "tile_size",
+     "label": "Tile size",
+     "value": "4 × 12",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "grout_line",
+     "label": "Grout line",
+     "value": "1/8",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "fits_alcove_depth",
+     "label": "Fits alcove depth",
+     "value": "28-32",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
    "sources": [
     "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
    ],
@@ -57,7 +98,48 @@
    "model": "SHBW-1560760-88",
    "description": "Same kit in Black (suffix -88 VERIFIED). Pattern geometry ESTIMATED; colour APPROXIMATE. No black tub kit is in the catalog.",
    "colorName": "",
-   "specs": [],
+   "specs": [
+    {
+     "key": "panel_height",
+     "label": "Panel height",
+     "value": "76",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
+    },
+    {
+     "key": "pattern",
+     "label": "Pattern",
+     "value": "Vertical subway",
+     "unit": "",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
+    },
+    {
+     "key": "tile_size",
+     "label": "Tile size",
+     "value": "4 × 12",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "grout_line",
+     "label": "Grout line",
+     "value": "1/8",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "fits_alcove_depth",
+     "label": "Fits alcove depth",
+     "value": "28-32",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
    "sources": [
     "https://images.salsify.com/image/upload/q_100,fl_attachment/47da9d02f5ac8c4dd493598deb988cdef7da937e.pdf"
    ],
@@ -512,7 +594,48 @@
    "model": "DLT-113060x",
    "description": "",
    "colorName": "",
-   "specs": [],
+   "specs": [
+    {
+     "key": "length",
+     "label": "Length",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
+    },
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "30",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
+    },
+    {
+     "key": "threshold_width",
+     "label": "Threshold width",
+     "value": "2.5",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "drain_options",
+     "label": "Drain options",
+     "value": "Center, left or right end",
+     "unit": "",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
+    }
+   ],
    "sources": [
     "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
    ],
@@ -1048,11 +1171,44 @@
    "category": "fixture",
    "type": "shower",
    "name": "Delta Monitor 13 shower-only BT13210, chrome",
-   "manufacturer": "",
-   "model": "",
+   "manufacturer": "Delta",
+   "model": "BT13210",
    "description": "7″ escutcheon VERIFIED (DSP-B-BT13010). Lever and arm length ESTIMATES.",
    "colorName": "",
-   "specs": [],
+   "specs": [
+    {
+     "key": "escutcheon_diameter",
+     "label": "Escutcheon diameter",
+     "value": "7",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://zoro.com/static/cms/enhanced_pdf/Tigris%20Fulfillment%20Partners,%20LLC_DSPxxBxxBT13010xxRevxxHxx52ec24.pdf"
+    },
+    {
+     "key": "showerhead_face",
+     "label": "Showerhead face",
+     "value": "2",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://zoro.com/static/cms/enhanced_pdf/Tigris%20Fulfillment%20Partners,%20LLC_DSPxxBxxBT13010xxRevxxHxx52ec24.pdf"
+    },
+    {
+     "key": "lever_length",
+     "label": "Lever length",
+     "value": "4.2",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "shower_arm_length",
+     "label": "Shower arm length",
+     "value": "7",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
    "sources": [
     "https://zoro.com/static/cms/enhanced_pdf/Tigris%20Fulfillment%20Partners,%20LLC_DSPxxBxxBT13010xxRevxxHxx52ec24.pdf"
    ],
@@ -1179,7 +1335,7 @@
    "type": "shower",
    "name": "Moen Gibson shower-only T25902EP, chrome",
    "manufacturer": "Moen",
-   "model": "T25902EP / T25902EPBL / T25902EPBN / T25902EPBZG",
+   "model": "T25902EP",
    "description": "",
    "colorName": "",
    "specs": [
@@ -1247,7 +1403,7 @@
    "type": "shower",
    "name": "Moen Gibson shower-only T25902EPBL, matte black",
    "manufacturer": "Moen",
-   "model": "T25902EP / T25902EPBL / T25902EPBN / T25902EPBZG",
+   "model": "T25902EPBL",
    "description": "",
    "colorName": "",
    "specs": [
@@ -1315,7 +1471,7 @@
    "type": "tubShower",
    "name": "Moen Gibson tub/shower T25903EP, chrome",
    "manufacturer": "Moen",
-   "model": "T25903EP (Chrome), T25903EPBL (Matte Black), T25903EPBN (Brushed Nickel), T25903EPBZG (Bronzed Gold)",
+   "model": "T25903EP",
    "description": "",
    "colorName": "",
    "specs": [

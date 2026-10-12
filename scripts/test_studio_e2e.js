@@ -376,6 +376,94 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       }
     });
 
+    // ------------------------------------------------------------------ 15 failure handling and recovery
+    await step("15a. a reload mid-design: 'Continue my design' restores the selections", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "reload" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
+      await rendered(p);
+      await p.getByRole("tab", { name: "Walls" }).tap();
+      await p.tap('[data-testid="finish-qwall-vs-black"]');
+      await p.waitForTimeout(2500); // auto-save runs 1.5 s after the last change
+      await p.reload({ waitUntil: "domcontentloaded" });
+      await p.tap('[data-testid="resume"]', { timeout: 120000 });
+      await rendered(p);
+      await p.getByRole("tab", { name: "Walls" }).tap();
+      must((await p.locator('[data-testid="finish-qwall-vs-black"]').getAttribute("aria-pressed")) === "true", "black walls not restored");
+    });
+    await step("15b. sending fails (no connection), the person is told, and a retry succeeds", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "retry" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-tub"]', { timeout: 120000 });
+      await rendered(p);
+      await p.getByRole("button", { name: "View design & price" }).tap();
+      await p.getByRole("button", { name: "Request installation" }).tap();
+      await p.fill('input[name="name"]', "Rita Retry");
+      await p.fill('input[name="phone"]', "631-555-0177");
+      await p.fill('input[name="email"]', "rita.qa@example.com");
+      await p.fill('input[name="zip"]', "11787");
+      await p.tap('[data-testid="consent"]');
+      await p.waitForTimeout(8000); // a person takes longer than the 8-second anti-bot minimum
+      await p.route("**/api/studio/designs/*/submit", (r) => r.abort("internetdisconnected"));
+      await p.tap('[data-testid="submit-request"]');
+      await p.getByText(/couldn.t reach Profixter/).waitFor({ timeout: 30000 });
+      await p.unroute("**/api/studio/designs/*/submit");
+      await p.tap('[data-testid="submit-request"]');
+      await p.waitForSelector('[data-testid="request-done"]', { timeout: 60000 }).catch(async () => { throw new Error("retry did not complete: " + (await p.locator(".bg-\[\#FDECEB\]").allTextContents()).join(" | ")); });
+    });
+    await step("15c. an unusable file instead of a photo is refused politely; the design keeps working", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "badfile" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
+      await rendered(p);
+      await p.tap('[data-testid="open-photo"]');
+      await p.setInputFiles('[data-testid="photo-input"]', { name: "not-a-photo.jpg", mimeType: "image/jpeg", buffer: Buffer.from("this is not an image") });
+      await p.locator('[role="status"]').filter({ hasText: /photo/i }).first().waitFor({ timeout: 30000 });
+      must(/Example bathroom/.test(await p.textContent('[data-testid="picture-badge"]')), "design lost after a bad file");
+    });
+    await step("15d. catalog service down: a clear message instead of a broken page", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "down" })).page;
+      await p.route("**/api/studio/catalog", (r) => r.fulfill({ status: 503, contentType: "application/json", body: '{"message":"Service unavailable"}' }));
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.getByText(/Shower Studio is unavailable right now/).waitFor({ timeout: 60000 });
+    });
+    await step("15e. catalog edits reach the public Studio: an unpublished product disappears at once", async () => {
+      const list = await api("GET", "/api/admin/studio/products?status=published", users.owner);
+      const bar = list.body.products.find((x) => x.sku === "qa-bar-30");
+      must((await api("POST", `/api/admin/studio/products/${bar._id}/status`, users.owner, { status: "draft" })).status === 200, "unpublish");
+      const pub = await (await fetch(`${BE}/api/studio/catalog`)).json();
+      must(!pub.catalog.accessories.some((a) => a.id === "qa-bar-30"), "unpublished product still public");
+      // a design that already used it still prices (archived/unpublished products keep resolving for staff)
+      await api("POST", `/api/admin/studio/products/${bar._id}/status`, users.owner, { status: "published" });
+    });
+    await step("15f. tablet and desktop layouts: picture visible, nothing scrolls sideways", async () => {
+      for (const [w, h, name] of [[820, 1180, "tablet"], [1440, 900, "desktop"]]) {
+        const p = (await ctxFor(null, { viewport: { width: w, height: h }, ...(w < 1000 ? { isMobile: true, hasTouch: true } : {}), label: name })).page;
+        await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+        await p.click('[data-testid="start-shower"]', { timeout: 120000 });
+        await rendered(p);
+        const sw = await p.evaluate(() => document.scrollingElement.scrollWidth);
+        must(sw <= w, `${name} scrolls sideways (${sw}px)`);
+        const box = await p.locator("[data-studio-after]").boundingBox();
+        must(box && box.width > 150 && box.y < h, `${name}: picture not visible`);
+        await p.screenshot({ path: path.join(OUT, `${name}-customize.png`) });
+      }
+    });
+
+    await step("16. owner demo: signing in normally (email + demo password) reaches the Studio Catalog", async () => {
+      const p = (await ctxFor(null, { viewport: { width: 1280, height: 900 }, label: "signin" })).page;
+      await p.goto(`${FE}/signin`, { waitUntil: "networkidle", timeout: 180000 }); // the form must be live (hydrated) before typing
+      await p.fill('input[type="email"]', users.owner.email);
+      await p.fill('input[autocomplete="current-password"]', "studio-demo");
+      await p.keyboard.press("Enter");
+      await p.waitForURL(/\/admin/, { timeout: 60000 }); // the owner lands in Admin
+      await p.goto(`${FE}/admin?tab=studio-catalog`, { waitUntil: "domcontentloaded" });
+      await p.getByRole("heading", { name: "Studio Catalog" }).waitFor({ timeout: 60000 });
+      await p.goto(`${FE}/admin?tab=studio`, { waitUntil: "domcontentloaded" });
+      await p.getByRole("heading", { name: "Shower Studio" }).waitFor({ timeout: 60000 });
+      await p.screenshot({ path: path.join(OUT, "desktop-admin-studio.png") });
+    });
+
     await step("13d. no browser errors in any session", async () => {
       must(!consoleErrors.length, consoleErrors.join("\n"));
     });
