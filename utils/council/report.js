@@ -45,6 +45,16 @@ function boardText(board) {
     .join("\n\n");
 }
 
+const TREND = { up: "a real rise", down: "a real drop", steady: "a normal swing for numbers this small, not a trend", too_few: "too few to call a trend" };
+const STATE = {
+  completed: "reported done by the knight - not yet checked",
+  verified: "checked and done",
+  not_verified: "failed the check",
+  blocked: "blocked - King Arthur must decide",
+  in_progress: "being worked on in a shift",
+  assigned: "waiting for the knight's next shift",
+};
+
 async function statusSection() {
   const { councilState } = require("./arthur");
   const s = await councilState();
@@ -56,7 +66,10 @@ async function statusSection() {
       field("AI agents", s.switches.agentsEnabled ? "on" : "off"),
       field("Automatic website changes engine", s.switches.changesEngineOn ? "on (still asks me where required)" : "off (watch-only)"),
       field("Live replies to homeowners", s.switches.liveRepliesOn ? "on" : "off"),
-      field("First free visits booked", Object.keys(ffv).length ? JSON.stringify(ffv) : "not available"),
+      field("First free visits booked", ffv.last7 != null ? `${ffv.last7} in the last 7 full days (7 days before: ${ffv.prev7}); ${ffv.last30} in the last 30 full days (30 days before: ${ffv.prev30}); counted through ${ffv.through}${ffv.todaySoFar ? `; today so far: ${ffv.todaySoFar}` : ""}` : "not available"),
+      field("Weekly first free visits (oldest first)", (ffv.weekly || []).length ? ffv.weekly.map((w) => `${w.from}..${w.through}: ${w.firstFreeVisits}`).join(", ") : null),
+      field("Trend (last 14 days vs the 14 before)", ffv.trend ? `${ffv.trend.last14} vs ${ffv.trend.prev14} - ${TREND[ffv.trend.verdict] || ffv.trend.verdict}` : null),
+      field("Bookings with no first-touch record (30 days)", ffv.noFirstTouchRecord30 != null ? `${ffv.noFirstTouchRecord30} (older accounts from before tracking began, or a browser that blocked it - untracked, not direct)` : null),
       field("Last first free visit", r.lastFirstFreeVisitAt ? ny(r.lastFirstFreeVisitAt) : "unknown"),
       field("Website visitors (30 days)", r.visitors30),
       field("Registrations (30 days)", r.registrations30),
@@ -75,6 +88,16 @@ async function statusSection() {
       ])
     ),
   ];
+  lines.push("", "## King Arthur's focus for the team");
+  lines.push(s.teamFocus ? `${s.teamFocus.text} (set ${ny(s.teamFocus.at)})` : "Not set yet.");
+  lines.push("", "## Open problems (stay here until King Arthur checks them fixed)");
+  lines.push(
+    s.unresolvedProblems.length
+      ? s.unresolvedProblems
+          .map((p) => `- [${p.severity}] ${p.title} - from ${p.from}, ${p.status}${p.reopened ? ", reopened after being marked resolved" : ""}${p.fixReported ? `; fix reported by ${p.fixReported.by}, awaiting King Arthur's check` : ""} (ID ${p.id})`)
+          .join("\n")
+      : "None."
+  );
   const taskRows = await CouncilTask.find({}).sort({ updatedAt: -1 }).limit(20).lean();
   lines.push("", "## Tasks (newest first)");
   lines.push(
@@ -86,7 +109,7 @@ async function statusSection() {
               `### ${p.hero}: ${p.instruction}`,
               field("Task ID", p.id),
               field("Asked by", p.origin === "owner" ? "me (through King Arthur)" : "King Arthur"),
-              field("State", p.status),
+              field("State", STATE[p.status] || p.status),
               field("History", p.history.map((h) => `${h.status} by ${h.by} (${ny(h.at)})${h.note ? ` - ${h.note}` : ""}`).join("; ")),
               p.result ? field("Specialist's report", p.result.summary) : null,
               p.verification ? field("Check", `${p.verification.verdict} by ${p.verification.by}: ${p.verification.note}`) : null,

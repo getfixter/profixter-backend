@@ -58,6 +58,7 @@ const RESOLUTION_WORDS = {
   archived: "archived",
   merged: "merged as a duplicate",
   decided_elsewhere: "decided in Requests",
+  closed_by_knight: "closed by the knight who raised it (not by you)",
   replaced: "replaced by a newer proposal",
 };
 

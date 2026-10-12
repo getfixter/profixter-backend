@@ -66,7 +66,17 @@ YOUR JOB (marketing only - you have no revenue, billing, membership or schedulin
 WHAT YOU CANNOT DO (your tools make these impossible; never pretend otherwise)
 You cannot approve or decline anything, send any message to a customer or anyone else, spend money or authorise paid campaigns, book visits, change Meta ads (the outside agency runs them), switch on any automation, change prices, offers, plans or booking rules, publish website changes, change permissions or approvals, or change a specialist's guidance without the owner confirming it. Your recommendation is never the owner's approval. You cannot retrain a specialist: guidance you propose becomes a saved note the specialist reads in its next shift, and only after the owner confirms it.
 
-MARKETING DATA (read-only): get_acquisition (first free-visit bookings, website visitors and registrations by first-touch source, the booking funnel, customer towns). Judge marketing by useful content ready or published, local search visibility, organic reach, qualified visits and first free-visit bookings by source - not by activity or reports. Volumes are small: a swing of a few is noise; prefer multi-week trends.
+PRIORITY ORDER - THE NUMBER ONE GOAL IS NEW HOMEOWNERS BOOKING THEIR FIRST FREE VISIT
+1. Start from the scoreboard: first free visits (last 7 full days, the weekly trend and its verdict) and which sources bring them. Every task you give must name the source or step it should move (e.g. Google Maps calls in Levittown, Instagram visits to the booking page) and how you will see the result.
+2. Work that brings homeowners now beats work that describes them. Prefer: getting a strong waiting draft ready and recommended so the owner can publish it today; fixing a weakness on a page homeowners already reach; measuring what was published. Avoid: new reports, research for its own sake, and new drafts while good ones still wait for the owner - a draft nobody publishes brings nobody.
+3. Rank what waits for the owner by how many homeowners it can bring, and say plainly which ONE to do first.
+
+PROBLEMS STAY OPEN UNTIL CHECKED
+- A risk or anomaly is not fixed because a knight says so. A knight's "it's fixed" is a fix report; the problem stays open until you check the evidence yourself (check_fix) - with fresh data where data can show it (get_acquisition), not just the knight's words.
+- A task reported "completed" is only verified when its RESULT is achieved, not when activity happened ("drafted a page" does not fix "no page for Levittown" until it is published). If the result needs the owner, say so and keep it visible; do not call it done.
+- Never tell the owner something is resolved, fixed or done unless the record says verified.
+
+MARKETING DATA (read-only): get_acquisition (first free-visit bookings, website visitors and registrations by first-touch source, the booking funnel, customer towns). Judge marketing by useful content ready or published, local search visibility, organic reach, qualified visits and first free-visit bookings by source - not by activity or reports. Volumes are small: a swing of a few is noise; prefer multi-week trends. Quote the trend verdict get_acquisition gives (UP, DOWN, STEADY, TOO FEW) - never call bookings "declining" when it says STEADY or TOO FEW. Counts are complete days through yesterday. Bookings with no first-touch record are untracked older accounts, not a tracking failure.
 
 HONESTY
 - Ground every statement in what your tools returned. Never invent numbers, customers, results or reviews. Say what you could not see.
@@ -126,10 +136,13 @@ async function settleDecisions() {
     const ref = d.refs[0];
     if (!["action", "playbook", "draft", "note"].includes(ref.kind)) continue;
     if (!(await pendingItem(ref.kind, ref.id))) {
-      await CouncilDecision.updateOne(
-        { _id: d._id, status: "open" },
-        { $set: { status: "superseded", resolution: { choice: "decided_elsewhere", by: "system", at: new Date(), note: "The item is no longer waiting." } } }
-      );
+      // Say who closed it: a knight closing its own note is not the owner deciding.
+      const note = ref.kind === "note" && mongoose.Types.ObjectId.isValid(ref.id) ? await AgentFinding.findById(ref.id).select("status statusBy").lean() : null;
+      const byKnight = note && tasks.SPECIALISTS.includes(note.statusBy);
+      const resolution = byKnight
+        ? { choice: "closed_by_knight", by: heroOf(note.statusBy), at: new Date(), note: `${heroOf(note.statusBy)} closed the note (${note.status}).` }
+        : { choice: "decided_elsewhere", by: "system", at: new Date(), note: "The item is no longer waiting." };
+      await CouncilDecision.updateOne({ _id: d._id, status: "open" }, { $set: { status: "superseded", resolution } });
     }
   }
 }
@@ -156,11 +169,46 @@ async function logDecision(ctx, fields) {
 /* The council snapshot (also served to the UI)                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Every risk/anomaly that is not verified fixed - open, or acknowledged by
+ * the owner (noted is not fixed). A knight's fix report is shown, not trusted.
+ */
+async function unresolvedProblems() {
+  const { PROBLEM_KINDS } = require("../agents/tools");
+  const rows = await AgentFinding.find({ kind: { $in: PROBLEM_KINDS }, status: { $in: ["open", "acknowledged"] } })
+    .sort({ updatedAt: -1 })
+    .limit(30)
+    .lean();
+  return rows.map((f) => ({
+    id: String(f._id),
+    from: heroOf(f.agent),
+    kind: f.kind,
+    severity: f.severity,
+    title: clip(f.title, 160),
+    status: f.status === "acknowledged" ? "owner noted it - not fixed yet" : "open",
+    fixReported: f.fixClaim?.at ? { by: f.fixClaim.by, at: f.fixClaim.at, evidence: clip(f.fixClaim.note, 400) } : null,
+    reopened: f.reopenedAt ? { at: f.reopenedAt } : null,
+    since: f.createdAt,
+  }));
+}
+
+/** Arthur must read an item in full (get_item) in the same run before he may pass judgement on it. */
+function markRead(ctx, kind, id) {
+  if (!ctx) return;
+  ctx.readItems = ctx.readItems || new Set();
+  ctx.readItems.add(`${kind}:${id}`);
+}
+function requireRead(ctx, kind, id, what) {
+  if (!ctx?.readItems?.has(`${kind}:${id}`)) throw new Error(`Read the ${what} in full first (get_item kind "${kind}", id ${id}) - checks are made on the record, not on a summary.`);
+}
+
 async function councilState({ now = new Date() } = {}) {
   const office = require("../growth/office");
   await settleDecisions();
   await require("./inbox").sweep({ now });
-  const [robots, approvals, openTasks, recentTasks, decisions, runs, built] = await Promise.all([
+  const [problems, focus, robots, approvals, openTasks, recentTasks, decisions, runs, built] = await Promise.all([
+    unresolvedProblems(),
+    tasks.teamFocus(),
     office.robotStates({ now }),
     office.approvalsList(),
     CouncilTask.find({ status: { $in: tasks.OPEN.concat(["completed"]) } }).sort({ createdAt: -1 }).limit(30).lean(),
@@ -232,6 +280,11 @@ async function councilState({ now = new Date() } = {}) {
       result: t.result?.summary ? clip(t.result.summary, 600) : null,
       since: t.updatedAt,
     })),
+    // stuck: slipped shifts or failed checks - cancel, rephrase/reassign, or (owner's task) file it for the owner
+    blockedTasks: openTasks.filter((t) => t.status === "blocked").map((t) => ({ id: String(t._id), hero: heroOf(t.agent), origin: t.origin, instruction: clip(t.instruction, 200), why: clip(t.result?.summary, 400) })),
+    // risks and anomalies not yet verified fixed - they stay here until check_fix says fixed
+    unresolvedProblems: problems,
+    teamFocus: focus,
     recentlyClosedTasks: recentTasks.map((t) => ({ id: String(t._id), hero: heroOf(t.agent), status: t.status, instruction: clip(t.instruction, 160) })),
     yourOpenRecords: decisions.map((d) => ({
       id: String(d._id),
@@ -275,8 +328,9 @@ const ARTHUR_TOOLS = {
   get_item: {
     description: "The full detail of one item: an approval item (action, playbook, draft), a note, a shift (run) or a task. Use the kind and id from get_council_state.",
     input_schema: obj({ kind: str("Item kind", { enum: ITEM_KINDS }), id: str("The id") }),
-    run: async ({ kind, id }) => {
+    run: async ({ kind, id }, ctx) => {
       const explain = require("../growth/explain");
+      markRead(ctx, kind, id);
       if (kind === "task") {
         if (!mongoose.Types.ObjectId.isValid(id)) throw new Error("bad id");
         const t = await CouncilTask.findById(id).lean();
@@ -307,7 +361,7 @@ const ARTHUR_TOOLS = {
       const f = await AgentFinding.findById(id).lean();
       if (!f) throw new Error("No such note.");
       const e = f.kind === "content_draft" ? explain.explainDraft(f) : explain.explainFinding(f);
-      return { id, hero: heroOf(f.agent), kind: f.kind, status: f.status, delivery: f.kind === "content_draft" ? "draft - not sent, not published (agents cannot publish)" : "a note - nothing is sent", severity: f.severity, title: f.title, detail: clip(f.detail, 4000), evidence: clip(typeof f.evidence === "string" ? f.evidence : JSON.stringify(f.evidence || ""), 3000), seenCount: f.seenCount, at: f.updatedAt, brief: clip(e.chatgpt, 6000) };
+      return { id, hero: heroOf(f.agent), kind: f.kind, status: f.status, delivery: f.kind === "content_draft" ? "draft - not sent, not published (agents cannot publish)" : "a note - nothing is sent", severity: f.severity, title: f.title, detail: clip(f.detail, 4000), fixReported: f.fixClaim?.at ? { by: f.fixClaim.by, at: f.fixClaim.at, evidence: f.fixClaim.note } : null, statusNote: f.statusNote || null, evidence: clip(typeof f.evidence === "string" ? f.evidence : JSON.stringify(f.evidence || ""), 3000), seenCount: f.seenCount, at: f.updatedAt, brief: clip(e.chatgpt, 6000) };
     },
   },
   get_specialist: {
@@ -366,12 +420,66 @@ const ARTHUR_TOOLS = {
     },
   },
   verify_task: {
-    description: "Check a task the specialist reported as completed: 'verified' when the report answers the task with evidence, 'not_verified' when it does not (say what is missing; assign a follow-up if needed).",
-    input_schema: obj({ task_id: str("Task id"), verdict: str("Verdict", { enum: ["verified", "not_verified"] }), note: str("What you checked and why") }),
+    description:
+      "Check a task the specialist reported as completed (read it with get_item first). 'verified' ONLY when the task's RESULT is achieved and the evidence shows it - not when activity happened; 'not_verified' sends it back to the same knight with your note saying exactly what is missing (after 3 failed checks it comes back to you as blocked).",
+    input_schema: obj({ task_id: str("Task id"), verdict: str("Verdict", { enum: ["verified", "not_verified"] }), note: str("What you checked (which evidence, which data) and why") }),
     run: async ({ task_id, verdict, note }, ctx) => {
+      requireRead(ctx, "task", task_id, "task report");
+      if (String(note || "").trim().length < 20) throw new Error("Say what you checked and why (at least a sentence).");
       const t = await tasks.verifyTask({ taskId: task_id, verdict, note, by: "King Arthur" });
       ctx.log?.push({ type: `task.${verdict}`, ref: String(t._id), label: clip(t.instruction, 120), ok: true });
       return { id: String(t._id), status: t.status };
+    },
+  },
+  check_fix: {
+    description:
+      "Check a knight's fix report on a PROBLEM (a risk or anomaly in unresolvedProblems with fixReported). Read it with get_item first, and re-check fresh data where data can show it. 'fixed' closes it as resolved; 'not_fixed' clears the report and keeps it open (say what is still wrong; assign a follow-up if needed). Problems are never closed any other way.",
+    input_schema: obj({
+      note_id: str("The problem's id (unresolvedProblems)"),
+      verdict: str("Verdict", { enum: ["fixed", "not_fixed"] }),
+      evidence: str("What you checked yourself - the data or record that shows it - and why"),
+    }),
+    run: async ({ note_id, verdict, evidence }, ctx) => {
+      const { PROBLEM_KINDS } = require("../agents/tools");
+      if (!mongoose.Types.ObjectId.isValid(note_id)) throw new Error("bad id");
+      requireRead(ctx, "note", note_id, "problem");
+      if (String(evidence || "").trim().length < 20) throw new Error("Say what you checked yourself (at least a sentence).");
+      const f = await AgentFinding.findOne({ _id: note_id, kind: { $in: PROBLEM_KINDS }, status: { $in: ["open", "acknowledged"] } }).lean();
+      if (!f) throw new Error("No unresolved problem with that id.");
+      if (!f.fixClaim?.at) throw new Error("No knight has reported this fixed yet. Assign the fix as a task; you check it once they report.");
+      const note = clip(`Checked by King Arthur: ${evidence}`, 600);
+      if (verdict === "fixed") {
+        await AgentFinding.updateOne({ _id: f._id }, { $set: { status: "resolved", statusBy: "King Arthur", statusNote: note } });
+      } else {
+        await AgentFinding.updateOne({ _id: f._id }, { $set: { statusNote: clip(`Fix report not accepted: ${evidence}`, 600) }, $unset: { fixClaim: 1 } });
+      }
+      ctx.log?.push({ type: verdict === "fixed" ? "problem.fixed" : "problem.not_fixed", ref: String(f._id), label: clip(f.title, 120), ok: true });
+      return { id: String(f._id), status: verdict === "fixed" ? "resolved" : f.status, kept_open: verdict !== "fixed" };
+    },
+  },
+  set_team_focus: {
+    description:
+      "Set the team's focus: 2-5 sentences every knight reads at the start of every shift until you change it - the one or two acquisition goals that matter most now (which source or step to move, in which towns), so Odysseus, Leonidas and Marcus pull the same way. Replaces the previous focus. Checked against the fixed rules in code.",
+    input_schema: obj({ focus: str("The focus, plain text, under 900 characters"), reason: str("Why this focus now, from the numbers") }),
+    run: async ({ focus, reason }, ctx) => {
+      try {
+        const text = await tasks.setTeamFocus(focus);
+        ctx.log?.push({ type: "focus.set", ref: "team-focus", label: clip(text, 140), ok: true });
+        await logDecision(ctx, {
+          category: "routine",
+          subject: "Set the team's focus",
+          simple: `Boss, I set the team's focus: ${clip(text, 300)}`,
+          detail: clip(reason, 1500),
+          agent: null,
+          refs: [],
+          status: "resolved",
+          resolution: { choice: "handled", by: "King Arthur", at: new Date() },
+        });
+        return { saved: true, focus: text };
+      } catch (error) {
+        if (error.problems) return { refused: true, problems: error.problems };
+        throw error;
+      }
     },
   },
   recommend: {
@@ -591,22 +699,26 @@ const CHAT_INSTRUCTIONS = `THIS RUN: the owner is talking to you. Read the conve
 - If the owner gives an instruction for a specialist, assign it with origin "owner" (one task per specialist; split if it concerns several). If it cannot be assigned, say why in one sentence and what the owner can do instead.
 - If the owner asks you to approve, send, spend, book, publish or switch something on: say plainly that only the owner can do that, and where (the owner's approval buttons), and give your recommendation if you have one.
 - If the owner wants a specialist to behave differently from now on, propose guidance (the owner confirms it) rather than a one-off task.
+- When the owner asks how things are going, lead with first free visits (last 7 full days and the trend verdict from get_acquisition), then problems still open. Never say a problem is fixed unless it was checked (unresolvedProblems no longer lists it).
 - Your final message IS your reply: start with "Boss,", at most about 120 words, very simple English. Say exactly what you did (assigned / recorded / checked) and what happens next and when. Never say a task is done when you only assigned it.`;
 
-const REVIEW_INSTRUCTIONS = `THIS RUN: your council review. Call get_council_state, then:
-1. Check every task reported "completed": verify or not_verify it (get_item for the details).
-1b. Review everything in toReview (a knight finished the work it waited on): read the new version and recommend - it returns to the owner only when it is ready for their approval or input; otherwise wait again.
-2. For each item waiting for the owner that has no recommendation from you yet, read it (get_item) and record a recommendation.
-3. Merge duplicate notes. Ask for missing evidence where a recommendation is unsupported (assign_task).
-3b. If this is your WEEKLY PLANNING review (the kickoff says so): plan the Kingdom's marketing week. Check marketing results (get_acquisition: visits and first free-visit bookings by source) against your mission and last week's notebook; review the drafts waiting (quality: true, local, specific, ready to publish - recommend on each); then give each hero the one or two tasks most likely to grow organic visibility, social reach, community presence or re-engagement - without repeating open tasks. Note the marketing goals you are tracking in your notebook.
-4. File what the owner should know (info), anything only the owner can decide (decision), and anything unclear (uncertain). Reuse dedupe keys so nothing repeats.
-5. Save anything you need to remember to your notebook.
-Your final message is your briefing for the owner: start with "Boss,", 2-5 short sentences, very simple English, most important first (marketing progress, then drafts and decisions waiting). If nothing changed that the owner should hear about, reply exactly: NOTHING NEW`;
+const REVIEW_INSTRUCTIONS = `THIS RUN: your council review. Acquisition first - every step serves new first free-visit bookings.
+0. SCOREBOARD: call get_acquisition and get_council_state. Note the first free visits (last 7 full days, the weekly numbers, the trend verdict) and the sources bringing them. This decides what matters in the rest of the review.
+1. COMPLETED TASKS: read each with get_item, then verify_task. "verified" only when the task's result is achieved; otherwise "not_verified" with exactly what is missing - it goes back to the same knight.
+2. PROBLEMS: for each item in unresolvedProblems with fixReported, read it (get_item kind "note"), re-check the data where you can, then check_fix. A problem with no fix report and no open task fixing it: assign one (or, if only the owner can fix it, say so in your briefing). Never describe an unresolved problem as solved.
+3. BLOCKED TASKS (blockedTasks): decide each one - rephrase and reassign it smaller, cancel your own with the reason, or, if it needs the owner (or the owner asked for it), file it for the owner. Nothing stays blocked without a decision.
+3b. Review everything in toReview (a knight finished the work it waited on): read the new version and recommend - it returns to the owner only when it is ready for their approval or input; otherwise wait again.
+4. WAITING FOR THE OWNER: for each item with no recommendation from you yet, read it (get_item) and recommend. Rank them by how many homeowners they can bring and make it clear which ONE the owner should do first.
+5. Merge duplicate notes. Ask for missing evidence where a recommendation is unsupported (assign_task).
+5b. If this is your WEEKLY PLANNING review (the kickoff says so): compare the scoreboard with last week's notebook; set_team_focus with the one or two acquisition goals for this week (which source or step to move, where); then give each hero at most one or two tasks that move that focus - each naming the source/step it should move and how you will see the result - without repeating open tasks. No research or report tasks unless they unblock a booking decision.
+6. File what the owner should know (info), anything only the owner can decide (decision), and anything unclear (uncertain). Reuse dedupe keys so nothing repeats.
+7. Save anything you need to remember to your notebook (the scoreboard numbers you saw, so next week can compare).
+Your final message is your briefing for the owner: start with "Boss,", 2-5 short sentences, very simple English: first free visits and the trend verdict first, then the ONE most useful thing the owner can do, then problems still open. If nothing changed that the owner should hear about, reply exactly: NOTHING NEW`;
 
 const ARTHUR_TOOL_NAMES = Object.keys(ARTHUR_TOOLS);
 
 /** What he may do in every run (replaces the specialists' growth-engine action list). */
-const ARTHUR_AUTHORITY = `Your authority in this run: every tool you have is switched on and needs no approval - assign and cancel your own tasks, archive outdated, duplicate or stale work (housekeeping), check reports (verify), recommend, file records for the owner, propose guidance, merge duplicate notes, start an extra shift (within its daily cap), keep your notebook, and read the marketing results. Use them whenever they serve the mission; routine internal coordination never waits for the owner. You have no growth-engine actions on purpose: anything that sends, spends, publishes, changes the site, prices or ads stays the owner's decision.`;
+const ARTHUR_AUTHORITY = `Your authority in this run: every tool you have is switched on and needs no approval - assign and cancel your own tasks, archive outdated, duplicate or stale work (housekeeping), check reports (verify) and knights' fix reports on problems (check_fix), set the team's focus, recommend, file records for the owner, propose guidance, merge duplicate notes, start an extra shift (within its daily cap), keep your notebook, and read the marketing results. Use them whenever they serve the mission; routine internal coordination never waits for the owner. You have no growth-engine actions on purpose: anything that sends, spends, publishes, changes the site, prices or ads stays the owner's decision.`;
 
 const WRAP_UP_CHAT = `LIMIT REACHED: this answer has used its budget, so you have no more tool calls. Write your final reply to the owner now, starting with "Boss,": what you actually did (only what your tools confirmed - tasks assigned, records filed), what you could not finish yet, and that the owner can reply "continue" for the rest. Do not claim anything you did not do.`;
 const WRAP_UP_REVIEW = `LIMIT REACHED: no more tool calls in this review. Write your briefing for the owner now, starting with "Boss,": what you did and what you will pick up in your next review.`;
@@ -618,7 +730,8 @@ function arthurDef(kind, { kickoff, context }) {
     rules: ARTHUR_RULES,
     instructions: kind === "chat" ? CHAT_INSTRUCTIONS : REVIEW_INSTRUCTIONS,
     effort: "medium",
-    maxTurns: 16,
+    // the review checks reports, problems and blocked tasks before planning: more steps, same cost cap
+    maxTurns: kind === "chat" ? 16 : 22,
     budgetCents: 80,
     // Near a limit the runtime takes the tools away for one last turn, so he
     // always answers with what he finished and what remains.
@@ -691,7 +804,7 @@ async function reviewFingerprint() {
   const [runs, actions, findings, taskRows, playbooks, toReview] = await Promise.all([
     AgentRun.find({ agent: { $in: tasks.SPECIALISTS }, status: { $nin: ["running", "skipped"] } }).sort({ startedAt: -1 }).limit(3).select("_id").lean(),
     GrowthAction.find({ status: "awaiting_approval" }).select("_id").lean(),
-    AgentFinding.find({ status: "open" }).select("_id updatedAt").lean(),
+    AgentFinding.find({ status: { $in: ["open", "acknowledged"] } }).select("_id updatedAt").lean(),
     CouncilTask.find({ status: { $in: ["completed", "blocked"] } }).select("_id status").lean(),
     EmailPlaybook.find({ status: "draft" }).select("key").lean(),
     CouncilDecision.find({ status: "open", inbox: "review" }).select("_id").lean(),
@@ -780,4 +893,5 @@ module.exports = {
   review,
   reviewFingerprint,
   settleDecisions,
+  unresolvedProblems,
 };

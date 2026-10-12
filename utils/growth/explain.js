@@ -499,10 +499,16 @@ function explainResults(office) {
   if (f && f.last7 != null) {
     const diff = f.prev7 != null ? f.last7 - f.prev7 : null;
     parts.push(
-      `This week, ${f.last7 === 1 ? "1 homeowner" : `${f.last7} homeowners`} booked their first free visit${diff == null ? "" : diff === 0 ? " - the same as last week" : diff > 0 ? ` - ${diff} more than last week` : ` - ${-diff} fewer than last week`}.`
+      `In the last 7 full days, ${f.last7 === 1 ? "1 homeowner" : `${f.last7} homeowners`} booked their first free visit${diff == null ? "" : diff === 0 ? " - the same as the 7 days before" : diff > 0 ? ` - ${diff} more than the 7 days before` : ` - ${-diff} fewer than the 7 days before`}.`
     );
+    // small numbers swing by chance: say so instead of letting a few look like a trend
+    const verdict = f.trend?.verdict;
+    if (verdict === "steady" || verdict === "too_few") parts.push("With numbers this small, that is a normal swing, not a trend.");
+    else if (verdict === "down") parts.push("Over the last two weeks that is a real drop, not just chance.");
+    else if (verdict === "up") parts.push("Over the last two weeks that is a real rise, not just chance.");
+    if (f.todaySoFar) parts.push(`Today so far: ${f.todaySoFar}.`);
   } else parts.push("I can't see this week's bookings right now.");
-  if (f && f.last30 != null) parts.push(`In the last 30 days: ${f.last30}${f.prev30 != null ? ` (the 30 days before: ${f.prev30})` : ""}.`);
+  if (f && f.last30 != null) parts.push(`In the last 30 full days: ${f.last30}${f.prev30 != null ? ` (the 30 days before: ${f.prev30})` : ""}.`);
   const fn = k.funnel30;
   if (fn && fn.booking_page_view) parts.push(`${fn.booking_page_view} people looked at our booking page this month, and ${fn.firstFreeVisits ?? "some"} booked.`);
   parts.push(office.approvals?.total ? `${office.approvals.total} ${office.approvals.total === 1 ? "thing is" : "things are"} waiting for your answer.` : "Nothing is waiting for your answer.");
@@ -511,7 +517,7 @@ function explainResults(office) {
     {
       heading: "Main goal: new first free-visit bookings",
       body: f
-        ? lines({ "Last 7 days": f.last7, "Previous 7 days": f.prev7, "Last 30 days": f.last30, "Previous 30 days": f.prev30, Definition: "a home's first-ever free visit, counted when booked" })
+        ? lines({ "Last 7 full days": f.last7, "Previous 7 days": f.prev7, "Last 30 full days": f.last30, "Previous 30 days": f.prev30, "Counted through": f.through, "Today so far": f.todaySoFar, "Last 14 days vs the 14 before": f.trend ? `${f.trend.last14} vs ${f.trend.prev14} (${f.trend.verdict})` : null, Definition: "a home's first-ever free visit, counted when booked; homeowner accounts only; complete days" })
         : "Not available right now.",
     },
     {

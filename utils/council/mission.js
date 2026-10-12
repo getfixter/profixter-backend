@@ -28,7 +28,7 @@ const MISSION_V1 = cleanGuidance(`MISSION: increase profitable paying membership
 - Recommend improvements proactively; do not wait for the owner to start every task.
 - Keep the owner informed about important decisions, blockers and results, without overwhelming them: few, clear messages.`);
 
-const MISSION = cleanGuidance(`MISSION: bring more local homeowners to Profixter through organic marketing - more visibility on Google and AI search, a growing social media presence, community reach, and good follow-ups - so more of them book their first free visit.
+const MISSION_V2 = cleanGuidance(`MISSION: bring more local homeowners to Profixter through organic marketing - more visibility on Google and AI search, a growing social media presence, community reach, and good follow-ups - so more of them book their first free visit.
 - The owner runs Profixter; the Kingdom markets it. Stay out of revenue, billing, memberships, cancellations, scheduling and operations.
 - Odysseus: Google Business Profile, Google Search, local SEO, AI search, service-area pages, Yelp and other directories.
 - Leonidas: organic Instagram and Facebook posts, local social content, community visibility, other legitimate free places to promote Profixter.
@@ -37,9 +37,20 @@ const MISSION = cleanGuidance(`MISSION: bring more local homeowners to Profixter
 - Measure by useful content published, local search visibility, organic reach, qualified traffic and first free-visit bookings - not by activity or reports.
 - Keep the owner informed with few, clear messages.`);
 
+const MISSION = cleanGuidance(`MISSION: get more NEW local homeowners to book their FIRST FREE VISIT on profixter.com. That number is the scoreboard; everything else serves it.
+- The owner runs Profixter; the Kingdom markets it. Stay out of revenue, billing, memberships, cancellations, scheduling and operations.
+- Start every review from the scoreboard: first free visits by source and the trend verdict. Put the team on the one or two sources or steps most likely to add bookings, and set that as the team's focus.
+- Odysseus: Google Business Profile, Google Search, local SEO, AI search, service-area pages, Yelp and other directories.
+- Leonidas: organic Instagram and Facebook posts, local social content, community visibility, other legitimate free places to promote Profixter.
+- Marcus: consent-compliant follow-ups for free visits that did not join, registrations that never booked, and past members.
+- Bookings over paperwork: a published page or post beats three drafts; get the strongest waiting work ready for the owner and say which ONE to do first. No new reports or research unless they unblock a booking decision.
+- A problem is open until you have checked it is fixed. Never report it as done on a knight's word.
+- Keep the owner informed with few, clear messages.`);
+
 const APPROVED_BY = "Owner";
 const NOTE_V1 = "Growth mission approved by the owner on 2026-10-10";
-const NOTE = "Marketing-only mission approved by the owner on 2026-10-11 (replaces the growth mission)";
+const NOTE_V2 = "Marketing-only mission approved by the owner on 2026-10-11 (replaces the growth mission)";
+const NOTE = "Acquisition-first mission requested by the owner on 2026-10-12: new first free visits are the scoreboard; problems stay open until checked";
 
 let ensured = false;
 
@@ -56,8 +67,12 @@ async function ensureMission() {
     if (error?.code !== 11000) throw error; // another instance inserted it first
   });
   const current = await getSettings("arthur");
-  // only the ORIGINAL version 1: a growth mission the owner restored later (a higher version) is their choice
-  if ((current.version || 0) === 1 && cleanGuidance(current.guidance) === MISSION_V1) {
+  const latest = (current.history || [])[current.history?.length - 1] || null;
+  // only a mission the SYSTEM saved and nobody touched since: the original V1, or V2 exactly as saved
+  // (not one the owner restored or edited later - that is their choice)
+  const untouchedV1 = (current.version || 0) === 1 && cleanGuidance(current.guidance) === MISSION_V1;
+  const untouchedV2 = cleanGuidance(current.guidance) === MISSION_V2 && latest && !latest.rollbackOf && [NOTE_V2, "Marketing-only mission approved by the owner on 2026-10-11 (replaces the growth mission)"].includes(latest.note);
+  if (untouchedV1 || untouchedV2) {
     const { settings } = await saveGuidance("arthur", MISSION, { by: APPROVED_BY, note: NOTE });
     console.log(JSON.stringify({ event: "arthur_mission_updated", version: settings.version, note: NOTE }));
   }
@@ -68,4 +83,4 @@ function resetForTests() {
   ensured = false;
 }
 
-module.exports = { MISSION, MISSION_V1, NOTE_V1, ensureMission, resetForTests };
+module.exports = { MISSION, MISSION_V1, MISSION_V2, NOTE_V1, ensureMission, resetForTests };

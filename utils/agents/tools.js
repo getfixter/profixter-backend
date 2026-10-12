@@ -34,6 +34,10 @@ const { getDefinition } = require("../growth/actionRegistry");
 const MAX_MEMORY_NOTES = 40;
 const MAX_NOTE_CHARS = 1200;
 const MAX_FINDINGS_PER_RUN = 12;
+/** Problems: never closed on the word of the knight who raised them (see AgentFinding.fixClaim). */
+const PROBLEM_KINDS = ["risk", "anomaly"];
+/** Unpublished drafts per knight before it must revise instead of adding more. */
+const MAX_OPEN_DRAFTS = 6;
 
 function obj(properties) {
   return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
@@ -210,13 +214,25 @@ const TOOL_DEFS = {
         },
         { upsert: true, new: true }
       );
+      // A problem that was marked resolved and is seen again was not fixed: it reopens.
+      // (Dismissed or archived ones stay closed - those were the owner's or Arthur's call.)
+      let reopened = false;
+      if (doc.status === "resolved" && PROBLEM_KINDS.includes(doc.kind)) {
+        await AgentFinding.updateOne(
+          { _id: doc._id, status: "resolved" },
+          { $set: { status: "open", reopenedAt: now, statusNote: clip(`Reopened: seen again after it was marked resolved. ${doc.statusNote || ""}`, 600), statusBy: ctx.agent }, $unset: { fixClaim: 1 } }
+        );
+        doc.status = "open";
+        reopened = true;
+      }
       ctx.findingsThisRun += 1;
       ctx.findingIds.push(doc._id);
-      return { id: String(doc._id), status: doc.status, seenCount: doc.seenCount };
+      return { id: String(doc._id), status: doc.status, seenCount: doc.seenCount, ...(reopened ? { reopened: true } : {}) };
     },
   },
   close_finding: {
-    description: "Close one of YOUR findings when the data shows it is resolved or no longer true.",
+    description:
+      "Close one of YOUR findings when the data shows it is resolved or no longer true. A PROBLEM (risk or anomaly) is not closed by you: your evidence is recorded as a fix report and it stays open until King Arthur checks it - so give the evidence that shows it is fixed (numbers, what you re-checked).",
     input_schema: obj({
       id: str("Finding id"),
       status: str("New status", { enum: ["resolved", "superseded"] }),
@@ -224,11 +240,17 @@ const TOOL_DEFS = {
     }),
     run: async ({ id, status, note }, ctx) => {
       if (!mongoose.Types.ObjectId.isValid(id)) throw new Error("bad id");
-      const res = await AgentFinding.updateOne(
-        { _id: id, agent: ctx.agent },
-        { $set: { status, statusNote: clip(note, 600), statusBy: ctx.agent } }
-      );
-      if (!res.matchedCount) throw new Error("No finding of yours with that id.");
+      const f = await AgentFinding.findOne({ _id: id, agent: ctx.agent, status: { $in: ["open", "acknowledged"] } }).lean();
+      if (!f) throw new Error("No open finding of yours with that id.");
+      if (PROBLEM_KINDS.includes(f.kind)) {
+        if (clip(note, 600).trim().length < 20) throw new Error("Give the evidence that it is fixed (at least a sentence).");
+        await AgentFinding.updateOne(
+          { _id: id },
+          { $set: { fixClaim: { by: ctx.agentLabel || ctx.agent, at: new Date(), note: clip(note, 600), status } } }
+        );
+        return { id, status: f.status, fixReported: true, note: "Recorded as a fix report. The problem stays open until King Arthur checks it." };
+      }
+      await AgentFinding.updateOne({ _id: id }, { $set: { status, statusNote: clip(note, 600), statusBy: ctx.agent } });
       return { id, status };
     },
   },
@@ -289,6 +311,14 @@ Object.assign(TOOL_DEFS, {
       const draftProblems = require("./copyRules").checkCopy(`${input.title}
 ${input.body_markdown}`);
       if (draftProblems.length) throw new Error(`Rewrite needed: ${draftProblems.join(" ")}`);
+      // A pile of unpublished drafts brings no homeowners: past the cap, revise one (same dedupe_key) instead of adding.
+      const key = clip(input.dedupe_key, 120);
+      const revising = await AgentFinding.exists({ agent: ctx.agent, dedupeKey: key });
+      if (!revising && (await AgentFinding.countDocuments({ agent: ctx.agent, kind: "content_draft", status: "open" })) >= MAX_OPEN_DRAFTS) {
+        throw new Error(
+          `You already have ${MAX_OPEN_DRAFTS} drafts waiting for the owner. Drafts only bring homeowners once published: do not add another. Improve the best existing one (same dedupe_key), or spend the shift on measuring and finding what will get the waiting ones used.`
+        );
+      }
       const doc = await AgentFinding.findOneAndUpdate(
         { agent: ctx.agent, dedupeKey: clip(input.dedupe_key, 120) },
         {
@@ -571,4 +601,4 @@ async function runTool(name, input, ctx) {
   return def.run(input || {}, ctx);
 }
 
-module.exports = { POSTAL_RE, TOOL_DEFS, WEB_SEARCH, runTool, toolsFor };
+module.exports = { POSTAL_RE, PROBLEM_KINDS, TOOL_DEFS, WEB_SEARCH, runTool, toolsFor };
