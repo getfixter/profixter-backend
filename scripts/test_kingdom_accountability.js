@@ -96,7 +96,7 @@ async function main() {
     assert.strictEqual(t.last30, 3);
     assert.strictEqual(t.todaySoFar, 1, "this morning's booking is shown apart, not mixed into the week");
     assert.strictEqual(t.weekly.length, 6);
-    assert.deepStrictEqual(t.weekly.at(-1), { from: "2026-10-05", through: "2026-10-11", firstFreeVisits: 1, canceledSince: 0 });
+    assert.deepStrictEqual(t.weekly.at(-1), { from: "2026-10-05", through: "2026-10-11", firstFreeVisits: 1, canceledSince: 0, newMembershipPurchases: 0 });
     assert.strictEqual(t.noFirstTouchRecord30, 2, "H1 and H4 left no first-touch record; H3 did");
   });
 

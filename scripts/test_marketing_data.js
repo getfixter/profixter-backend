@@ -64,12 +64,12 @@ async function main() {
     assert.deepStrictEqual(Object.keys(AGENTS).sort(), ["conversion", "outreach", "visibility"], "the business digest agent is retired");
   });
 
-  await test("the roles: Odysseus search & visibility, Leonidas organic social, Marcus re-engagement", async () => {
+  await test("the roles: Odysseus search & visibility, Leonidas organic social, Marcus prospect follow-ups", async () => {
     assert.match(AGENTS.visibility.instructions, /Google Business Profile/);
     assert.match(AGENTS.visibility.instructions, /Yelp/);
     assert.match(AGENTS.outreach.instructions, /Instagram account and Facebook Page \(organic posts only\)/);
     assert.match(AGENTS.outreach.instructions, /No paid campaigns, no boosting/);
-    assert.match(AGENTS.conversion.instructions, /had their free first visit but did not become members/);
+    assert.match(AGENTS.conversion.instructions, /had their free first visit but never bought a membership/);
     assert.ok(AGENTS.conversion.tools.includes("get_reengagement_audiences"));
     assert.ok(!AGENTS.conversion.tools.includes("web_search"), "Marcus works from audience counts, not the open web");
     for (const k of ["visibility", "outreach"]) assert.ok(AGENTS[k].tools.includes("web_search"), `${k} can research`);
@@ -136,13 +136,13 @@ async function main() {
     const a = out.audiences;
     assert.deepStrictEqual([a.free_visit_undecided.people, a.free_visit_undecided.mayEmail, a.free_visit_undecided.optedOut, a.free_visit_undecided.optedInToMarketingTexts], [2, 1, 1, 1]);
     assert.deepStrictEqual([a.registered_never_booked.people, a.registered_never_booked.mayEmail], [1, 1]);
-    assert.strictEqual(a.former_member_recent.people, 1);
+    assert.ok(!("former_member_recent" in a), "past members are not an acquisition audience");
     assert.match(out.rules, /GoHighLevel is out of scope/);
   });
 
-  await test("a follow-up email playbook can only target the three re-engagement audiences", async () => {
+  await test("a follow-up email playbook can only target the two acquisition audiences", async () => {
     const seg = TOOL_DEFS.save_email_playbook.input_schema.properties.segment.enum;
-    assert.deepStrictEqual(seg.sort(), ["former_member_recent", "free_visit_undecided", "registered_never_booked"]);
+    assert.deepStrictEqual(seg.sort(), ["free_visit_undecided", "registered_never_booked"]);
   });
 
   console.log("mission and refocus");
@@ -154,7 +154,7 @@ async function main() {
     const s = await settings.getSettings("arthur");
     assert.strictEqual(s.version, 2);
     assert.strictEqual(s.guidance, mission.MISSION);
-    assert.match(s.history[1].note, /Acquisition-first mission requested by the owner on 2026-10-12/);
+    assert.match(s.history[1].note, /New-customer acquisition mission \(owner, 2026-10-12\)/);
     assert.strictEqual(s.history[0].guidance, mission.MISSION_V1);
     assert.deepStrictEqual(settings.validateGuidance(mission.MISSION), []);
     mission.resetForTests();

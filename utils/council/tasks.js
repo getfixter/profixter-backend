@@ -75,6 +75,8 @@ function taskProblems(agent, instruction) {
   if (text.length > 800) problems.push("Keep an instruction under 800 characters.");
   problems.push(...validateGuidance(text).filter((p) => !/under 1500 characters/.test(p)));
   for (const rule of NEEDS_OWNER) if (rule.re.test(text)) problems.push(rule.why);
+  const scope = require("../growth/acquisitionScope");
+  if (scope.outOfScope(text)) problems.push(scope.SCOPE_WHY);
   return problems;
 }
 
@@ -88,6 +90,8 @@ function entry(status, by, note = "") {
  */
 async function assignTask({ agent, instruction, why = "", origin = "arthur", ownerName = "Owner" }) {
   const problems = taskProblems(agent, instruction);
+  const scope = require("../growth/acquisitionScope");
+  if (!problems.includes(scope.SCOPE_WHY) && scope.outOfScope(why)) problems.push(scope.SCOPE_WHY);
   if (problems.length) {
     const err = new Error("task_refused");
     err.problems = problems;
@@ -146,6 +150,8 @@ async function setTeamFocus(text) {
   if (clean.length > 900) throw Object.assign(new Error("focus_refused"), { problems: ["Keep the focus under 900 characters."] });
   const problems = validateGuidance(clean).filter((p) => !/under 1500 characters/.test(p));
   for (const rule of NEEDS_OWNER) if (rule.re.test(clean)) problems.push(rule.why);
+  const scope = require("../growth/acquisitionScope");
+  if (scope.outOfScope(clean)) problems.push(scope.SCOPE_WHY);
   if (problems.length) throw Object.assign(new Error("focus_refused"), { problems });
   await AgentMemory.updateOne({ agent: "arthur", key: FOCUS_KEY }, { $set: { content: clean } }, { upsert: true });
   return clean;

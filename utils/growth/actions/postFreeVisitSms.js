@@ -69,6 +69,7 @@ async function execute(payload, { now }) {
   if (user.smsPreferences?.marketingEnabled !== true) return { outcome: "skip", reason: "no_marketing_sms_consent" };
   const { audience } = await resolveAudience(user, now);
   if (audience === "member") return { outcome: "skip", reason: "already_member" };
+  if (await require("../acquisitionScope").hasMembership(user._id)) return { outcome: "skip", reason: "membership_purchased" };
 
   const sent = await sendMarketingSms({
     notificationType: NOTIFICATION_TYPE,

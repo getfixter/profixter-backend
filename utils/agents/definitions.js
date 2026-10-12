@@ -11,9 +11,9 @@
  *                           community visibility, other legitimate free places
  *                           to be seen. No paid campaigns, boosting, postcards
  *                           or cold lists; Meta Ads belong to the agency.
- *   Marcus    "conversion"  re-engagement: follow-ups for people who had the
+ *   Marcus    "conversion"  prospect follow-ups: for people who had the
  *                           free visit but did not join, registered but never
- *                           booked, and past members - consent-compliant,
+ *                           booked - never members (acquisitionScope), consent-compliant,
  *                           approved before anything is sent.
  *
  * MARKETING DATA ONLY. No agent has a tool for revenue, MRR, Stripe, billing,
@@ -33,7 +33,12 @@
 
 const MEMORY = ["read_memory", "write_memory", "get_recent_runs", "list_findings", "get_action_history", "record_finding", "close_finding"];
 
-const OUTCOME_RULES = `For every opportunity you record, answer in the finding: what it is, why it will bring more local homeowners to Profixter (and toward a first free-visit booking), the evidence (data, or the sources your research found), the exact next step and who must approve it, and how its result will be measured and when you will re-check it. Before recording anything, check the shared findings and the action history: never re-record or re-propose something already done, acknowledged, dismissed or declined unless something has materially changed - then say what changed.`;
+/* The owner's permanent rule (2026-10-12): utils/growth/acquisitionScope.js enforces it in code. */
+const SCOPE = `ACQUISITION ONLY: find new homeowners -> registration -> first free visit -> membership purchase -> done. Prospects are people who registered but never booked, and people who had their free visit but never bought a membership. Anyone who has bought a membership (even one that ended) is finished for the Kingdom: never target, analyse, follow up or contact them, and never spend effort on existing members' bookings, visits, scheduling, completed work, payments, billing, cancellations or membership management - your tools refuse it. A routine booking change by the owner is not a marketing event; do not investigate it.`;
+
+const OUTCOME_RULES = `${SCOPE}
+
+For every opportunity you record, answer in the finding: what it is, why it will bring more local homeowners to Profixter (and toward a first free-visit booking), the evidence (data, or the sources your research found), the exact next step and who must approve it, and how its result will be measured and when you will re-check it. Before recording anything, check the shared findings and the action history: never re-record or re-propose something already done, acknowledged, dismissed or declined unless something has materially changed - then say what changed.`;
 
 const PROACTIVE = `Be proactive, and judge your shift by NEW HOMEOWNERS BOOKING THEIR FIRST FREE VISIT, not by how much you produced. Start from get_acquisition (first free visits by source and the trend verdict - quote the verdict, never call a STEADY or TOO FEW change a decline) and King Arthur's focus. Each shift, find at least one NEW opportunity or weakness in your area that can plausibly bring bookings (research it with web_search where useful - competitors, directories, what homeowners ask, what ranks), and leave the owner something ready to use: a concrete recommendation, a finding with evidence, or a draft. If drafts of yours are already waiting for the owner, do not add more: improve the strongest one and say which ONE the owner should publish first and why. Never repeat what is already waiting for the owner. When you report a problem fixed, give the evidence (fresh numbers, what you re-checked) - King Arthur checks it before it closes.`;
 
@@ -111,7 +116,7 @@ ${OUTCOME_RULES}`,
 
 const CONVERSION = {
   name: "conversion",
-  label: "Marcus - customer re-engagement",
+  label: "Marcus - prospect follow-ups",
   effort: "high",
   maxTurns: 18,
   budgetCents: 150,
@@ -126,10 +131,10 @@ const CONVERSION = {
     "save_content_draft",
   ],
   allowedActions: [],
-  instructions: `Your role: Marcus, customer re-engagement. Bring back homeowners who already know Profixter:
-- people who had their free first visit but did not become members,
-- people who registered on profixter.com but never booked,
-- past members, when it is appropriate (not straight after they left; the engine enforces cool-downs).
+  instructions: `Your role: Marcus, prospect follow-ups. Turn homeowners who already know Profixter into customers:
+- people who registered on profixter.com but never booked their first free visit,
+- people who had their free first visit but never bought a membership.
+The moment someone buys a membership, your follow-ups for them stop - the engine re-checks membership and consent at the moment of every send, and anyone who has ever had a membership (including past members) is never in your audiences.
 
 You build useful, personal, consent-compliant follow-up workflows - you never send anything yourself.
 - Follow-ups are EMAIL playbooks for one fixed audience (save_email_playbook). The owner approves the wording; the growth engine then sends one at a time, only to people who may receive marketing email, never to anyone unsubscribed, with frequency caps, re-checking at send time that the person is still in that audience.
@@ -140,15 +145,15 @@ You build useful, personal, consent-compliant follow-up workflows - you never se
 Every shift:
 1. Read your notebook, recent shifts and list_email_playbooks (what exists, what was approved, how sends went).
 2. get_reengagement_audiences: the size of each audience and how many may be emailed.
-3. Improve the workflow for the audience with the most reachable people and the weakest playbook: draft or revise ONE email playbook (at most two per shift) - short, specific, honest, helpful, one clear next step (book the free visit, finish joining, come back), no discounts, offers or prices.
+3. Improve the workflow for the audience with the most reachable people and the weakest playbook: draft or revise ONE email playbook (at most two per shift) - short, specific, honest, helpful, one clear next step (book the free visit, or join after it), no discounts, offers or prices.
 4. Where a different touch would help (a website wording change on the page these people return to, a follow-up message for the owner to send personally), draft it with save_content_draft.
 5. ${PROACTIVE}
-6. Notebook: what you drafted, for which audience, and what to measure (replies, bookings, joins - as reported by the playbook results).
+6. Notebook: what you drafted, for which audience, and what to measure (first free visits booked, memberships bought - as reported by the playbook results and get_acquisition).
 
 Never invent services, prices, discounts, warranties, availability or guarantees; never promise a time slot.
 
 ${OUTCOME_RULES}`,
-  kickoff: (now) => `Customer re-engagement shift for ${now.toISOString().slice(0, 10)}.`,
+  kickoff: (now) => `Prospect follow-up shift for ${now.toISOString().slice(0, 10)}.`,
 };
 
 const AGENTS = { visibility: VISIBILITY, outreach: OUTREACH, conversion: CONVERSION };

@@ -259,8 +259,18 @@ async function loadData({ now = new Date() } = {}) {
   // Homeowners only: a staff/QA account's test booking (or one whose user no
   // longer exists) is not a new customer, and the sources could not place it.
   const freeVisits = bookings.filter((b) => (b.isFreeFirstVisit || b.accessType === "free_first_visit") && userById.has(String(b.user)));
+  /*
+   * A booking made while the customer already had a membership (paid or gift)
+   * is a member's booking: never a new customer and never a first free visit,
+   * whatever flag it carries.
+   */
+  const memberAt = (userId, at) => {
+    const t = new Date(at);
+    return memberships.some((m) => m.userId === userId && m.start && m.start <= t && (!m.end || m.end > t));
+  };
   const earliestByHome = new Map();
   for (const b of freeVisits) {
+    if (memberAt(String(b.user), b.createdAt)) continue;
     const home = `${b.user}:${b.addressId || "-"}`;
     const seen = earliestByHome.get(home);
     if (!seen || new Date(b.createdAt) < new Date(seen.createdAt)) earliestByHome.set(home, b);
@@ -429,7 +439,8 @@ function periodCounts(data, from, to) {
    */
   const firstFv = data.firstFreeVisitByHome.filter((b) => inRange(b.createdAt, from, to));
   const fvCompleted = data.freeVisits.filter((b) => isCompleted(b) && inRange(completedAt(b), from, to));
-  const fvConverted = fvCompleted.filter((b) => membershipStartedAfter(data, String(b.user), b.date));
+  // one conversion per customer, however many free-visit bookings they had
+  const fvConverted = [...new Map(fvCompleted.filter((b) => membershipStartedAfter(data, String(b.user), b.date)).map((b) => [String(b.user), b])).values()];
   const activeAtEnd = data.memberships.filter((m) => activeAt(m, new Date(Math.min(to.getTime(), data.now.getTime())))).length;
   return { newCustomers, newMemberships, cancellations, fvBooked, firstFv, fvCompleted, fvConverted, activeAtEnd };
 }
@@ -1275,6 +1286,20 @@ async function firstFreeVisitTrend({ now = new Date(), weeks = 6 } = {}) {
   const prev14 = count(shiftYmd(today, -28), shiftYmd(today, -14)).length;
   const last30 = count(shiftYmd(today, -30), today);
   const noRecord = last30.filter((b) => !hasFirstTouch(data.userById.get(String(b.user))));
+  /*
+   * NEW MEMBERSHIP PURCHASES - the acquisition's final conversion: a
+   * customer's FIRST paid membership, counted once per customer (a renewal,
+   * a second home or a re-join is not a new conversion; a gift is not a
+   * purchase). Aggregate counts only.
+   */
+  const firstPurchase = new Map();
+  for (const m of data.memberships) {
+    if (m.kind !== "paid" || !m.start) continue;
+    if (!firstPurchase.has(m.userId) || firstPurchase.get(m.userId) > m.start) firstPurchase.set(m.userId, m.start);
+  }
+  const purchases = (fromYmd, toYmdExclusive) =>
+    [...firstPurchase.values()].filter((at) => inRange(at, nyMidnight(fromYmd), nyMidnight(toYmdExclusive))).length;
+  for (const w of weekly) w.newMembershipPurchases = purchases(w.from, shiftYmd(w.from, 7));
   return {
     through: shiftYmd(today, -1),
     last7: last7.length,
@@ -1286,6 +1311,12 @@ async function firstFreeVisitTrend({ now = new Date(), weeks = 6 } = {}) {
     weekly,
     trend: { last14, prev14, verdict: trendVerdict(last14, prev14) },
     noFirstTouchRecord30: noRecord.length,
+    newMembershipPurchases: {
+      last7: purchases(shiftYmd(today, -7), today),
+      prev7: purchases(shiftYmd(today, -14), shiftYmd(today, -7)),
+      last30: purchases(shiftYmd(today, -30), today),
+      prev30: purchases(shiftYmd(today, -60), shiftYmd(today, -30)),
+    },
   };
 }
 

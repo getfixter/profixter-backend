@@ -2,6 +2,7 @@ const Booking = require("../../models/Booking");
 const Subscription = require("../../models/Subscription");
 const User = require("../../models/User");
 const { resolveAudience } = require("../marketing/marketingEligibility");
+const { hasMembership } = require("./acquisitionScope");
 
 /**
  * The only audiences an email playbook can target, each a fixed, reviewable
@@ -37,6 +38,8 @@ const SEGMENT_DEFS = {
       return [...new Set(rows.map((r) => String(r.user)).filter(Boolean))].slice(0, limit);
     },
     async includes(user, { now = new Date() } = {}) {
+      // acquisition ends at a membership - current, past or a gift
+      if (await hasMembership(user._id)) return false;
       const { audience } = await resolveAudience(user, now);
       if (audience === "member") return false;
       const fv = await freeVisitState(user._id);
@@ -67,10 +70,14 @@ const SEGMENT_DEFS = {
       const age = (now - new Date(user.createdAt)) / DAY;
       if (age < 2 || age > 60) return false;
       if (await Booking.exists({ user: user._id })) return false;
+      if (await hasMembership(user._id)) return false;
       const { audience } = await resolveAudience(user, now);
       return audience === "non_member";
     },
   },
+  // The two below target people who already bought a membership. They stay
+  // defined for the history of older playbooks, but no follow-up may use them:
+  // acquisition ends at a membership (acquisitionScope.ACQUISITION_SEGMENTS).
   cancellation_scheduled: {
     label: "Member whose cancellation is scheduled",
     async members({ limit = 100 } = {}) {
