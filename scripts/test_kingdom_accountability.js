@@ -308,6 +308,22 @@ async function main() {
     assert.match(text, /State: reported done by the knight - not yet checked/);
   });
 
+  await test("the production health line carries counts and dates only - never titles, instructions or text", async () => {
+    await clean();
+    await AgentFinding.create({ agent: "visibility", kind: "risk", severity: "high", title: "SECRET-TITLE 404 on Massapequa page", status: "open", fixClaim: { by: "Odysseus", at: new Date(), note: "SECRET-NOTE", status: "resolved" } });
+    await AgentFinding.create({ agent: "outreach", kind: "anomaly", severity: "low", title: "x", status: "open", reopenedAt: new Date() });
+    const tid = await completedTask("visibility", "SECRET-INSTRUCTION rewrite the Levittown title");
+    await tasks.verifyTask({ taskId: tid, verdict: "not_verified", note: "SECRET-CHECK", by: "King Arthur" });
+    await A.set_team_focus.run({ focus: "SECRET-FOCUS: more Google Maps bookings in Levittown and Hicksville this week.", reason: "x" }, king());
+    const h = await require("../utils/council/health").councilHealth();
+    assert.deepStrictEqual(h.problems, { unresolved: 2, awaitingCheck: 1, reopened: 1 });
+    assert.strictEqual(h.tasks.assigned, 1);
+    assert.strictEqual(h.tasks.sentBackOpen, 1);
+    assert.strictEqual(h.focus.set, true);
+    assert.deepStrictEqual(Object.keys(h.agents), ["Odysseus", "Leonidas", "Marcus", "Arthur"]);
+    assert.doesNotMatch(JSON.stringify(h), /SECRET/, "no titles, notes, instructions or focus text reach the log");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("mission");
 
