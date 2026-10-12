@@ -24,6 +24,8 @@ const ALLOWED = new Set([
   "DATAFORSEO_LOGIN",
   "DATAFORSEO_PASSWORD",
   "GHL_API_TOKEN",
+  // Shower Studio: signs private photo links (utils/studio/signedLinks.js).
+  "STUDIO_LINK_SECRET",
 ]);
 const REFRESH_MS = 30 * 60 * 1000;
 

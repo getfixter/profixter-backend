@@ -67,7 +67,7 @@ modified. `estimateleads` gets one new optional field and an index
 | `STUDIO_PUBLIC_ENABLED` | **leave unset for the dark launch** | the public Studio is OFF unless this is `true`: no design, quote or request can be created, even by a script. Setting it to `true` later is the go-live switch (no code change). |
 | `S3_BUCKET` | existing | unchanged |
 | `JWT_SECRET` | existing | unchanged (photo links are signed with a key derived from it if the next one is absent) |
-| `STUDIO_LINK_SECRET` | **required before go-live, recommended now** | a new random secret, 32+ characters, only for photo links. Shorter values are refused. The server logs which key it uses (`studio_link_secret`: dedicated / derived), never the key. |
+| `STUDIO_LINK_SECRET` | **required before go-live, recommended now** | a new random secret, 32+ characters, only for photo links, stored as SecureString `/profixter/prod/STUDIO_LINK_SECRET` (allow-listed in `utils/secrets.js`; picked up within 30 minutes, no restart). Shorter values are refused. The server logs which key it uses (`studio_link_secret`: dedicated / derived), never the key. |
 | `STUDIO_STORAGE` | no | leave unset (S3 when `S3_BUCKET` is set) |
 | `STUDIO_S3_PREFIX` | no | default `private/studio` (must stay under `private/`) |
 | `STUDIO_LINK_TTL_SECONDS` | no | default 900 |
