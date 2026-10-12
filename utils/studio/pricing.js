@@ -128,12 +128,25 @@ function priceDesign({ design, projectType, products, pricing, adjustments = [] 
 }
 
 /** The ONLY pricing information a public visitor receives. */
-function publicQuote(result, pricing) {
+/** Exact wording when any needed price is missing: no number is ever shown. */
+const PRICE_PENDING = "Price confirmed after review.";
+
+/**
+ * The ONLY pricing information a public visitor receives. Always an ESTIMATE;
+ * `measureSource` says whether it is based on a standard example size or the
+ * customer's own measurements. Never labelled verified.
+ */
+function publicQuote(result, pricing, { measureSource = "standard" } = {}) {
+  const basis = measureSource === "customer"
+    ? "Based on the measurements you entered."
+    : "Based on a standard 60″ × 30″ example size, not your measurements.";
   return {
     complete: result.complete,
     totalCents: result.complete ? result.totalCents : null,
     display: result.complete ? money(result.totalCents) : null,
-    message: result.complete ? pricing.disclaimer : "We'll confirm the price for this design after a quick review.",
+    label: result.complete ? "Estimated total" : null,
+    basis: result.complete ? basis : null,
+    message: result.complete ? pricing.disclaimer : PRICE_PENDING,
     includes: result.lines.filter((l) => l.kind !== "adjustment" && l.kind !== "discount").map((l) => l.label),
   };
 }
@@ -146,4 +159,4 @@ function discountAllowed({ subtotalCents, percent, amountCents, pricing, isOwner
   return ask <= cap;
 }
 
-module.exports = { priceDesign, publicQuote, selectedSkus, discountAllowed, money };
+module.exports = { PRICE_PENDING, priceDesign, publicQuote, selectedSkus, discountAllowed, money };

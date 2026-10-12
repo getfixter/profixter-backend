@@ -120,6 +120,10 @@ const StudioDesignSchema = new mongoose.Schema(
     },
     /* private data is deleted after this date unless the design moves forward */
     deleteAfter: { type: Date, default: null, index: true },
+    /* designed on an example bathroom (no customer photo) - utils/studio/examples.js */
+    exampleScene: { type: String, default: null },
+    /* where the alcove size came from: standard example size, the customer, or verified on site */
+    measureSource: { type: String, enum: ["standard", "customer", "verified"], default: "standard" },
   },
   { timestamps: true, minimize: false }
 );

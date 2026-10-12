@@ -27,6 +27,7 @@ const { staffCatalog, invalidate } = require("../utils/studio/catalogService");
 const { validateState } = require("../utils/studio/designState");
 const { checkDesign, quoteDesign, blockingErrors, skusOf } = require("../utils/studio/designService");
 const { discountAllowed } = require("../utils/studio/pricing");
+const { EXAMPLE_SCENES, MEASURE_SOURCES, MEASURE_LABEL } = require("../utils/studio/examples");
 
 const router = express.Router();
 const json = express.json({ limit: "1mb" });
@@ -319,6 +320,7 @@ async function fullView(d, req) {
   return {
     design: {
       id: d.publicId, origin: d.origin, status: d.status, projectType: d.projectType, state: d.state,
+      exampleScene: d.exampleScene, measureSource: d.measureSource, measureLabel: MEASURE_LABEL[d.measureSource] || MEASURE_LABEL.standard,
       customer: d.customer, consentAt: d.consentAt, submittedAt: d.submittedAt,
       selections: d.selections, priceSnapshot: d.priceSnapshot, adjustments: d.adjustments,
       leadId: d.leadId, customerId: d.customerId, projectId: d.projectId, estimateId: d.estimateId,
@@ -347,12 +349,13 @@ router.get("/designs", ...sellPerm, handle(async (req, res) => {
     const rx = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     q.$and = [{ $or: [{ "customer.name": rx }, { "customer.email": rx }, { "customer.phone": rx }, { "customer.zip": rx }] }];
   }
-  const list = await StudioDesign.find(q).sort({ updatedAt: -1 }).limit(200).select("publicId origin status projectType customer.name customer.email customer.phone customer.zip priceSnapshot.totalCents priceSnapshot.complete submittedAt updatedAt createdAt photo leadId projectId").lean();
+  const list = await StudioDesign.find(q).sort({ updatedAt: -1 }).limit(200).select("publicId origin status projectType exampleScene measureSource customer.name customer.email customer.phone customer.zip priceSnapshot.totalCents priceSnapshot.complete submittedAt updatedAt createdAt photo leadId projectId").lean();
   const photos = await StudioPhoto.find({ _id: { $in: list.map((d) => d.photo).filter(Boolean) }, deletedAt: null }).select("publicId").lean();
   const pmap = new Map(photos.map((p) => [String(p._id), p.publicId]));
   res.json({
     designs: list.map((d) => ({
       id: d.publicId, origin: d.origin, status: d.status, projectType: d.projectType,
+      exampleScene: d.exampleScene, measureSource: d.measureSource,
       customer: d.customer, totalCents: d.priceSnapshot?.totalCents ?? null, priceComplete: d.priceSnapshot?.complete ?? null,
       submittedAt: d.submittedAt, updatedAt: d.updatedAt, createdAt: d.createdAt,
       thumb: d.photo && pmap.get(String(d.photo)) ? photoUrl(pmap.get(String(d.photo))) : null,
@@ -397,8 +400,9 @@ router.put("/designs/:id", ...sellPerm, json, handle(async (req, res) => {
   if (d.origin === "public" && d.status === "draft") throw fail(404, "Design not found.");
   if (d.status === "signed") throw fail(409, "This design is signed. Start a new revision from Projects (change order) instead.");
   const b = req.body || {};
-  const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : null;
+  const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : d.exampleScene ? EXAMPLE_SCENES[d.exampleScene] : null;
   if (b.state) d.state = validateState(b.state, photo);
+  if (MEASURE_SOURCES.includes(b.measureSource)) d.measureSource = b.measureSource;
   if (["tub-to-shower", "shower-replacement", "tub-replacement"].includes(b.projectType)) d.projectType = b.projectType;
   if (b.customer) {
     const c = b.customer;
@@ -422,7 +426,7 @@ router.put("/designs/:id", ...sellPerm, json, handle(async (req, res) => {
 /** Price preview for unsaved changes (full lines; staff only). */
 router.post("/designs/:id/quote", ...sellPerm, json, handle(async (req, res) => {
   const d = await designOr404(req.params.id);
-  const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : null;
+  const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : d.exampleScene ? EXAMPLE_SCENES[d.exampleScene] : null;
   const state = req.body?.state ? validateState(req.body.state, photo) : d.state;
   if (!state) throw fail(400, "No design yet.");
   const projectType = req.body?.projectType || d.projectType;
@@ -446,6 +450,7 @@ router.post("/designs/:id/photo", ...sellPerm, (req, res) => {
       width: meta.width, height: meta.height, sha256: crypto.createHash("sha256").update(clean.buffer).digest("hex"),
     });
     d.photo = p._id;
+    d.exampleScene = null;
     d.state = null; // the dots belong to the old photo (the old photo stays with past revisions)
     d.updatedBy = actorId(req);
     await d.save();

@@ -18,7 +18,30 @@ needs `projects.manage`. All three are new owner-grantable sections in the
 Employees editor ("Shower Studio", "Shower Studio price adjustments",
 "Shower Studio catalog & prices"); no existing employee has them until the owner turns them on.
 
-## Flow
+## Public flow (simplified, owner-approved 2026-10-12)
+
+**Start -> Customize -> Design & price -> Request installation.** No photo,
+no measuring, no account:
+
+- Start: "Walk-in shower" or "Bathtub". The design appears immediately on an
+  **example bathroom** (a real CC BY 2.0 photo, pre-marked) at a **standard
+  60" x 30" size**. The picture, the badge and the price all say so.
+- Customize: walls, base, faucet, door, extras; shower/bathtub switch; "what's
+  there now" (tub or old shower) for the price.
+- Optional: "I know my measurements" (price basis becomes the customer's
+  measurements) and "Try it on a photo of my bathroom" (the original photo
+  flow: upload, auto-found dots, tap-4, remove items).
+- Price: always labelled **Estimated total** with its basis ("standard ... example
+  size, not your measurements" or "the measurements you entered"); never
+  "verified". If any needed price is missing: exactly **"Price confirmed after
+  review."** and no number anywhere.
+- A request without a photo is complete: the lead notes say "No photo:
+  designed on the example bathroom" and "Standard example size (not measured)".
+  Staff open it on the example bathroom, see the size source, and tick
+  "Measured on site" to record verified measurements; the proposal scope states
+  which it is.
+
+## Original Milestone 2 flow (still available)
 
 1. **Owner** manages products (Admin -> Studio Catalog): identity, specs with
    VERIFIED/ESTIMATE status and sources, visualization/compatibility fields
@@ -85,9 +108,9 @@ prices computed server-side only; AI budget guards from Milestone 1b remain
 cd BackEnd
 node scripts/studio_demo_env.js      # in-memory DB, test staff/customer/catalog, local storage,
                                      # SMTP catcher, local S3 stub; prints logins (tokens)
-node scripts/test_studio_backend.js            # 23 API tests (in-memory)
+node scripts/test_studio_backend.js            # 29 API tests (in-memory)
 node scripts/test_studio_proposal_signing.js   # 6: design -> proposal -> contract -> signature
-node scripts/test_studio_e2e.js                # 17: the full Definition of Done in a browser
+node scripts/test_studio_e2e.js                # 21: Definition of Done + the no-photo flows in a browser
 node scripts/test_studio_engine_sync.js        # shared rules identical in BackEnd and FrontEnd
 npm test                                       # existing CI suites (82) + the sync test
 ```
@@ -108,9 +131,15 @@ AWS credentials are deliberately hidden from it), email goes to a local catcher.
 - Saved public designs live 30 days unless sent.
 - Estimates have no tax line (as existing estimates).
 
+**Owner demo:** double-click `C:UsersTarasprofixter-studioOpen Shower Studio demo.cmd`.
+
 ## Needs the owner before launch
 
 1. Review on staging and approve deployment (nothing is deployed).
+1b. **Before any production deployment, verify the real S3 bucket policy and
+   access settings** (public-access block, bucket policy, IAM) so that
+   `private/studio/` is not readable. Local tests use a stub and prove nothing
+   about the production bucket.
 2. Real prices and which starter products to publish (all are unpriced drafts).
 3. Product photos/textures you are licensed to use (none uploaded).
 4. Confirm the private S3 prefix: `private/studio/` must stay outside the

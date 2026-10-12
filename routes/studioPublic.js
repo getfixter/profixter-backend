@@ -30,6 +30,8 @@ const { publicCatalog } = require("../utils/studio/catalogService");
 const { validateState } = require("../utils/studio/designState");
 const { checkDesign, quoteDesign, blockingErrors } = require("../utils/studio/designService");
 const { publicQuote } = require("../utils/studio/pricing");
+const { EXAMPLE_SCENES, isExampleScene, MEASURE_LABEL } = require("../utils/studio/examples");
+const PUBLIC_MEASURE = (v) => (v === "customer" ? "customer" : "standard");
 
 const router = express.Router();
 const json = express.json({ limit: "512kb" });
@@ -74,6 +76,8 @@ async function view(d) {
     status: d.status,
     projectType: d.projectType,
     state: d.state,
+    exampleScene: d.exampleScene,
+    measureSource: d.measureSource,
     photo: await photoInfo(d),
     submittedAt: d.submittedAt,
     customer: d.status === "draft" ? undefined : { name: d.customer.name, email: d.customer.email },
@@ -113,6 +117,8 @@ router.post("/designs", limit("create", 20, 60 * 60_000), json, async (req, res)
       origin: "public",
       editTokenHash: hashToken(token),
       projectType: ["tub-to-shower", "shower-replacement", "tub-replacement"].includes(req.body?.projectType) ? req.body.projectType : "tub-to-shower",
+      exampleScene: isExampleScene(req.body?.exampleScene) ? req.body.exampleScene : null,
+      measureSource: PUBLIC_MEASURE(req.body?.measureSource),
       deleteAfter: new Date(Date.now() + DRAFT_DAYS * DAY),
     });
     return res.status(201).json({ id: d.publicId, token, deleteAfter: d.deleteAfter });
@@ -133,7 +139,12 @@ router.put("/designs/:id", limit("save", 120, 60_000), json, async (req, res) =>
     const d = await ownDesign(req, res);
     if (!d) return null;
     if (d.status !== "draft") return err(res, 409, "This design was already sent to Profixter. Our team will continue it with you.");
-    const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : null;
+    if (req.body?.exampleScene !== undefined && !d.photo) {
+      if (req.body.exampleScene !== null && !isExampleScene(req.body.exampleScene)) return err(res, 400, "Unknown example bathroom.");
+      d.exampleScene = req.body.exampleScene;
+    }
+    if (req.body?.measureSource !== undefined) d.measureSource = PUBLIC_MEASURE(req.body.measureSource);
+    const photo = d.photo ? await StudioPhoto.findById(d.photo).lean() : d.exampleScene ? EXAMPLE_SCENES[d.exampleScene] : null;
     if (req.body?.state) d.state = validateState(req.body.state, photo);
     if (["tub-to-shower", "shower-replacement", "tub-replacement"].includes(req.body?.projectType)) d.projectType = req.body.projectType;
     d.deleteAfter = new Date(Date.now() + DRAFT_DAYS * DAY);
@@ -165,6 +176,7 @@ router.post("/designs/:id/photo", limit("photo", 30, 60 * 60_000), (req, res) =>
       // a new photo replaces the old one; the old file is deleted
       if (d.photo) await deletePhoto(d.photo);
       d.photo = p._id;
+      d.exampleScene = null; // their own bathroom now, not the example
       d.state = null; // dots and masks belong to the old photo
       await d.save();
       return res.status(201).json({ photo: { url: photoUrl(p.publicId), width: p.width, height: p.height } });
@@ -240,7 +252,7 @@ router.post("/quote", limit("quote", 240, 60_000), json, async (req, res) => {
     const state = validateState({ marks: dummyMarks, points: dummyPoints, design: req.body?.design }, null);
     const projectType = String(req.body?.projectType || "tub-to-shower");
     const { result, pricing } = await quoteDesign(state.design, projectType);
-    return res.json(publicQuote(result, pricing));
+    return res.json(publicQuote(result, pricing, { measureSource: PUBLIC_MEASURE(req.body?.measureSource) }));
   } catch (e) {
     return err(res, e.status || 500, e.status ? e.message : "Could not price this design.");
   }
@@ -278,7 +290,8 @@ router.post(
       if (PHONE_DIGITS(phone).length < 10 || PHONE_DIGITS(phone).length > 15) errors.push({ field: "phone", message: "Please enter a phone number we can reach you at." });
       if (!ZIP.test(zip)) errors.push({ field: "zip", message: "Please enter a 5-digit ZIP code." });
       if (b.consent !== true) errors.push({ field: "consent", message: "Please agree to be contacted about this request." });
-      if (!d.photo || !d.state) errors.push({ field: "design", message: "Add your photo and finish your design first." });
+      // a photo is optional: a design on an example bathroom is a complete request
+      if (!d.state || (!d.photo && !isExampleScene(d.exampleScene))) errors.push({ field: "design", message: "Finish your design first." });
       if (errors.length) return err(res, 400, errors[0].message, { errors });
       // a real person takes more than a few seconds from starting a design to sending it
       if (Date.now() - new Date(d.createdAt).getTime() < 8000) return err(res, 400, "Please review your design before sending it.");
@@ -311,7 +324,14 @@ router.post(
         contactPref: d.customer.contactPref === "text" ? "text" : d.customer.contactPref,
         sourcePage: "/shower-studio",
         source: "shower_studio",
-        notes: [`Shower Studio: ${typeLabel}`, ...result.selections.map((s) => `- ${s.name}${s.quantity > 1 ? ` ×${s.quantity}` : ""}`), d.customer.notes ? `Customer notes: ${d.customer.notes}` : ""].filter(Boolean).join("\n"),
+        notes: [
+          `Shower Studio: ${typeLabel}`,
+          d.photo ? "Customer photo attached (private, in Admin -> Shower Studio)." : "No photo: designed on the example bathroom.",
+          `Size: ${MEASURE_LABEL[d.measureSource] || MEASURE_LABEL.standard}${d.measureSource === "standard" ? "" : ` - ${d.state.design.measure.facingWidth}" × ${d.state.design.measure.sideLength}"`}.`,
+          ...result.selections.map((s) => `- ${s.name}${s.quantity > 1 ? ` ×${s.quantity}` : ""}`),
+          result.complete ? `Estimated total shown: ${(result.totalCents / 100).toFixed(2)}` : "No total shown (prices incomplete): Price confirmed after review.",
+          d.customer.notes ? `Customer notes: ${d.customer.notes}` : "",
+        ].filter(Boolean).join("\n"),
         bathroomItems: [d.projectType === "tub-replacement" ? "tub" : "shower"],
         estimateLow: totalDollars,
         estimateHigh: totalDollars,
@@ -339,7 +359,7 @@ async function notifyStaff(d, lead, typeLabel, result) {
     address: lead.address,
     contactPref: d.customer.contactPref,
     sourcePage: "/shower-studio",
-    notes: `${typeLabel} designed in the Shower Studio.\n${result.complete ? `Estimated total shown: $${(result.totalCents / 100).toFixed(2)}` : "No estimate shown (prices incomplete)."}\nOpen it in Admin → Shower Studio.`,
+    notes: `${typeLabel} designed in the Shower Studio.\n${d.photo ? "With the customer's photo." : "On the example bathroom (no photo)."} Size: ${MEASURE_LABEL[d.measureSource] || MEASURE_LABEL.standard}.\n${result.complete ? `Estimated total shown: ${(result.totalCents / 100).toFixed(2)}` : "No estimate shown (prices incomplete)."}\nOpen it in Admin → Shower Studio.`,
     estimateLow: lead.estimateLow,
     estimateHigh: lead.estimateHigh,
   }, { logContext: { source: "shower_studio" } });

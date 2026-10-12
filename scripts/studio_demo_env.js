@@ -224,6 +224,7 @@ module.exports = { start, stop, OWNER_EMAIL };
 if (require.main === module) {
   start().then((env) => {
     console.log("\nShower Studio demo is running (Ctrl+C to stop):");
+    if (process.argv.includes("--open")) spawn("cmd", ["/c", "start", "", `${env.FRONTEND_URL}/shower-studio`], { stdio: "ignore", detached: true });
     console.log(`  Public Studio:  ${env.FRONTEND_URL}/shower-studio`);
     console.log(`  Admin:          ${env.FRONTEND_URL}/admin?tab=studio  (sign in by pasting a token below into localStorage "token")`);
     for (const [k, u] of Object.entries(env.users)) console.log(`  ${k.padEnd(10)} ${u.email}\n             token: ${u.token}`);

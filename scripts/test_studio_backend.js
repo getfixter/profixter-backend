@@ -375,6 +375,82 @@ async function main() {
     assert.strictEqual(up.status, 201);
   });
 
+  console.log("no photo, no measurements (example bathroom)");
+  await test("price labels: always an ESTIMATE, its basis stated, never called verified", async () => {
+    const std = await call("POST", "/api/studio/quote", { body: { design: baseDesign, projectType: "tub-to-shower", measureSource: "standard" } });
+    assert.strictEqual(std.body.complete, true);
+    assert.strictEqual(std.body.label, "Estimated total");
+    assert.match(std.body.basis, /standard 60″ × 30″ example size, not your measurements/);
+    const cust = await call("POST", "/api/studio/quote", { body: { design: baseDesign, projectType: "tub-to-shower", measureSource: "customer" } });
+    assert.match(cust.body.basis, /measurements you entered/);
+    const tampered = await call("POST", "/api/studio/quote", { body: { design: baseDesign, projectType: "tub-to-shower", measureSource: "verified" } });
+    assert.match(tampered.body.basis, /standard/, "the public cannot claim verified measurements");
+    for (const r of [std, cust, tampered]) assert.ok(!/verif/i.test(JSON.stringify(r.body)), JSON.stringify(r.body));
+  });
+
+  await test("incomplete prices: no number at all, exactly 'Price confirmed after review.'", async () => {
+    await StudioProduct.create({ sku: "unpriced-bar", category: "accessory", type: "grabBar", name: "Unpriced bar", status: "published", engine: { length: 24, diameter: 1.25, clearance: 1.5, flange: 3, finishColor: "#cccccc", roughness: 0.3 } });
+    const r = await call("POST", "/api/studio/quote", { body: { design: { ...baseDesign, accessories: [{ key: "u", productId: "unpriced-bar", wall: "left", u: 30, y: 35.5 }] }, projectType: "tub-to-shower" } });
+    assert.strictEqual(r.body.complete, false);
+    assert.strictEqual(r.body.message, "Price confirmed after review.");
+    assert.strictEqual(r.body.totalCents, null);
+    assert.strictEqual(r.body.display, null);
+    assert.strictEqual(r.body.label, null);
+    assert.ok(!/\$\d/.test(JSON.stringify(r.body)), "no dollar amount anywhere");
+  });
+
+  const exampleState = (design) => stateFor({ width: 681, height: 1023 }, design);
+  await test("an unknown example bathroom is refused", async () => {
+    const r = await call("POST", "/api/studio/designs", { body: {} });
+    const s = await call("PUT", `/api/studio/designs/${r.body.id}`, { headers: { "x-studio-token": r.body.token }, body: { exampleScene: "../../etc/passwd", state: exampleState(baseDesign) } });
+    assert.strictEqual(s.status, 400);
+  });
+
+  await test("without a photo or an example bathroom a request cannot be sent", async () => {
+    const r = await call("POST", "/api/studio/designs", { body: {} });
+    const h = { "x-studio-token": r.body.token };
+    await call("PUT", `/api/studio/designs/${r.body.id}`, { headers: h, body: { state: exampleState(baseDesign) } });
+    await StudioDesign.collection.updateOne({ publicId: r.body.id }, { $set: { createdAt: new Date(Date.now() - 120000) } });
+    const s = await call("POST", `/api/studio/designs/${r.body.id}/submit`, { headers: h, body: { name: "Nora", email: "nora@example.com", phone: "6315550111", zip: "11787", consent: true } });
+    assert.strictEqual(s.status, 400);
+    assert.match(s.body.message, /Finish your design/);
+  });
+
+  let exampleId;
+  await test("a complete request with NO photo and NO measurements (example bathroom, standard size)", async () => {
+    const leadsBefore = await EstimateLead.countDocuments({});
+    const r = await call("POST", "/api/studio/designs", { body: { exampleScene: "example-bathroom-1", measureSource: "standard", projectType: "tub-to-shower" } });
+    assert.strictEqual(r.status, 201);
+    exampleId = r.body.id;
+    const h = { "x-studio-token": r.body.token };
+    const put = await call("PUT", `/api/studio/designs/${r.body.id}`, { headers: h, body: { state: exampleState({ ...baseDesign, enclosureId: "duet-6072" }), measureSource: "standard" } });
+    assert.strictEqual(put.status, 200, JSON.stringify(put.body));
+    await StudioDesign.collection.updateOne({ publicId: r.body.id }, { $set: { createdAt: new Date(Date.now() - 120000) } });
+    const s = await call("POST", `/api/studio/designs/${r.body.id}/submit`, { headers: h, body: { name: "Erin Example", email: "erin@example.com", phone: "6315550123", zip: "11787", consent: true } });
+    assert.strictEqual(s.status, 200, JSON.stringify(s.body));
+    assert.strictEqual(await EstimateLead.countDocuments({}), leadsBefore + 1);
+    const lead = await EstimateLead.findOne({ email: "erin@example.com" }).lean();
+    assert.match(lead.notes, /No photo: designed on the example bathroom/);
+    assert.match(lead.notes, /Standard example size \(not measured\)/);
+    const d = await StudioDesign.findOne({ publicId: r.body.id }).lean();
+    assert.strictEqual(d.photo, null);
+    assert.strictEqual(d.exampleScene, "example-bathroom-1");
+    assert.strictEqual(d.measureSource, "standard");
+    assert.ok(d.priceSnapshot.complete);
+  });
+
+  await test("staff see 'standard example size' and can mark the measurements verified on site", async () => {
+    const v = await call("GET", `/api/admin/studio/designs/${exampleId}`, { user: seller });
+    assert.strictEqual(v.status, 200);
+    assert.strictEqual(v.body.design.exampleScene, "example-bathroom-1");
+    assert.strictEqual(v.body.design.measureLabel, "Standard example size (not measured)");
+    const state = v.body.design.state;
+    state.design.measure.facingWidth = 31;
+    const put = await call("PUT", `/api/admin/studio/designs/${exampleId}`, { user: seller, body: { state, measureSource: "verified", note: "Measured on site" } });
+    assert.strictEqual(put.status, 200, JSON.stringify(put.body));
+    assert.strictEqual(put.body.design.measureLabel, "Verified on site by Profixter");
+  });
+
   console.log("retention");
   await test("abandoned drafts are deleted with their photos; old requests keep the record but lose the photos", async () => {
     const { sweepStudioRetention } = require("../utils/studio/retention");

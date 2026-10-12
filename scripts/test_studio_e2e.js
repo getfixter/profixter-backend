@@ -88,49 +88,73 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       must(!/priceCents|installCents|internalNote/.test(JSON.stringify(pub)), "prices leaked");
     });
 
-    // ------------------------------------------------------------------ 3-8 homeowner on a phone
-    const phone = await ctxFor(null, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, label: "homeowner" });
+    // ------------------------------------------------------------------ 3-8 homeowner on a phone: NO photo, NO measurements
+    const mobile = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
+    const phone = await ctxFor(null, { ...mobile, label: "homeowner" });
     const hp = phone.page;
     const shot = (n) => hp.screenshot({ path: path.join(OUT, `phone-${n}.png`) });
-    await step("3-4. homeowner starts without an account and uploads a bathroom photo; the alcove is found", async () => {
+    const strip = () => hp.textContent('[data-testid="price-strip"]').then((t) => (t || "").trim());
+    const waitStrip = async (want) => {
+      await hp.waitForFunction((w) => (document.querySelector('[data-testid="price-strip"]')?.textContent || "").trim() === w, want, { timeout: 30000 })
+        .catch(async () => { throw new Error(`price strip "${await strip()}", expected "${want}"`); });
+    };
+    // a real render: the badge shows (engine ready) and the preview canvas has the photo's size (a blank canvas is 300 px wide)
+    const rendered = (p) => p.waitForFunction(() => { const c = document.querySelector("[data-studio-after]"); return document.querySelector('[data-testid="picture-badge"]') && c && c.width !== 300 && c.width > 0 && !document.querySelector('[role="status"].absolute'); }, null, { timeout: 120000 });
+
+    await step("3. starting from an example SHOWER: no photo, no measurements, no account - the design appears right away", async () => {
       await hp.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
-      await hp.tap('[data-testid="start"]', { timeout: 120000 });
-      await hp.setInputFiles('[data-testid="photo-input"]', PHOTO);
-      await hp.waitForFunction(() => document.querySelector("[data-studio-photo] canvas")?.width > 0, null, { timeout: 120000 });
-      await hp.waitForFunction(() => document.querySelectorAll("[data-studio-photo] svg circle").length >= 6, null, { timeout: 60000 });
-      await shot("1-photo");
+      await hp.waitForSelector('[data-testid="start-shower"]', { timeout: 120000 });
+      await shot("0-start");
+      const t0 = Date.now();
+      await hp.tap('[data-testid="start-shower"]');
+      await rendered(hp);
+      const ms = Date.now() - t0;
+      const badge = await hp.textContent('[data-testid="picture-badge"]');
+      must(/Example bathroom/.test(badge) && /standard 60″ × 30″ size/.test(badge), `badge "${badge}"`);
+      must(await hp.locator('[data-testid="photo-input"]').count() === 0, "no photo upload is shown up front");
+      must(!(await hp.locator('[data-testid="m-facingWidth"]').count()), "no measurement form is shown up front");
       const scrollW = await hp.evaluate(() => document.scrollingElement.scrollWidth);
       must(scrollW <= 390, `page scrolls sideways (${scrollW})`);
-      const local = await hp.evaluate(() => localStorage.getItem("profixter:shower-studio:design"));
-      must(local && JSON.parse(local).token, "design token not kept locally");
+      await waitStrip("$7,650.00"); // 4600 base + 900 pan + 1200 white walls + 350 trim + 600 paint above, all TEST prices
+      await shot("1-customize");
+      return { firstPictureMs: ms };
     });
-    await step("5. homeowner enters measurements and chooses a tub-to-shower conversion", async () => {
-      await hp.getByRole("button", { name: "The dots look right" }).tap();
-      await hp.getByRole("button", { name: /standard 60/ }).tap();
-      await shot("2-measure");
-      await hp.getByRole("button", { name: "Continue" }).tap();
-      await hp.tap('[data-testid="type-tub-to-shower"]');
-      await hp.waitForFunction(() => document.querySelector("[data-studio-after]")?.width > 0, null, { timeout: 120000 });
-    });
+
     let total;
-    await step("6-7. homeowner customizes with the new product; the preview renders and the total updates", async () => {
+    await step("6-7. editing selections (walls, door, the owner's new grab bar) updates the picture and the total", async () => {
       await hp.getByRole("tab", { name: "Walls" }).tap();
       await hp.tap('[data-testid="finish-qwall-vs-black"]');
+      await waitStrip("$7,650.00"); // black and white kits are the same TEST price
+      await hp.getByRole("tab", { name: "Door" }).tap();
+      await hp.tap('[data-testid="enclosure-duet-6072"]');
+      await waitStrip("$8,850.00"); // + 950 door + 250 door installation
       await hp.getByRole("tab", { name: "Extras" }).tap();
       await hp.tap('[data-testid="add-grabBar"]');
       await hp.getByRole("button", { name: /Left wall ·/ }).first().tap();
       await hp.locator("select").filter({ hasText: "QA 30in Grab Bar" }).first().selectOption({ label: "QA 30in Grab Bar" });
-      await hp.waitForTimeout(2500);
-      await shot("3-customize");
-      await hp.getByRole("button", { name: "See my price" }).tap();
-      await hp.waitForFunction(() => /\$\d/.test(document.querySelector('[data-testid="price-total"]')?.textContent || ""), null, { timeout: 30000 });
-      total = (await hp.textContent('[data-testid="price-total"]')).trim();
-      await shot("4-price");
-      // 4600 base + 900 pan + 1200 walls + 350 trim + 600 paint above + 99 QA bar + 150 grab-bar blocking
-      must(total === "$7,899.00", `total ${total}`);
+      await waitStrip("$9,099.00"); // + 99 QA bar + 150 grab-bar blocking
+      await rendered(hp);
+      await shot("2-edited");
+      total = await strip();
       return { total };
     });
-    await step("8. homeowner requests installation (validated; one lead; no booking created)", async () => {
+
+    await step("7b. design & price: labelled an ESTIMATE on a standard example size, the example clearly marked", async () => {
+      await hp.getByRole("button", { name: "View design & price" }).tap();
+      await hp.waitForSelector('[data-testid="price-card"]');
+      const label = (await hp.textContent('[data-testid="price-label"]')).trim();
+      const amount = (await hp.textContent('[data-testid="price-total"]')).trim();
+      const basis = (await hp.textContent('[data-testid="price-basis"]')).trim();
+      must(/estimated total/i.test(label), `label "${label}"`);
+      must(amount === "$9,099.00", `amount ${amount}`);
+      must(/standard 60″ × 30″ example size, not your measurements/.test(basis), `basis "${basis}"`);
+      must(await hp.locator('[data-testid="example-note"]').isVisible(), "example note missing");
+      must(!/verified/i.test(await hp.textContent('[data-testid="price-card"]')), "public price called verified");
+      await hp.waitForTimeout(900); // let the smooth scroll settle before the screenshot
+      await shot("3-price");
+    });
+
+    await step("8. a complete request WITHOUT a photo (validated; one lead; nothing booked)", async () => {
       await hp.getByRole("button", { name: "Request installation" }).tap();
       await hp.tap('[data-testid="submit-request"]');
       await hp.getByText("Please enter your name.").waitFor();
@@ -138,11 +162,65 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await hp.fill('input[name="phone"]', "631-555-0142");
       await hp.fill('input[name="email"]', "hannah.qa@example.com");
       await hp.fill('input[name="zip"]', "11787");
-      await hp.fill('input[name="address"]', "12 Elm St, Smithtown NY");
       await hp.tap('[data-testid="consent"]');
       await hp.tap('[data-testid="submit-request"]');
       await hp.waitForSelector('[data-testid="request-done"]', { timeout: 60000 });
-      await shot("5-done");
+      await shot("4-done");
+      const local = JSON.parse(await hp.evaluate(() => localStorage.getItem("profixter:shower-studio:design")));
+      const d = await (await fetch(`${BE}/api/studio/designs/${local.id}`, { headers: { "X-Studio-Token": local.token } })).json();
+      must(d.status === "submitted" && !d.photo && d.exampleScene === "example-bathroom-1" && d.measureSource === "standard", JSON.stringify({ s: d.status, p: d.photo, e: d.exampleScene, m: d.measureSource }));
+    });
+
+    await step("3b. starting from an example BATHTUB: a tub is chosen, priced as a bathtub replacement", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "tub" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-tub"]', { timeout: 120000 });
+      await rendered(p);
+      await p.getByRole("tab", { name: "Base" }).tap();
+      const tubPicked = await p.locator('[data-testid^="base-"][aria-pressed="true"]').getAttribute("data-testid");
+      must(/prism|studio/.test(tubPicked || ""), `selected base ${tubPicked}`);
+      must((await p.locator('[data-testid="kind-tub"]').getAttribute("aria-pressed")) === "true", "bathtub not selected");
+      await p.waitForFunction(() => /\$/.test(document.querySelector('[data-testid="price-strip"]')?.textContent || ""), null, { timeout: 30000 });
+      const t = (await p.textContent('[data-testid="price-strip"]')).trim();
+      must(t === "$6,850.00", `tub total ${t}`); // 3800 base + 900 tub + 1200 tub walls + 350 trim + 600 paint above (TEST prices)
+      await p.getByRole("tab", { name: "Walls" }).tap();
+      must(await p.locator('[data-testid="finish-qwall-tub-white"]').count() === 1, "tub wall kit offered");
+      await p.screenshot({ path: path.join(OUT, "phone-tub.png") });
+      return { total: t, base: tubPicked };
+    });
+
+    await step("5b. optional: the customer's own measurements change the price basis (still an estimate)", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "measure" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
+      await rendered(p);
+      await p.tap('[data-testid="open-measure"]');
+      await p.fill('[data-testid="m-facingWidth"]', "30");
+      await p.fill('[data-testid="m-sideLength"]', "60");
+      await p.fill('[data-testid="m-rimHeight"]', "16");
+      await p.tap('[data-testid="apply-measure"]');
+      await p.waitForFunction(() => /your measurements/.test(document.querySelector('[data-testid="picture-badge"]')?.textContent || ""), null, { timeout: 30000 });
+      await p.getByRole("button", { name: "View design & price" }).tap();
+      await p.waitForFunction(() => /measurements you entered/.test(document.querySelector('[data-testid="price-basis"]')?.textContent || ""), null, { timeout: 30000 });
+      must(/estimated total/i.test(await p.textContent('[data-testid="price-label"]')), "still an estimate");
+    });
+
+    let photoDesign;
+    await step("4. optional: the photo path still works (upload, alcove found, design kept, private photo)", async () => {
+      const p = (await ctxFor(null, { ...mobile, label: "photo" })).page;
+      await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+      await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
+      await rendered(p);
+      await p.tap('[data-testid="open-photo"]');
+      await p.setInputFiles('[data-testid="photo-input"]', PHOTO);
+      await p.waitForFunction(() => document.querySelectorAll("[data-studio-photo] svg circle").length >= 6, null, { timeout: 120000 });
+      await p.screenshot({ path: path.join(OUT, "phone-photo-dots.png") });
+      await p.tap('[data-testid="photo-done"]');
+      await p.waitForFunction(() => /Your photo/.test(document.querySelector('[data-testid="picture-badge"]')?.textContent || ""), null, { timeout: 30000 });
+      photoDesign = JSON.parse(await p.evaluate(() => localStorage.getItem("profixter:shower-studio:design")));
+      const d = await (await fetch(`${BE}/api/studio/designs/${photoDesign.id}`, { headers: { "X-Studio-Token": photoDesign.token } })).json();
+      must(d.photo?.url && d.exampleScene === null, JSON.stringify({ photo: Boolean(d.photo), ex: d.exampleScene }));
+      photoDesign.photoUrl = d.photo.url;
     });
 
     // ------------------------------------------------------------------ 9 staff notified
@@ -167,11 +245,15 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await tp.waitForSelector('[data-testid="studio-editor"]', { timeout: 60000 });
       await tp.waitForFunction(() => document.querySelector("[data-studio-after]")?.width > 0, null, { timeout: 120000 });
       designId = new URL(tp.url()).searchParams.get("design");
-      await tp.waitForFunction(() => /\$7,899/.test(document.querySelector('[data-testid="studio-total"]')?.textContent || ""), null, { timeout: 30000 });
+      await tp.waitForFunction(() => /\$9,099/.test(document.querySelector('[data-testid="studio-total"]')?.textContent || ""), null, { timeout: 30000 });
+      const before = await tp.textContent('[data-testid="studio-measure-source"]');
+      must(/Standard example size \(not measured\)/.test(before), `staff label "${before}"`);
       await tp.fill('[data-testid="studio-m-facingWidth"]', "30.25");
       await tp.press('[data-testid="studio-m-facingWidth"]', "Tab");
+      await tp.check('[data-testid="studio-verified"]');
       await tp.click('[data-testid="studio-save"]');
       await tp.getByText("Saved. A revision was recorded.").waitFor({ timeout: 30000 });
+      await tp.waitForFunction(() => /Verified on site/.test(document.querySelector('[data-testid="studio-measure-source"]')?.textContent || ""), null, { timeout: 30000 });
       await tp.screenshot({ path: path.join(OUT, "tablet-editor.png"), fullPage: true });
     });
     await step("10b. salesperson adds an installation adder; discounts are not offered without price-adjust access", async () => {
@@ -181,7 +263,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       must(!kinds.some((k) => /Discount|Set the total/.test(k)), `seller sees ${kinds.join(",")}`);
       await tp.locator('[data-testid="adj-add"]').scrollIntoViewIfNeeded();
       await tp.tap('[data-testid="adj-add"]');
-      await tp.waitForFunction(() => /\$8,399/.test(document.querySelector('[data-testid="studio-total"]')?.textContent || ""), null, { timeout: 30000 });
+      await tp.waitForFunction(() => /\$9,599/.test(document.querySelector('[data-testid="studio-total"]')?.textContent || ""), null, { timeout: 30000 });
     });
     let proposal;
     await step("11. salesperson creates the proposal (Project + Estimate at the frozen price)", async () => {
@@ -259,8 +341,8 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       must(put.status === 403, "seller changed prices");
     });
     await step("13b. private photos: no listing, unsigned or tampered links refused, CORS-safe", async () => {
-      const d = await api("GET", `/api/admin/studio/designs/${designId}`, users.seller);
-      const url = d.body.design.photo.url;
+      must(photoDesign?.photoUrl, "no photo design to check");
+      const url = photoDesign.photoUrl;
       must((await fetch(BE + url)).status === 200, "signed link should work");
       must((await fetch(BE + url.split("?")[0])).status === 403, "unsigned link served");
       must((await fetch(BE + url.replace(/sig=[^&]+/, "sig=x"))).status === 403, "tampered link served");
@@ -271,6 +353,29 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       const r = await fetch(`${BE}/api/studio/designs/${local.id}`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Studio-Token": local.token }, body: JSON.stringify({ projectType: "tub-replacement" }) });
       must(r.status === 409, `edit after send -> ${r.status}`);
     });
+    await step("14. incomplete prices: the public sees 'Price confirmed after review.' and never a number", async () => {
+      const list = await api("GET", "/api/admin/studio/products?status=published", users.owner);
+      const white = list.body.products.find((p) => p.sku === "qwall-vs-white");
+      const cleared = await api("PUT", `/api/admin/studio/products/${white._id}`, users.owner, { pricing: { priceCents: null, installCents: 0 } });
+      must(cleared.status === 200, `clear price ${cleared.status}`);
+      await new Promise((r) => setTimeout(r, 1200));
+      try {
+        const p = (await ctxFor(null, { ...mobile, label: "pending" })).page;
+        await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
+        await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
+        await rendered(p);
+        await p.waitForFunction(() => (document.querySelector('[data-testid="price-strip"]')?.textContent || "").trim() === "Price confirmed after review.", null, { timeout: 30000 });
+        await p.getByRole("button", { name: "View design & price" }).tap();
+        const card = await p.textContent('[data-testid="price-card"]');
+        must(card.includes("Price confirmed after review.") && !/\$\d/.test(card), `price card "${card}"`);
+        await p.getByRole("button", { name: "Request installation" }).tap();
+        must((await p.textContent('[data-testid="request-price"]')).trim() === "Price confirmed after review.", "request form shows a number");
+        await p.screenshot({ path: path.join(OUT, "phone-price-pending.png") });
+      } finally {
+        await api("PUT", `/api/admin/studio/products/${white._id}`, users.owner, { pricing: { priceCents: 120000, installCents: 0 } });
+      }
+    });
+
     await step("13d. no browser errors in any session", async () => {
       must(!consoleErrors.length, consoleErrors.join("\n"));
     });

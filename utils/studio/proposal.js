@@ -47,7 +47,7 @@ function scopeText(design) {
   const by = (cat) => sel.filter((s) => s.category === cat);
   const lines = [
     `${TYPE_LABEL[design.projectType] || "Shower/tub project"} - designed in the Profixter Shower Studio (design ${design.publicId}).`,
-    `Alcove as measured: ${m.facingWidth}" × ${m.sideLength}", ${m.leftWall && m.rightWall ? "three walls" : m.leftWall ? "wall on the left" : "wall on the right"}.`,
+    `Alcove ${design.measureSource === "verified" ? "as measured on site" : design.measureSource === "customer" ? "as measured by the customer" : "at the standard example size (NOT measured)"}: ${m.facingWidth}" × ${m.sideLength}", ${m.leftWall && m.rightWall ? "three walls" : m.leftWall ? "wall on the left" : "wall on the right"}.`,
     ...by("base").map((s) => `Base: ${s.name}${s.model ? ` (${s.manufacturer} ${s.model})` : ""}.`),
     ...by("wall").map((s) => `Wall system: ${s.name}${s.model ? ` (${s.manufacturer} ${s.model})` : ""}.`),
     ...by("fixture").map((s) => `Valve trim: ${s.name}.`),
