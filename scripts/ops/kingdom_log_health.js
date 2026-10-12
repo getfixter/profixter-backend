@@ -82,11 +82,11 @@ async function main() {
           continue;
         }
         if (!(row.event in KEEP)) continue;
-        const stamp = (line.slice(0, at).match(/^w{3}s+d+s+[d:]+/) || [line.slice(0, 15)])[0];
+        const stamp = (line.slice(0, at).match(/^\w{3}\s+\d+\s+[\d:]+/) || [line.slice(0, 15)])[0];
         const key = `${stamp}|${JSON.stringify(row).length}|${row.event}`; // bundles can repeat a log
         if (seen.has(key)) continue;
         seen.add(key);
-        rows.push({ when: stamp.replace(/\s+\S+\s+web\[\d+\]:?$/, ""), instance: inst.Ec2InstanceId, event: row.event, ...pick(row.event, row) });
+        rows.push({ when: stamp, instance: inst.Ec2InstanceId, event: row.event, ...pick(row.event, row) });
       }
     } finally {
       fs.rmSync(zip, { force: true });
