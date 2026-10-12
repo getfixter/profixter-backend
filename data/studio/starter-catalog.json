@@ -1,0 +1,2483 @@
+{
+ "researchedOn": "2026-10-11",
+ "note": "Starter Shower Studio catalog from the Milestone 1b research. Prices are deliberately empty: the owner sets them.",
+ "products": [
+  {
+   "sku": "qwall-vs-white",
+   "category": "wall",
+   "type": "pan",
+   "name": "DreamLine QWALL-VS White",
+   "manufacturer": "DreamLine",
+   "model": "SHBW-1560760-00",
+   "description": "Vertical subway pattern (VERIFIED wording). Tile 4×12″, grout ⅛″ and the 28–32″ depth range are ESTIMATES; colour APPROXIMATE.",
+   "colorName": "",
+   "specs": [],
+   "sources": [
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1713377620/websites-product-info-and-content/dreamline/product-info/walls/qwall-vs/technical-drawings/dreamline-shbw-1560760-tech-drawing.jpg"
+   ],
+   "engine": {
+    "color": "#f3f3ef",
+    "material": "acrylic/ABS",
+    "pattern": {
+     "type": "tile",
+     "orientation": "vertical",
+     "bond": "running",
+     "tileW": 4,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.7,
+    "kit": {
+     "height": 76,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 28,
+     "fitsWidthMax": 32,
+     "requiresBase": [],
+     "preferredBase": []
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 10,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "qwall-vs-black",
+   "category": "wall",
+   "type": "pan",
+   "name": "DreamLine QWALL-VS Black",
+   "manufacturer": "DreamLine",
+   "model": "SHBW-1560760-88",
+   "description": "Same kit in Black (suffix -88 VERIFIED). Pattern geometry ESTIMATED; colour APPROXIMATE. No black tub kit is in the catalog.",
+   "colorName": "",
+   "specs": [],
+   "sources": [
+    "https://images.salsify.com/image/upload/q_100,fl_attachment/47da9d02f5ac8c4dd493598deb988cdef7da937e.pdf"
+   ],
+   "engine": {
+    "color": "#26272a",
+    "material": "acrylic/ABS",
+    "pattern": {
+     "type": "tile",
+     "orientation": "vertical",
+     "bond": "running",
+     "tileW": 4,
+     "tileH": 12,
+     "groutW": 0.125,
+     "groutColor": "#1d1e20"
+    },
+    "gloss": 0.9,
+    "kit": {
+     "height": 76,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 28,
+     "fitsWidthMax": 32,
+     "requiresBase": [],
+     "preferredBase": []
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 20,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "qwall-tub-white",
+   "category": "wall",
+   "type": "tub",
+   "name": "DreamLine QWALL-Tub White",
+   "manufacturer": "DreamLine",
+   "model": "SHBW-1360603-01",
+   "description": "Tub kit, 60″ above the tub rim, for 56–60 × 28–32″ tubs (VERIFIED). DreamLine describes only a 'tile pattern': the 12×4″ running-bond drawing is ILLUSTRATIVE.",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "widthRange",
+     "label": "Width Range",
+     "value": "56-60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1747761852/websites-product-info-and-content/dreamline/product-info/shower-bases-and-walls/qwall-tub/marketing-brochures/tub-backwalls-product-sheet-shbw-1360603-01.pdf"
+    },
+    {
+     "key": "depthRange",
+     "label": "Depth Range",
+     "value": "28-32",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1747761852/websites-product-info-and-content/dreamline/product-info/shower-bases-and-walls/qwall-tub/marketing-brochures/tub-backwalls-product-sheet-shbw-1360603-01.pdf"
+    },
+    {
+     "key": "panelHeight",
+     "label": "Panel Height",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-qwall-tub-56-60-inch-w-x-28-32-inch-d-x-60-inch-h-acrylic-wall-kit/base-shbw-1360603-01/sellable-shbw-1360603-01/"
+    },
+    {
+     "key": "glassShelves",
+     "label": "Glass Shelves",
+     "value": "2",
+     "unit": "pcs",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1747761852/websites-product-info-and-content/dreamline/product-info/shower-bases-and-walls/qwall-tub/marketing-brochures/tub-backwalls-product-sheet-shbw-1360603-01.pdf"
+    },
+    {
+     "key": "pieces",
+     "label": "Pieces",
+     "value": "4",
+     "unit": "panels (2 back, 2 side) + trim",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1713376471/websites-product-info-and-content/dreamline/product-info/walls/qwall-tub/installation-guides/q-wall-tub-install-guide.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-qwall-tub-56-60-inch-w-x-28-32-inch-d-x-60-inch-h-acrylic-wall-kit/base-shbw-1360603-01/sellable-shbw-1360603-01/",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1747761852/websites-product-info-and-content/dreamline/product-info/shower-bases-and-walls/qwall-tub/marketing-brochures/tub-backwalls-product-sheet-shbw-1360603-01.pdf",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1713376471/websites-product-info-and-content/dreamline/product-info/walls/qwall-tub/installation-guides/q-wall-tub-install-guide.pdf"
+   ],
+   "engine": {
+    "color": "#f3f3ef",
+    "material": "acrylic/ABS",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 12,
+     "tileH": 4,
+     "groutW": 0.125
+    },
+    "gloss": 0.65,
+    "kit": {
+     "height": 60,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 28,
+     "fitsWidthMax": 32,
+     "requiresBase": [],
+     "preferredBase": []
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 30,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-c500-smooth-6032",
+   "category": "wall",
+   "type": "pan",
+   "name": "Delta Classic 500 smooth 60×32",
+   "manufacturer": "Delta",
+   "model": "B12205-6032-WH",
+   "description": "Smooth high-gloss, moulded corner shelves (not drawn). Delta: for the Classic 500 60×32 base only (VERIFIED). Direct-to-stud install.",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B12205-6032-WH.html"
+    },
+    {
+     "key": "depth",
+     "label": "Depth",
+     "value": "32",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B12205-6032-WH.html"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "73.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B12205-6032-WH.html"
+    },
+    {
+     "key": "doorOpeningWidth",
+     "label": "Door Opening Width",
+     "value": "58.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12205-6032-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "builtInShelfDepth",
+     "label": "Built In Shelf Depth",
+     "value": "3.625",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12205-6032-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "pieces",
+     "label": "Pieces",
+     "value": "3",
+     "unit": "panels",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B12205-6032-WH.html"
+    }
+   ],
+   "sources": [
+    "https://www.deltafaucet.com/bathroom/product/B12205-6032-WH.html",
+    "https://media.deltafaucet.com/SpecSheet/DSP-B-B12205-6032-WH%20Rev%20B.pdf"
+   ],
+   "engine": {
+    "color": "#f5f5f2",
+    "material": "acrylic",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.85,
+    "kit": {
+     "height": 73.25,
+     "fitsLengthMin": 60,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 32,
+     "fitsWidthMax": 32,
+     "requiresBase": [
+      "delta-c500-base-6032"
+     ],
+     "preferredBase": []
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 40,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-procrylic-tile-6032",
+   "category": "wall",
+   "type": "pan",
+   "name": "Delta ProCrylic subway 60×32",
+   "manufacturer": "Delta",
+   "model": "B122106-6032-WH",
+   "description": "Moulded subway, running bond (VERIFIED wording). Tile size and horizontal orientation are ESTIMATES (Delta does not publish them).",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "nominalWidth",
+     "label": "Nominal Width",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "finishedWidth",
+     "label": "Finished Width",
+     "value": "55.38",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "finishedDepth",
+     "label": "Finished Depth",
+     "value": "32",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "depthIncludingFlange",
+     "label": "Depth Including Flange",
+     "value": "33.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "finishedHeight",
+     "label": "Finished Height",
+     "value": "71.88",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "heightIncludingFlange",
+     "label": "Height Including Flange",
+     "value": "73.13",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "doorOpeningWidth",
+     "label": "Door Opening Width",
+     "value": "58.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B122106-6032-WH%20Rev%20A.pdf"
+    },
+    {
+     "key": "builtInShelfDepth",
+     "label": "Built In Shelf Depth",
+     "value": "3.625",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B122106-6032-WH%20Rev%20A.pdf"
+    },
+    {
+     "key": "pieces",
+     "label": "Pieces",
+     "value": "4",
+     "unit": "panels",
+     "status": "VERIFIED",
+     "source": "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html"
+    },
+    {
+     "key": "tileSize",
+     "label": "Tile Size",
+     "value": "approx. 3x6 or 4x12 subway (not stated)",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
+   "sources": [
+    "https://www.deltafaucet.com/bathroom/product/B122106-6032-WH.html",
+    "https://media.deltafaucet.com/SpecSheet/DSP-B-B122106-6032-WH%20Rev%20A.pdf"
+   ],
+   "engine": {
+    "color": "#f6f6f3",
+    "material": "ProCrylic acrylic",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 6,
+     "tileH": 3,
+     "groutW": 0.1
+    },
+    "gloss": 0.8,
+    "kit": {
+     "height": 71.88,
+     "fitsLengthMin": 60,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 32,
+     "fitsWidthMax": 32,
+     "requiresBase": [],
+     "preferredBase": [
+      "delta-c500-base-6032"
+     ]
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 50,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "as-aspirations-vtile",
+   "category": "wall",
+   "type": "pan",
+   "name": "American Standard Aspirations vertical tile",
+   "manufacturer": "American Standard",
+   "model": "2952BWT36.020",
+   "description": "Vertical stacked tile with etched grout (VERIFIED wording); 4×12″ size ESTIMATE. A 36″-deep set, trimmable to custom depth (VERIFIED) - the 28″ minimum is an ESTIMATE. Glue-up over water-resistant board.",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "nominalWidth",
+     "label": "Nominal Width",
+     "value": "59.0625",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/lixil/american-standard/spec-sheets/specs-2952bwt36-aspirations-60x36-bath-wall-system-v2.pdf"
+    },
+    {
+     "key": "nominalDepth",
+     "label": "Nominal Depth",
+     "value": "35.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/lixil/american-standard/spec-sheets/specs-2952bwt36-aspirations-60x36-bath-wall-system-v2.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://americanstandardbathing.com/products/american-standard-aspirations-60-x-36-x-72-inch-vertical-tile-bath-wall-set-2952bwt36"
+    },
+    {
+     "key": "sidePanelWidth",
+     "label": "Side Panel Width",
+     "value": "35.1875",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/lixil/american-standard/spec-sheets/specs-2952bwt36-aspirations-60x36-bath-wall-system-v2.pdf"
+    },
+    {
+     "key": "pieces",
+     "label": "Pieces",
+     "value": "4",
+     "unit": "panels (2 back, 2 side)",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/lixil/american-standard/spec-sheets/specs-2952bwt36-aspirations-60x36-bath-wall-system-v2.pdf"
+    },
+    {
+     "key": "tileSize",
+     "label": "Tile Size",
+     "value": "not stated",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
+   "sources": [
+    "https://americanstandardbathing.com/products/american-standard-aspirations-60-x-36-x-72-inch-vertical-tile-bath-wall-set-2952bwt36",
+    "https://res.cloudinary.com/american-bath-group/image/upload/lixil/american-standard/spec-sheets/specs-2952bwt36-aspirations-60x36-bath-wall-system-v2.pdf"
+   ],
+   "engine": {
+    "color": "#f4f4f1",
+    "material": "acrylic",
+    "pattern": {
+     "type": "tile",
+     "orientation": "vertical",
+     "bond": "stack",
+     "tileW": 4,
+     "tileH": 12,
+     "groutW": 0.1
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 59,
+     "fitsLengthMax": 60,
+     "fitsWidthMin": 28,
+     "fitsWidthMax": 36,
+     "requiresBase": [],
+     "preferredBase": []
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 60,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "slimline-6030",
+   "category": "base",
+   "type": "pan",
+   "name": "DreamLine SlimLine 60×30 base",
+   "manufacturer": "DreamLine",
+   "model": "DLT-113060x",
+   "description": "",
+   "colorName": "",
+   "specs": [],
+   "sources": [
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743431704/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113060.pdf"
+   ],
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 2.75,
+    "color": "#f3f3ef",
+    "material": "acrylic, fiberglass reinforced",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (left or right model)",
+      "along": 0.12,
+      "across": 0.5
+     },
+     {
+      "id": "center",
+      "name": "Center drain (DLT-1130600)",
+      "along": 0.5,
+      "across": 0.5
+     }
+    ],
+    "thresholdVerified": false
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 70,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "slimline-6032",
+   "category": "base",
+   "type": "pan",
+   "name": "DreamLine SlimLine 60×32 base",
+   "manufacturer": "DreamLine",
+   "model": "DLT-113260x",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433933/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113260.pdf"
+    },
+    {
+     "key": "depth",
+     "label": "Depth",
+     "value": "32",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433933/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113260.pdf"
+    },
+    {
+     "key": "overallHeight",
+     "label": "Overall Height",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433933/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113260.pdf"
+    },
+    {
+     "key": "thresholdHeight",
+     "label": "Threshold Height",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-slimline-32-inch-d-x-60-inch-w-x-2-3-4-inch-h-single-threshold-shower-base/dlt-113260/dlt-1132601"
+    },
+    {
+     "key": "drainOpeningDiameter",
+     "label": "Drain Opening Diameter",
+     "value": "3.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433933/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113260.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-slimline-32-inch-d-x-60-inch-w-x-2-3-4-inch-h-single-threshold-shower-base/dlt-113260/dlt-1132601",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743433933/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113260.pdf"
+   ],
+   "engine": {
+    "length": 60,
+    "width": 32,
+    "height": 2.75,
+    "color": "#f3f3ef",
+    "material": "acrylic, fiberglass reinforced",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (left or right model)",
+      "along": 0.12,
+      "across": 0.5
+     },
+     {
+      "id": "center",
+      "name": "Center drain (DLT-1132600)",
+      "along": 0.5,
+      "across": 0.5
+     }
+    ],
+    "thresholdVerified": false
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 80,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "slimline-6036",
+   "category": "base",
+   "type": "pan",
+   "name": "DreamLine SlimLine 60×36 base",
+   "manufacturer": "DreamLine",
+   "model": "DLT-113660x",
+   "description": "Needs a 36″-deep alcove; a standard 30″ tub alcove would need framing changes.",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433420/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113660-22.pdf"
+    },
+    {
+     "key": "depth",
+     "label": "Depth",
+     "value": "36",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433420/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113660-22.pdf"
+    },
+    {
+     "key": "overallHeight",
+     "label": "Overall Height",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433420/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113660-22.pdf"
+    },
+    {
+     "key": "thresholdHeight",
+     "label": "Threshold Height",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-slimline-36-inch-d-x-60-inch-w-x-2-3-4-inch-h-single-threshold-shower-base/dlt-113660/dlt-1136600-22"
+    },
+    {
+     "key": "drainOpeningDiameter",
+     "label": "Drain Opening Diameter",
+     "value": "3.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743433420/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113660-22.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-slimline-36-inch-d-x-60-inch-w-x-2-3-4-inch-h-single-threshold-shower-base/dlt-113660/dlt-1136600-22",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743433420/websites-product-info-and-content/dreamline/product-info/shower-bases/slimline/marketing-brochures/slimline-shower-base-product-sheet-dlt-113660-22.pdf"
+   ],
+   "engine": {
+    "length": 60,
+    "width": 36,
+    "height": 2.75,
+    "color": "#f3f3ef",
+    "material": "acrylic, fiberglass reinforced",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (left or right model)",
+      "along": 0.12,
+      "across": 0.5
+     },
+     {
+      "id": "center",
+      "name": "Center drain (DLT-1136600)",
+      "along": 0.5,
+      "across": 0.5
+     }
+    ],
+    "thresholdVerified": false
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 90,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-c500-base-6032",
+   "category": "base",
+   "type": "pan",
+   "name": "Delta Classic 500 60×32 base",
+   "manufacturer": "Delta",
+   "model": "B12135-6032L/R-WH",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "59.875",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "depth",
+     "label": "Depth",
+     "value": "32",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "overallHeight",
+     "label": "Overall Height",
+     "value": "4.875",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "thresholdCallout",
+     "label": "Threshold Callout",
+     "value": "1.375",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf (1-3/8 in callout at threshold end; meaning not labelled - likely threshold rise above floor)"
+    },
+    {
+     "key": "drainCenterFromEndWall",
+     "label": "Drain Center From End Wall",
+     "value": "8.4375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "drainCenterFromBackWall",
+     "label": "Drain Center From Back Wall",
+     "value": "15.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    },
+    {
+     "key": "drainStrainer",
+     "label": "Drain Strainer",
+     "value": "4.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+    }
+   ],
+   "sources": [
+    "https://www.deltafaucet.com/bathroom/product/B12135-6032L-WH.html",
+    "https://media.deltafaucet.com/SpecSheet/DSP-B-B12135-6032L-WH%20Rev%20B.pdf"
+   ],
+   "engine": {
+    "length": 59.875,
+    "width": 32,
+    "height": 4.875,
+    "color": "#f5f5f2",
+    "material": "acrylic",
+    "geometry": {
+     "thresholdW": 2.75,
+     "ledgeW": 1.5,
+     "floorDrop": 3.2
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (L or R model)",
+      "along": 0.1409185803757829,
+      "across": 0.48046875
+     }
+    ],
+    "thresholdVerified": false
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 100,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "dreamline-prism-6030",
+   "category": "base",
+   "type": "tub",
+   "name": "DreamLine Prism 60×30 alcove tub",
+   "manufacturer": "DreamLine",
+   "model": "BTPM6030XL00 / XR00",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "length",
+     "label": "Length",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    },
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "30",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "16",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    },
+    {
+     "key": "depthAsLabelled",
+     "label": "Depth As Labelled",
+     "value": "10.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/ (labelled only 'Depth'; interpreting it as bathing-well/water depth is an ESTIMATE)"
+    },
+    {
+     "key": "deckWidth",
+     "label": "Deck Width",
+     "value": "3.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    },
+    {
+     "key": "maxDoorWidth",
+     "label": "Max Door Width",
+     "value": "58.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    },
+    {
+     "key": "requiredThresholdWidth",
+     "label": "Required Threshold Width",
+     "value": "2.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/prism-60-inch-l-x-30-inch-w-acrylic-alcove-bathtub/btpm6030/btpm6030xl00/",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1722449977/websites-product-info-and-content/dreamline/product-info/bathtubs/prism/technical-drawings/prism6030-techdrawing.pdf"
+   ],
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 16,
+    "color": "#f4f4f1",
+    "material": "acrylic",
+    "geometry": {
+     "thresholdW": 3.5,
+     "ledgeW": 3.5,
+     "floorDrop": 13.5,
+     "slope": 3.5
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (left or right model)",
+      "along": 0.1,
+      "across": 0.5
+     }
+    ],
+    "thresholdVerified": true
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 110,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "as-studio-6030",
+   "category": "base",
+   "type": "tub",
+   "name": "American Standard Studio 60×30 tub",
+   "manufacturer": "American Standard",
+   "model": "2973102.020 / 2973202.020",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "length",
+     "label": "Length",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf"
+    },
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "30",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "18",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf (product page says 19 in - conflict)"
+    },
+    {
+     "key": "soakingDepth",
+     "label": "Soaking Depth",
+     "value": "12",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf"
+    },
+    {
+     "key": "tileFlangeHeight",
+     "label": "Tile Flange Height",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf"
+    },
+    {
+     "key": "drainSize",
+     "label": "Drain Size",
+     "value": "2.125",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://americanstandardbathing.com/products/american-standard-studio-60-x-30-inch-integral-apron-bathtub-2973102"
+    }
+   ],
+   "sources": [
+    "https://americanstandardbathing.com/products/american-standard-studio-60-x-30-inch-integral-apron-bathtub-2973102",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1776964412/websites-product-info-and-content/bootz/product-info/bathtubs/tech-data/as-2973-6030-studio-apron-acrylic-tub-spec-sheet.pdf"
+   ],
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 18,
+    "color": "#f5f5f2",
+    "material": "acrylic",
+    "geometry": {
+     "thresholdW": 3.25,
+     "ledgeW": 3.25,
+     "floorDrop": 15,
+     "slope": 4
+    },
+    "drains": [
+     {
+      "id": "end",
+      "name": "Drain at the valve end (left or right model)",
+      "along": 0.1,
+      "across": 0.5
+     }
+    ],
+    "thresholdVerified": false
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 120,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-bt13210",
+   "category": "fixture",
+   "type": "shower",
+   "name": "Delta Monitor 13 shower-only BT13210, chrome",
+   "manufacturer": "",
+   "model": "",
+   "description": "7″ escutcheon VERIFIED (DSP-B-BT13010). Lever and arm length ESTIMATES.",
+   "colorName": "",
+   "specs": [],
+   "sources": [
+    "https://zoro.com/static/cms/enhanced_pdf/Tigris%20Fulfillment%20Partners,%20LLC_DSPxxBxxBT13010xxRevxxHxx52ec24.pdf"
+   ],
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4.2,
+     "armLen": 7,
+     "headDiameter": 2.9
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 130,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-bt13410",
+   "category": "fixture",
+   "type": "tubShower",
+   "name": "Delta Monitor 13 tub/shower BT13410, chrome",
+   "manufacturer": "Delta",
+   "model": "BT13410 (Chrome), BT13410-SS (Stainless)",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "escutcheonHeight",
+     "label": "Escutcheon Height",
+     "value": "7",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+    },
+    {
+     "key": "tubSpoutLength",
+     "label": "Tub Spout Length",
+     "value": "7.0625",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf (spout RP64721)"
+    },
+    {
+     "key": "tubSpoutBelowValveCenter",
+     "label": "Tub Spout Below Valve Center",
+     "value": "8 min - 18 max",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+    },
+    {
+     "key": "showerheadDiameter",
+     "label": "Showerhead Diameter",
+     "value": "3",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf (RP102064)"
+    },
+    {
+     "key": "showerheadLength",
+     "label": "Showerhead Length",
+     "value": "4.1875",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+    },
+    {
+     "key": "flowRate",
+     "label": "Flow Rate",
+     "value": "1.75",
+     "unit": "gpm",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+    },
+    {
+     "key": "extraWallThicknessWithRP77991",
+     "label": "Extra Wall Thickness With R P77991",
+     "value": "1.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+    }
+   ],
+   "sources": [
+    "https://www.deltafaucet.com/bathroom/product/BT13410.html",
+    "https://media.deltafaucet.com/SpecSheet/DSP-B-BT13010%20Rev%20L.pdf"
+   ],
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4.2,
+     "armLen": 7,
+     "headDiameter": 3,
+     "spoutReach": 7.0625,
+     "spoutAboveRim": 4.5
+    },
+    "spoutBelowValveMin": 8,
+    "spoutBelowValveMax": 18
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 140,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-t25902ep-chrome",
+   "category": "fixture",
+   "type": "shower",
+   "name": "Moen Gibson shower-only T25902EP, chrome",
+   "manufacturer": "Moen",
+   "model": "T25902EP / T25902EPBL / T25902EPBN / T25902EPBZG",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "escutcheonDiameter",
+     "label": "Escutcheon Diameter",
+     "value": "7",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "showerheadDiameter",
+     "label": "Showerhead Diameter",
+     "value": "4.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25902ep"
+    },
+    {
+     "key": "showerArmReach",
+     "label": "Shower Arm Reach",
+     "value": "7.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "flowRate",
+     "label": "Flow Rate",
+     "value": "1.75",
+     "unit": "gpm",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25902ep"
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/t25902ep",
+    "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+   ],
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4,
+     "armLen": 7.375,
+     "headDiameter": 4.5
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 150,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-t25902ep-black",
+   "category": "fixture",
+   "type": "shower",
+   "name": "Moen Gibson shower-only T25902EPBL, matte black",
+   "manufacturer": "Moen",
+   "model": "T25902EP / T25902EPBL / T25902EPBN / T25902EPBZG",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "escutcheonDiameter",
+     "label": "Escutcheon Diameter",
+     "value": "7",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "showerheadDiameter",
+     "label": "Showerhead Diameter",
+     "value": "4.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25902ep"
+    },
+    {
+     "key": "showerArmReach",
+     "label": "Shower Arm Reach",
+     "value": "7.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "flowRate",
+     "label": "Flow Rate",
+     "value": "1.75",
+     "unit": "gpm",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25902ep"
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/t25902ep",
+    "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+   ],
+   "engine": {
+    "finishColor": "#2a2b2d",
+    "roughness": 0.55,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4,
+     "armLen": 7.375,
+     "headDiameter": 4.5
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 160,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-t25903ep-chrome",
+   "category": "fixture",
+   "type": "tubShower",
+   "name": "Moen Gibson tub/shower T25903EP, chrome",
+   "manufacturer": "Moen",
+   "model": "T25903EP (Chrome), T25903EPBL (Matte Black), T25903EPBN (Brushed Nickel), T25903EPBZG (Bronzed Gold)",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "escutcheonDiameter",
+     "label": "Escutcheon Diameter",
+     "value": "7",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "showerheadDiameter",
+     "label": "Showerhead Diameter",
+     "value": "4.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25903ep"
+    },
+    {
+     "key": "showerArmReach",
+     "label": "Shower Arm Reach",
+     "value": "7.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "tubSpoutLength",
+     "label": "Tub Spout Length",
+     "value": "6.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25903ep"
+    },
+    {
+     "key": "tubSpoutHeight",
+     "label": "Tub Spout Height",
+     "value": "2.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    },
+    {
+     "key": "flowRate",
+     "label": "Flow Rate",
+     "value": "1.75",
+     "unit": "gpm",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/t25902ep"
+    },
+    {
+     "key": "thinWallOpeningDiameter",
+     "label": "Thin Wall Opening Diameter",
+     "value": "2.25 min - 3.5 max",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/t25903ep",
+    "https://assets.moen.com/shared/docs/product-specifications/spc27136sp.pdf"
+   ],
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4,
+     "armLen": 7.375,
+     "headDiameter": 4.5,
+     "spoutReach": 6.5,
+     "spoutAboveRim": 4.5
+    }
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 170,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "infinityz-6072-chrome",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Infinity-Z sliding door, chrome",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-0960720-01",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "openingWidthMin",
+     "label": "Opening Width Min",
+     "value": "56",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "openingWidthMax",
+     "label": "Opening Width Max",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04"
+    },
+    {
+     "key": "glassThickness",
+     "label": "Glass Thickness",
+     "value": "0.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "walkThroughWidth",
+     "label": "Walk Through Width",
+     "value": "21.375-25.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "minThresholdDepth",
+     "label": "Min Threshold Depth",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 72,
+    "glassThickness": 0.25,
+    "frame": "semi",
+    "frameColor": "#e6e8ea",
+    "minThreshold": 1,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 180,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "infinityz-6072-black",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Infinity-Z sliding door, matte black",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-0960720-09",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "openingWidthMin",
+     "label": "Opening Width Min",
+     "value": "56",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "openingWidthMax",
+     "label": "Opening Width Max",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04"
+    },
+    {
+     "key": "glassThickness",
+     "label": "Glass Thickness",
+     "value": "0.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "walkThroughWidth",
+     "label": "Walk Through Width",
+     "value": "21.375-25.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "minThresholdDepth",
+     "label": "Min Threshold Depth",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 72,
+    "glassThickness": 0.25,
+    "frame": "semi",
+    "frameColor": "#2a2b2d",
+    "minThreshold": 1,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 190,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "duet-6072",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Duet bypass door, chrome",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-1260728-01",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "openingWidthMin",
+     "label": "Opening Width Min",
+     "value": "56",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+    },
+    {
+     "key": "openingWidthMax",
+     "label": "Opening Width Max",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-duet-56-60-inch-w-x-72-inch-h-semi-frameless-bypass-shower-door/shdr-1260728/shdr-1260728-04"
+    },
+    {
+     "key": "glassThickness",
+     "label": "Glass Thickness",
+     "value": "0.3125",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+    },
+    {
+     "key": "walkThroughWidth",
+     "label": "Walk Through Width",
+     "value": "23-27",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+    },
+    {
+     "key": "minThresholdDepth",
+     "label": "Min Threshold Depth",
+     "value": "2",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-duet-56-60-inch-w-x-72-inch-h-semi-frameless-bypass-shower-door/shdr-1260728/shdr-1260728-04",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743528510/websites-product-info-and-content/dreamline/product-info/shower-doors/duet/marketing-brochures/duet-shower-door-product-sheet-shdr-1260728.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 72,
+    "glassThickness": 0.3125,
+    "frame": "framed",
+    "frameColor": "#e6e8ea",
+    "minThreshold": 2,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 200,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "enigmax-6076",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Enigma-X frameless sliding door",
+   "manufacturer": "DreamLine",
+   "model": "DAMZ-61607610-08",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "openingWidthMin",
+     "label": "Opening Width Min",
+     "value": "56",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    },
+    {
+     "key": "openingWidthMax",
+     "label": "Opening Width Max",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "76",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    },
+    {
+     "key": "glassThickness",
+     "label": "Glass Thickness",
+     "value": "0.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    },
+    {
+     "key": "walkThroughWidth",
+     "label": "Walk Through Width",
+     "value": "22-26",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    },
+    {
+     "key": "minThresholdDepth",
+     "label": "Min Threshold Depth",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-enigma-x-56-60-inch-w-x-76-inch-h-frameless-sliding-shower-door/damz-61607610/damz-61607610-08/"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 76,
+    "glassThickness": 0.375,
+    "frame": "frameless",
+    "frameColor": "#d9dcde",
+    "minThreshold": 2.75,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 210,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "infinityz-tub-6058",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Infinity-Z tub door, chrome",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-0960580-01",
+   "description": "Tub version 56–60 × 58″ (VERIFIED in the Infinity-Z listing).",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "openingWidthMin",
+     "label": "Opening Width Min",
+     "value": "56",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "openingWidthMax",
+     "label": "Opening Width Max",
+     "value": "60",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04"
+    },
+    {
+     "key": "glassThickness",
+     "label": "Glass Thickness",
+     "value": "0.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "walkThroughWidth",
+     "label": "Walk Through Width",
+     "value": "21.375-25.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    },
+    {
+     "key": "minThresholdDepth",
+     "label": "Min Threshold Depth",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-infinity-z-56-60-inch-w-x-72-inch-h-semi-frameless-sliding-shower-door/shdr-0960720/shdr-0960720-04",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1743538507/websites-product-info-and-content/dreamline/product-info/shower-doors/infinity-z/marketing-brochures/infinity-z-shower-door-product-sheet-shdr-0960720.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "tub"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 58,
+    "glassThickness": 0.25,
+    "frame": "semi",
+    "frameColor": "#e6e8ea",
+    "minThreshold": 1,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 220,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-csr2160-chrome",
+   "category": "enclosure",
+   "type": "rod",
+   "name": "Moen curved shower rod CSR2160CH, chrome",
+   "manufacturer": "Moen",
+   "model": "CSR2160CH",
+   "description": "Mounting height 75″ is a typical installer choice (ESTIMATE); bow at 60″ interpolated (ESTIMATE).",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "spanRange",
+     "label": "Span Range",
+     "value": "54-72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "rodDiameter",
+     "label": "Rod Diameter",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt54",
+     "label": "Curve Bow At54",
+     "value": "5.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt72",
+     "label": "Curve Bow At72",
+     "value": "7.4375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt60",
+     "label": "Curve Bow At60",
+     "value": "6",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/csr2160ch",
+    "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan",
+     "tub"
+    ],
+    "openingMin": 54,
+    "openingMax": 72,
+    "mountHeight": 75,
+    "diameter": 1,
+    "bow": 6,
+    "finishColor": "#e6e8ea"
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 230,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-csr2160-black",
+   "category": "enclosure",
+   "type": "rod",
+   "name": "Moen curved shower rod CSR2160BL, matte black",
+   "manufacturer": "Moen",
+   "model": "CSR2160BL",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "spanRange",
+     "label": "Span Range",
+     "value": "54-72",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "rodDiameter",
+     "label": "Rod Diameter",
+     "value": "1",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt54",
+     "label": "Curve Bow At54",
+     "value": "5.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt72",
+     "label": "Curve Bow At72",
+     "value": "7.4375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+    },
+    {
+     "key": "curveBowAt60",
+     "label": "Curve Bow At60",
+     "value": "6",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/csr2160ch",
+    "https://assets.moen.com/shared/docs/product-specifications/csr2160sp.pdf"
+   ],
+   "engine": {
+    "forKinds": [
+     "pan",
+     "tub"
+    ],
+    "openingMin": 54,
+    "openingMax": 72,
+    "mountHeight": 75,
+    "diameter": 1,
+    "bow": 6,
+    "finishColor": "#2a2b2d"
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 240,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-8724",
+   "category": "accessory",
+   "type": "grabBar",
+   "name": "Moen 24″ grab bar 8724",
+   "manufacturer": "Moen",
+   "model": "8724 (satin stainless); R8724PS polished, LR8724W white also listed",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "lengthCenterToCenter",
+     "label": "Length Center To Center",
+     "value": "24",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf"
+    },
+    {
+     "key": "overallLength",
+     "label": "Overall Length",
+     "value": "27.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf (FW Webb lists 27-1/2)"
+    },
+    {
+     "key": "tubeDiameter",
+     "label": "Tube Diameter",
+     "value": "1.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/8724"
+    },
+    {
+     "key": "projectionFromWall",
+     "label": "Projection From Wall",
+     "value": "3",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8724/609381"
+    },
+    {
+     "key": "wallClearance",
+     "label": "Wall Clearance",
+     "value": "1.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf"
+    },
+    {
+     "key": "flangeDiameter",
+     "label": "Flange Diameter",
+     "value": "3.25",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "weightRating",
+     "label": "Weight Rating",
+     "value": "500",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/8724"
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/8724",
+    "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf",
+    "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8724/609381"
+   ],
+   "engine": {
+    "length": 24,
+    "diameter": 1.25,
+    "clearance": 1.5,
+    "flange": 3.25,
+    "finishColor": "#c9ccce",
+    "roughness": 0.35,
+    "ratedLoad": 500
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 250,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-8736",
+   "category": "accessory",
+   "type": "grabBar",
+   "name": "Moen 36″ grab bar 8736",
+   "manufacturer": "Moen",
+   "model": "8736 (stainless); R8736PS, R8736W also listed",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "lengthCenterToCenter",
+     "label": "Length Center To Center",
+     "value": "36",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf"
+    },
+    {
+     "key": "overallLength",
+     "label": "Overall Length",
+     "value": "39.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf (FW Webb lists 39-1/2)"
+    },
+    {
+     "key": "tubeDiameter",
+     "label": "Tube Diameter",
+     "value": "1.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8736/609384"
+    },
+    {
+     "key": "projectionFromWall",
+     "label": "Projection From Wall",
+     "value": "3",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8736/609384"
+    },
+    {
+     "key": "wallClearance",
+     "label": "Wall Clearance",
+     "value": "1.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf"
+    },
+    {
+     "key": "flangeDiameter",
+     "label": "Flange Diameter",
+     "value": "3.25",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    },
+    {
+     "key": "weightRating",
+     "label": "Weight Rating",
+     "value": "500",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8736/609384"
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/8736",
+    "https://assets.moen.com/shared/docs/product-specifications/8700sp.pdf",
+    "https://www.fwwebb.com/product/Moen/Home-Care-Grab-Bar/8736/609384"
+   ],
+   "engine": {
+    "length": 36,
+    "diameter": 1.25,
+    "clearance": 1.5,
+    "flange": 3.25,
+    "finishColor": "#c9ccce",
+    "roughness": 0.35,
+    "ratedLoad": 500
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 260,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "delta-41824-ss",
+   "category": "accessory",
+   "type": "grabBar",
+   "name": "Delta 24″ grab bar 41824-SS",
+   "manufacturer": "Delta",
+   "model": "41824-SS (Brilliance Stainless); 41824 = Chrome",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "lengthCenterToCenter",
+     "label": "Length Center To Center",
+     "value": "24",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://fwwebbimage.fwwebb.com/ProductInfo/41824-SPEC.pdf"
+    },
+    {
+     "key": "overallLength",
+     "label": "Overall Length",
+     "value": "27.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://fwwebbimage.fwwebb.com/ProductInfo/41824-SPEC.pdf"
+    },
+    {
+     "key": "tubeDiameter",
+     "label": "Tube Diameter",
+     "value": "1.25",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://fwwebbimage.fwwebb.com/ProductInfo/41824-SPEC.pdf"
+    },
+    {
+     "key": "flangeDiameter",
+     "label": "Flange Diameter",
+     "value": "3.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://fwwebbimage.fwwebb.com/ProductInfo/41824-SPEC.pdf"
+    },
+    {
+     "key": "projectionFromWall",
+     "label": "Projection From Wall",
+     "value": "2.75",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Delta/BathSafety-Grab-Bar/41824-SS/520995 (spec sheet prints 2 3/4 in next to '95 mm', which is inconsistent)"
+    },
+    {
+     "key": "weightRating",
+     "label": "Weight Rating",
+     "value": "500",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://www.fwwebb.com/product/Delta/BathSafety-Grab-Bar/41824-SS/520995"
+    }
+   ],
+   "sources": [
+    "https://www.fwwebb.com/product/Delta/BathSafety-Grab-Bar/41824-SS/520995",
+    "https://fwwebbimage.fwwebb.com/ProductInfo/41824-SPEC.pdf"
+   ],
+   "engine": {
+    "length": 24,
+    "diameter": 1.25,
+    "clearance": 1.5,
+    "flange": 3.5,
+    "finishColor": "#d5d8da",
+    "roughness": 0.25,
+    "ratedLoad": 500
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 270,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "as-passage-shelf",
+   "category": "accessory",
+   "type": "shelf",
+   "name": "American Standard Passage corner shelf",
+   "manufacturer": "American Standard (American Standard Bathing)",
+   "model": "1202-008.266",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "legLength",
+     "label": "Leg Length",
+     "value": "9",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1779297430/websites-product-info-and-content/dreamline/product-info/tech-drawing/1202-008.266_spec.pdf"
+    },
+    {
+     "key": "frontDiagonal",
+     "label": "Front Diagonal",
+     "value": "11.9375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1779297430/websites-product-info-and-content/dreamline/product-info/tech-drawing/1202-008.266_spec.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "3.5",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://americanstandardbathing.com/products/american-standard-passage-corner-shower-shelf-9-x-9-x-35-in-brushed-metal-finish-1202-008"
+    },
+    {
+     "key": "loadCapacity",
+     "label": "Load Capacity",
+     "value": "5",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1779297430/websites-product-info-and-content/dreamline/product-info/tech-drawing/1202-008.266_spec.pdf"
+    }
+   ],
+   "sources": [
+    "https://americanstandardbathing.com/products/american-standard-passage-corner-shower-shelf-9-x-9-x-35-in-brushed-metal-finish-1202-008",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1779297430/websites-product-info-and-content/dreamline/product-info/tech-drawing/1202-008.266_spec.pdf",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1779297433/websites-product-info-and-content/dreamline/product-info/installation-guide/1202-008.266_install_guide.pdf"
+   ],
+   "engine": {
+    "leg": 9,
+    "thickness": 0.4,
+    "metal": true,
+    "color": "#b8bbbe"
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 280,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "moen-dn7110",
+   "category": "accessory",
+   "type": "seat",
+   "name": "Moen fold-down teak seat DN7110",
+   "manufacturer": "Moen",
+   "model": "DN7110 (DN7110OWB Old World Bronze also listed)",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "seatWidth",
+     "label": "Seat Width",
+     "value": "20",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/dn7110"
+    },
+    {
+     "key": "overallWidth",
+     "label": "Overall Width",
+     "value": "20.472",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/dn7110sp.pdf"
+    },
+    {
+     "key": "depthDeployed",
+     "label": "Depth Deployed",
+     "value": "16.171",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/dn7110sp.pdf (page rounds to 15 in deep)"
+    },
+    {
+     "key": "backHeight",
+     "label": "Back Height",
+     "value": "15.404",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/dn7110sp.pdf"
+    },
+    {
+     "key": "foldedProjection",
+     "label": "Folded Projection",
+     "value": "2.835",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://assets.moen.com/shared/docs/product-specifications/dn7110sp.pdf"
+    },
+    {
+     "key": "weightRating",
+     "label": "Weight Rating",
+     "value": "400",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://shop.moen.com/products/dn7110"
+    },
+    {
+     "key": "seatMountingHeight",
+     "label": "Seat Mounting Height",
+     "value": "17-19 (ADA guidance)",
+     "unit": "in",
+     "status": "ESTIMATE",
+     "source": ""
+    }
+   ],
+   "sources": [
+    "https://shop.moen.com/products/dn7110",
+    "https://assets.moen.com/shared/docs/product-specifications/dn7110sp.pdf"
+   ],
+   "engine": {
+    "width": 20.47,
+    "depth": 16.17,
+    "color": "#a8784c",
+    "frameColor": "#c9ccce",
+    "ratedLoad": 400
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 290,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  },
+  {
+   "sku": "dreamline-shst-01",
+   "category": "accessory",
+   "type": "seat",
+   "name": "DreamLine fold-down teak seat SHST-01-TK",
+   "manufacturer": "DreamLine",
+   "model": "SHST-01-TK (ADA version SHST-02-TN 15-3/8 D x 20 W; plastic SHST-01-PL 13-1/8 D x 15 W)",
+   "description": "",
+   "colorName": "",
+   "specs": [
+    {
+     "key": "width",
+     "label": "Width",
+     "value": "15",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1744033902/websites-product-info-and-content/dreamline/product-info/accessories/shower-seat/marketing-brochures/shower-seat-product-sheet-shst-01-tk.pdf"
+    },
+    {
+     "key": "depth",
+     "label": "Depth",
+     "value": "12.875",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1744033902/websites-product-info-and-content/dreamline/product-info/accessories/shower-seat/marketing-brochures/shower-seat-product-sheet-shst-01-tk.pdf"
+    },
+    {
+     "key": "height",
+     "label": "Height",
+     "value": "11.375",
+     "unit": "in",
+     "status": "VERIFIED",
+     "source": "https://dreamline.com/product/dreamline-natural-teak-folding-shower-seat-12-7-8-inch-d-x-15-inch-w/base-shst-01-tk/sellable-shst-01-tk/"
+    },
+    {
+     "key": "weightRating",
+     "label": "Weight Rating",
+     "value": "250",
+     "unit": "lb",
+     "status": "VERIFIED",
+     "source": "https://res.cloudinary.com/american-bath-group/image/upload/v1744033902/websites-product-info-and-content/dreamline/product-info/accessories/shower-seat/marketing-brochures/shower-seat-product-sheet-shst-01-tk.pdf"
+    }
+   ],
+   "sources": [
+    "https://dreamline.com/product/dreamline-natural-teak-folding-shower-seat-12-7-8-inch-d-x-15-inch-w/base-shst-01-tk/sellable-shst-01-tk/",
+    "https://res.cloudinary.com/american-bath-group/image/upload/v1744033902/websites-product-info-and-content/dreamline/product-info/accessories/shower-seat/marketing-brochures/shower-seat-product-sheet-shst-01-tk.pdf"
+   ],
+   "engine": {
+    "width": 15,
+    "depth": 12.875,
+    "color": "#a8784c",
+    "frameColor": "#c9ccce",
+    "ratedLoad": 250
+   },
+   "visualStatus": "illustrative",
+   "status": "published",
+   "isPublic": true,
+   "featured": false,
+   "sortOrder": 300,
+   "pricing": {
+    "priceCents": null,
+    "installCents": 0,
+    "internalNote": ""
+   }
+  }
+ ]
+}

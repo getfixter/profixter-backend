@@ -69,6 +69,8 @@ const EstimateLeadSchema = new mongoose.Schema(
 
     // ── Metadata ───────────────────────────────────────────────────────────
     source: { type: String, default: "estimate_builder" },
+    /* Set when the request came from the Shower Studio: the saved design staff open in Admin. */
+    studioDesignId: { type: mongoose.Schema.Types.ObjectId, ref: "StudioDesign", default: null, index: true },
     status: {
       type: String,
       enum: ["new", "contacted", "qualified", "won", "lost"],

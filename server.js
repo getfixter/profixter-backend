@@ -95,6 +95,8 @@ methods: "GET,POST,PUT,PATCH,DELETE",
       "Authorization",
       "Content-Type",
       "x-ghl-secret",
+      // Shower Studio: a visitor's anonymous design is unlocked by this token
+      "x-studio-token",
     ],
   })
 );
@@ -111,6 +113,11 @@ app.post(
 
 // ⛔ MUST come BEFORE json body parser
 app.use("/api/bookings", (req, res, next) => next());
+
+// Shower Studio: mounted before the global 500mb parser so its own small
+// body limits (and upload limits) are the ones that apply.
+app.use("/api/studio", require("./routes/studioPublic"));
+app.use("/api/admin/studio", require("./routes/adminStudio"));
 
 // ✅ body parser for everything except bookings
 app.use(express.json({

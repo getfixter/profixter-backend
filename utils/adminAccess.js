@@ -57,6 +57,13 @@ const PERMISSIONS = Object.freeze({
   PROMOTION_MANAGE: "promotion.manage",
   BLACKLIST_MANAGE: "blacklist.manage",
   ACTIVITY_READ: "activity.read",
+
+  /* Shower Studio: design with customers, work Studio requests, create proposals. */
+  STUDIO_SELL: "studio.sell",
+  /* Shower Studio: change a design's estimate (price overrides, discounts). */
+  STUDIO_PRICE_ADJUST: "studio.priceAdjust",
+  /* Shower Studio: the product catalog, its photos and textures, and every Studio price. */
+  STUDIO_CATALOG: "studio.catalog",
 });
 
 /*
@@ -133,6 +140,28 @@ const SECTIONS = Object.freeze([
     label: "Projects",
     description: "Projects, estimates, contracts, change orders and invoices",
     permissions: [PERMISSIONS.PROJECTS_MANAGE],
+  },
+  {
+    id: "studio",
+    group: "business",
+    label: "Shower Studio",
+    description: "Design showers and tubs with customers, Studio requests and proposals",
+    permissions: [PERMISSIONS.STUDIO_SELL],
+  },
+  {
+    id: "studio-pricing",
+    group: "business",
+    label: "Shower Studio price adjustments",
+    description: "Change a design's estimate: price overrides and discounts",
+    permissions: [PERMISSIONS.STUDIO_PRICE_ADJUST],
+    requires: "studio",
+  },
+  {
+    id: "studio-catalog",
+    group: "business",
+    label: "Shower Studio catalog & prices",
+    description: "Products, photos, textures, compatibility and every Studio price",
+    permissions: [PERMISSIONS.STUDIO_CATALOG],
   },
   {
     id: "jobs",

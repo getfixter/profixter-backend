@@ -38,3 +38,4 @@ __MACOSX/
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
+.studio-private/
