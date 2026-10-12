@@ -211,6 +211,27 @@ async function main() {
     assert.deepStrictEqual([def.defaultMode, def.maxMode, def.promoteAfter, def.limits.perDay], ["supervised", "autonomous", 3, 1]);
   });
 
+  await test("the read-only connection check: token, auth, accounts - no post, no token in the output", async () => {
+    delete process.env.GHL_SOCIAL_TOKEN;
+    assert.deepStrictEqual((await social.connectionCheck()).auth, "no_token");
+    process.env.GHL_SOCIAL_TOKEN = "pit-secret-test-token";
+    accounts = [GOOGLE, FACEBOOK, INSTAGRAM];
+    calls = [];
+    const c = await social.connectionCheck();
+    assert.strictEqual(c.tokenLoaded, true);
+    assert.strictEqual(c.auth, "ok");
+    assert.strictEqual(c.googleBusinessProfile, "ready");
+    assert.deepStrictEqual(c.postableByKingdom, ["google"], "Facebook and Instagram are listed as connected but never postable");
+    assert.deepStrictEqual(c.accounts.map((a) => a.platform).sort(), ["facebook", "google", "instagram"]);
+    assert.ok(calls.every((x) => x.method === "GET"), "read-only");
+    assert.doesNotMatch(JSON.stringify(c), /pit-secret/);
+    social.setFetchForTests(async () => ({ ok: false, status: 401, statusText: "", text: async () => JSON.stringify({ message: "Invalid token pit-secret-test-token" }) }));
+    const bad = await social.connectionCheck();
+    assert.strictEqual(bad.auth, "error");
+    assert.doesNotMatch(JSON.stringify(bad), /pit-secret/, "a token echoed in an error is redacted");
+    process.env.GHL_SOCIAL_TOKEN = "test-token";
+  });
+
   console.log("suspension, follow-up limits, action log");
 
   await test("a second failure within 7 days suspends the action type completely", async () => {

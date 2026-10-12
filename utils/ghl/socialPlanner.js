@@ -83,6 +83,31 @@ async function googleBusinessAccount({ env = process.env } = {}) {
   return { id: google[0].id, name: google[0].name || "Google Business Profile", platform: google[0].platform };
 }
 
+/**
+ * READ-ONLY connection check (no post, no write): does the token load and
+ * authenticate, which accounts are connected, and is exactly one Google
+ * Business Profile ready? Facebook/Instagram are listed only to show they are
+ * connected but never addressable. The token never appears in the result.
+ */
+async function connectionCheck({ env = process.env } = {}) {
+  const { configured, locationId } = config(env);
+  const out = { tokenLoaded: configured, locationId, auth: configured ? null : "no_token", accounts: [], googleBusinessProfile: "not_ready", postableByKingdom: [] };
+  if (!configured) return out;
+  try {
+    const data = await call("GET", `/social-media-posting/${locationId}/accounts`, { env });
+    const all = data?.results?.accounts || data?.accounts || [];
+    out.auth = "ok";
+    out.accounts = all.map((a) => ({ platform: a.platform, name: String(a.name || "").slice(0, 60), active: a.active !== false && !a.deleted, expired: Boolean(a.isExpired) }));
+    const google = all.filter((a) => a.platform === PLATFORM && a.active !== false && !a.deleted && !a.isExpired);
+    out.googleBusinessProfile = google.length === 1 ? "ready" : google.length ? "more_than_one" : "not_connected_or_expired";
+    out.postableByKingdom = google.length === 1 ? [PLATFORM] : [];
+  } catch (error) {
+    out.auth = "error";
+    out.error = String(error.message || error).replace(/pit-[\w-]+/gi, "[redacted]").slice(0, 200);
+  }
+  return out;
+}
+
 async function postingUserId({ env = process.env } = {}) {
   const { locationId, userId } = config(env);
   if (userId) return userId;
@@ -138,4 +163,4 @@ async function deletePost(postId, { env = process.env } = {}) {
   return { deleted: postId };
 }
 
-module.exports = { PLATFORM, SocialError, config, createGbpPost, deletePost, googleBusinessAccount, postStatus, setFetchForTests };
+module.exports = { PLATFORM, SocialError, config, connectionCheck, createGbpPost, deletePost, googleBusinessAccount, postStatus, setFetchForTests };

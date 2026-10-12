@@ -138,6 +138,15 @@ function startAgentJobs() {
   }, 90 * 1000).unref?.();
   // Old postcard/mail notes from before the mail tools were removed: retire them (idempotent).
   setTimeout(() => require("../utils/agents/retirePostal").retirePostalRecords().catch((e) => console.error("retirePostalRecords failed:", e.message)), 60 * 1000).unref?.();
+  // Google Business Profile connection, read-only (no post), after the secret store's first load
+  setTimeout(async () => {
+    try {
+      const c = await require("../utils/ghl/socialPlanner").connectionCheck();
+      console.log(JSON.stringify({ event: "ghl_social_check", ...c, actionEngine: require("../utils/growth/actionEngine").engineEnabled() ? "on" : "off" }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "ghl_social_check", auth: "error", error: String(e.message).slice(0, 200) }));
+    }
+  }, 4 * 60 * 1000).unref?.();
   // Check 5 minutes after boot (after the secret store's first load), then every 30 minutes.
   setTimeout(() => firstActivation().catch(() => {}), 5 * 60 * 1000).unref?.();
   cron.schedule("*/30 * * * *", () => firstActivation().catch(() => {}), { timezone: TIMEZONE });
