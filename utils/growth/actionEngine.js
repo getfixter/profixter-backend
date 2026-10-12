@@ -269,6 +269,9 @@ async function recordVerifiedSuccess(def) {
   }
 }
 
+const SUSPEND_AFTER_FAILURES = 2;
+const SUSPEND_WINDOW_MS = 7 * 864e5;
+
 async function recordFailure(def, reason) {
   const policy = await GrowthPolicy.findOneAndUpdate(
     { type: def.type },
@@ -297,6 +300,36 @@ async function recordFailure(def, reason) {
         to: "supervised",
         reason,
       });
+    }
+  }
+
+  /*
+   * UNUSUAL BEHAVIOUR -> SUSPENDED. A second failure (run or verification)
+   * within 7 days stops the type completely: back to shadow (recorded, never
+   * executed) until the owner looks and sets it again. One failure is a
+   * demotion; a pattern is a stop.
+   */
+  const since = new Date(Date.now() - SUSPEND_WINDOW_MS);
+  const recentFailures = await GrowthAction.countDocuments({
+    type: def.type,
+    updatedAt: { $gte: since },
+    $or: [{ status: "failed" }, { "verification.status": "failed" }],
+  });
+  if (recentFailures >= SUSPEND_AFTER_FAILURES) {
+    const suspended = await GrowthPolicy.findOneAndUpdate(
+      { type: def.type, mode: { $in: ["supervised", "autonomous"] } },
+      {
+        $set: {
+          mode: "shadow",
+          demotedAt: new Date(),
+          setBy: { kind: "auto_suspension", userId: null, note: `Suspended after ${recentFailures} failures in 7 days: ${String(reason).slice(0, 200)}`, at: new Date() },
+        },
+      },
+      { new: true }
+    );
+    if (suspended) {
+      await audit("policy_suspended", { _id: suspended._id, type: def.type, summary: def.label }, null, { to: "shadow", failures7d: recentFailures, reason });
+      console.log(JSON.stringify({ event: "growth_action_suspended", type: def.type, failures7d: recentFailures }));
     }
   }
 }
@@ -539,4 +572,6 @@ module.exports = {
   runSweeps,
   setPolicyMode,
   verificationSweep,
+  // tests only
+  _internal: { recordFailure },
 };

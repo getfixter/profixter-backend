@@ -63,6 +63,13 @@ const ALLOWED = new Set([
   path.join("utils", "outreach", "audience.js"),
   path.join("models", "ConversationThread.js"),
   path.join("models", "Outreach.js"),
+  /*
+   * ORGANIC GOOGLE BUSINESS PROFILE POSTS (owner-authorized 2026-10-12):
+   * publishes one public business post to the Google Business Profile
+   * connected in the Social Planner, refusing every other connected account.
+   * Sends no contact, customer or ProFixter data - only the post text.
+   */
+  path.join("utils", "ghl", "socialPlanner.js"),
   /* This file. */
   path.join("scripts", "test_ghl_separation.js"),
 ]);

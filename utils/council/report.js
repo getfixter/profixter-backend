@@ -98,6 +98,15 @@ async function statusSection() {
           .join("\n")
       : "None."
   );
+  const { actionLog, suspendedTypes } = require("../growth/actionLog");
+  const [log, suspended] = await Promise.all([actionLog({ days: 14 }), suspendedTypes()]);
+  lines.push("", "## Action log (14 days, newest first) - external cost is always $0: the Kingdom is 100% organic");
+  lines.push(
+    log.length
+      ? log.map((a) => `- ${ny(a.at)} · ${a.agent} · ${a.platform} · ${a.action} · ${a.outcome} · cost $${(a.estimatedCostCents / 100).toFixed(2)} · verification: ${a.verification}`).join("\n")
+      : "No actions in the last 14 days."
+  );
+  if (suspended.length) lines.push("", "## Suspended automatically (repeated failures - set it again in the Growth tab to resume)", suspended.map((s) => `- ${s.type}: ${s.why}`).join("\n"));
   const taskRows = await CouncilTask.find({}).sort({ updatedAt: -1 }).limit(20).lean();
   lines.push("", "## Tasks (newest first)");
   lines.push(

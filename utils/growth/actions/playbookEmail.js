@@ -21,14 +21,19 @@ const { defineAction } = require("../actionRegistry");
  *   - the wording still passes the copy rules (no discounts, prices, claims)
  *   - the person is a marketable account and not unsubscribed
  *   - the person is STILL in the segment (they may have booked or joined)
- *   - no other marketing or playbook email reached them in the last 4 days
+ *   - no other marketing or playbook email reached them in the last 7 days,
+ *     and no more than 3 follow-ups in 90 days
  *   - they have never received this playbook (idempotency key per person)
  *
- * Starts in SHADOW: the Command Center lists exactly who would receive it,
- * which is how the audience is verified before anything is sent.
+ * Starts SUPERVISED (owner, 2026-10-12): the first sends each wait for the
+ * owner's approval - the controlled check - then it runs on its own after 5
+ * verified sends, and any failure drops it back (two in 7 days suspend it).
  */
 const TYPE = "playbook_email";
-const QUIET_DAYS = 4;
+const QUIET_DAYS = 7;
+// reasonable frequency (owner, 2026-10-12): at most this many Kingdom follow-up emails per person per window
+const MAX_PER_WINDOW = 3;
+const WINDOW_DAYS = 90;
 
 function validate(p = {}) {
   if (!mongoose.Types.ObjectId.isValid(String(p.userId || ""))) throw new Error("playbook_email needs a userId");
@@ -61,7 +66,10 @@ async function recentlyEmailed(user, actionId, now) {
     MarketingSend.exists({ user: user._id, status: "sent", sentAt: { $gte: since } }),
     GrowthAction.exists({ _id: { $ne: actionId }, type: TYPE, "subject.entityId": String(user._id), status: "succeeded", executedAt: { $gte: since } }),
   ]);
-  return Boolean(marketing || playbook);
+  if (marketing || playbook) return true;
+  const windowStart = new Date(now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const inWindow = await GrowthAction.countDocuments({ _id: { $ne: actionId }, type: TYPE, "subject.entityId": String(user._id), status: "succeeded", executedAt: { $gte: windowStart } });
+  return inWindow >= MAX_PER_WINDOW;
 }
 
 async function execute(payload, { action, now }) {
@@ -116,9 +124,10 @@ defineAction({
   type: TYPE,
   label: "Approved follow-up email",
   description:
-    "One email from an owner-approved playbook to one customer in its segment. Email only, marketing rules, unsubscribe honoured, at most one per person per playbook, nothing within 4 days of another marketing email.",
+    "One email from an owner-approved playbook to one customer in its segment. Email only, marketing rules, unsubscribe honoured, at most one per person per playbook, nothing within 7 days of another marketing email, at most 3 follow-ups per person in 90 days.",
   riskTier: "medium",
-  defaultMode: "shadow",
+  // owner authorized sending (2026-10-12): the first sends wait for approval, then it runs on its own after 5 verified
+  defaultMode: "supervised",
   maxMode: "autonomous",
   promoteAfter: 5,
   limits: { perDay: 12 },

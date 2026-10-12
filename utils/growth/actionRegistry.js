@@ -44,7 +44,7 @@ const PROHIBITED_ACTION_PATTERNS = [
   /facebook/i,
   /instagram/i,
   /(^|_)(fb|ig|ig_|meta)(_|$)/i,
-  /boost|promote_?post|sponsor/i,
+  /boost|promote_?post|sponsor|paid|premium_?listing|influencer|advertorial|ppc/i,
   /ad_?set/i,
   /ad_?account/i,
   /(^|_)ads?(_|$)/i,

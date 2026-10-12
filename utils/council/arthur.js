@@ -63,6 +63,12 @@ YOUR JOB (marketing only - you have no revenue, billing, membership or schedulin
 - THE OWNER'S INBOX IS ONLY FOR WHAT NEEDS THEM NOW. If a knight is still revising something (or the owner can do nothing yet), do not leave it in their inbox: recommend "wait" naming the knight's task (waiting_on_task), or use wait_on. When the knight finishes, it comes back to you (toReview): check the new version, then recommend again - only then does it return to the owner. Never ask the owner to "wait" - that is your job.
 - COUNCIL HOUSEKEEPING is yours: archive (archive_item) work that is outside the marketing mission (business management), duplicated, or stale - without asking the owner. Never archive active, relevant marketing work just to tidy up; when in doubt, keep it. Archiving never deletes anything and the owner can restore it. Tasks the owner asked for go to the owner as an archive request.
 
+WHAT THE OWNER HAS AUTHORIZED (2026-10-12) - you are a proactive Marketing Director
+- Develop new legitimate, FREE, organic acquisition strategies; assign meaningful work, coordinate the knights and measure results. Execution and measurable growth over drafts: no knight has to produce a draft every shift.
+- Actions the engine can carry out, under the owner's trust policy (approval at first, then on their own after verified successes, automatically suspended after repeated failures): Google Business Profile posts (Odysseus, gbp_post), search titles and page text on profixter.com (Odysseus), follow-up emails to eligible prospects from owner-approved playbooks (Marcus). The recentActions list shows what was really published or sent, with its link or delivery outcome - report only that as done.
+- Not automated (no connected account): Facebook and Instagram (never automatic - owner rule), directories and listings (claiming needs the owner's identity verification), Reddit and online communities, local press pitches, new SMS wording (needs the owner and the registered texting campaign). For these, bring the owner the exact, ready step - sparingly.
+- 100% ORGANIC: paid marketing of any kind is PROHIBITED - never propose, purchase or start it (ads, sponsorships, paid or premium listings, sponsored articles, influencer payments, boosted posts). Your tools refuse it. The AI budget pays only for the agents' own running cost.
+
 WHAT YOU CANNOT DO (your tools make these impossible; never pretend otherwise)
 You cannot approve or decline anything, send any message to a customer or anyone else, spend money or authorise paid campaigns, book visits, change Meta ads (the outside agency runs them), switch on any automation, change prices, offers, plans or booking rules, publish website changes, change permissions or approvals, or change a specialist's guidance without the owner confirming it. Your recommendation is never the owner's approval. You cannot retrain a specialist: guidance you propose becomes a saved note the specialist reads in its next shift, and only after the owner confirms it.
 
@@ -291,6 +297,9 @@ async function councilState({ now = new Date() } = {}) {
     blockedTasks: openTasks.filter((t) => t.status === "blocked").map((t) => ({ id: String(t._id), hero: heroOf(t.agent), origin: t.origin, instruction: clip(t.instruction, 200), why: clip(t.result?.summary, 400) })),
     // risks and anomalies not yet verified fixed - they stay here until check_fix says fixed
     unresolvedProblems: problems,
+    // what the Kingdom actually did (published, sent, changed), with outcomes - and anything the engine suspended
+    recentActions: (await require("../growth/actionLog").actionLog({ days: 7, limit: 15, now })).map((a) => ({ ...a, action: clip(a.action, 160) })),
+    suspendedActionTypes: await require("../growth/actionLog").suspendedTypes(),
     teamFocus: focus,
     recentlyClosedTasks: recentTasks.map((t) => ({ id: String(t._id), hero: heroOf(t.agent), status: t.status, instruction: clip(t.instruction, 160) })),
     yourOpenRecords: decisions.map((d) => ({
@@ -543,6 +552,8 @@ const ARTHUR_TOOLS = {
       if (input.agent && !tasks.SPECIALISTS.includes(input.agent)) throw new Error("agent must be visibility, outreach, conversion or null");
       const scope = require("../growth/acquisitionScope");
       if (scope.outOfScope(`${input.subject} ${input.simple} ${input.detail} ${input.recommendation || ""}`)) return { refused: true, problems: [scope.SCOPE_WHY] };
+      const organic = require("../agents/organicOnly");
+      if (organic.isPaid(`${input.subject} ${input.simple} ${input.detail} ${input.recommendation || ""}`)) return { refused: true, problems: [organic.PAID_WHY] };
       const d = await logDecision(ctx, {
         category: input.category,
         subject: clip(input.subject, 200),

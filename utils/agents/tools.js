@@ -199,6 +199,7 @@ const TOOL_DEFS = {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
       refusePostal(input.title, input.detail, input.expected_impact, input.plain, input.owner_question, input.dedupe_key);
       refuseOutOfScope(input.title, input.detail, input.plain);
+      require("./organicOnly").refusePaid(input.title, input.detail, input.expected_impact, input.plain, input.owner_question);
       const now = new Date();
       const doc = await AgentFinding.findOneAndUpdate(
         { agent: ctx.agent, dedupeKey: clip(input.dedupe_key, 120) },
@@ -315,6 +316,7 @@ Object.assign(TOOL_DEFS, {
     run: async (input, ctx) => {
       if (ctx.findingsThisRun >= MAX_FINDINGS_PER_RUN) throw new Error(`At most ${MAX_FINDINGS_PER_RUN} findings per run.`);
       refusePostal(input.title, input.why, input.body_markdown, input.plain, input.target);
+      require("./organicOnly").refusePaid(input.title, input.why, input.body_markdown, input.plain, input.target);
       const draftProblems = require("./copyRules").checkCopy(`${input.title}
 ${input.body_markdown}`);
       if (draftProblems.length) throw new Error(`Rewrite needed: ${draftProblems.join(" ")}`);

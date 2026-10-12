@@ -223,8 +223,9 @@ async function main() {
 
   console.log("operations");
 
-  await test("agents may propose website-wording changes only - never customer messages", async () => {
-    const ALLOWED = new Set(["seo_page_update", "seo_content_update"]);
+  await test("agents may propose website-wording changes and Google Business Profile posts only - never customer messages", async () => {
+    // gbp_post: owner-authorized 2026-10-12 (organic posts on the business profile; trust ladder applies)
+    const ALLOWED = new Set(["seo_page_update", "seo_content_update", "gbp_post"]);
     for (const a of Object.values(AGENTS)) {
       for (const t of a.allowedActions) assert.ok(ALLOWED.has(t), `${a.name} may propose ${t}`);
     }

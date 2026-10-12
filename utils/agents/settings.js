@@ -46,6 +46,8 @@ const PROTECTED = [
     re: /\b(change|edit|modify|cancel|pause|refund)\b[^.\n]{0,30}\b(memberships?|subscriptions?|plans?|booking rules?|service area)\b/i,
     why: "Memberships, plans, booking rules and the service area are not the agents' to change.",
   },
+  // 100% organic marketing (owner, 2026-10-12): paid marketing is prohibited, not merely approval-gated
+  { re: require("./organicOnly").PAID_RE, why: require("./organicOnly").PAID_WHY },
 ];
 
 function cleanGuidance(text) {
