@@ -5,6 +5,8 @@
  * designs that are based on them.
  */
 const EXAMPLE_SCENES = Object.freeze({
+  // drawn by the engine (FrontEnd/lib/studio/engine/room.js) for the design's alcove size
+  "studio-room-1": { width: 1080, height: 1350, label: "Example bathroom (3D illustration)", model: true },
   "example-alcove-1": { width: 1080, height: 1350, label: "Example bathroom (illustrated 60″ × 30″ tub alcove)" },
   "example-bathroom-1": { width: 681, height: 1023, label: "Example bathroom (60″ tub alcove)" },
 });

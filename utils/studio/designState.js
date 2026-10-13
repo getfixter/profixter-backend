@@ -76,6 +76,8 @@ function validateState(state, photo) {
     baseId: sku(d.baseId, "base"), drainId: String(d.drainId || "").slice(0, 64), finishId: sku(d.finishId, "finish"),
     fixtureId: sku(d.fixtureId, "fixture"), enclosureId: d.enclosureId === "none" || !d.enclosureId ? "none" : sku(d.enclosureId, "door"),
     curtain: Boolean(d.curtain), accessories,
+    // the plumbing wall (the modelled example room, or a photo where the person picked it)
+    plumbing: ["facing", "left", "right"].includes(d.plumbing?.wall) ? { wall: d.plumbing.wall, ...(isNum(d.plumbing.u) && d.plumbing.u >= 0 && d.plumbing.u <= 120 ? { u: d.plumbing.u } : {}) } : null,
   };
   const len = w * h;
   const masks = {

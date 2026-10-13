@@ -72,6 +72,7 @@ export function parseDesign(obj) {
     },
     baseId: String(obj.design.baseId || ""), drainId: String(obj.design.drainId || ""), finishId: String(obj.design.finishId || ""),
     fixtureId: String(obj.design.fixtureId || ""), enclosureId: String(obj.design.enclosureId || "none"), curtain: Boolean(obj.design.curtain),
+    plumbing: ["facing", "left", "right"].includes(obj.design.plumbing?.wall) ? { wall: obj.design.plumbing.wall, ...(Number.isFinite(obj.design.plumbing.u) ? { u: obj.design.plumbing.u } : {}) } : null,
     accessories: (Array.isArray(obj.design.accessories) ? obj.design.accessories : []).slice(0, 12).map((a, i) => ({
       key: String(a.key || `a${i}`), productId: String(a.productId || ""),
       wall: ["facing", "left", "right"].includes(a.wall) ? a.wall : undefined,

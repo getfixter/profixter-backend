@@ -49,6 +49,8 @@ const StudioProductSchema = new mongoose.Schema(
     model: { type: String, trim: true, maxlength: 120, default: "" },
     description: { type: String, trim: true, maxlength: 4000, default: "" },
     colorName: { type: String, trim: true, maxlength: 80, default: "" },
+    /* optional family name that groups variants (sizes, colours) into one card for customers */
+    familyName: { type: String, trim: true, maxlength: 80, default: "" },
     specs: { type: [SpecSchema], default: [] },
     sources: { type: [String], default: [] },
     /* Visualization and compatibility parameters (validated per category). */

@@ -30,6 +30,30 @@ export function alcoveFootprint(m) {
     : { length: m.sideLength, width: m.facingWidth, opening: m.sideLength, side };
 }
 
+/**
+ * Which hand the plumbing is on, as seen standing in front of the opening:
+ * "left" | "right", or null when it cannot be said (plumbing on the back wall
+ * of a front-open alcove, or no plumbing wall chosen).
+ */
+export function plumbingHand(design) {
+  const p = design?.plumbing, m = design?.measure;
+  if (!p?.wall || !m) return null;
+  const open = openSide(m);
+  if (open === "front") return p.wall === "left" || p.wall === "right" ? p.wall : null;
+  // an alcove open on one side: the facing wall is the end of the tub
+  if (p.wall === "facing") return open === "right" ? "right" : "left";
+  return null;
+}
+
+/** The same base with the drain on the other end (a sibling in the catalog), if there is one. */
+export function handedSibling(base, hand, catalog) {
+  if (!base || !hand) return null;
+  const fam = (b) => b.family?.key || String(b.name || "").replace(/\b(left|right)[- ]hand\b|\b(left|right)\b|\bL\/R\b/gi, "").replace(/\s+/g, " ").trim();
+  const same = (b) => b.kind === base.kind && b.dims.length === base.dims.length && b.dims.width === base.dims.width && fam(b) === fam(base) && (b.drains || []).some((d) => d.id === hand);
+  const list = (catalog.bases || []).filter(same);
+  return list.find((b) => (b.variant?.color || b.color) === (base.variant?.color || base.color)) || list[0] || null;
+}
+
 export function wallLength(wall, m) {
   return wall === "facing" ? m.facingWidth : m.sideLength;
 }
@@ -111,6 +135,10 @@ export function check(design, catalog) {
   if (base.drains && !base.drains.some((d) => d.id === design.drainId)) {
     errors.push({ field: "drainId", code: "drain", message: `${base.name} does not come with that drain position.` });
   }
+  const hand = plumbingHand(design);
+  if (hand && ["left", "right"].includes(design.drainId) && design.drainId !== hand) {
+    warnings.push({ field: "drainId", code: "drain_hand", message: `The plumbing is on the ${hand}, but this ${base.kind === "tub" ? "tub" : "base"} drains on the ${design.drainId}. Choose the ${hand}-hand version or move the plumbing.` });
+  }
   const kit = kitFor(finish, base);
   if (!kit) {
     errors.push({ field: "finishId", code: "kit_kind", message: `${finish.name} has no ${base.kind === "tub" ? "tub" : "shower"} wall kit in the catalog.` });
@@ -143,9 +171,10 @@ export function check(design, catalog) {
     if (base.thresholdVerified) errors.push({ field: "enclosureId", code: "threshold", message: msg + "." });
     else warnings.push({ field: "enclosureId", code: "threshold", message: msg + " (an ESTIMATE - the manufacturer does not publish it). Confirm before ordering." });
   }
-  if (fixture.spoutBelowValve && design.valveWall && fixture.geometry?.spout) {
+  const valve = !design.valveWall ? null : Array.isArray(design.valveWall) ? { wall: "facing", u: design.valveWall[0], y: design.valveWall[1] } : design.valveWall;
+  if (fixture.spoutBelowValve && valve && fixture.geometry?.spout) {
     const spoutY = base.dims.height + fixture.geometry.spout.aboveRim;
-    const drop = design.valveWall[1] - spoutY;
+    const drop = valve.y - spoutY;
     const [lo, hi] = fixture.spoutBelowValve;
     if (drop < lo || drop > hi) warnings.push({ field: "fixtureId", code: "spout_drop", message: `The tub spout would sit ${drop.toFixed(1)}" below the valve; ${fixture.name} allows ${lo}–${hi}". Move the valve dot or plan a valve relocation.` });
   }
@@ -161,7 +190,6 @@ export function check(design, catalog) {
   if (enc && enc.kind === "rod" && enc.mountHeight > wallTop + 2) warnings.push({ field: "enclosureId", code: "rod_height", message: `The rod at ${enc.mountHeight}" mounts above the ${kit?.height}" panels - its flanges go into the painted wall.` });
   const floor = base.kind === "tub" ? base.dims.height - (base.geometry?.floorDrop ?? 13) : base.dims.height - (base.geometry?.floorDrop ?? 1.6);
   const placed = [];
-  const valve = design.valveWall || null; // [u, y] on the facing wall, when known
   for (const a of design.accessories || []) {
     const p = byId(catalog.accessories, a.productId);
     if (!p) { errors.push({ field: `accessory:${a.key}`, code: "missing_product", message: "An accessory is no longer in the catalog." }); continue; }
@@ -193,10 +221,10 @@ export function check(design, catalog) {
       if (p.depth > fp.width - 12) warnings.push({ field: `accessory:${a.key}`, code: "seat_depth", message: `${p.name} leaves less than 12" of standing room when down.` });
       notes.push(`${p.name}: needs solid backing in the wall; check the rated load (${p.ratedLoad ?? "see spec"} lb).`);
     }
-    if (valve && a.wall === "facing") {
+    if (valve && a.wall === valve.wall) {
       const r = (catalog.fixtures.find((f) => f.id === design.fixtureId)?.geometry?.plateR ?? 3.5) + 1;
-      const nearest = [Math.max(a.u - half, Math.min(valve[0], a.u + half)), Math.max(a.y - vhalf, Math.min(valve[1], a.y + vhalf))];
-      if (Math.hypot(nearest[0] - valve[0], nearest[1] - valve[1]) < r) errors.push({ field: `accessory:${a.key}`, code: "valve", message: `${p.name} overlaps the valve trim.` });
+      const nearest = [Math.max(a.u - half, Math.min(valve.u, a.u + half)), Math.max(a.y - vhalf, Math.min(valve.y, a.y + vhalf))];
+      if (Math.hypot(nearest[0] - valve.u, nearest[1] - valve.y) < r) errors.push({ field: `accessory:${a.key}`, code: "valve", message: `${p.name} overlaps the faucet.` });
     }
     placed.push({ key: a.key, wall: a.wall, u0: a.u - half, u1: a.u + half, y0: a.y - vhalf, y1: a.y + vhalf, name: p.name });
   }
@@ -236,6 +264,12 @@ export function autoFix(design, catalog) {
     if (fit && fit.id !== d.baseId) { changes.push(`Base changed to ${fit.name} to fit the ${alcoveFootprint(d.measure).length}×${alcoveFootprint(d.measure).width}" alcove.`); d.baseId = fit.id; base = fit; }
   }
   if (!base) return { design: d, changes };
+  const hand = plumbingHand(d);
+  if (hand && base.drains && !base.drains.some((x) => x.id === hand)) {
+    const sib = handedSibling(base, hand, catalog);
+    if (sib && baseFits(sib, d.measure)) { d.baseId = sib.id; base = sib; changes.push(`Switched to the ${hand}-hand drain version to match the plumbing.`); }
+  }
+  if (hand && base.drains?.some((x) => x.id === hand)) d.drainId = hand;
   if (base.drains && !base.drains.some((x) => x.id === d.drainId)) { d.drainId = base.drains[0].id; }
   const o = opts();
   if (!o.finishes.some((f) => f.id === d.finishId) && o.finishes[0]) {

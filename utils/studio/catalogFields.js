@@ -49,7 +49,7 @@ function fieldsFor(category, type) {
       return [
         color("color", "Panel colour", { help: "Approximate colour used to draw the panels", default: "#f3f3ef" }),
         text("material", "Material", { default: "acrylic" }),
-        choice("pattern.type", "Surface", ["tile", "smooth", "beadboard"], { default: "tile" }),
+        choice("pattern.type", "Surface", ["tile", "smooth", "beadboard", "marble", "stone"], { default: "tile", help: "Marble and stone are drawn looks for smooth panels with a marble or stone finish" }),
         choice("pattern.orientation", "Tile direction", ["horizontal", "vertical"], { required: false, default: "horizontal" }),
         choice("pattern.bond", "Tile layout", ["running", "stack"], { required: false, default: "running" }),
         n("pattern.tileW", "Tile width", 0.5, 48, { required: false, default: 12 }),
@@ -58,6 +58,9 @@ function fieldsFor(category, type) {
         color("pattern.groutColor", "Grout colour", { required: false }),
         n("pattern.boardW", "Board width (beadboard)", 1, 12, { required: false }),
         n("pattern.grooveW", "Groove width (beadboard)", 0.05, 1, { required: false }),
+        color("pattern.veinColor", "Vein colour (marble look)", { required: false }),
+        n("pattern.veinScale", "Vein spacing (marble look)", 6, 120, { required: false, step: 1 }),
+        color("pattern.speckleColor", "Speckle colour (stone look)", { required: false }),
         n("gloss", "Gloss (0 matte – 1 glossy)", 0, 1, { unit: "", step: 0.05, default: 0.7 }),
         n("kit.height", "Panel height above the base", 30, 100, { default: type === "tub" ? 60 : 76 }),
         n("kit.fitsLengthMin", "Fits alcove length from", 24, 96, { default: 56 }),
@@ -90,6 +93,7 @@ function fieldsFor(category, type) {
         n("geometry.leverLen", "Lever length", 1, 8, { default: 4.2 }),
         n("geometry.armLen", "Shower arm length", 3, 16, { default: 7 }),
         n("geometry.headDiameter", "Showerhead diameter", 1, 12, { default: 3 }),
+        n("geometry.handheld.barLength", "Hand shower slide bar length (handheld packages)", 12, 48, { required: false, help: "Leave empty when there is no hand shower" }),
         ...(type === "tubShower"
           ? [
               n("geometry.spoutReach", "Tub spout reach", 2, 12, { default: 7 }),
@@ -120,6 +124,7 @@ function fieldsFor(category, type) {
             n("diameter", "Rod diameter", 0.5, 2, { default: 1 }),
             n("bow", "Curve (0 = straight)", 0, 12, { default: 6 }),
             color("finishColor", "Finish colour", { default: "#e6e8ea" }),
+            color("curtainColor", "Curtain colour (when sold with a curtain)", { required: false }),
           ];
     case "accessory":
       if (type === "grabBar")
@@ -213,6 +218,7 @@ function validateEngine(category, type, input) {
     if (Number.isFinite(lo) && Number.isFinite(hi) && lo > hi) errors.push({ field: b, message: "The upper limit must not be below the lower limit." });
   }
   if (category === "wall" && engine.pattern?.type === "tile" && !(engine.pattern.tileW && engine.pattern.tileH)) errors.push({ field: "pattern.tileW", message: "Tile patterns need a tile width and height." });
+  if (category === "wall" && engine.pattern?.type === "marble" && !engine.pattern.veinColor) errors.push({ field: "pattern.veinColor", message: "A marble look needs a vein colour." });
   return { engine, errors };
 }
 
@@ -226,7 +232,7 @@ function validateProduct(body, { creating }) {
     out.sku = sku;
     out.category = String(body.category || "");
   }
-  for (const [k, max, req] of [["name", 160, true], ["manufacturer", 120], ["model", 120], ["description", 4000], ["colorName", 80]]) {
+  for (const [k, max, req] of [["name", 160, true], ["manufacturer", 120], ["model", 120], ["description", 4000], ["colorName", 80], ["familyName", 80]]) {
     if (body[k] === undefined && !creating) continue;
     const v = String(body[k] ?? "").trim();
     if (req && !v) errors.push({ field: k, message: "Name is required." });
@@ -335,6 +341,7 @@ function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos =
         ...common, kind: p.type, finishColor: hexToNum(e.finishColor),
         geometry: {
           plateR: g.plateR, leverLen: g.leverLen, armLen: g.armLen, headDiameter: g.headDiameter, roughness: e.roughness,
+          ...(Number.isFinite(g.handheld?.barLength) ? { handheld: { barLength: g.handheld.barLength } } : {}),
           ...(p.type === "tubShower" ? { spout: { reach: g.spoutReach, aboveRim: g.spoutAboveRim } } : {}),
         },
         ...(p.type === "tubShower" && Number.isFinite(e.spoutBelowValveMin) && Number.isFinite(e.spoutBelowValveMax) ? { spoutBelowValve: [e.spoutBelowValveMin, e.spoutBelowValveMax] } : {}),
@@ -343,7 +350,7 @@ function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos =
       const base = { ...common, kind: p.type, forKinds: e.forKinds || ["pan"], opening: [e.openingMin, e.openingMax] };
       cat.enclosures.push(p.type === "door"
         ? { ...base, glassHeight: e.glassHeight, glassThickness: e.glassThickness, frame: e.frame, frameColor: hexToNum(e.frameColor), minThreshold: e.minThreshold, overlap: e.overlap ?? 2 }
-        : { ...base, mountHeight: e.mountHeight, diameter: e.diameter, bow: e.bow ?? 0, finishColor: hexToNum(e.finishColor) });
+        : { ...base, mountHeight: e.mountHeight, diameter: e.diameter, bow: e.bow ?? 0, finishColor: hexToNum(e.finishColor), ...(e.curtainColor ? { curtainColor: hexToNum(e.curtainColor) } : {}) });
     } else if (p.category === "accessory") {
       if (p.type === "grabBar")
         cat.accessories.push({ ...common, type: "grabBar", length: e.length, flange: e.flange, ratedLoad: e.ratedLoad, render: { length: e.length, diameter: e.diameter, clearance: e.clearance, flange: e.flange, finishColor: hexToNum(e.finishColor), roughness: e.roughness } });
@@ -411,9 +418,15 @@ function readiness(p) {
 }
 
 const slugify = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
-/** The product family a product belongs to: a manufacturer series, a unit (its walls), or itself. */
+/**
+ * The product family a product belongs to: a unit (its walls), the family the
+ * owner named (`familyName`, groups variants of owner-made products and can
+ * regroup manufacturer ones), a manufacturer series, or itself.
+ */
 function familyOf(p) {
   if (p.source?.unitSku) return { key: `unit:${p.source.unitSku}`, name: p.name };
+  const own = String(p.familyName || "").trim();
+  if (own) return { key: `family:${p.category}:${slugify(own)}`, name: own, label: own };
   if (p.source?.manufacturer && p.source.seriesName) {
     const name = p.source.seriesName.replace(/[®™]/g, "").replace(/\s+/g, " ").trim();
     return { key: `${p.source.manufacturer}:${p.category}:${slugify(p.source.seriesName)}`, name, label: customerLabel(name, p.category) };
@@ -427,7 +440,7 @@ function familyOf(p) {
  * Manufacturer products use their family label (the colour is shown apart).
  */
 function friendlyName(p) {
-  if (p.source?.manufacturer && !p.source.unitSku) return familyOf(p).label || p.name;
+  if ((p.source?.manufacturer || String(p.familyName || "").trim()) && !p.source?.unitSku) return familyOf(p).label || p.name;
   // drop model codes: words mixing capitals and digits (BT13210, T25902EP, CSR2160CH, SHST-01-TK) and long numbers (8724, 41824-SS)
   const kept = [];
   for (const w of String(p.name || "").split(/\s+/)) {
