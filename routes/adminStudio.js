@@ -369,6 +369,22 @@ router.post("/products/:id/media/copy", ...catalogPerm, json, handle(async (req,
   res.status(reused ? 200 : 201).json({ product: serializeProduct(p.toObject(), await assetMapFor([p])) });
 }));
 
+/** Reorder a product's photos (the first is the main photo customers see). Only its own photos. */
+router.post("/products/:id/assets/order", ...catalogPerm, json, handle(async (req, res) => {
+  if (!validId(req.params.id)) throw fail(404, "Product not found.");
+  const p = await StudioProduct.findById(req.params.id);
+  if (!p) throw fail(404, "Product not found.");
+  const ids = (Array.isArray(req.body?.assetIds) ? req.body.assetIds : []).map(String);
+  const current = p.assets.photos.map((x) => String(x.assetId));
+  if (ids.length !== current.length || !ids.every((id) => current.includes(id))) throw fail(400, "List each of the product's photos once.");
+  p.assets.photos = ids.map((id) => p.assets.photos.find((x) => String(x.assetId) === id));
+  p.version += 1;
+  p.updatedBy = actorId(req);
+  await p.save();
+  invalidate();
+  res.json({ product: serializeProduct(p.toObject(), await assetMapFor([p]), await rightsMap()) });
+}));
+
 /** The owner has looked at the manufacturer's changes (list price, availability): clear the notes. */
 router.post("/products/:id/source/reviewed", ...catalogPerm, handle(async (req, res) => {
   if (!validId(req.params.id)) throw fail(404, "Product not found.");

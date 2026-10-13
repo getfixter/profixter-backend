@@ -88,9 +88,9 @@ StudioPricingSchema.statics.current = async function current() {
   return this.create({
     key: "default",
     projectTypes: [
-      { key: "tub-to-shower", label: "Tub-to-shower conversion", includes: "Remove the old tub, install the shower base, acrylic walls and valve trim." },
-      { key: "shower-replacement", label: "Shower replacement", includes: "Remove the old shower, install the new base, acrylic walls and valve trim." },
-      { key: "tub-replacement", label: "Bathtub replacement", includes: "Remove the old tub, install the new acrylic tub, tub walls and trim." },
+      { key: "tub-to-shower", label: "Tub-to-shower conversion", includes: "Remove the old tub, install the shower base, new wall panels and valve trim." },
+      { key: "shower-replacement", label: "Shower replacement", includes: "Remove the old shower, install the new base, new wall panels and valve trim." },
+      { key: "tub-replacement", label: "Bathtub replacement", includes: "Remove the old tub, install the new tub, tub walls and trim." },
     ],
     adders: [
       { key: "paint-above", label: "Remove old tile above the new walls, patch and paint", trigger: "paintAbove" },

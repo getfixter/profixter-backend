@@ -9,6 +9,8 @@
  *   frontend           -> next dev against that backend
  *
  *   node scripts/studio_demo_env.js          # start and keep running (prints logins)
+ *   node scripts/studio_demo_env.js --demo   # the owner's homeowner demo: curated DEMO catalog,
+ *                                            # optimized build, open to phones/tablets on this Wi-Fi
  *   require("./studio_demo_env").start()     # used by the end-to-end test
  *
  * Refuses to start if a port is busy (a stale server would make results lie).
@@ -26,8 +28,18 @@ const BACKEND_PORT = Number(process.env.STUDIO_QA_BACKEND_PORT || 5098);
 const FRONTEND_PORT = Number(process.env.STUDIO_QA_FRONTEND_PORT || 3098);
 const SMTP_PORT = Number(process.env.STUDIO_QA_SMTP_PORT || 2598);
 const S3_PORT = Number(process.env.STUDIO_QA_S3_PORT || 9098);
-const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
-const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
+let BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+let FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
+
+/** This computer's address on the local Wi-Fi/Ethernet (for phones and tablets on the same network). */
+function lanAddress() {
+  const list = [];
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) if (a.family === "IPv4" && !a.internal && !/vEthernet|WSL|VirtualBox|VMware|Hyper-V/i.test(name)) list.push({ name, address: a.address });
+  }
+  const priv = list.find((x) => /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(x.address));
+  return (priv || list[0])?.address || null;
+}
 const FRONTEND_DIR = path.join(__dirname, "..", "..", "FrontEnd");
 const SECRET = "studio-qa-only-secret-not-for-production";
 const OWNER_EMAIL = "owner@studio-qa.test";
@@ -107,6 +119,7 @@ function startSmtpCatcher() {
             data = false;
             const subject = /^Subject: (.*)$/im.exec(current.body)?.[1] || "";
             mail.push({ ...current, subject, at: new Date().toISOString() });
+            if (require.main === module) console.log(`  [caught on this computer, not sent] ${subject}`);
             current = { from: "", to: [], body: "" };
             say("250 queued (not delivered - QA catcher)");
           } else current.body += line + "\n";
@@ -136,7 +149,7 @@ function spawnChild(label, cmd, args, opts) {
   return child;
 }
 
-async function seed() {
+async function seed({ catalog = "starter" } = {}) {
   const User = require("../models/User");
   const StudioProduct = require("../models/studio/StudioProduct");
   const StudioPricing = require("../models/studio/StudioPricing");
@@ -150,6 +163,12 @@ async function seed() {
     outsider: await mk("Otto Outsider", "otto@studio-qa.test", "employee", { adminSections: ["leads"] }),
     customer: await mk("Carla Customer", "carla@studio-qa.test", "customer", { phone: "6315550199" }),
   };
+  const tokens = Object.fromEntries(Object.entries(users).map(([k, u]) => [k, { id: String(u._id), email: u.email, token: jwt.sign({ id: String(u._id) }, SECRET, { expiresIn: "12h" }) }]));
+  if (catalog === "demo") {
+    const info = await require("./studio_demo_catalog").seedDemoCatalog({ ownerId: users.owner._id });
+    log("demo catalog", info.swanFile ? `${info.swanProducts} Swan + ${info.starterProducts} starter products, DEMO prices (Swan file ${info.swanFile})` : `starter products only (no Swan file in catalog-imports/), DEMO prices`);
+    return tokens;
+  }
   const starter = require("../data/studio/starter-catalog.json");
   // TEST prices only (the owner sets real ones). Round numbers make totals easy to check.
   const PRICES = {
@@ -160,10 +179,13 @@ async function seed() {
   for (const t of pricing.projectTypes) t.basePriceCents = { "tub-to-shower": 450000, "shower-replacement": 400000, "tub-replacement": 380000 }[t.key];
   for (const a of pricing.adders) a.priceCents = { "paint-above": 60000, "door-install": 25000, "grab-bar-blocking": 15000, "seat-backing": 20000, "valve-relocation": 50000 }[a.key];
   await pricing.save();
-  return Object.fromEntries(Object.entries(users).map(([k, u]) => [k, { id: String(u._id), email: u.email, token: jwt.sign({ id: String(u._id) }, SECRET, { expiresIn: "12h" }) }]));
+  return tokens;
 }
 
-async function start({ frontend = true } = {}) {
+async function start({ frontend = true, demo = false } = {}) {
+  // --demo: reachable from phones/tablets on this network, optimized (production) build, DEMO labels
+  const lan = demo ? lanAddress() : null;
+  if (lan) { BACKEND_URL = `http://${lan}:${BACKEND_PORT}`; FRONTEND_URL = `http://${lan}:${FRONTEND_PORT}`; }
   await assertPortFree(BACKEND_PORT, "backend");
   if (frontend) await assertPortFree(FRONTEND_PORT, "frontend");
   await assertPortFree(SMTP_PORT, "smtp");
@@ -172,8 +194,8 @@ async function start({ frontend = true } = {}) {
   const mongoUri = mongo.getUri();
   await mongoose.connect(mongoUri);
   log("mongo (in memory)", "isolated");
-  const users = await seed();
-  log("seeded", "test staff, test customer, starter catalog with TEST prices");
+  const users = await seed({ catalog: demo ? "demo" : "starter" });
+  log("seeded", demo ? "test staff, test customer, curated DEMO catalog" : "test staff, test customer, starter catalog with TEST prices");
   await startSmtpCatcher();
   await startS3Stub();
   log("s3 stub", `127.0.0.1:${S3_PORT} (no request can reach AWS)`);
@@ -193,12 +215,23 @@ async function start({ frontend = true } = {}) {
       AWS_SES_SMTP_HOST: "127.0.0.1", AWS_SES_SMTP_PORT: String(SMTP_PORT), AWS_SES_SMTP_USER: "qa", AWS_SES_SMTP_PASS: "qa",
       BOOKING_REMINDERS_ENABLED: "false", BOOKING_REVIEW_REQUESTS_ENABLED: "false", ESIGN_ADOBE_STARTUP: "false", ESIGN_ALLOW_UNSIGNED_COMPANY: "true",
       SMS_ENABLED: "false", STUDIO_PUBLIC_ENABLED: "true", PUBLIC_API_BASE_URL: BACKEND_URL, PUBLIC_SITE_BASE_URL: FRONTEND_URL,
-      EXTRA_CORS_ORIGINS: `${FRONTEND_URL},http://localhost:${FRONTEND_PORT}`,
+      EXTRA_CORS_ORIGINS: `${FRONTEND_URL},http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}`,
     },
   });
-  await waitForHttp(`${BACKEND_URL}/api/studio/catalog`, "backend");
+  await waitForHttp(`http://127.0.0.1:${BACKEND_PORT}/api/studio/catalog`, "backend");
   log("backend", BACKEND_URL);
-  if (frontend) {
+  if (frontend && demo) {
+    // An optimized build is much faster on a phone than the development server.
+    // It goes to its own folder (.next-studio-demo) so it never mixes with other builds.
+    const env = { ...process.env, NEXT_PUBLIC_API_URL: BACKEND_URL, NEXT_PUBLIC_STUDIO_DEMO: "1", NEXT_DIST_DIR: ".next-studio-demo", NEXT_TELEMETRY_DISABLED: "1" };
+    log("frontend", "building the optimized demo site (about 2-3 minutes)...");
+    const build = spawnChild("frontend-build", "npx", ["next", "build"], { cwd: FRONTEND_DIR, env });
+    const code = await new Promise((resolve) => build.on("exit", resolve));
+    if (code !== 0) throw new Error(`The demo site did not build (see ${path.join(os.tmpdir(), "studio-qa-frontend-build.log")}).`);
+    spawnChild("frontend", "npx", ["next", "start", "-p", String(FRONTEND_PORT), "-H", lan ? "0.0.0.0" : "127.0.0.1"], { cwd: FRONTEND_DIR, env: { ...env, PORT: String(FRONTEND_PORT) } });
+    await waitForHttp(`http://127.0.0.1:${FRONTEND_PORT}/shower-studio`, "frontend", 300000);
+    log("frontend", FRONTEND_URL);
+  } else if (frontend) {
     spawnChild("frontend", "npx", ["next", "dev", "-p", String(FRONTEND_PORT), "-H", "127.0.0.1"], {
       cwd: FRONTEND_DIR,
       env: { ...process.env, NEXT_PUBLIC_API_URL: BACKEND_URL, PORT: String(FRONTEND_PORT), NEXT_TELEMETRY_DISABLED: "1" },
@@ -206,7 +239,7 @@ async function start({ frontend = true } = {}) {
     await waitForHttp(`${FRONTEND_URL}/shower-studio`, "frontend", 300000);
     log("frontend", FRONTEND_URL);
   }
-  return { BACKEND_URL, FRONTEND_URL, users, mail, storageDir, secret: SECRET, s3Log };
+  return { BACKEND_URL, FRONTEND_URL, users, mail, storageDir, secret: SECRET, s3Log, lan };
 }
 
 async function stop() {
@@ -225,8 +258,14 @@ async function stop() {
 module.exports = { start, stop, OWNER_EMAIL };
 
 if (require.main === module) {
-  start().then((env) => {
+  const demoMode = process.argv.includes("--demo");
+  start({ demo: demoMode }).then((env) => {
     console.log("\nShower Studio demo is running (Ctrl+C to stop):");
+    if (demoMode) {
+      console.log(env.lan ? `  On your phone or tablet (same Wi-Fi):  ${env.FRONTEND_URL}/shower-studio` : "  (No Wi-Fi address found: phones cannot reach this computer.)");
+      console.log("  If a phone cannot open it: allow Node.js on Private networks when Windows asks (Windows Security > Firewall).");
+      console.log("  Prices are DEMO prices; requests you send are caught here and never reach anyone.");
+    }
     if (process.argv.includes("--open")) spawn("cmd", ["/c", "start", "", `${env.FRONTEND_URL}/shower-studio`], { stdio: "ignore", detached: true });
     console.log(`  Public Studio:  ${env.FRONTEND_URL}/shower-studio`);
     console.log(`  Admin sign-in:  ${env.FRONTEND_URL}/signin   (password for every test account: ${DEMO_PASSWORD})`);

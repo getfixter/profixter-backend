@@ -63,7 +63,8 @@ function read(...parts) {
  */
 function sourceFiles(root) {
   const out = [];
-  const skip = new Set(["node_modules", ".next", ".git", "dist", "build", "coverage"]);
+  // .next-studio-demo: the local Shower Studio demo build (BackEnd/scripts/studio_demo_env.js --demo)
+  const skip = new Set(["node_modules", ".next", ".next-studio-demo", ".git", "dist", "build", "coverage"]);
   const selfPath = path.resolve(__filename);
   /*
    * The tracking tests are excluded from the scan, in both repos. They name all

@@ -90,7 +90,7 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
       await p.locator('[data-testid="mfr-detail-add"]').waitFor({ timeout: 30000 });
       await p.screenshot({ path: path.join(OUT, "A1-product-page.png") });
       await p.click('[data-testid="mfr-detail-add"]');
-      await p.locator('[data-testid="product-source"]').waitFor({ timeout: 30000 });
+      await p.locator('[data-testid="product-stage"]').waitFor({ timeout: 30000 });
       const fr = await api("GET", `/api/admin/studio/products?view=families&q=${KIT}`, users.owner);
       must(fr.body.families?.length, `families: ${fr.status} ${JSON.stringify(fr.body).slice(0, 300)}`);
       const prod = fr.body.families[0].products[0];
@@ -111,6 +111,7 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
       await p.locator('[role="status"]').getByText(/Add a photo/).waitFor({ timeout: 30000 });
       await p.setInputFiles('[data-testid="product-photo-input"]', photo);
       await p.getByText("Photo added.").waitFor({ timeout: 30000 });
+      await p.click('[data-testid="editor-tab-publish"]');
       await p.click('[data-testid="product-compat-check"]');
       await p.locator('[data-testid="product-compat-report"]').waitFor({ timeout: 30000 });
       await p.selectOption('[data-testid="product-compat"]', "reviewed");
@@ -124,6 +125,46 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
       await p.getByText("Published: customers can choose it now.").waitFor({ timeout: 30000 });
       t = (await api("GET", `/api/admin/studio/products/${kitId}`, users.owner)).body.product;
       must(t.status === "published" && t.pricing.priceCents === 390000 && t.pricing.costCents === 180000 && t.source.listPriceCents === 351600, "saved");
+    });
+
+    await step("A4. editor: advanced settings and specifications survive editing; main photo; unpublish/publish; previews stay preview-only", async () => {
+      const before = (await api("GET", `/api/admin/studio/products/${kitId}`, users.owner)).body.product;
+      // edit everyday fields only, save, reopen
+      await p.click('[data-testid="editor-tab-product"]');
+      await p.fill('[data-testid="product-description"]', "Classic subway look, easy to clean.");
+      await p.fill('[data-testid="product-install"]', "150");
+      await p.click('[data-testid="product-save"]');
+      await p.getByText("Saved.").waitFor({ timeout: 30000 });
+      const after = (await api("GET", `/api/admin/studio/products/${kitId}`, users.owner)).body.product;
+      must(JSON.stringify(after.engine) === JSON.stringify(before.engine), "drawing settings unchanged");
+      must(JSON.stringify(after.specs) === JSON.stringify(before.specs), "specifications unchanged");
+      must(JSON.stringify(after.externalMedia) === JSON.stringify(before.externalMedia) && after.source.partNumber === before.source.partNumber, "manufacturer links unchanged");
+      must(after.pricing.installCents === 15000 && after.pricing.priceCents === 390000 && after.pricing.costCents === 180000, JSON.stringify(after.pricing));
+      // advanced tab shows every drawing field with its value
+      await p.click('[data-testid="editor-tab-advanced"]');
+      must(await p.inputValue('[data-testid="eng-kit.height"]') === String(before.engine.kit.height), "advanced value shown");
+      await p.locator('[data-testid="product-source"]').waitFor();
+      // photos: a second photo, make it main
+      await p.setInputFiles('[data-testid="product-photo-input"]', photo);
+      await p.getByText("Photo added.").waitFor({ timeout: 30000 });
+      await p.click('[data-testid="editor-tab-photos"]');
+      const firstBefore = (await api("GET", `/api/admin/studio/products/${kitId}`, users.owner)).body.product.assets.photos.map((x) => x.assetId);
+      await p.getByRole("button", { name: "Make main" }).first().click();
+      await p.getByText("Main photo changed.").waitFor({ timeout: 30000 });
+      const firstAfter = (await api("GET", `/api/admin/studio/products/${kitId}`, users.owner)).body.product.assets.photos.map((x) => x.assetId);
+      must(firstAfter[0] === firstBefore[1] && firstAfter.length === 2, "main photo reordered");
+      // image rights unconfirmed: manufacturer previews cannot be used
+      const use = p.getByRole("button", { name: "Use as customer photo" }).first();
+      must(await use.isDisabled(), "manufacturer photo usable without rights");
+      must(await p.getByText("Preview only").count() > 0, "previews labelled");
+      await p.screenshot({ path: path.join(OUT, "A4-editor-photos.png"), fullPage: true });
+      // unpublish, publish again
+      await p.click('[data-testid="product-unpublish"]');
+      await p.getByText("Unpublished.").waitFor({ timeout: 30000 });
+      await p.click('[data-testid="product-publish"]');
+      await p.getByText("Published: customers can choose it now.").waitFor({ timeout: 30000 });
+      await p.click('[data-testid="editor-tab-product"]');
+      await p.screenshot({ path: path.join(OUT, "A4b-editor-after.png"), fullPage: true });
     });
 
     await step("A3. product pages explain themselves: already in Studio (open), and not drawable (why)", async () => {
@@ -187,15 +228,17 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
     await step("C2. open a family, switch colour in the editor, archive drafts in bulk", async () => {
       await p.click('[data-testid="catalog-stage-all"]');
       await p.fill('[data-testid="catalog-search"]', "TSMK84-3062");
+      await p.waitForTimeout(900); // the list refreshes 300 ms after typing
       const fam = p.locator('[data-testid="catalog-family"]', { hasText: "Traditional Subway Tile Glue up Shower Wall Kit" }).first(); // (the list updates 300 ms after typing)
       await fam.waitFor({ timeout: 30000 });
       await fam.locator('button[data-testid^="catalog-family-"]').click();
       await p.locator(`[data-testid="catalog-row-${KIT}"] button`).click({ timeout: 30000 });
       await p.locator('[data-testid="product-siblings"]').waitFor({ timeout: 30000 });
       await p.click('[data-testid="sibling-TSMK843062.203"]');
-      await p.locator('[data-testid="product-editor"]').getByText(/^TSMK843062.203 ·/).first().waitFor({ timeout: 30000 });
+      await p.locator('[data-testid="product-editor"]').getByText("TSMK843062.203", { exact: false }).first().waitFor({ timeout: 30000 });
       await p.getByRole("button", { name: "← Back to the catalog" }).click();
       await p.fill('[data-testid="catalog-search"]', "TSMK84-3062");
+      await p.waitForTimeout(900); // the list refreshes 300 ms after typing
       const f2 = p.locator('[data-testid="catalog-family"]', { hasText: "Traditional Subway Tile Glue up Shower Wall Kit" }).first(); // (the list updates 300 ms after typing)
       await f2.waitFor({ timeout: 30000 });
       await f2.locator('button[data-testid^="catalog-family-"]').click();
@@ -210,7 +253,7 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
     await step("C3. editing an existing (hand-made) Studio product still works", async () => {
       await p.fill('[data-testid="catalog-search"]', "");
       await p.selectOption('[data-testid="catalog-manufacturer"]', "own");
-      const row = p.locator('[data-testid^="catalog-row-"] button').first();
+      const row = p.locator('button[data-testid^="catalog-row-"], [data-testid^="catalog-row-"] button').first();
       await row.click({ timeout: 30000 });
       await p.locator('[data-testid="product-name"]').waitFor({ timeout: 30000 });
       const name = await p.inputValue('[data-testid="product-name"]');
@@ -220,6 +263,33 @@ const KIT = "TSMK843062.221"; // Swanstone Traditional Subway 62 x 30 x 84 showe
       await p.fill('[data-testid="product-name"]', name);
       await p.click('[data-testid="product-save"]');
       await p.getByText("Saved.").waitFor({ timeout: 30000 });
+    });
+
+    await step("C4. 'Next needing review' moves to another product without going back to the catalog", async () => {
+      await p.getByRole("button", { name: "← Back to the catalog" }).click();
+      await p.selectOption('[data-testid="catalog-manufacturer"]', "swan");
+      await p.fill('[data-testid="catalog-search"]', KIT);
+      await p.locator(`button[data-testid="catalog-row-${KIT}"], [data-testid="catalog-row-${KIT}"] button`).first().click({ timeout: 30000 });
+      await p.locator('[data-testid="product-next"]').click();
+      await p.waitForFunction((kit) => !document.querySelector('[data-testid="product-editor"]')?.textContent?.includes(kit), KIT, { timeout: 30000 });
+      await p.locator('[data-testid="product-stage"]').waitFor();
+      must(/remaining before publishing/.test(await p.locator('[data-testid="product-readiness"]').innerText()), "lands on a product needing review");
+      await p.screenshot({ path: path.join(OUT, "C4-next-review.png"), fullPage: true });
+    });
+
+    await step("C5. phone and tablet: the product editor fits, with large touch targets", async () => {
+      for (const [w, h, label] of [[390, 844, "phone"], [820, 1180, "tablet"]]) {
+        const m = await page(users.owner, { width: w, height: h }, `${label}-editor`);
+        await m.goto(`${FE}/admin?tab=studio-catalog`, { waitUntil: "domcontentloaded", timeout: 180000 });
+        await m.fill('[data-testid="catalog-search"]', KIT, { timeout: 120000 });
+        await m.locator(`button[data-testid="catalog-row-${KIT}"], [data-testid="catalog-row-${KIT}"] button`).first().click({ timeout: 60000 });
+        await m.locator('[data-testid="product-stage"]').waitFor({ timeout: 60000 });
+        await noOverflow(m, `${label} editor`);
+        await m.screenshot({ path: path.join(OUT, `C5-${label}-editor.png`), fullPage: true });
+        await m.click('[data-testid="editor-tab-photos"]');
+        await noOverflow(m, `${label} editor photos`);
+        await m.screenshot({ path: path.join(OUT, `C5-${label}-editor-photos.png`), fullPage: true });
+      }
     });
 
     await step("D1. the public catalog: published products only, no manufacturer images, no costs or list prices", async () => {

@@ -1,5 +1,27 @@
 # Shower Studio - 10-minute owner demo
 
+## On your phone and tablet (the homeowner experience)
+
+1. On this computer, double-click
+   `C:\Users\Taras\profixter-studio\Open Shower Studio demo (phone and tablet).cmd`.
+2. Wait 3-4 minutes (it builds a fast version of the site). If Windows asks
+   whether Node.js may use the network, allow **Private networks**.
+3. The window shows an address like `http://192.168.1.158:3098/shower-studio`.
+   Type it into Safari/Chrome on your phone or iPad - they must be on the same
+   Wi-Fi as this computer. It also opens here in your browser.
+4. Design a bathtub or a walk-in shower and send a request with test details.
+   The black window shows "[caught on this computer, not sent]" for each one.
+
+What you see: a curated set (4 wall styles in 4 colours, 2 tubs, 2 shower
+bases, Delta and Moen faucet packages, doors, a rod and extras) with **DEMO
+prices** and a DEMO banner. Nothing reaches customers, email, Profixter's
+database or AWS; closing the window erases everything. The same window also
+gives Admin at `.../signin` (owner@studio-qa.test / studio-demo).
+
+If the phone cannot open the address: check it is on the same Wi-Fi (not
+cellular), and in Windows Security → Firewall & network protection → Allow an
+app, tick Node.js for Private networks.
+
 **Start:** double-click `C:\Users\Taras\profixter-studio\Open Shower Studio demo.cmd`.
 Wait 1-2 minutes; the browser opens the Studio. Everything is test data on your
 computer (test prices, test staff, emails caught locally). Close the black

@@ -16,7 +16,7 @@ const TYPES = {
   ],
   base: [
     { id: "pan", label: "Shower pan" },
-    { id: "tub", label: "Acrylic tub" },
+    { id: "tub", label: "Bathtub" },
   ],
   fixture: [
     { id: "shower", label: "Shower-only trim" },
@@ -413,9 +413,25 @@ const slugify = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/
 function familyOf(p) {
   if (p.source?.unitSku) return { key: `unit:${p.source.unitSku}`, name: p.name };
   if (p.source?.manufacturer && p.source.seriesName) {
-    return { key: `${p.source.manufacturer}:${p.category}:${slugify(p.source.seriesName)}`, name: p.source.seriesName.replace(/[®™]/g, "").replace(/\s+/g, " ").trim() };
+    const name = p.source.seriesName.replace(/[®™]/g, "").replace(/\s+/g, " ").trim();
+    return { key: `${p.source.manufacturer}:${p.category}:${slugify(p.source.seriesName)}`, name, label: customerLabel(name, p.category) };
   }
   return { key: `sku:${p.sku}`, name: p.name };
+}
+
+/**
+ * The family name a homeowner sees: the manufacturer's series without
+ * installer wording ("Swanstone Modern Subway Tile Glue up Tub Wall Kit" ->
+ * "Swanstone Modern Subway Tile"). Admin keeps the full name.
+ */
+function customerLabel(name, category) {
+  let s = name
+    .replace(/\b(glue[ -]?up|direct[ -]to[ -]stud|(four|five)[ -]piece|reinforced|fully configured|alcove)\b/gi, " ")
+    .replace(/\bwith (l\/r|center|front center|left hand|right hand) drain\b/gi, " ")
+    .replace(/\bl\/r drain\b/gi, " ");
+  if (category === "wall") s = s.replace(/\b(bathtub and shower|tub|shower|bath)?\s*(single |double )?wall (kit|panel)s?\b/gi, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  return s.length >= 4 ? s : name;
 }
 const inch = (v) => (Number.isFinite(v) ? `${Math.round(v * 100) / 100}″` : "");
 /** This variant's size and colour within its family. */
