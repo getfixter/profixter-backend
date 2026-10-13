@@ -36,7 +36,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     return p;
   }
   // open one configurator section (they are an accordion: tapping an open one closes it)
-  const openSec = async (p, id) => { const b = p.locator(`[data-testid="section-${id}"]`); if ((await b.getAttribute("aria-expanded")) !== "true") await b.click(); await p.waitForTimeout(500); };
+  const openSec = async (p, id) => { await p.locator(`[data-testid="tab-${id}"]`).click(); await p.waitForTimeout(500); };
   const card = (prefix) => `[data-testid^="${prefix}"]:not([data-testid$="-delta"])`;
   const strip = (p) => p.textContent('[data-testid="price-strip"]').then((t) => (t || "").replace(/\s+/g, " ").trim());
   const tap = (p, sel) => p.locator(sel).first().click();
@@ -73,13 +73,13 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     await shot("4-base");
     // faucet
     await openSec(p, "fixture");
-    const fx = p.locator(card("fixture-"));
+    const fx = p.locator(`${card("family-fixture-")}, ${card("fixture-")}`);
     must(await fx.count() >= 2, "2 fixture packages");
     await fx.nth(1).click();
     await p.waitForTimeout(600);
     // door
     await openSec(p, "door");
-    await p.locator(card("enclosure-")).nth(1).click().catch(() => {});
+    await p.locator(`${card("family-enclosure-")}, ${card("enclosure-")}`).nth(1).click().catch(() => {});
     await p.waitForTimeout(600);
     await shot("5-door");
     // extras
@@ -90,11 +90,11 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     await shot("6-extras");
     must(price0 !== price2 || price0 !== price1, `price never changed: ${price0}`);
     // result + request
-    await p.getByRole("button", { name: "View design & price" }).click();
+    await p.locator('[data-testid="total-review"]').click();
     await p.locator('[data-testid="price-card"]').waitFor({ timeout: 30000 });
     must(/DEMO PRICE/.test(await p.locator('[data-testid="price-card"]').innerText()), "the result says DEMO PRICE");
     await shot("7-result");
-    await p.getByRole("button", { name: "Request installation" }).click();
+    await p.locator('[data-testid="go-request"]').click();
     await p.fill('input[name="name"]', `Demo Homeowner (${label})`);
     await p.fill('input[name="phone"]', "631-555-0142");
     await p.fill('input[name="email"]', `demo.${label}@example.com`);
@@ -122,7 +122,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       const images = Object.values(c).filter(Array.isArray).flat().flatMap((x) => [x.photo, ...(x.photos || []).map((y) => y.url), x.texture?.url]).filter(Boolean);
       must(images.every((u) => u.includes("/api/studio/assets/")), `only Profixter-hosted images: ${images.find((u) => !u.includes("/api/studio/assets/"))}`);
       must(!/american-bath-group\/image\/upload[^"]*\/swan\/|salsify/.test(JSON.stringify(r)), "no Swan image links");
-      must(info.tubs === 2 && info.bases === 2 && info.fixtures >= 4 && info.extras >= 4, JSON.stringify(info));
+      must(info.tubs >= 2 && info.bases >= 2 && info.fixtures >= 4 && info.extras >= 4 && info.wallFamilies >= 6, JSON.stringify(info));
       return info;
     });
     await step("phone (390 × 844): bathtub journey, request sent", () => device({ width: 390, height: 844 }, "phone", true).then((p) => journey(p, "phone", "tub")));
@@ -138,8 +138,8 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded" });
       await tap(p, '[data-testid="start-shower"]');
       await p.waitForSelector('[data-testid="price-strip"]', { timeout: 60000 });
-      await p.getByRole("button", { name: "View design & price" }).click();
-      await p.getByRole("button", { name: "Request installation" }).click();
+      await p.locator('[data-testid="total-review"]').click();
+      await p.locator('[data-testid="go-request"]').click();
       await tap(p, '[data-testid="submit-request"]');
       await p.getByText("Please enter your name.").waitFor({ timeout: 10000 });
     });

@@ -37,7 +37,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
   const mongoose = require("mongoose");
   const counts = async () => ({ leads: await mongoose.connection.db.collection("estimateleads").countDocuments(), designs: await mongoose.connection.db.collection("studiodesigns").countDocuments(), photos: await mongoose.connection.db.collection("studiophotos").countDocuments() });
   // open one configurator section (they are an accordion: tapping an open one closes it)
-  const openSec = async (p, id) => { const b = p.locator(`[data-testid="section-${id}"]`); if ((await b.getAttribute("aria-expanded")) !== "true") await b.click(); await p.waitForTimeout(500); };
+  const openSec = async (p, id) => { await p.locator(`[data-testid="tab-${id}"]`).click(); await p.waitForTimeout(500); };
   const card = (prefix) => `[data-testid^="${prefix}"]:not([data-testid$="-delta"])`;
   const strip = (p) => p.textContent('[data-testid="price-strip"]').then((t) => (t || "").replace(/\s+/g, " ").trim());
 
@@ -60,10 +60,10 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     const price1 = await strip(p);
     must(price0 !== price1, `price did not change (${price0})`);
     await shot("3-changed");
-    await p.getByRole("button", { name: "View design & price" }).click();
+    await p.locator('[data-testid="total-review"]').click();
     await p.locator('[data-testid="price-card"]').waitFor({ timeout: 30000 });
     must(/DEMO PRICE/.test(await p.locator('[data-testid="price-card"]').innerText()), "DEMO PRICE on the result");
-    await p.getByRole("button", { name: "Request installation" }).click();
+    await p.locator('[data-testid="go-request"]').click();
     await p.fill('input[name="name"]', `Owner Test (${label})`);
     await p.fill('input[name="phone"]', "631-555-0142");
     await p.fill('input[name="email"]', `owner.${label}@example.com`);
