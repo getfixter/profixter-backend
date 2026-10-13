@@ -22,7 +22,8 @@ const StudioPhoto = require("../models/studio/StudioPhoto");
 const { sanitizeImageBuffer } = require("../utils/imageSanitizer");
 const storage = require("../utils/studio/storage");
 const { photoUrl, randomId } = require("../utils/studio/signedLinks");
-const { TYPES, fieldsFor, validateEngine, validateProduct, completeness, publishBlockers } = require("../utils/studio/catalogFields");
+const { TYPES, fieldsFor, validateEngine, validateProduct, completeness, publishBlockers, readiness, familyOf, variantOf } = require("../utils/studio/catalogFields");
+const StudioManufacturer = require("../models/studio/StudioManufacturer");
 const { staffCatalog, invalidate } = require("../utils/studio/catalogService");
 const { validateState } = require("../utils/studio/designState");
 const { checkDesign, quoteDesign, blockingErrors, skusOf } = require("../utils/studio/designService");
@@ -66,14 +67,37 @@ router.get("/catalog/fields", ...catalogPerm, handle(async (_req, res) => {
   res.json({ categories: out });
 }));
 
-function serializeProduct(p, assetMap = new Map()) {
+/** Image and drawing status of a product (what customers could see, and from where). */
+function imagingOf(p, rights = {}) {
+  const r = readinessCache.get(p) || readiness(p);
+  return {
+    manufacturerImages: (p.externalMedia || []).filter((m) => m.kind === "photo").length,
+    imageRights: p.source?.manufacturer ? rights[p.source.manufacturer] || "unconfirmed" : null,
+    publicPhotos: p.assets?.photos?.length || 0,
+    texture: p.assets?.texture?.assetId ? p.assets.texture.source || "owner" : null,
+    visualization: r.blockers.some((b) => /^Visualization details/.test(b)) ? "incomplete" : (p.source?.visualIssues || []).length && p.review?.visual !== true ? "needs-review" : p.visualStatus === "verified" ? "verified" : "illustrative",
+  };
+}
+const readinessCache = new WeakMap();
+async function rightsMap() {
+  const list = await StudioManufacturer.find({}).select("key imageRights.status").lean();
+  return Object.fromEntries(list.map((m) => [m.key, m.imageRights?.status || "unconfirmed"]));
+}
+
+function serializeProduct(p, assetMap = new Map(), rights = {}) {
   const url = (id) => (assetMap.get(String(id)) ? `/api/studio/assets/${assetMap.get(String(id))}` : null);
+  const r = readiness(p);
+  readinessCache.set(p, r);
   return {
     ...p,
     _id: String(p._id),
+    readiness: r,
+    family: familyOf(p),
+    variant: variantOf(p),
+    imaging: imagingOf(p, rights),
     assets: {
       photos: (p.assets?.photos || []).map((x) => ({ assetId: String(x.assetId), alt: x.alt, url: url(x.assetId) })),
-      texture: p.assets?.texture?.assetId ? { assetId: String(p.assets.texture.assetId), widthIn: p.assets.texture.widthIn, heightIn: p.assets.texture.heightIn, url: url(p.assets.texture.assetId) } : null,
+      texture: p.assets?.texture?.assetId ? { assetId: String(p.assets.texture.assetId), widthIn: p.assets.texture.widthIn, heightIn: p.assets.texture.heightIn, source: p.assets.texture.source || "owner", url: url(p.assets.texture.assetId) } : null,
     },
     issues: completeness(p),
   };
@@ -84,20 +108,173 @@ async function assetMapFor(products) {
   return new Map(list.map((a) => [String(a._id), a.publicId]));
 }
 
+/**
+ * The catalog manager: products grouped into families, filtered and paged.
+ *   q            exact SKU / part number first, else name, model, colour, SKU
+ *   manufacturer "own" (added by hand) or a manufacturer key
+ *   category     wall | base | fixture | enclosure | accessory
+ *   stage        draft | incomplete | review | ready | published | archived |
+ *                missingPrice | missingPhoto | compatibility | visual | changes
+ */
+const STAGE_TEST = {
+  all: (p) => p.status !== "archived",
+  draft: (p) => p.status === "draft",
+  incomplete: (p, r) => r.stage === "incomplete",
+  review: (p, r) => r.stage === "review",
+  ready: (p, r) => r.stage === "ready",
+  published: (p) => p.status === "published",
+  archived: (p) => p.status === "archived",
+  missingPrice: (p) => p.status !== "archived" && p.pricing?.priceCents == null && !p.source?.unitSku,
+  missingPhoto: (p) => p.status !== "archived" && !p.assets?.photos?.length && !p.source?.unitSku,
+  compatibility: (p) => p.status !== "archived" && p.compatibility?.status !== "reviewed",
+  visual: (p, r) => p.status !== "archived" && (r.blockers.some((b) => /^Visualization details|preview/.test(b))),
+  changes: (p) => (p.source?.pendingReview || []).length > 0,
+};
+const CAT_ORDER = ["wall", "base", "fixture", "enclosure", "accessory"];
+
 router.get("/products", ...catalogPerm, handle(async (req, res) => {
+  if (req.query.view !== "families") return legacyProducts(req, res);
+  const f = {};
+  if (req.query.category && CAT_ORDER.includes(String(req.query.category))) f.category = String(req.query.category);
+  const mfr = String(req.query.manufacturer || "");
+  if (mfr === "own") f["source.manufacturer"] = null;
+  else if (mfr) f["source.manufacturer"] = mfr.slice(0, 40);
+  const term = String(req.query.q || "").trim().slice(0, 80);
+  const stage = STAGE_TEST[String(req.query.stage || "all")] ? String(req.query.stage || "all") : "all";
+  let list = await StudioProduct.find(f).select("-specs -sources -description").lean();
+  const counts = {};
+  const scored = [];
+  for (const p of list) {
+    const r = readiness(p);
+    for (const [k, test] of Object.entries(STAGE_TEST)) if (test(p, r)) counts[k] = (counts[k] || 0) + 1;
+    if (!STAGE_TEST[stage](p, r)) continue;
+    scored.push(p);
+  }
+  list = scored;
+  let exact = null;
+  if (term) {
+    const t = term.toLowerCase();
+    exact = list.find((p) => p.sku.toLowerCase() === t || p.source?.partNumber?.toLowerCase() === t) || null;
+    list = exact ? [exact] : list.filter((p) => [p.sku, p.name, p.model, p.colorName, p.source?.modelNumber, p.source?.seriesName].some((x) => String(x || "").toLowerCase().includes(t)));
+  }
+  const fams = new Map();
+  for (const p of list) {
+    const fam = familyOf(p);
+    if (!fams.has(fam.key)) fams.set(fam.key, { key: fam.key, name: fam.name, category: p.category, manufacturer: p.manufacturer || "", fromManufacturer: Boolean(p.source?.manufacturer), products: [] });
+    fams.get(fam.key).products.push(p);
+  }
+  const all = [...fams.values()].sort((a, b) => (CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category)) || (a.fromManufacturer - b.fromManufacturer) || a.name.localeCompare(b.name));
+  const per = Math.max(5, Math.min(60, Number(req.query.per) || 20));
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const slice = all.slice((page - 1) * per, page * per);
+  const assets = await assetMapFor(slice.flatMap((x) => x.products));
+  const rights = await rightsMap();
+  const row = (p) => {
+    const sp = serializeProduct(p, assets, rights);
+    const thumb = sp.assets.photos[0]?.url || null;
+    const ext = (p.externalMedia || []).find((m) => m.kind === "photo")?.url || null;
+    return {
+      _id: sp._id, sku: p.sku, name: p.name, category: p.category, type: p.type, status: p.status, colorName: p.colorName, model: p.model,
+      variant: sp.variant, readiness: sp.readiness, imaging: sp.imaging, pricing: { priceCents: p.pricing?.priceCents ?? null, costCents: p.pricing?.costCents ?? null },
+      listPriceCents: p.source?.listPriceCents ?? null, availability: p.source?.availability || null, unitSku: p.source?.unitSku || null,
+      compatibility: p.compatibility?.status || "reviewed", pendingReview: (p.source?.pendingReview || []).length, isPublic: p.isPublic !== false, featured: Boolean(p.featured),
+      photoUrl: thumb, manufacturerPhotoUrl: thumb ? null : ext,
+    };
+  };
+  res.json({
+    total: { products: list.length, families: all.length }, page, per, counts, exact: exact ? exact.sku : null,
+    manufacturers: [...new Set((await StudioProduct.distinct("source.manufacturer")).filter(Boolean))],
+    families: slice.map((x) => {
+      const rows = x.products.map(row).sort((a, b) => a.variant.size.localeCompare(b.variant.size, undefined, { numeric: true }) || a.variant.color.localeCompare(b.variant.color));
+      const by = (k) => rows.filter((r) => r.readiness.stage === k).length;
+      return { key: x.key, name: x.name, category: x.category, manufacturer: x.manufacturer, fromManufacturer: x.fromManufacturer, sizes: [...new Set(rows.map((r) => r.variant.size).filter(Boolean))], colors: [...new Set(rows.map((r) => r.variant.color).filter(Boolean))], stages: { published: by("published"), ready: by("ready"), review: by("review"), incomplete: by("incomplete") }, products: rows };
+    }),
+  });
+}));
+
+async function legacyProducts(req, res) {
   const q = {};
   if (req.query.category) q.category = String(req.query.category);
   if (req.query.status) q.status = String(req.query.status);
-  const list = await StudioProduct.find(q).sort({ category: 1, sortOrder: 1, name: 1 }).lean();
+  if (req.query.q) {
+    const rx = new RegExp(String(req.query.q).trim().slice(0, 60).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    q.$or = [{ sku: rx }, { name: rx }, { model: rx }];
+  }
+  const limit = Math.max(1, Math.min(5000, Number(req.query.limit) || 5000));
+  const list = await StudioProduct.find(q).sort({ category: 1, sortOrder: 1, name: 1 }).limit(limit).lean();
   const assets = await assetMapFor(list);
-  res.json({ products: list.map((p) => serializeProduct(p, assets)) });
-}));
+  const rights = await rightsMap();
+  res.json({ products: list.map((p) => serializeProduct(p, assets, rights)) });
+}
 
 router.get("/products/:id", ...catalogPerm, handle(async (req, res) => {
   if (!validId(req.params.id)) throw fail(404, "Product not found.");
   const p = await StudioProduct.findById(req.params.id).lean();
   if (!p) throw fail(404, "Product not found.");
-  res.json({ product: serializeProduct(p, await assetMapFor([p])) });
+  res.json({ product: serializeProduct(p, await assetMapFor([p]), await rightsMap()), siblings: await siblingsOf(p) });
+}));
+
+/** The other variants of a product's family (size / colour switcher in the editor). */
+async function siblingsOf(p) {
+  const fam = familyOf(p);
+  if (fam.key.startsWith("sku:") || fam.key.startsWith("unit:")) return [];
+  const list = await StudioProduct.find({ "source.manufacturer": p.source.manufacturer, "source.seriesName": p.source.seriesName, category: p.category, "source.unitSku": null }).select("sku name status colorName engine category source.modelNumber pricing.priceCents").lean();
+  return list.map((x) => ({ _id: String(x._id), sku: x.sku, status: x.status, variant: variantOf(x), priceCents: x.pricing?.priceCents ?? null })).sort((a, b) => a.variant.size.localeCompare(b.variant.size, undefined, { numeric: true }) || a.variant.color.localeCompare(b.variant.color));
+}
+
+/** What the product fits and pairs with, and what to confirm (compatibility review). */
+router.get("/products/:id/compatibility", ...catalogPerm, handle(async (req, res) => {
+  if (!validId(req.params.id)) throw fail(404, "Product not found.");
+  const p = await StudioProduct.findById(req.params.id).lean();
+  if (!p) throw fail(404, "Product not found.");
+  const { compatReport } = require("../utils/studio/compatReport");
+  res.json({ report: await compatReport(p) });
+}));
+
+/**
+ * Bulk changes from the catalog manager. Every product goes through the same
+ * rules as one at a time: publishing still requires a product to be ready;
+ * archiving applies to drafts only (unpublish first).
+ */
+const BULK = ["archive", "draft", "publish", "compatibilityReviewed", "show", "hide", "feature", "unfeature"];
+router.post("/products/bulk", ...catalogPerm, json, handle(async (req, res) => {
+  const action = String(req.body?.action || "");
+  if (!BULK.includes(action)) throw fail(400, "Unknown action.");
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter(validId).slice(0, 500);
+  if (!ids.length) throw fail(400, "Select products first.");
+  const note = String(req.body?.note || "").trim().slice(0, 1000);
+  if (action === "compatibilityReviewed" && note.length < 5) throw fail(400, "Say what you checked (it is saved on each product).");
+  const list = await StudioProduct.find({ _id: { $in: ids } });
+  const done = [];
+  const skipped = [];
+  for (const p of list) {
+    const skip = (reason) => skipped.push({ sku: p.sku, reason });
+    if (p.source?.unitSku && ["archive", "draft", "publish"].includes(action)) { skip("Part of a one-piece unit: changes with the unit."); continue; }
+    if (action === "archive") {
+      if (p.status === "published") { skip("Published: unpublish it first."); continue; }
+      if (p.status === "archived") { skip("Already archived."); continue; }
+      await changeStatus(p, "archived", req);
+    } else if (action === "draft") {
+      if (p.status === "draft") { skip("Already a draft."); continue; }
+      await changeStatus(p, "draft", req);
+    } else if (action === "publish") {
+      if (p.status === "published") { skip("Already published."); continue; }
+      const blocked = readiness(p.toObject()).blockers;
+      if (blocked.length) { skip(blocked[0]); continue; }
+      await changeStatus(p, "published", req);
+    } else if (action === "compatibilityReviewed") {
+      p.compatibility = { status: "reviewed", note, reviewedBy: actorId(req), reviewedAt: new Date() };
+      await p.save();
+    } else {
+      if (action === "show" || action === "hide") p.isPublic = action === "show";
+      else p.featured = action === "feature";
+      p.updatedBy = actorId(req);
+      await p.save();
+    }
+    done.push(p.sku);
+  }
+  invalidate();
+  res.json({ done: done.length, skipped });
 }));
 
 router.post("/products", ...catalogPerm, json, handle(async (req, res) => {
@@ -120,6 +297,9 @@ router.put("/products/:id", ...catalogPerm, json, handle(async (req, res) => {
   const all = [...errors, ...eng.errors];
   if (all.length) throw fail(400, all[0].message, { errors: all });
   delete value.sku; delete value.category;
+  if (value.review) {
+    value.review = { info: value.review.info ?? p.review?.info ?? null, visual: value.review.visual ?? p.review?.visual ?? null, by: actorId(req), at: new Date() };
+  }
   if (value.compatibility) {
     const was = p.compatibility?.status;
     value.compatibility = { ...value.compatibility, reviewedBy: value.compatibility.status === "reviewed" ? (was === "reviewed" ? p.compatibility.reviewedBy : actorId(req)) : null, reviewedAt: value.compatibility.status === "reviewed" ? (was === "reviewed" ? p.compatibility.reviewedAt : new Date()) : null };
@@ -146,14 +326,18 @@ router.post("/products/:id/status", ...catalogPerm, json, handle(async (req, res
     const blockers = publishBlockers(p);
     if (blockers.length) throw fail(400, blockers[0], { errors: blockers.map((message) => ({ field: "status", message })) });
   }
-  p.status = status;
-  p.updatedBy = actorId(req);
-  await p.save();
-  // A one-piece unit's integral walls always share the unit's status.
-  if (p.source?.manufacturer) await StudioProduct.updateMany({ "source.unitSku": p.sku }, { $set: { status, updatedBy: actorId(req) } });
+  await changeStatus(p, status, req);
   invalidate();
   res.json({ product: serializeProduct(p.toObject(), await assetMapFor([p])) });
 }));
+
+/** Set a product's status (checks done by the caller). A one-piece unit's integral walls follow the unit. */
+async function changeStatus(p, status, req) {
+  p.status = status;
+  p.updatedBy = actorId(req);
+  await p.save();
+  if (p.source?.manufacturer) await StudioProduct.updateMany({ "source.unitSku": p.sku }, { $set: { status, updatedBy: actorId(req) } });
+}
 
 router.post("/products/reorder", ...catalogPerm, json, handle(async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(validId).slice(0, 500) : [];
@@ -219,7 +403,7 @@ router.post("/products/:id/assets", ...catalogPerm, (req, res) => {
     if (kind === "texture") {
       const w = Number(req.body.widthIn), h = Number(req.body.heightIn);
       if (!(w >= 1 && w <= 240 && h >= 1 && h <= 240)) throw fail(400, "Give the real-world size of the texture image in inches (1–240).");
-      p.assets.texture = { assetId: asset._id, widthIn: w, heightIn: h };
+      p.assets.texture = { assetId: asset._id, widthIn: w, heightIn: h, source: ["manufacturer", "approximation"].includes(req.body?.textureSource) ? req.body.textureSource : "owner" };
     } else {
       if (p.assets.photos.length >= 8) throw fail(400, "Up to 8 photos per product.");
       p.assets.photos.push({ assetId: asset._id, alt: String(req.body?.alt || p.name).slice(0, 200) });
@@ -357,6 +541,21 @@ async function snapshotFor(d) {
   return { at: new Date(), pricingVersion: result.pricingVersion, complete: result.complete, missing: result.missing, lines: result.lines, totalCents: result.totalCents };
 }
 
+/**
+ * A design view carries the whole staff catalog (thousands of products once a
+ * manufacturer range is added), and nothing upstream compresses responses:
+ * gzip it here when the browser accepts it.
+ */
+function sendView(req, res, body, status = 200) {
+  const text = JSON.stringify(body);
+  res.status(status);
+  if (text.length > 32 * 1024 && /gzip/.test(String(req.headers["accept-encoding"] || ""))) {
+    res.set({ "Content-Type": "application/json; charset=utf-8", "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+    return res.end(require("zlib").gzipSync(text));
+  }
+  return res.type("application/json").send(text);
+}
+
 async function fullView(d, req) {
   const skus = skusOf(d.state?.design);
   const { catalog, products } = await staffCatalog(skus);
@@ -433,13 +632,13 @@ router.post("/designs", ...sellPerm, json, handle(async (req, res) => {
     customerId: validId(b.customerId) ? b.customerId : null,
     createdBy: actorId(req), updatedBy: actorId(req),
   });
-  res.status(201).json(await fullView(d, req));
+  sendView(req, res, await fullView(d, req), 201);
 }));
 
 router.get("/designs/:id", ...sellPerm, handle(async (req, res) => {
   const d = await designOr404(req.params.id);
   if (d.origin === "public" && d.status === "draft") throw fail(404, "Design not found."); // a visitor's unsent draft is theirs
-  res.json(await fullView(d, req));
+  sendView(req, res, await fullView(d, req));
 }));
 
 /** Save the design (staff edit). Every save keeps a revision. */
@@ -468,7 +667,7 @@ router.put("/designs/:id", ...sellPerm, json, handle(async (req, res) => {
   d.updatedBy = actorId(req);
   d.markModified("state");
   await d.save();
-  res.json(await fullView(d, req));
+  sendView(req, res, await fullView(d, req));
 }));
 
 /** Price preview for unsaved changes (full lines; staff only). */
@@ -502,7 +701,7 @@ router.post("/designs/:id/photo", ...sellPerm, (req, res) => {
     d.state = null; // the dots belong to the old photo (the old photo stays with past revisions)
     d.updatedBy = actorId(req);
     await d.save();
-    res.status(201).json(await fullView(d, req));
+    sendView(req, res, await fullView(d, req), 201);
   })(req, res));
 });
 
@@ -541,7 +740,7 @@ router.post("/designs/:id/adjustments", ...sellPerm, json, handle(async (req, re
   d.priceSnapshot = await snapshotFor(d);
   d.updatedBy = actorId(req);
   await d.save();
-  res.status(201).json(await fullView(d, req));
+  sendView(req, res, await fullView(d, req), 201);
 }));
 
 router.delete("/designs/:id/adjustments/:adjId", ...sellPerm, handle(async (req, res) => {
@@ -552,7 +751,7 @@ router.delete("/designs/:id/adjustments/:adjId", ...sellPerm, handle(async (req,
   adj.deleteOne();
   d.priceSnapshot = await snapshotFor(d);
   await d.save();
-  res.json(await fullView(d, req));
+  sendView(req, res, await fullView(d, req));
 }));
 
 /** A rendered preview of the design (stored privately; shown to staff and in the lead). */

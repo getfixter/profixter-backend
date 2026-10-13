@@ -60,6 +60,8 @@ const StudioProductSchema = new mongoose.Schema(
         /* real-world size of one repeat of the texture image, inches */
         widthIn: { type: Number, min: 1, max: 240, default: null },
         heightIn: { type: Number, min: 1, max: 240, default: null },
+        /* where the texture came from: owner upload, the manufacturer, or an approximation for testing */
+        source: { type: String, enum: ["owner", "manufacturer", "approximation", null], default: null },
       },
     },
     /* "illustrative": the preview is an approximation (drawn pattern, estimated colour). */
@@ -87,11 +89,25 @@ const StudioProductSchema = new mongoose.Schema(
       /* the one-piece unit whose integral walls this wall finish is (only selectable with it, included in its price) */
       unitSku: { type: String, default: null },
       approximations: { type: [String], default: [] },
+      /* approximations serious enough that the preview must be checked before publishing */
+      visualIssues: { type: [String], default: [] },
       lastImportId: { type: mongoose.Schema.Types.ObjectId, default: null },
       pendingReview: {
         type: [{ _id: false, kind: String, message: String, from: String, to: String, at: Date }],
         default: [],
       },
+    },
+    /*
+     * The owner's sign-off on a manufacturer product (null = not yet; owner-made
+     * products need no sign-off). `info`: name, description and specifications
+     * checked. `visual`: the illustrative preview checked against the real
+     * product. Both are required to publish a manufacturer product.
+     */
+    review: {
+      info: { type: Boolean, default: null },
+      visual: { type: Boolean, default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      at: { type: Date, default: null },
     },
     /* Manufacturer links (photos, drawings, guides, CAD). Previewed in Admin only; never sent to the public Studio. */
     externalMedia: {

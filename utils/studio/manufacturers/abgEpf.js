@@ -198,7 +198,8 @@ function normalizeEpf(workbook, adapter) {
         programs: role === "express" ? ["express"] : [],
         listPriceCents: priceNum == null ? null : Math.round(priceNum * 100),
         listPriceEffective: dateText(r[H.priceDate]),
-        color: { code: colorCode, name: String(r[H.color] || "").trim() },
+        // some sheets (SwanXpress) leave Color empty: name it from the brand's colour code
+        color: { code: colorCode, name: String(r[H.color] || "").trim() || (adapter.colorNameFor?.(colorCode) ?? "") },
         surface: String(r[H.surface] || "").trim(),
         material: String(r[H.material] || "").trim(),
         installationType: String(r[H.install] || "").trim(),

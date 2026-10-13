@@ -33,6 +33,8 @@ const { ADAPTERS, adapterFor } = require("../utils/studio/manufacturers");
 const { GROUPS } = require("../utils/studio/manufacturers/abgEpf");
 const { previewImport, applyImport } = require("../utils/studio/manufacturers/importService");
 const { addToStudio } = require("../utils/studio/manufacturers/studioLink");
+const { previewEligible, startBulkAdd, currentJob } = require("../utils/studio/manufacturers/bulkAdd");
+const StudioBulkJob = require("../models/studio/StudioBulkJob");
 const { runLinkCheck, statusFor } = require("../utils/studio/manufacturers/media");
 const { sanitizeImageBuffer } = require("../utils/imageSanitizer");
 const storage = require("../utils/studio/storage");
@@ -271,10 +273,20 @@ router.get("/:key/items", handle(async (req, res) => {
   const page = Math.max(1, Math.min(500, Number(req.query.page) || 1));
   const per = Math.max(10, Math.min(200, Number(req.query.per) || 60));
   const f = itemFilter(a.key, req.query);
-  const [total, list] = await Promise.all([
-    StudioSupplierItem.countDocuments(f),
-    StudioSupplierItem.find(f).sort({ group: 1, seriesKey: 1, baseModel: 1, "color.name": 1 }).skip((page - 1) * per).limit(per).select("-attributes -priceHistory").lean(),
-  ]);
+  let total, list;
+  const designer = String(req.query.designer || "");
+  if (designer === "supported" || designer === "unsupported") {
+    // drawable or not is the adapter's decision, so filter after reading (a few thousand rows at most)
+    const want = designer === "supported";
+    const all = (await StudioSupplierItem.find(f).sort({ group: 1, seriesKey: 1, baseModel: 1, "color.name": 1 }).select("-attributes -priceHistory").lean()).filter((it) => a.studioMapping(it).supported === want);
+    total = all.length;
+    list = all.slice((page - 1) * per, page * per);
+  } else {
+    [total, list] = await Promise.all([
+      StudioSupplierItem.countDocuments(f),
+      StudioSupplierItem.find(f).sort({ group: 1, seriesKey: 1, baseModel: 1, "color.name": 1 }).skip((page - 1) * per).limit(per).select("-attributes -priceHistory").lean(),
+    ]);
+  }
   const checks = await statusFor(list.flatMap((it) => (it.media || []).filter((x) => x.kind === "photo").map((x) => x.url)));
   res.json({ total, page, per, items: list.map((it) => itemRow(a, it, checks)) });
 }));
@@ -305,6 +317,26 @@ router.post("/:key/add-to-studio", json, handle(async (req, res) => {
   const a = adapterOr404(req);
   const out = await addToStudio({ key: a.key, partNumbers: req.body?.partNumbers, actorId: actorId(req) });
   res.status(out.added.length ? 201 : 200).json(out);
+}));
+
+// ------------------------------------------------------------------ add everything eligible
+/** What "Add eligible products to Studio" would add, per category. Nothing changes. */
+router.get("/:key/studio-eligible", handle(async (req, res) => {
+  const a = adapterOr404(req);
+  res.json(await previewEligible(a.key));
+}));
+
+/** Start adding the eligible products of the chosen categories as private drafts (runs in the background). */
+router.post("/:key/studio-jobs", json, handle(async (req, res) => {
+  const a = adapterOr404(req);
+  const job = await startBulkAdd({ key: a.key, groups: req.body?.groups, actorId: actorId(req) });
+  res.status(202).json({ job });
+}));
+
+router.get("/:key/studio-jobs", handle(async (req, res) => {
+  const a = adapterOr404(req);
+  await currentJob(a.key); // marks a stopped run as interrupted
+  res.json({ jobs: await StudioBulkJob.find({ manufacturer: a.key }).sort({ createdAt: -1 }).limit(10).lean() });
 }));
 
 router.post("/:key/link-check", handle(async (req, res) => {

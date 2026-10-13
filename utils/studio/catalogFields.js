@@ -265,6 +265,11 @@ function validateProduct(body, { creating }) {
       internalNote: String(p.internalNote || "").trim().slice(0, 1000),
     };
   }
+  if (body.review !== undefined) {
+    const r = body.review || {};
+    out.review = {};
+    for (const k of ["info", "visual"]) if (r[k] !== undefined) out.review[k] = r[k] === true;
+  }
   if (body.compatibility !== undefined) {
     const c = body.compatibility || {};
     out.compatibility = { status: c.status === "reviewed" ? "reviewed" : "unverified", note: String(c.note || "").trim().slice(0, 1000) };
@@ -278,7 +283,7 @@ const hexToNum = (h) => (typeof h === "string" && HEX.test(h) ? parseInt(h.slice
  * Products -> the visualization engine's catalog shape.
  * `assetUrl(assetId)` turns an asset id into a URL. Pricing is never included.
  */
-function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos = false } = {}) {
+function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos = false, withSpecs = true } = {}) {
   const cat = { finishes: [], bases: [], fixtures: [], enclosures: [], accessories: [], specs: {} };
   for (const p of products) {
     const e = p.engine || {};
@@ -294,8 +299,10 @@ function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos =
       ...(!ownPhoto && extPhoto ? { photoSource: "manufacturer-preview" } : {}),
       photos: (p.assets?.photos || []).map((x) => ({ url: assetUrl(x.assetId), alt: x.alt || p.name })),
       featured: Boolean(p.featured), sortOrder: p.sortOrder || 0,
+      // product family and this variant's size / colour, so pickers show one card per family
+      family: familyOf(p), variant: variantOf(p),
     };
-    cat.specs[p.sku] = {
+    if (withSpecs) cat.specs[p.sku] = {
       name: p.name, manufacturer: p.manufacturer, model: p.model,
       specs: Object.fromEntries((p.specs || []).map((s) => [s.label || s.key, { value: s.value, unit: s.unit, status: s.status, source: s.source }])),
       sources: p.sources || [],
@@ -373,11 +380,56 @@ function completeness(p) {
  */
 function publishBlockers(p) {
   if (!p.source?.manufacturer) return [];
+  if (p.source.unitSku) return []; // a unit's integral walls follow the unit
   const out = [];
   if (p.pricing?.priceCents == null) out.push("Set your selling price before publishing.");
+  if (!p.assets?.photos?.length) out.push("Add a photo customers may see: upload one you are licensed to use, or copy the manufacturer's once image rights are confirmed.");
   if (p.compatibility?.status !== "reviewed") out.push("Compatibility is unverified: review what it fits and pairs with, then mark it reviewed.");
+  if (p.review?.info !== true) out.push("Approve the product information (name, description, specifications).");
+  if (p.review?.visual !== true) out.push(`Check the illustrative preview and approve it${p.source.visualIssues?.length ? ` (${p.source.visualIssues.length} point(s) to check)` : ""}.`);
   if (p.source.availability === "discontinued" || p.source.availability === "unlisted") out.push(`The manufacturer lists it as ${p.source.availability}.`);
   return out;
 }
 
-module.exports = { publishBlockers, TYPES, fieldsFor, validateEngine, validateProduct, toEngineCatalog, completeness, SKU_PATTERN: SKU };
+/**
+ * Where a product stands, for the catalog manager:
+ *   published | archived
+ *   ready      - a draft with nothing missing: the owner can publish it
+ *   review     - priced and photographed; waiting for the owner's checks
+ *   incomplete - missing a selling price, a photo, or drawing details
+ */
+function readiness(p) {
+  if (p.status === "archived") return { stage: "archived", blockers: [] };
+  const engineErrors = validateEngine(p.category, p.type, p.engine).errors.map((e) => `Visualization details: ${e.message}`);
+  const blockers = [...engineErrors, ...publishBlockers(p)];
+  if (p.status === "published") return { stage: "published", blockers };
+  if (!blockers.length) return { stage: "ready", blockers };
+  const basicsMissing = engineErrors.length || (p.source?.manufacturer && !p.source.unitSku && (p.pricing?.priceCents == null || !p.assets?.photos?.length));
+  return { stage: basicsMissing ? "incomplete" : "review", blockers };
+}
+
+const slugify = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
+/** The product family a product belongs to: a manufacturer series, a unit (its walls), or itself. */
+function familyOf(p) {
+  if (p.source?.unitSku) return { key: `unit:${p.source.unitSku}`, name: p.name };
+  if (p.source?.manufacturer && p.source.seriesName) {
+    return { key: `${p.source.manufacturer}:${p.category}:${slugify(p.source.seriesName)}`, name: p.source.seriesName.replace(/[®™]/g, "").replace(/\s+/g, " ").trim() };
+  }
+  return { key: `sku:${p.sku}`, name: p.name };
+}
+const inch = (v) => (Number.isFinite(v) ? `${Math.round(v * 100) / 100}″` : "");
+/** This variant's size and colour within its family. */
+function variantOf(p) {
+  const e = p.engine || {};
+  let size = "";
+  if (p.category === "wall") size = [e.kit?.fitsLengthMax, e.kit?.fitsWidthMax, e.kit?.height].every(Number.isFinite) ? `${inch(e.kit.fitsLengthMax)} × ${inch(e.kit.fitsWidthMax)} × ${inch(e.kit.height)}` : "";
+  else if (p.category === "base") {
+    const d = (e.drains || []).length === 1 && e.drains[0].id !== "center" ? `, ${e.drains[0].name.toLowerCase()}` : "";
+    size = Number.isFinite(e.length) ? `${inch(e.length)} × ${inch(e.width)}${d}` : "";
+  } else if (p.category === "accessory" && Number.isFinite(e.length)) size = inch(e.length);
+  else if (p.category === "accessory" && Number.isFinite(e.width)) size = inch(e.width);
+  const model = p.source?.modelNumber || p.model || "";
+  return { size, model, color: p.colorName || "", colorHex: typeof e.color === "string" ? e.color : typeof e.finishColor === "string" ? e.finishColor : null };
+}
+
+module.exports = { publishBlockers, readiness, familyOf, variantOf, TYPES, fieldsFor, validateEngine, validateProduct, toEngineCatalog, completeness, SKU_PATTERN: SKU };

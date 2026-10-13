@@ -12,9 +12,11 @@ const { toEngineCatalog } = require("./catalogFields");
 
 const CACHE_MS = 30 * 1000;
 let cache = null;
+let staffCache = null;
 
 function invalidate() {
   cache = null;
+  staffCache = null;
 }
 
 function apiBase() {
@@ -53,9 +55,19 @@ async function publicCatalog() {
 
 /** Staff catalog: all non-archived products, plus any archived SKUs listed in `keepSkus`. */
 async function staffCatalog(keepSkus = []) {
-  const products = await StudioProduct.find({ $or: [{ status: { $ne: "archived" } }, { sku: { $in: keepSkus } }] }).lean();
+  // Large manufacturer catalogs make this the heaviest Studio query; staff
+  // designs ask for it on every change, so the live part is cached briefly
+  // (cleared by any catalog edit) and only archived SKUs are looked up.
+  if (!staffCache || staffCache.at < Date.now() - CACHE_MS) {
+    const live = await StudioProduct.find({ status: { $ne: "archived" } }).select("-specs -sources").lean();
+    staffCache = { at: Date.now(), live };
+  }
+  const have = new Set(staffCache.live.map((p) => p.sku));
+  const missing = [...new Set(keepSkus)].filter((s) => s && !have.has(s));
+  const archived = missing.length ? await StudioProduct.find({ sku: { $in: missing } }).select("-specs -sources").lean() : [];
+  const products = [...staffCache.live, ...archived];
   const assetUrl = await assetUrlResolver(products);
-  return { catalog: toEngineCatalog(products, { assetUrl, manufacturerPhotos: true }), products };
+  return { catalog: toEngineCatalog(products, { assetUrl, manufacturerPhotos: true, withSpecs: false }), products };
 }
 
 /** sku -> product (with pricing), for pricing. Includes archived products so old designs still price. */

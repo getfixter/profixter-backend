@@ -61,12 +61,69 @@ calculated from it. A Swan product cannot be published, and is never priced in
 a customer quote, until you set a selling price. Per-estimate overrides and
 discounts work as before (Shower Studio → design → price adjustments).
 
+## Adding products to the Studio
+
+**One product:** open it in Manufacturers → Products (search a part number,
+or a series → model → colour) and press **Add to Studio**. It becomes a
+private draft with the manufacturer's specifications, size and colour, and
+the editor opens. Already added: "Already in Studio → Open in editor". Not
+drawable (vanity tops, sinks, single panels, corner bases...): the page says
+why. "Add all N colors" on a model adds every colour of that size at once.
+
+**Everything eligible:** Manufacturers → Products → **Add eligible products
+to Studio**. The preview shows, per category: new, already in the Studio, not
+drawable (with reasons), missing specifications, missing photo links. Pick
+categories and confirm. Swan file of 2026-10-01: **1,804 eligible** (1,370
+wall kits, 236 bases, 30 tubs, 106 tub/shower units, 12 shower units, 49
+accessories; plus the integral walls of the 118 one-piece units) and 1,868
+that stay in the library. Adding all of them takes a few seconds; it runs in
+the background, and running it again adds only what is missing (an
+interrupted run is marked and simply started again).
+
+Both use the same code path, keyed on the manufacturer part number: a
+product is never added twice, and nothing you set is ever overwritten.
+
+## Getting a product ready to publish
+
+Studio Catalog → **Products** is the catalog manager: products grouped into
+families (series → size → colour), with search (an exact SKU / part number
+jumps straight to it), source, category and readiness filters (drafts, ready
+for review, ready to publish, published, missing price, missing photo,
+compatibility unverified, preview to check, manufacturer changes, archived),
+and bulk changes (publish ready ones, back to draft, archive drafts, mark
+compatibility reviewed with a note, show/hide on the website, feature).
+
+A manufacturer product can be published only when its checklist is complete:
+
+1. your selling price;
+2. a photo customers may see (your upload, or the manufacturer's copied after
+   image rights are confirmed);
+3. compatibility reviewed (the editor's **Show what it fits** lists the
+   bases/walls/doors in your catalog it pairs with under the designer's own
+   fit rules, and what to confirm: drain position, threshold, installation);
+4. product information approved (name, description, specifications);
+5. illustrative preview checked (any estimated detail is listed);
+6. still sold by the manufacturer.
+
+Bulk publishing runs the same checklist per product and skips (with the
+reason) any that are not ready. Hand-made products keep the old rules.
+
+The editor also shows the family's other sizes and colours (one click to
+switch), and each product's image status: photos customers may see,
+manufacturer images (and their rights), texture source (yours / manufacturer
+/ approximation), and whether the preview needs checking.
+
 ## Product families, sizes and colours
 
 Variants are grouped as **category → series → model (size / drain side) →
 colour**, e.g. *Swanstone Traditional Subway Tile Glue up Shower Wall Kit →
 TSMK84-3062 (62″ × 30″ × 84″) → Carrara / Ash Gray / …*. Search finds a model
 number with or without dashes (`TSMK84-3062`, `TSMK843062`) or a UPC.
+
+The designer (staff and public) shows **one card per family**; choosing it
+shows the sizes that fit the measured alcove and the colours of that size as
+chips. Only combinations that pass the fit rules are offered, and the public
+Studio offers only published products.
 
 ## What the designer can draw
 

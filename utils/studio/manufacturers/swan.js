@@ -263,6 +263,7 @@ module.exports = {
   PATTERNS,
   DEFAULT_TRIM_ALLOWANCE_IN,
   colorOf,
+  colorNameFor: (code) => COLOR_BY_CODE.get(code || "")?.name || "",
   patternFor,
   modelNumber,
   seriesName,

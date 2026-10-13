@@ -287,22 +287,43 @@ async function main() {
   });
 
   console.log("prices and publishing");
-  await test("three separate prices: list (manufacturer), material cost and selling price (owner); publishing needs a selling price and a compatibility review", async () => {
+  const photoJpeg = await sharp({ create: { width: 640, height: 480, channels: 3, background: { r: 230, g: 230, b: 228 } } }).jpeg().toBuffer();
+  async function ownPhoto(id) {
+    const form = new FormData();
+    form.append("file", new Blob([photoJpeg], { type: "image/jpeg" }), "own.jpg");
+    form.append("kind", "photo");
+    return call("POST", `/api/admin/studio/products/${id}/assets`, { user: owner, form });
+  }
+  const publish = (id) => call("POST", `/api/admin/studio/products/${id}/status`, { user: owner, body: { status: "published" } });
+
+  await test("three separate prices; publishing walks through every requirement: selling price, own photo, compatibility, information, preview", async () => {
     const kit = await StudioProduct.findOne({ sku: "MTMK723450.221" });
-    let r = await call("POST", `/api/admin/studio/products/${kit._id}/status`, { user: owner, body: { status: "published" } });
+    let r = await publish(kit._id);
     assert.strictEqual(r.status, 400);
     assert.match(r.body.message, /selling price/);
     r = await call("PUT", `/api/admin/studio/products/${kit._id}`, { user: owner, body: { pricing: { priceCents: 410000, costCents: 205000 } } });
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.product.pricing.costCents, 205000);
     assert.strictEqual(r.body.product.source.listPriceCents, 318500, "the list price is not the cost");
-    r = await call("POST", `/api/admin/studio/products/${kit._id}/status`, { user: owner, body: { status: "published" } });
-    assert.strictEqual(r.status, 400);
+    assert.strictEqual(r.body.product.readiness.stage, "incomplete", "no photo yet");
+    r = await publish(kit._id);
+    assert.match(r.body.message, /Add a photo customers may see/);
+    assert.strictEqual((await ownPhoto(kit._id)).status, 201);
+    r = await publish(kit._id);
     assert.match(r.body.message, /Compatibility is unverified/);
     r = await call("PUT", `/api/admin/studio/products/${kit._id}`, { user: owner, body: { compatibility: { status: "reviewed", note: "Fits our 60x32 alcoves" } } });
     assert.strictEqual(r.body.product.compatibility.status, "reviewed");
     assert.ok(r.body.product.compatibility.reviewedAt);
-    r = await call("POST", `/api/admin/studio/products/${kit._id}/status`, { user: owner, body: { status: "published" } });
+    assert.strictEqual(r.body.product.readiness.stage, "review");
+    r = await publish(kit._id);
+    assert.match(r.body.message, /Approve the product information/);
+    r = await call("PUT", `/api/admin/studio/products/${kit._id}`, { user: owner, body: { review: { info: true } } });
+    r = await publish(kit._id);
+    assert.match(r.body.message, /Check the illustrative preview/);
+    r = await call("PUT", `/api/admin/studio/products/${kit._id}`, { user: owner, body: { review: { visual: true } } });
+    assert.strictEqual(r.body.product.readiness.stage, "ready");
+    assert.strictEqual(r.body.product.review.info, true, "the earlier sign-off is kept");
+    r = await publish(kit._id);
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.product.status, "published");
   });
@@ -310,14 +331,19 @@ async function main() {
   await test("owner-made products keep the old rules (an unpriced owner product can still be published)", async () => {
     const r = await call("POST", "/api/admin/studio/products", { user: owner, body: { sku: "OWN-BAR-1", category: "accessory", type: "grabBar", name: "Owner bar", engine: { length: 24, diameter: 1.25, clearance: 1.5, flange: 3.25, finishColor: "#c9ccce", roughness: 0.35 } } });
     assert.strictEqual(r.status, 201);
-    const p = await call("POST", `/api/admin/studio/products/${r.body.product._id}/status`, { user: owner, body: { status: "published" } });
+    const p = await publish(r.body.product._id);
     assert.strictEqual(p.status, 200);
   });
 
-  await test("publishing a unit publishes its walls with it", async () => {
+  await test("a one-piece unit needs its preview checked (drawn approximately), and its walls are published with it", async () => {
     const unit = await StudioProduct.findOne({ sku: "VP6030CTSML.010" });
-    await call("PUT", `/api/admin/studio/products/${unit._id}`, { user: owner, body: { pricing: { priceCents: 350000 }, compatibility: { status: "reviewed" } } });
-    const r = await call("POST", `/api/admin/studio/products/${unit._id}/status`, { user: owner, body: { status: "published" } });
+    assert.ok(unit.source.visualIssues.some((v) => /approximation of its shape/.test(v)));
+    await ownPhoto(unit._id);
+    await call("PUT", `/api/admin/studio/products/${unit._id}`, { user: owner, body: { pricing: { priceCents: 350000 }, compatibility: { status: "reviewed" }, review: { info: true } } });
+    let r = await publish(unit._id);
+    assert.match(r.body.message, /Check the illustrative preview and approve it \(\d point/);
+    await call("PUT", `/api/admin/studio/products/${unit._id}`, { user: owner, body: { review: { visual: true } } });
+    r = await publish(unit._id);
     assert.strictEqual(r.status, 200);
     assert.strictEqual((await StudioProduct.findOne({ sku: "VP6030CTSML.010-WALLS" }).lean()).status, "published");
     await call("POST", `/api/admin/studio/products/${unit._id}/status`, { user: owner, body: { status: "draft" } });
@@ -372,7 +398,7 @@ async function main() {
     assert.ok(!text.includes("MTMK723450.010") && !text.includes("VP6030CTL.010"), "no drafts");
     for (const leak of ["costCents", "listPrice", "205000", "318500", "329900", "410000", "cloudinary", "salsify", "pendingReview", "externalMedia"]) assert.ok(!text.includes(leak), `public catalog leaks ${leak}`);
     const kit = r.body.catalog.finishes.find((f) => f.id === "MTMK723450.221");
-    assert.strictEqual(kit.photo, null, "manufacturer photos are not public");
+    assert.ok(kit.photo && kit.photo.startsWith("/api/studio/assets/"), "only the owner's own photo is public, never a manufacturer link");
     assert.deepStrictEqual(kit.kits.map((k) => k.for), ["pan", "tub"]);
   });
 
@@ -486,6 +512,146 @@ async function main() {
     assert.ok(row.issues.some((i) => /selling price/.test(i.message)));
   });
 
+  console.log("adding everything eligible");
+  const swanAdapter = require("../utils/studio/manufacturers/swan");
+  const StudioBulkJob = require("../models/studio/StudioBulkJob");
+  const { addToStudio } = require("../utils/studio/manufacturers/studioLink");
+  async function waitJob() {
+    for (let i = 0; i < 200; i++) {
+      const r = await call("GET", `${M}/studio-jobs`, { user: owner });
+      if (r.body.jobs[0] && r.body.jobs[0].status !== "running") return r.body.jobs[0];
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    throw new Error("bulk add did not finish");
+  }
+  let eligibleWallsBases = 0;
+  await test("bulk preview: per category - eligible, new, already in Studio, unsupported (with reasons), no longer sold", async () => {
+    const r = await call("GET", `${M}/studio-eligible`, { user: owner });
+    assert.strictEqual(r.status, 200);
+    const items = await StudioSupplierItem.find({}).lean();
+    const sellable = items.filter((i) => ["active", "special-order"].includes(i.availability));
+    const supported = sellable.filter((i) => swanAdapter.studioMapping(i).supported);
+    assert.strictEqual(r.body.totals.eligible, supported.length);
+    assert.strictEqual(r.body.totals.unsupported, sellable.length - supported.length);
+    assert.strictEqual(r.body.totals.notSold, items.length - sellable.length);
+    assert.strictEqual(r.body.totals.alreadyInStudio, supported.filter((i) => i.studioSku).length);
+    const g = Object.fromEntries(r.body.groups.map((x) => [x.key, x]));
+    assert.strictEqual(g.vanityTops.eligible, 0);
+    assert.strictEqual(g.sinks.eligible, 0);
+    assert.ok(Object.keys(g.walls.unsupportedReasons).some((k) => /complete wall kits only/.test(k)), "single panels stay in the library");
+    eligibleWallsBases = g.walls.new + g.bases.new;
+    assert.ok(eligibleWallsBases > 0);
+  });
+
+  await test("bulk add: chosen categories only, all PRIVATE DRAFTS with no price; counts match; repeating adds nothing; owner prices kept", async () => {
+    const before = await StudioProduct.countDocuments();
+    const startedAt = new Date();
+    let r = await call("POST", `${M}/studio-jobs`, { user: owner, body: { groups: ["walls", "bases"] } });
+    assert.strictEqual(r.status, 202);
+    let job = await waitJob();
+    assert.strictEqual(job.status, "done");
+    assert.strictEqual(job.added, eligibleWallsBases);
+    const fresh = await StudioProduct.find({ "source.manufacturer": "swan", createdAt: { $gte: startedAt } }).lean();
+    assert.ok(fresh.length >= eligibleWallsBases);
+    assert.ok(fresh.every((p) => p.status === "draft"), "new ones are drafts");
+    assert.ok(fresh.filter((p) => !p.source.unitSku && p.status === "draft").every((p) => p.pricing.priceCents == null && p.compatibility.status === "unverified"), "no price, unverified");
+    assert.strictEqual(await StudioProduct.countDocuments({ category: { $in: ["fixture", "enclosure"] }, "source.manufacturer": "swan" }), 0);
+    const mid = await StudioProduct.countDocuments();
+    assert.strictEqual(mid - before, eligibleWallsBases);
+    r = await call("POST", `${M}/studio-jobs`, { user: owner, body: { groups: ["walls", "bases"] } });
+    job = await waitJob();
+    assert.strictEqual(job.total, 0);
+    assert.strictEqual(await StudioProduct.countDocuments(), mid, "no duplicates");
+    const kit = await StudioProduct.findOne({ sku: "MTMK723450.221" }).lean();
+    assert.deepStrictEqual([kit.pricing.priceCents, kit.pricing.costCents, kit.status], [410000, 205000, "published"]);
+    assert.strictEqual(new Set((await StudioProduct.find({}).select("sku").lean()).map((p) => p.sku)).size, await StudioProduct.countDocuments());
+  });
+
+  await test("an interrupted run is marked as such; starting again continues with what is missing", async () => {
+    await StudioBulkJob.create({ manufacturer: "swan", groups: ["accessories"], status: "running", heartbeatAt: new Date(Date.now() - 10 * 60 * 1000) });
+    const r = await call("GET", `${M}/studio-jobs`, { user: owner });
+    assert.strictEqual(r.body.jobs.find((j) => j.groups[0] === "accessories" && j.total === 0).status, "interrupted");
+    const go = await call("POST", `${M}/studio-jobs`, { user: owner, body: { groups: ["accessories", "bathtubs", "tubShowers", "showers"] } });
+    assert.strictEqual(go.status, 202);
+    const job = await waitJob();
+    assert.strictEqual(job.status, "done");
+    const pv = await call("GET", `${M}/studio-eligible`, { user: owner });
+    assert.strictEqual(pv.body.totals.new, 0, "everything eligible is now in the Studio");
+  });
+
+  await test("two adds of the same product at the same moment never create a duplicate", async () => {
+    await StudioProduct.deleteOne({ sku: "SS07211.010" });
+    await StudioSupplierItem.updateOne({ partNumber: "SS07211.010" }, { $set: { studioSku: null } });
+    const [a, b] = await Promise.all([addToStudio({ key: "swan", partNumbers: ["SS07211.010"] }), addToStudio({ key: "swan", partNumbers: ["SS07211.010"] })]);
+    assert.strictEqual(a.added.length + b.added.length, 1);
+    assert.strictEqual(await StudioProduct.countDocuments({ sku: "SS07211.010" }), 1);
+  });
+
+  console.log("catalog manager");
+  await test("families group sizes and colours; exact SKU search; filters by manufacturer, category and readiness", async () => {
+    let r = await call("GET", "/api/admin/studio/products?view=families&category=wall", { user: cataloger });
+    assert.strictEqual(r.status, 200);
+    const fam = r.body.families.find((x) => /Metro Subway Tile Glue up Bathtub and Shower Wall Kit/.test(x.name));
+    assert.ok(fam.products.length >= 3 && fam.colors.includes("Carrara") && fam.sizes.length === 1, JSON.stringify({ sizes: fam.sizes, colors: fam.colors }));
+    assert.ok(fam.products.every((p) => p.readiness && p.variant.size));
+    r = await call("GET", "/api/admin/studio/products?view=families&q=mtmk723450.221", { user: cataloger });
+    assert.strictEqual(r.body.exact, "MTMK723450.221");
+    assert.strictEqual(r.body.total.products, 1);
+    r = await call("GET", "/api/admin/studio/products?view=families&manufacturer=own", { user: cataloger });
+    assert.deepStrictEqual(r.body.families.flatMap((x) => x.products.map((p) => p.sku)), ["OWN-BAR-1"]);
+    r = await call("GET", "/api/admin/studio/products?view=families&stage=published", { user: cataloger });
+    assert.ok(r.body.families.every((x) => x.products.every((p) => p.status === "published")));
+    assert.ok(r.body.counts.missingPrice > 10 && r.body.counts.compatibility > 10 && r.body.counts.incomplete > 0);
+    r = await call("GET", "/api/admin/studio/products?view=families&stage=missingPrice&per=5&page=2", { user: cataloger });
+    assert.ok(r.body.families.length <= 5 && r.body.page === 2);
+    assert.strictEqual((await call("GET", "/api/admin/studio/products?view=families", { user: seller })).status, 403);
+  });
+
+  await test("the editor gets the family's other sizes/colours to switch between", async () => {
+    const kit = await StudioProduct.findOne({ sku: "MTMK723450.221" }).lean();
+    const r = await call("GET", `/api/admin/studio/products/${kit._id}`, { user: owner });
+    assert.ok(r.body.siblings.length >= 3 && r.body.siblings.some((x) => x.sku === "MTMK723450.203"));
+    assert.strictEqual(r.body.product.imaging.imageRights, "approved");
+    assert.strictEqual(r.body.product.imaging.publicPhotos, 1);
+  });
+
+  await test("bulk actions keep the rules: drafts archive, published are skipped; bulk publish only publishes ready products", async () => {
+    const drafts = await StudioProduct.find({ "source.manufacturer": "swan", status: "draft", category: "wall", "source.unitSku": null }).limit(3).lean();
+    const pub = await StudioProduct.findOne({ sku: "MTMK723450.221" }).lean();
+    let r = await call("POST", "/api/admin/studio/products/bulk", { user: owner, body: { action: "publish", ids: drafts.map((d) => String(d._id)) } });
+    assert.strictEqual(r.body.done, 0);
+    assert.ok(r.body.skipped.every((x) => /selling price|photo/.test(x.reason)));
+    r = await call("POST", "/api/admin/studio/products/bulk", { user: owner, body: { action: "compatibilityReviewed", ids: drafts.map((d) => String(d._id)) } });
+    assert.strictEqual(r.status, 400, "a note is required");
+    r = await call("POST", "/api/admin/studio/products/bulk", { user: owner, body: { action: "archive", ids: [...drafts.map((d) => String(d._id)), String(pub._id)] } });
+    assert.strictEqual(r.body.done, 3);
+    assert.match(r.body.skipped[0].reason, /unpublish it first/);
+    assert.strictEqual((await StudioProduct.findById(pub._id).lean()).status, "published");
+    r = await call("POST", "/api/admin/studio/products/bulk", { user: owner, body: { action: "draft", ids: drafts.map((d) => String(d._id)) } });
+    assert.strictEqual(r.body.done, 3);
+    assert.strictEqual((await call("POST", "/api/admin/studio/products/bulk", { user: seller, body: { action: "archive", ids: [String(pub._id)] } })).status, 403);
+  });
+
+  await test("compatibility review shows what a product fits in the catalog and what to confirm", async () => {
+    const pan = await StudioProduct.findOne({ "source.manufacturer": "swan", category: "base", type: "pan", "source.unitSku": null }).lean();
+    let r = await call("GET", `/api/admin/studio/products/${pan._id}/compatibility`, { user: owner });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.report.checks.some((c) => /Drain/.test(c.text)) && r.body.report.checks.some((c) => /Threshold/.test(c.text)));
+    assert.ok(Array.isArray(r.body.report.pairs));
+    const kit = await StudioProduct.findOne({ sku: "MTMK723450.221" }).lean();
+    r = await call("GET", `/api/admin/studio/products/${kit._id}/compatibility`, { user: owner });
+    assert.ok(r.body.report.checks.some((c) => /shower bases and tubs/.test(c.text)));
+  });
+
+  await test("designer catalog: variants carry family, size and colour so pickers show one card per family", async () => {
+    const list = await StudioProduct.find({ "source.manufacturer": "swan", category: "wall", "source.unitSku": null }).lean();
+    const cat = toEngineCatalog(list, { withSpecs: false });
+    const metro = cat.finishes.filter((x) => x.family.name.includes("Metro Subway Tile Glue up Bathtub and Shower Wall Kit"));
+    assert.ok(metro.length >= 3 && new Set(metro.map((x) => x.family.key)).size === 1);
+    assert.ok(metro.every((x) => x.variant.size && x.variant.color));
+    assert.deepStrictEqual(cat.specs, {}, "the staff catalog leaves specifications out");
+  });
+
   const real = (() => {
     const dir = path.join(__dirname, "..", "catalog-imports");
     try { return fs.readdirSync(dir).filter((f) => /^swan-epf-.*\.xlsx$/i.test(f)).map((f) => path.join(dir, f))[0] || null; } catch { return null; }
@@ -514,6 +680,43 @@ async function main() {
       assert.strictEqual(r.body.import.summary.changed, 0);
       assert.ok(previewMs < 60000 && applyMs < 120000, `preview ${previewMs} ms, apply ${applyMs} ms`);
       console.log(`        ${s.variants} variants, ${s.models} models, ${s.series} series; preview ${previewMs} ms, apply ${applyMs} ms`);
+    });
+
+    await test("the whole workbook: every eligible product added as drafts in one run; the manager and designer stay fast", async () => {
+      const { staffCatalog } = require("../utils/studio/catalogService");
+      let t = Date.now();
+      const pv = await call("GET", `${M}/studio-eligible`, { user: owner });
+      const previewMs = Date.now() - t;
+      const groups = pv.body.groups.filter((g) => g.eligible).map((g) => g.key);
+      t = Date.now();
+      await call("POST", `${M}/studio-jobs`, { user: owner, body: { groups } });
+      const job = await waitJob();
+      const addMs = Date.now() - t;
+      assert.strictEqual(job.status, "done");
+      assert.strictEqual(job.added + job.skipped, job.total);
+      const again = await call("GET", `${M}/studio-eligible`, { user: owner });
+      assert.strictEqual(again.body.totals.new, 0);
+      t = Date.now();
+      const fam = await call("GET", "/api/admin/studio/products?view=families&per=20", { user: owner });
+      const managerMs = Date.now() - t;
+      t = Date.now();
+      const sku = (await StudioProduct.findOne({ "source.manufacturer": "swan" }).lean()).sku;
+      const exact = await call("GET", `/api/admin/studio/products?view=families&q=${encodeURIComponent(sku)}`, { user: owner });
+      const searchMs = Date.now() - t;
+      assert.strictEqual(exact.body.exact, sku);
+      require("../utils/studio/catalogService").invalidate();
+      t = Date.now();
+      const { catalog, products } = await staffCatalog([]);
+      const staffMs = Date.now() - t;
+      const kb = Math.round(JSON.stringify(catalog).length / 1024);
+      const gzKb = Math.round(require("zlib").gzipSync(JSON.stringify(catalog)).length / 1024);
+      const t2 = Date.now();
+      await staffCatalog([]);
+      const cachedMs = Date.now() - t2;
+      const studio = await StudioProduct.countDocuments({ "source.manufacturer": "swan" });
+      console.log(`        eligible ${pv.body.totals.eligible} of ${pv.body.totals.variants} (unsupported ${pv.body.totals.unsupported}, not sold ${pv.body.totals.notSold}); preview ${previewMs} ms; bulk add ${job.added} (+${job.companions} unit walls) in ${addMs} ms; Studio products now ${studio}`);
+      console.log(`        catalog manager page ${managerMs} ms (${fam.body.total.families} families / ${fam.body.total.products} products); exact SKU ${searchMs} ms; staff designer catalog ${products.length} products, ${kb} KB (${gzKb} KB gzipped), ${staffMs} ms (cached ${cachedMs} ms)`);
+      assert.ok(managerMs < 5000 && searchMs < 5000 && staffMs < 5000, "fast enough");
     });
   }
 

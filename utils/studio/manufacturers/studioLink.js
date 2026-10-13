@@ -15,6 +15,8 @@ const { validateEngine } = require("../catalogFields");
 const { adapterFor } = require("./index");
 
 const MAX_PER_CALL = 300;
+/** Approximations that mean the preview must be checked by the owner before publishing. */
+const VISUAL_ISSUE = /not in the file|not published|no measured swatch|placeholder|estimated|approximation of its shape/i;
 const WALLS_SUFFIX = "-WALLS";
 
 function specsFor(item, adapter) {
@@ -95,7 +97,7 @@ async function addToStudio({ key, partNumbers, actorId = null }) {
     const source = {
       manufacturer: key, partNumber: part, modelNumber: item.modelNumber, seriesName: item.seriesName, colorCode: item.color?.code || null,
       listPriceCents: item.listPriceCents, listPriceEffective: item.listPriceEffective, availability: item.availability,
-      unitSku: null, approximations, lastImportId: item.lastImportId, pendingReview: [],
+      unitSku: null, approximations, visualIssues: approximations.filter((a) => VISUAL_ISSUE.test(a)), lastImportId: item.lastImportId, pendingReview: [],
     };
     const texture = m.category === "wall" && ov?.textureAssetId ? { assetId: ov.textureAssetId, widthIn: ov.textureWidthIn, heightIn: ov.textureHeightIn } : undefined;
     const doc = {
@@ -125,7 +127,7 @@ async function addToStudio({ key, partNumbers, actorId = null }) {
         specs: [], sources, engine: cv.engine, visualStatus: "illustrative", status: "draft", isPublic: true,
         // The walls are part of the unit: $0 here, the unit's selling price covers them.
         pricing: { priceCents: 0, costCents: null, installCents: 0, internalNote: `Included in the price of ${part}.` },
-        source: { ...source, unitSku: part, listPriceCents: null, approximations: ["Integral walls of a one-piece unit, drawn as smooth panels."] },
+        source: { ...source, unitSku: part, listPriceCents: null, approximations: ["Integral walls of a one-piece unit, drawn as smooth panels."], visualIssues: [] },
         externalMedia: [], compatibility: { status: "reviewed", note: `Only with ${part} (part of the same unit).` },
         updatedBy: actorId,
       });
@@ -133,7 +135,15 @@ async function addToStudio({ key, partNumbers, actorId = null }) {
     added.push({ partNumber: part, sku: part, category: m.category, type: m.type, name: doc.name, companion: m.companion ? part + WALLS_SUFFIX : null });
   }
   if (docs.length) {
-    await StudioProduct.insertMany(docs, { ordered: true });
+    try {
+      await StudioProduct.insertMany(docs, { ordered: false });
+    } catch (e) {
+      // Another add (a second tab or server) created some of these first: those are "already in the Studio".
+      const errs = e.writeErrors || [];
+      if (!errs.length || errs.some((w) => (w.code ?? w.err?.code) !== 11000)) throw e;
+      const dup = new Set(errs.map((w) => docs[w.index ?? w.err?.index]?.sku).filter(Boolean));
+      for (let i = added.length - 1; i >= 0; i--) if (dup.has(added[i].sku)) { skipped.push({ partNumber: added[i].partNumber, reason: "Already in the Studio catalog." }); added.splice(i, 1); }
+    }
     await StudioSupplierItem.updateMany({ manufacturer: key, partNumber: { $in: added.map((a) => a.partNumber) } }, [{ $set: { studioSku: "$partNumber" } }]);
     require("../catalogService").invalidate();
   }
