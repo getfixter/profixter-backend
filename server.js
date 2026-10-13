@@ -118,6 +118,8 @@ app.use("/api/bookings", (req, res, next) => next());
 // body limits (and upload limits) are the ones that apply.
 app.use("/api/studio", require("./routes/studioPublic"));
 app.use("/api/admin/studio", require("./routes/adminStudio"));
+// Owner-only live preview of the customer Studio: fixed demo catalog, demo prices, stateless (nothing saved or sent).
+app.use("/api/studio-preview", require("./routes/studioPreview"));
 
 // ✅ body parser for everything except bookings
 app.use(express.json({

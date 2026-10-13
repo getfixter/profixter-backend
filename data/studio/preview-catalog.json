@@ -1,0 +1,2684 @@
+{
+ "note": "DEMO catalog for the owner-only live preview. Demo prices; not a selling price list. Built by scripts/build_studio_preview_catalog.js.",
+ "products": [
+  {
+   "sku": "SS07211.010",
+   "category": "accessory",
+   "type": "shelf",
+   "name": "SS-7211 Corner Soap Dish in White",
+   "manufacturer": "Swan",
+   "model": "SS-7211",
+   "description": "",
+   "colorName": "White",
+   "engine": {
+    "leg": 5.75,
+    "thickness": 0.4,
+    "metal": false,
+    "color": "#fcfcfc"
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 9500,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Corner Soap Dish",
+    "modelNumber": "SS-7211",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "as-passage-shelf",
+   "category": "accessory",
+   "type": "shelf",
+   "name": "American Standard Passage corner shelf",
+   "manufacturer": "American Standard (American Standard Bathing)",
+   "model": "1202-008.266",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "leg": 9,
+    "thickness": 0.4,
+    "metal": true,
+    "color": "#b8bbbe"
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 280,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 7500,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-8724",
+   "category": "accessory",
+   "type": "grabBar",
+   "name": "Moen 24″ grab bar 8724",
+   "manufacturer": "Moen",
+   "model": "8724 (satin stainless); R8724PS polished, LR8724W white also listed",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "length": 24,
+    "diameter": 1.25,
+    "clearance": 1.5,
+    "flange": 3.25,
+    "finishColor": "#c9ccce",
+    "roughness": 0.35,
+    "ratedLoad": 500
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 250,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 9000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-8736",
+   "category": "accessory",
+   "type": "grabBar",
+   "name": "Moen 36″ grab bar 8736",
+   "manufacturer": "Moen",
+   "model": "8736 (stainless); R8736PS, R8736W also listed",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "length": 36,
+    "diameter": 1.25,
+    "clearance": 1.5,
+    "flange": 3.25,
+    "finishColor": "#c9ccce",
+    "roughness": 0.35,
+    "ratedLoad": 500
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 260,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 11000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-dn7110",
+   "category": "accessory",
+   "type": "seat",
+   "name": "Moen fold-down teak seat DN7110",
+   "manufacturer": "Moen",
+   "model": "DN7110 (DN7110OWB Old World Bronze also listed)",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "width": 20.47,
+    "depth": 16.17,
+    "color": "#a8784c",
+    "frameColor": "#c9ccce",
+    "ratedLoad": 400
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 290,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 26000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "OP6030TL.010",
+   "category": "base",
+   "type": "tub",
+   "name": "OP6030TL 60 x 30 Optima Veritek™ Pro Bathtub with Left Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "OP6030TSL/R",
+   "description": "Coordinating Wall Set Available. Integrated Tiling Flange and Skirt. Easy Installation",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 15,
+    "color": "#fcfcfc",
+    "material": "Sheet Molding Compound",
+    "geometry": {
+     "thresholdW": 3.5,
+     "ledgeW": 3.5,
+     "floorDrop": 11,
+     "slope": 3.5
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 135000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Optima Veritek™ Pro Bathtub with L/R Drain",
+    "modelNumber": "OP6030TSL/R",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "OP6030TR.010",
+   "category": "base",
+   "type": "tub",
+   "name": "OP6030TR 60 x 30 Optima Veritek™ Pro Bathtub with Right Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "OP6030TSL/R",
+   "description": "Coordinating Wall Set Available. Integrated Tiling Flange and Skirt. Easy Installation",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 15,
+    "color": "#fcfcfc",
+    "material": "Sheet Molding Compound",
+    "geometry": {
+     "thresholdW": 3.5,
+     "ledgeW": 3.5,
+     "floorDrop": 11,
+     "slope": 3.5
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 135000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Optima Veritek™ Pro Bathtub with L/R Drain",
+    "modelNumber": "OP6030TSL/R",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060LM.010",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Left Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060LM.203",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Left Hand Drain Ash Gray",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Ash Gray",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060LM.221",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Left Hand Drain Carrara",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Carrara",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060LM.226",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Left Hand Drain Birch",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Birch",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060RM.010",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Right Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060RM.203",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Right Hand Drain Ash Gray",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Ash Gray",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060RM.221",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Right Hand Drain Carrara",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Carrara",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SB03060RM.226",
+   "category": "base",
+   "type": "pan",
+   "name": "SBF-3060LM/RM 30 x 60 Swanstone® Alcove Shower Pan with Right Hand Drain in Birch",
+   "manufacturer": "Swan",
+   "model": "SBF-3060LM/RM",
+   "description": "Designed for Tub Replacement. Coordinating wall set available. Roll-in threshold",
+   "colorName": "Birch",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 4.375,
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 130000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Alcove Shower Pan with L/R Drain",
+    "modelNumber": "SBF-3060LM/RM",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "VP6030CPANNSL.010",
+   "category": "base",
+   "type": "pan",
+   "name": "VP6030CPANNSL/R Veritek™ Pro Alcove Shower Pan with Left Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "VP6030CPANNSL/R",
+   "description": "Patented Water Management. Coordinating wall set available. Economical Solution",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 6,
+    "color": "#fcfcfc",
+    "material": "Veritek Pro",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 90000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Veritek™ Pro Alcove Shower Pan with L/R Drain",
+    "modelNumber": "VP6030CPANNSL/R",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "VP6030CPANNSR.010",
+   "category": "base",
+   "type": "pan",
+   "name": "VP6030CPANNSL/R Veritek™ Pro Alcove Shower Pan with Right Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "VP6030CPANNSL/R",
+   "description": "Patented Water Management. Coordinating wall set available. Economical Solution",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 6,
+    "color": "#fcfcfc",
+    "material": "Veritek Pro",
+    "geometry": {
+     "thresholdW": 2.5,
+     "ledgeW": 1.25,
+     "floorDrop": 1.6,
+     "slope": 1.6
+    },
+    "thresholdVerified": false,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 90000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Veritek™ Pro Alcove Shower Pan with L/R Drain",
+    "modelNumber": "VP6030CPANNSL/R",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "VP6030CTL.010",
+   "category": "base",
+   "type": "tub",
+   "name": "VP6030CTL 60 x 30 Veritek™ Pro Bathtub with Left Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "VP6030CTL",
+   "description": "Coordinating Wall Set Available. Integrated Tiling Flange and Skirt. Easy Installation",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 15,
+    "color": "#fcfcfc",
+    "material": "Veritek Pro",
+    "geometry": {
+     "thresholdW": 2.625,
+     "ledgeW": 3.5,
+     "floorDrop": 13.5,
+     "slope": 3.5
+    },
+    "thresholdVerified": true,
+    "drains": [
+     {
+      "id": "left",
+      "name": "Left-hand drain",
+      "along": 0.12,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 110000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Veritek™ Pro Bathtub with L/R Drain",
+    "modelNumber": "VP6030CTL",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "VP6030CTR.010",
+   "category": "base",
+   "type": "tub",
+   "name": "VP6030CTR 60 x 30 Veritek™ Pro Bathtub with Right Hand Drain in White",
+   "manufacturer": "Swan",
+   "model": "VP6030CTR",
+   "description": "Coordinating Wall Set Available. Integrated Tiling Flange and Skirt. Easy Installation",
+   "colorName": "White",
+   "engine": {
+    "length": 60,
+    "width": 30,
+    "height": 15,
+    "color": "#fcfcfc",
+    "material": "Veritek Pro",
+    "geometry": {
+     "thresholdW": 2.625,
+     "ledgeW": 3.5,
+     "floorDrop": 13.5,
+     "slope": 3.5
+    },
+    "thresholdVerified": true,
+    "drains": [
+     {
+      "id": "right",
+      "name": "Right-hand drain",
+      "along": 0.88,
+      "across": 0.5
+     }
+    ]
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 110000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Veritek™ Pro Bathtub with L/R Drain",
+    "modelNumber": "VP6030CTR",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "enigmax-6076",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Enigma-X frameless sliding door",
+   "manufacturer": "DreamLine",
+   "model": "DAMZ-61607610-08",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 76,
+    "glassThickness": 0.375,
+    "frame": "frameless",
+    "frameColor": "#d9dcde",
+    "minThreshold": 2.75,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 210,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 145000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "infinityz-6072-chrome",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Infinity-Z sliding door, chrome",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-0960720-01",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "forKinds": [
+     "pan"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 72,
+    "glassThickness": 0.25,
+    "frame": "semi",
+    "frameColor": "#e6e8ea",
+    "minThreshold": 1,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 180,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 95000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "infinityz-tub-6058",
+   "category": "enclosure",
+   "type": "door",
+   "name": "DreamLine Infinity-Z tub door, chrome",
+   "manufacturer": "DreamLine",
+   "model": "SHDR-0960580-01",
+   "description": "Tub version 56–60 × 58″ (VERIFIED in the Infinity-Z listing).",
+   "colorName": "",
+   "engine": {
+    "forKinds": [
+     "tub"
+    ],
+    "openingMin": 56,
+    "openingMax": 60,
+    "glassHeight": 58,
+    "glassThickness": 0.25,
+    "frame": "semi",
+    "frameColor": "#e6e8ea",
+    "minThreshold": 1,
+    "overlap": 2
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 220,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 85000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-csr2160-chrome",
+   "category": "enclosure",
+   "type": "rod",
+   "name": "Moen curved shower rod CSR2160CH, chrome",
+   "manufacturer": "Moen",
+   "model": "CSR2160CH",
+   "description": "Mounting height 75″ is a typical installer choice (ESTIMATE); bow at 60″ interpolated (ESTIMATE).",
+   "colorName": "",
+   "engine": {
+    "forKinds": [
+     "pan",
+     "tub"
+    ],
+    "openingMin": 54,
+    "openingMax": 72,
+    "mountHeight": 75,
+    "diameter": 1,
+    "bow": 6,
+    "finishColor": "#e6e8ea"
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 230,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 12000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "delta-bt13210",
+   "category": "fixture",
+   "type": "shower",
+   "name": "Delta Monitor 13 shower-only BT13210, chrome",
+   "manufacturer": "Delta",
+   "model": "BT13210",
+   "description": "7″ escutcheon VERIFIED (DSP-B-BT13010). Lever and arm length ESTIMATES.",
+   "colorName": "",
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4.2,
+     "armLen": 7,
+     "headDiameter": 2.9
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 130,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 35000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "delta-bt13410",
+   "category": "fixture",
+   "type": "tubShower",
+   "name": "Delta Monitor 13 tub/shower BT13410, chrome",
+   "manufacturer": "Delta",
+   "model": "BT13410 (Chrome), BT13410-SS (Stainless)",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4.2,
+     "armLen": 7,
+     "headDiameter": 3,
+     "spoutReach": 7.0625,
+     "spoutAboveRim": 4.5
+    },
+    "spoutBelowValveMin": 8,
+    "spoutBelowValveMax": 18
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 140,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 39000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-t25902ep-chrome",
+   "category": "fixture",
+   "type": "shower",
+   "name": "Moen Gibson shower-only T25902EP, chrome",
+   "manufacturer": "Moen",
+   "model": "T25902EP",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4,
+     "armLen": 7.375,
+     "headDiameter": 4.5
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 150,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 42000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "moen-t25903ep-chrome",
+   "category": "fixture",
+   "type": "tubShower",
+   "name": "Moen Gibson tub/shower T25903EP, chrome",
+   "manufacturer": "Moen",
+   "model": "T25903EP",
+   "description": "",
+   "colorName": "",
+   "engine": {
+    "finishColor": "#e6e8ea",
+    "roughness": 0.12,
+    "geometry": {
+     "plateR": 3.5,
+     "leverLen": 4,
+     "armLen": 7.375,
+     "headDiameter": 4.5,
+     "spoutReach": 6.5,
+     "spoutAboveRim": 4.5
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 170,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 46000,
+    "installCents": 0
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK723062.010",
+   "category": "wall",
+   "type": "tub",
+   "name": "MSMK72-3062 30 x 62 x 72 Swanstone® Modern Subway Tile Glue up Tub Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "MSMK72-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 225000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "MSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK723062.203",
+   "category": "wall",
+   "type": "tub",
+   "name": "MSMK72-3062 30 x 62 x 72 Swanstone® Modern Subway Tile Glue up Tub Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "MSMK72-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 225000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "MSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK723062.221",
+   "category": "wall",
+   "type": "tub",
+   "name": "MSMK72-3062 30 x 62 x 72 Swanstone® Modern Subway Tile Glue up Tub Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "MSMK72-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 225000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "MSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK723062.226",
+   "category": "wall",
+   "type": "tub",
+   "name": "MSMK72-3062 30 x 62 x 72 Swanstone® Modern Subway Tile Glue up Tub Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "MSMK72-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 225000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "MSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK843062.010",
+   "category": "wall",
+   "type": "pan",
+   "name": "MSMK84-3062 30 x 62 x 84 Swanstone® Modern Subway Tile Glue up Shower Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "MSMK84-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 245000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "MSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK843062.203",
+   "category": "wall",
+   "type": "pan",
+   "name": "MSMK84-3062 30 x 62 x 84 Swanstone® Modern Subway Tile Glue up Shower Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "MSMK84-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 245000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "MSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK843062.221",
+   "category": "wall",
+   "type": "pan",
+   "name": "MSMK84-3062 30 x 62 x 84 Swanstone® Modern Subway Tile Glue up Shower Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "MSMK84-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 245000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "MSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MSMK843062.226",
+   "category": "wall",
+   "type": "pan",
+   "name": "MSMK84-3062 30 x 62 x 84 Swanstone® Modern Subway Tile Glue up Shower Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "MSMK84-3062",
+   "description": "Modern Subway Pattern 6\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 6,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 245000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Modern Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "MSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MTMK843062.010",
+   "category": "wall",
+   "type": "pan",
+   "name": "MTMK84-3062 30 x 62 x 84 Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "MTMK84-3062",
+   "description": "Metro Subway Pattern 4\"H x 8\" W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 8,
+     "tileH": 4,
+     "groutW": 0.125
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30,
+     "forKinds": [
+      "pan",
+      "tub"
+     ]
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 260000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit",
+    "modelNumber": "MTMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MTMK843062.203",
+   "category": "wall",
+   "type": "pan",
+   "name": "MTMK84-3062 30 x 62 x 84 Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "MTMK84-3062",
+   "description": "Metro Subway Pattern 4\"H x 8\" W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 8,
+     "tileH": 4,
+     "groutW": 0.125
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30,
+     "forKinds": [
+      "pan",
+      "tub"
+     ]
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 260000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit",
+    "modelNumber": "MTMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MTMK843062.221",
+   "category": "wall",
+   "type": "pan",
+   "name": "MTMK84-3062 30 x 62 x 84 Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "MTMK84-3062",
+   "description": "Metro Subway Pattern 4\"H x 8\" W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 8,
+     "tileH": 4,
+     "groutW": 0.125
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30,
+     "forKinds": [
+      "pan",
+      "tub"
+     ]
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 260000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit",
+    "modelNumber": "MTMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "MTMK843062.226",
+   "category": "wall",
+   "type": "pan",
+   "name": "MTMK84-3062 30 x 62 x 84 Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "MTMK84-3062",
+   "description": "Metro Subway Pattern 4\"H x 8\" W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 8,
+     "tileH": 4,
+     "groutW": 0.125
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30,
+     "forKinds": [
+      "pan",
+      "tub"
+     ]
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 260000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Metro Subway Tile Glue up Bathtub and Shower Wall Kit",
+    "modelNumber": "MTMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SK366296.010",
+   "category": "wall",
+   "type": "pan",
+   "name": "SK-366296 36 x 62 x 96 Swanstone® Smooth Glue up Shower Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "SK-366296",
+   "description": "Easily Trim to Fit. Easy to Clean. Bestseller",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 96,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 30,
+     "fitsWidthMax": 36
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 215000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Shower Wall Kit",
+    "modelNumber": "SK-366296",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SK366296.203",
+   "category": "wall",
+   "type": "pan",
+   "name": "SK-366296 36 x 62 x 96 Swanstone® Smooth Glue up Shower Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "SK-366296",
+   "description": "Easily Trim to Fit. Easy to Clean. Bestseller",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 96,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 30,
+     "fitsWidthMax": 36
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 215000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Shower Wall Kit",
+    "modelNumber": "SK-366296",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SK366296.221",
+   "category": "wall",
+   "type": "pan",
+   "name": "SK-366296 36 x 62 x 96 Swanstone® Smooth Glue up Shower Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "SK-366296",
+   "description": "Easily Trim to Fit. Easy to Clean. Bestseller",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 96,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 30,
+     "fitsWidthMax": 36
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 215000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Shower Wall Kit",
+    "modelNumber": "SK-366296",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SK366296.226",
+   "category": "wall",
+   "type": "pan",
+   "name": "SK-366296 36 x 62 x 96 Swanstone® Smooth Glue up Shower Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "SK-366296",
+   "description": "Easily Trim to Fit. Easy to Clean. Bestseller",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 96,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 30,
+     "fitsWidthMax": 36
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 215000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Shower Wall Kit",
+    "modelNumber": "SK-366296",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SMMK723062.010",
+   "category": "wall",
+   "type": "tub",
+   "name": "SMMK72-3062 30 x 62 x 72 Swanstone® Smooth Glue up Tub Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "SMMK72-3062",
+   "description": "Bestseller. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 195000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Tub Wall Kit",
+    "modelNumber": "SMMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SMMK723062.203",
+   "category": "wall",
+   "type": "tub",
+   "name": "SMMK72-3062 30 x 62 x 72 Swanstone® Smooth Glue up Tub Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "SMMK72-3062",
+   "description": "Bestseller. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 195000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Tub Wall Kit",
+    "modelNumber": "SMMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SMMK723062.221",
+   "category": "wall",
+   "type": "tub",
+   "name": "SMMK72-3062 30 x 62 x 72 Swanstone® Smooth Glue up Tub Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "SMMK72-3062",
+   "description": "Bestseller. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 195000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Tub Wall Kit",
+    "modelNumber": "SMMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "SMMK723062.226",
+   "category": "wall",
+   "type": "tub",
+   "name": "SMMK72-3062 30 x 62 x 72 Swanstone® Smooth Glue up Tub Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "SMMK72-3062",
+   "description": "Bestseller. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "smooth"
+    },
+    "gloss": 0.5,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 195000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Smooth Glue up Tub Wall Kit",
+    "modelNumber": "SMMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK723062.010",
+   "category": "wall",
+   "type": "tub",
+   "name": "TSMK72-3062 30 x 62 x 72 Swanstone® Traditional Subway Tile Glue up Tub Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "TSMK72-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 220000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "TSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK723062.203",
+   "category": "wall",
+   "type": "tub",
+   "name": "TSMK72-3062 30 x 62 x 72 Swanstone® Traditional Subway Tile Glue up Tub Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "TSMK72-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 220000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "TSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK723062.221",
+   "category": "wall",
+   "type": "tub",
+   "name": "TSMK72-3062 30 x 62 x 72 Swanstone® Traditional Subway Tile Glue up Tub Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "TSMK72-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 220000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "TSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK723062.226",
+   "category": "wall",
+   "type": "tub",
+   "name": "TSMK72-3062 30 x 62 x 72 Swanstone® Traditional Subway Tile Glue up Tub Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "TSMK72-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 72,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 220000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Tub Wall Kit",
+    "modelNumber": "TSMK72-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK843062.010",
+   "category": "wall",
+   "type": "pan",
+   "name": "TSMK84-3062 30 x 62 x 84 Swanstone® Traditional Subway Tile Glue up Shower Wall Kit in White",
+   "manufacturer": "Swan",
+   "model": "TSMK84-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "White",
+   "engine": {
+    "color": "#fcfcfc",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 240000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "TSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK843062.203",
+   "category": "wall",
+   "type": "pan",
+   "name": "TSMK84-3062 30 x 62 x 84 Swanstone® Traditional Subway Tile Glue up Shower Wall Kit in Ash Gray",
+   "manufacturer": "Swan",
+   "model": "TSMK84-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Ash Gray",
+   "engine": {
+    "color": "#b5b6b3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 240000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "TSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK843062.221",
+   "category": "wall",
+   "type": "pan",
+   "name": "TSMK84-3062 30 x 62 x 84 Swanstone® Traditional Subway Tile Glue up Shower Wall Kit in Carrara",
+   "manufacturer": "Swan",
+   "model": "TSMK84-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Carrara",
+   "engine": {
+    "color": "#e9e9e9",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 240000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "TSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  },
+  {
+   "sku": "TSMK843062.226",
+   "category": "wall",
+   "type": "pan",
+   "name": "TSMK84-3062 30 x 62 x 84 Swanstone® Traditional Subway Tile Glue up Shower Wall Kit in Birch",
+   "manufacturer": "Swan",
+   "model": "TSMK84-3062",
+   "description": "Traditional Subway Pattern 12\"H x 24\"W. Easily Trim to Fit. Easy to Clean",
+   "colorName": "Birch",
+   "engine": {
+    "color": "#cdc8c3",
+    "material": "Swanstone",
+    "pattern": {
+     "type": "tile",
+     "orientation": "horizontal",
+     "bond": "running",
+     "tileW": 24,
+     "tileH": 12,
+     "groutW": 0.125
+    },
+    "gloss": 0.75,
+    "kit": {
+     "height": 84,
+     "fitsLengthMin": 56,
+     "fitsLengthMax": 62,
+     "fitsWidthMin": 24,
+     "fitsWidthMax": 30
+    }
+   },
+   "visualStatus": "illustrative",
+   "featured": false,
+   "sortOrder": 0,
+   "status": "published",
+   "isPublic": true,
+   "pricing": {
+    "priceCents": 240000,
+    "installCents": 0
+   },
+   "source": {
+    "manufacturer": "swan",
+    "seriesName": "Swanstone® Traditional Subway Tile Glue up Shower Wall Kit",
+    "modelNumber": "TSMK84-3062",
+    "unitSku": null
+   },
+   "assets": {
+    "photos": [],
+    "texture": {
+     "assetId": null
+    }
+   }
+  }
+ ],
+ "pricing": {
+  "currency": "USD",
+  "version": 1,
+  "maxDiscountPercent": 15,
+  "disclaimer": "DEMO PRICE - sample numbers for testing the Studio. Not a real quote.",
+  "privacyNote": "Owner preview: nothing you enter here is saved or sent.",
+  "projectTypes": [
+   {
+    "key": "tub-to-shower",
+    "label": "Tub-to-shower conversion",
+    "includes": "Remove the old tub, install the shower base, new wall panels and valve trim.",
+    "basePriceCents": 450000,
+    "enabled": true
+   },
+   {
+    "key": "shower-replacement",
+    "label": "Shower replacement",
+    "includes": "Remove the old shower, install the new base, new wall panels and valve trim.",
+    "basePriceCents": 400000,
+    "enabled": true
+   },
+   {
+    "key": "tub-replacement",
+    "label": "Bathtub replacement",
+    "includes": "Remove the old tub, install the new tub, tub walls and trim.",
+    "basePriceCents": 380000,
+    "enabled": true
+   }
+  ],
+  "adders": [
+   {
+    "key": "paint-above",
+    "label": "Remove old tile above the new walls, patch and paint",
+    "trigger": "paintAbove",
+    "priceCents": 60000,
+    "enabled": true
+   },
+   {
+    "key": "door-install",
+    "label": "Glass door installation",
+    "trigger": "door",
+    "priceCents": 25000,
+    "enabled": true
+   },
+   {
+    "key": "grab-bar-blocking",
+    "label": "Grab bar blocking and installation",
+    "trigger": "perGrabBar",
+    "priceCents": 15000,
+    "enabled": true
+   },
+   {
+    "key": "seat-backing",
+    "label": "Seat backing and installation",
+    "trigger": "perSeat",
+    "priceCents": 20000,
+    "enabled": true
+   },
+   {
+    "key": "valve-relocation",
+    "label": "Valve relocation",
+    "trigger": "manual",
+    "priceCents": 50000,
+    "enabled": true
+   }
+  ],
+  "packages": []
+ }
+}

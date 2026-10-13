@@ -182,7 +182,7 @@ async function seed({ catalog = "starter" } = {}) {
   return tokens;
 }
 
-async function start({ frontend = true, demo = false } = {}) {
+async function start({ frontend = true, demo = false, publicEnabled = true } = {}) {
   // --demo: reachable from phones/tablets on this network, optimized (production) build, DEMO labels
   const lan = demo ? lanAddress() : null;
   if (lan) { BACKEND_URL = `http://${lan}:${BACKEND_PORT}`; FRONTEND_URL = `http://${lan}:${FRONTEND_PORT}`; }
@@ -214,7 +214,7 @@ async function start({ frontend = true, demo = false } = {}) {
       HOME: os.tmpdir(), USERPROFILE: os.tmpdir(),
       AWS_SES_SMTP_HOST: "127.0.0.1", AWS_SES_SMTP_PORT: String(SMTP_PORT), AWS_SES_SMTP_USER: "qa", AWS_SES_SMTP_PASS: "qa",
       BOOKING_REMINDERS_ENABLED: "false", BOOKING_REVIEW_REQUESTS_ENABLED: "false", ESIGN_ADOBE_STARTUP: "false", ESIGN_ALLOW_UNSIGNED_COMPANY: "true",
-      SMS_ENABLED: "false", STUDIO_PUBLIC_ENABLED: "true", PUBLIC_API_BASE_URL: BACKEND_URL, PUBLIC_SITE_BASE_URL: FRONTEND_URL,
+      SMS_ENABLED: "false", STUDIO_PUBLIC_ENABLED: publicEnabled ? "true" : "", PUBLIC_API_BASE_URL: BACKEND_URL, PUBLIC_SITE_BASE_URL: FRONTEND_URL,
       EXTRA_CORS_ORIGINS: `${FRONTEND_URL},http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}`,
     },
   });
