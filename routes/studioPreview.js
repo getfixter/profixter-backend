@@ -80,6 +80,24 @@ router.post("/quote", limit("quote", 240), json, (req, res) => {
   }
 });
 
+/** Totals for several candidate designs (the price difference on each option), demo prices. */
+router.post("/quote/options", limit("quoteOptions", 240), json, (req, res) => {
+  try {
+    const list = Array.isArray(req.body?.designs) ? req.body.designs.slice(0, 40) : [];
+    if (!list.length) return fail(res, 400, "No designs to price.");
+    const projectType = PROJECT_TYPES.has(req.body?.projectType) ? req.body.projectType : "tub-to-shower";
+    const totals = list.map((d) => {
+      const state = validateState({ marks: dummyMarks, points: dummyPoints, design: d }, null);
+      demoSkus(state.design);
+      const r = priceDesign({ design: state.design, projectType, products: PRODUCTS, pricing: DEMO.pricing });
+      return r.complete ? r.totalCents : null;
+    });
+    return res.json({ totals, preview: true });
+  } catch (e) {
+    return fail(res, e.status || 400, e.status ? e.message : "Could not price these options.");
+  }
+});
+
 /**
  * "Request installation" in the preview: the same checks a customer's request
  * gets, then a DEMO reference. Nothing is stored or sent.

@@ -301,6 +301,8 @@ function toEngineCatalog(products, { assetUrl = () => null, manufacturerPhotos =
       featured: Boolean(p.featured), sortOrder: p.sortOrder || 0,
       // product family and this variant's size / colour, so pickers show one card per family
       family: familyOf(p), variant: variantOf(p),
+      // the short name customers see (the full name and model stay in Details)
+      label: friendlyName(p),
     };
     if (withSpecs) cat.specs[p.sku] = {
       name: p.name, manufacturer: p.manufacturer, model: p.model,
@@ -417,6 +419,25 @@ function familyOf(p) {
     return { key: `${p.source.manufacturer}:${p.category}:${slugify(p.source.seriesName)}`, name, label: customerLabel(name, p.category) };
   }
   return { key: `sku:${p.sku}`, name: p.name };
+}
+
+/**
+ * A product name without model codes and installer wording, for customers:
+ * "Moen Gibson shower-only T25902EP, chrome" -> "Moen Gibson shower-only, chrome".
+ * Manufacturer products use their family label (the colour is shown apart).
+ */
+function friendlyName(p) {
+  if (p.source?.manufacturer && !p.source.unitSku) return familyOf(p).label || p.name;
+  // drop model codes: words mixing capitals and digits (BT13210, T25902EP, CSR2160CH, SHST-01-TK) and long numbers (8724, 41824-SS)
+  const kept = [];
+  for (const w of String(p.name || "").split(/\s+/)) {
+    const t = w.replace(/[,.;]+$/, "");
+    const code = /^\d{4,}(-[A-Z]+)?$/.test(t) || (/^[A-Z0-9]+(-[A-Z0-9]+)*$/.test(t) && /\d/.test(t) && /[A-Z]/.test(t));
+    if (!code) kept.push(w);
+    else if (w.endsWith(",") && kept.length) kept[kept.length - 1] += ","; // "BT13210, chrome" keeps its comma
+  }
+  const fixed = kept.join(" ").replace(/,$/, "").trim();
+  return fixed.length >= 4 ? fixed : p.name;
 }
 
 /**

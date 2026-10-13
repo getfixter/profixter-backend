@@ -89,6 +89,9 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     });
 
     // ------------------------------------------------------------------ 3-8 homeowner on a phone: NO photo, NO measurements
+  // open one configurator section (they are an accordion: tapping an open one closes it)
+  const openSec = async (p, id) => { const b = p.locator(`[data-testid="section-${id}"]`); if ((await b.getAttribute("aria-expanded")) !== "true") await b.click(); await p.waitForTimeout(500); };
+  const card = (prefix) => `[data-testid^="${prefix}"]:not([data-testid$="-delta"])`;
     const mobile = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
     const phone = await ctxFor(null, { ...mobile, label: "homeowner" });
     const hp = phone.page;
@@ -110,29 +113,29 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await rendered(hp);
       const ms = Date.now() - t0;
       const badge = await hp.textContent('[data-testid="picture-badge"]');
-      must(/Example bathroom/.test(badge) && /standard 60″ × 30″ size/.test(badge), `badge "${badge}"`);
+      must(/Example bathroom/.test(badge) && /standard 60″ × 30″/.test(badge), `badge "${badge}"`);
       must(await hp.locator('[data-testid="photo-input"]').count() === 0, "no photo upload is shown up front");
       must(!(await hp.locator('[data-testid="m-facingWidth"]').count()), "no measurement form is shown up front");
       const scrollW = await hp.evaluate(() => document.scrollingElement.scrollWidth);
       must(scrollW <= 390, `page scrolls sideways (${scrollW})`);
-      await waitStrip("$7,650.00"); // 4600 base + 900 pan + 1200 white walls + 350 trim + 600 paint above, all TEST prices
+      await waitStrip("$7,650"); // 4600 base + 900 pan + 1200 white walls + 350 trim + 600 paint above, all TEST prices
       await shot("1-customize");
       return { firstPictureMs: ms };
     });
 
     let total;
     await step("6-7. editing selections (walls, door, the owner's new grab bar) updates the picture and the total", async () => {
-      await hp.getByRole("tab", { name: "Walls" }).tap();
+      await openSec(hp, "walls");
       await hp.tap('[data-testid="finish-qwall-vs-black"]');
-      await waitStrip("$7,650.00"); // black and white kits are the same TEST price
-      await hp.getByRole("tab", { name: "Door" }).tap();
+      await waitStrip("$7,650"); // black and white kits are the same TEST price
+      await openSec(hp, "door");
       await hp.tap('[data-testid="enclosure-duet-6072"]');
-      await waitStrip("$8,850.00"); // + 950 door + 250 door installation
-      await hp.getByRole("tab", { name: "Extras" }).tap();
-      await hp.tap('[data-testid="add-grabBar"]');
-      await hp.getByRole("button", { name: /Left wall ·/ }).first().tap();
-      await hp.locator("select").filter({ hasText: "QA 30in Grab Bar" }).first().selectOption({ label: "QA 30in Grab Bar" });
-      await waitStrip("$9,099.00"); // + 99 QA bar + 150 grab-bar blocking
+      await waitStrip("$8,850"); // + 950 door + 250 door installation
+      await openSec(hp, "extras");
+      // the owner's new product is its own card, with its price difference shown before tapping
+      await hp.waitForFunction(() => /^\+\$249$/.test((document.querySelector('[data-testid="acc-qa-bar-30-delta"]')?.textContent || "").trim()), null, { timeout: 30000 });
+      await hp.tap('[data-testid="acc-qa-bar-30"]');
+      await waitStrip("$9,099"); // + 99 QA bar + 150 grab-bar blocking
       await rendered(hp);
       await shot("2-edited");
       total = await strip();
@@ -146,7 +149,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       const amount = (await hp.textContent('[data-testid="price-total"]')).trim();
       const basis = (await hp.textContent('[data-testid="price-basis"]')).trim();
       must(/estimated total/i.test(label), `label "${label}"`);
-      must(amount === "$9,099.00", `amount ${amount}`);
+      must(amount === "$9,099", `amount ${amount}`);
       must(/standard 60″ × 30″ example size, not your measurements/.test(basis), `basis "${basis}"`);
       must(await hp.locator('[data-testid="example-note"]').isVisible(), "example note missing");
       must(!/verified/i.test(await hp.textContent('[data-testid="price-card"]')), "public price called verified");
@@ -168,7 +171,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await shot("4-done");
       const local = JSON.parse(await hp.evaluate(() => localStorage.getItem("profixter:shower-studio:design")));
       const d = await (await fetch(`${BE}/api/studio/designs/${local.id}`, { headers: { "X-Studio-Token": local.token } })).json();
-      must(d.status === "submitted" && !d.photo && d.exampleScene === "example-bathroom-1" && d.measureSource === "standard", JSON.stringify({ s: d.status, p: d.photo, e: d.exampleScene, m: d.measureSource }));
+      must(d.status === "submitted" && !d.photo && d.exampleScene === "example-alcove-1" && d.measureSource === "standard", JSON.stringify({ s: d.status, p: d.photo, e: d.exampleScene, m: d.measureSource }));
     });
 
     await step("3b. starting from an example BATHTUB: a tub is chosen, priced as a bathtub replacement", async () => {
@@ -176,14 +179,14 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
       await p.tap('[data-testid="start-tub"]', { timeout: 120000 });
       await rendered(p);
-      await p.getByRole("tab", { name: "Base" }).tap();
+      await openSec(p, "base");
       const tubPicked = await p.locator('[data-testid^="base-"][aria-pressed="true"]').getAttribute("data-testid");
       must(/prism|studio/.test(tubPicked || ""), `selected base ${tubPicked}`);
       must((await p.locator('[data-testid="kind-tub"]').getAttribute("aria-pressed")) === "true", "bathtub not selected");
       await p.waitForFunction(() => /\$/.test(document.querySelector('[data-testid="price-strip"]')?.textContent || ""), null, { timeout: 30000 });
       const t = (await p.textContent('[data-testid="price-strip"]')).trim();
-      must(t === "$6,850.00", `tub total ${t}`); // 3800 base + 900 tub + 1200 tub walls + 350 trim + 600 paint above (TEST prices)
-      await p.getByRole("tab", { name: "Walls" }).tap();
+      must(t === "$6,850", `tub total ${t}`); // 3800 base + 900 tub + 1200 tub walls + 350 trim + 600 paint above (TEST prices)
+      await openSec(p, "walls");
       must(await p.locator('[data-testid="finish-qwall-tub-white"]').count() === 1, "tub wall kit offered");
       await p.screenshot({ path: path.join(OUT, "phone-tub.png") });
       return { total: t, base: tubPicked };
@@ -195,8 +198,8 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
       await rendered(p);
       await p.tap('[data-testid="open-measure"]');
-      await p.fill('[data-testid="m-facingWidth"]', "30");
-      await p.fill('[data-testid="m-sideLength"]', "60");
+      await p.fill('[data-testid="m-facingWidth"]', "60");
+      await p.fill('[data-testid="m-sideLength"]', "30");
       await p.fill('[data-testid="m-rimHeight"]', "16");
       await p.tap('[data-testid="apply-measure"]');
       await p.waitForFunction(() => /your measurements/.test(document.querySelector('[data-testid="picture-badge"]')?.textContent || ""), null, { timeout: 30000 });
@@ -382,13 +385,13 @@ const must = (c, m) => { if (!c) throw new Error(m); };
       await p.goto(`${FE}/shower-studio`, { waitUntil: "domcontentloaded", timeout: 180000 });
       await p.tap('[data-testid="start-shower"]', { timeout: 120000 });
       await rendered(p);
-      await p.getByRole("tab", { name: "Walls" }).tap();
+      await openSec(p, "walls");
       await p.tap('[data-testid="finish-qwall-vs-black"]');
       await p.waitForTimeout(2500); // auto-save runs 1.5 s after the last change
       await p.reload({ waitUntil: "domcontentloaded" });
       await p.tap('[data-testid="resume"]', { timeout: 120000 });
       await rendered(p);
-      await p.getByRole("tab", { name: "Walls" }).tap();
+      await openSec(p, "walls");
       must((await p.locator('[data-testid="finish-qwall-vs-black"]').getAttribute("aria-pressed")) === "true", "black walls not restored");
     });
     await step("15b. sending fails (no connection), the person is told, and a retry succeeds", async () => {

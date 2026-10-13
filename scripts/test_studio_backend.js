@@ -400,6 +400,29 @@ async function main() {
     assert.ok(!/\$\d/.test(JSON.stringify(r.body)), "no dollar amount anywhere");
   });
 
+  await test("price differences: /quote/options prices each candidate with the real engine (same totals as /quote), unpriced -> null", async () => {
+    const candidates = [
+      baseDesign,
+      { ...baseDesign, enclosureId: "duet-6072", measure: { ...baseDesign.measure, aboveMode: "paint" } }, // door + install + paint adder
+      { ...baseDesign, accessories: [{ key: "g", productId: "moen-8724", wall: "left", u: 30, y: 35.5 }, { key: "s", productId: "moen-dn7110", wall: "left", u: 45, y: 19 }] }, // package
+      { ...baseDesign, accessories: [{ key: "u", productId: "unpriced-bar", wall: "left", u: 30, y: 35.5 }] },
+    ];
+    const r = await call("POST", "/api/studio/quote/options", { body: { designs: candidates, projectType: "tub-to-shower" } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    for (let i = 0; i < 3; i++) {
+      const one = await call("POST", "/api/studio/quote", { body: { design: candidates[i], projectType: "tub-to-shower" } });
+      assert.strictEqual(r.body.totals[i], one.body.totalCents, `candidate ${i}`);
+    }
+    assert.ok(r.body.totals[1] - r.body.totals[0] > 0, "adding the door is a positive difference");
+    assert.ok(r.body.totals[0] - r.body.totals[1] < 0, "and back again a negative one");
+    assert.strictEqual(r.body.totals[3], null, "missing price: no number");
+    assert.strictEqual((await call("POST", "/api/studio/quote/options", { body: { designs: [] } })).status, 400);
+    const many = await call("POST", "/api/studio/quote/options", { body: { designs: Array(45).fill(baseDesign), projectType: "tub-to-shower" } });
+    assert.strictEqual(many.body.totals.length, 40, "at most 40 candidates per request");
+    const sent = await call("POST", "/api/studio/quote/options", { body: { designs: [{ ...baseDesign, totalCents: 1, priceCents: 1 }], projectType: "tub-to-shower" } });
+    assert.strictEqual(sent.body.totals[0], r.body.totals[0], "a browser-sent price is ignored");
+  });
+
   const exampleState = (design) => stateFor({ width: 681, height: 1023 }, design);
   await test("an unknown example bathroom is refused", async () => {
     const r = await call("POST", "/api/studio/designs", { body: {} });
@@ -460,7 +483,7 @@ async function main() {
       assert.strictEqual(c.status, 200);
       assert.strictEqual(c.body.enabled, false);
       assert.strictEqual(c.body.catalog.finishes.length, 0);
-      for (const [m, u, body] of [["POST", "/api/studio/designs", {}], ["POST", "/api/studio/quote", { design: baseDesign }], ["POST", `/api/studio/designs/${pub.id}/submit`, {}], ["PUT", `/api/studio/designs/${pub.id}`, {}]]) {
+      for (const [m, u, body] of [["POST", "/api/studio/designs", {}], ["POST", "/api/studio/quote", { design: baseDesign }], ["POST", "/api/studio/quote/options", { designs: [baseDesign] }], ["POST", `/api/studio/designs/${pub.id}/submit`, {}], ["PUT", `/api/studio/designs/${pub.id}`, {}]]) {
         const r = await call(m, u, { body });
         assert.strictEqual(r.status, 404, `${m} ${u} -> ${r.status}`);
       }
@@ -481,6 +504,11 @@ async function main() {
     const hidden = await StudioProduct.create({ sku: "staff-only-bar", category: "accessory", type: "grabBar", name: "Staff only", status: "published", isPublic: false, engine: draft.engine, pricing: { priceCents: 5000 } });
     const q2 = await call("POST", "/api/studio/quote", { body: { design: { ...baseDesign, accessories: [{ key: "s", productId: hidden.sku, wall: "left", u: 30, y: 35.5 }] }, projectType: "tub-to-shower" } });
     assert.strictEqual(q2.status, 400, "published but hidden from the website is not public either");
+    for (const sku of [draft.sku, hidden.sku]) {
+      const o = await call("POST", "/api/studio/quote/options", { body: { designs: [baseDesign, { ...baseDesign, accessories: [{ key: "s", productId: sku, wall: "left", u: 30, y: 35.5 }] }], projectType: "tub-to-shower" } });
+      assert.strictEqual(o.status, 400, `price difference for ${sku}`);
+      assert.ok(!JSON.stringify(o.body).includes("1234"), "no price leaked");
+    }
     const r = await call("POST", "/api/studio/designs", { body: {} });
     const s = await call("PUT", `/api/studio/designs/${r.body.id}`, { headers: { "x-studio-token": r.body.token }, body: { state: stateFor({ width: 1, height: 1 }, design) } });
     assert.ok(s.status === 400, `save with a draft product -> ${s.status}`);

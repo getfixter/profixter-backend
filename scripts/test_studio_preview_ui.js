@@ -36,6 +36,9 @@ const must = (c, m) => { if (!c) throw new Error(m); };
   }
   const mongoose = require("mongoose");
   const counts = async () => ({ leads: await mongoose.connection.db.collection("estimateleads").countDocuments(), designs: await mongoose.connection.db.collection("studiodesigns").countDocuments(), photos: await mongoose.connection.db.collection("studiophotos").countDocuments() });
+  // open one configurator section (they are an accordion: tapping an open one closes it)
+  const openSec = async (p, id) => { const b = p.locator(`[data-testid="section-${id}"]`); if ((await b.getAttribute("aria-expanded")) !== "true") await b.click(); await p.waitForTimeout(500); };
+  const card = (prefix) => `[data-testid^="${prefix}"]:not([data-testid$="-delta"])`;
   const strip = (p) => p.textContent('[data-testid="price-strip"]').then((t) => (t || "").replace(/\s+/g, " ").trim());
 
   async function journey(p, label, kind) {
@@ -49,11 +52,10 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     await p.waitForFunction(() => /\$\d/.test(document.querySelector('[data-testid="price-strip"]')?.textContent || ""), null, { timeout: 90000 });
     const price0 = await strip(p);
     await shot("2-design");
-    await p.locator('[data-testid^="family-finish-"]').nth(1).click();
+    await p.locator(card("family-finish-")).nth(1).click();
     await p.locator('[data-testid="variants-finish"] button').last().click();
-    await p.getByRole("tab", { name: "Extras" }).click();
-    const addBar = p.locator('[data-testid="add-grabBar"]');
-    if (await addBar.isEnabled().catch(() => false)) await addBar.click();
+    await openSec(p, "extras");
+    await p.locator(card("acc-")).first().click();
     await p.waitForTimeout(1200);
     const price1 = await strip(p);
     must(price0 !== price1, `price did not change (${price0})`);

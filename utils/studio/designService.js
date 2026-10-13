@@ -45,4 +45,16 @@ async function quoteDesign(design, projectType, adjustments = []) {
   return { result: priceDesign({ design, projectType, products, pricing: pricing.toObject ? pricing.toObject() : pricing, adjustments }), pricing };
 }
 
-module.exports = { checkDesign, quoteDesign, blockingErrors, skusOf, KIND_FOR };
+/**
+ * Price several designs at once (one catalog and price-list read): the totals
+ * behind "+$350 / -$200" on each option, each computed by the full pricing
+ * engine for the whole resulting design - never by subtracting product prices.
+ */
+async function quoteMany(designs, projectType) {
+  const skus = [...new Set(designs.flatMap(skusOf))];
+  const [products, pricingDoc] = await Promise.all([productMap(skus), StudioPricing.current()]);
+  const pricing = pricingDoc.toObject ? pricingDoc.toObject() : pricingDoc;
+  return designs.map((design) => priceDesign({ design, projectType, products, pricing }));
+}
+
+module.exports = { checkDesign, quoteDesign, quoteMany, blockingErrors, skusOf, KIND_FOR };

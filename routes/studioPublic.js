@@ -28,7 +28,7 @@ const storage = require("../utils/studio/storage");
 const { photoUrl, verify, randomId, hashToken } = require("../utils/studio/signedLinks");
 const { publicCatalog } = require("../utils/studio/catalogService");
 const { validateState } = require("../utils/studio/designState");
-const { checkDesign, quoteDesign, blockingErrors } = require("../utils/studio/designService");
+const { checkDesign, quoteDesign, quoteMany, blockingErrors } = require("../utils/studio/designService");
 const { publicQuote } = require("../utils/studio/pricing");
 const { EXAMPLE_SCENES, isExampleScene, MEASURE_LABEL } = require("../utils/studio/examples");
 const PUBLIC_MEASURE = (v) => (v === "customer" ? "customer" : "standard");
@@ -278,6 +278,25 @@ router.post("/quote", requirePublic, limit("quote", 240, 60_000), json, async (r
     return err(res, e.status || 500, e.status ? e.message : "Could not price this design.");
   }
 });
+/**
+ * Totals for several candidate designs (the price difference shown on each
+ * option). Same rules as /quote: published products only, prices never sent -
+ * only whole totals, and only when every price the design needs is set.
+ */
+router.post("/quote/options", requirePublic, limit("quoteOptions", 120, 60_000), json, async (req, res) => {
+  try {
+    const list = Array.isArray(req.body?.designs) ? req.body.designs.slice(0, 40) : [];
+    if (!list.length) return err(res, 400, "No designs to price.");
+    const designs = list.map((d) => validateState({ marks: dummyMarks, points: dummyPoints, design: d }, null).design);
+    const projectType = String(req.body?.projectType || "tub-to-shower");
+    await assertPublicProducts({ accessories: designs.flatMap((d) => [d.baseId, d.finishId, d.fixtureId, d.enclosureId, ...d.accessories.map((a) => a.productId)].filter((s) => s && s !== "none").map((productId) => ({ productId }))) });
+    const results = await quoteMany(designs, projectType);
+    return res.json({ totals: results.map((r) => (r.complete ? r.totalCents : null)) });
+  } catch (e) {
+    return err(res, e.status || 500, e.status ? e.message : "Could not price these options.");
+  }
+});
+
 /**
  * Visitors may only design with products that are published and shown on the
  * website: an unpublished product's price must never be computable from outside.

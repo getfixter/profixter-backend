@@ -35,6 +35,9 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     p.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|net::ERR_/.test(m.text())) errors.push(`${label} console: ${m.text().slice(0, 200)}`); });
     return p;
   }
+  // open one configurator section (they are an accordion: tapping an open one closes it)
+  const openSec = async (p, id) => { const b = p.locator(`[data-testid="section-${id}"]`); if ((await b.getAttribute("aria-expanded")) !== "true") await b.click(); await p.waitForTimeout(500); };
+  const card = (prefix) => `[data-testid^="${prefix}"]:not([data-testid$="-delta"])`;
   const strip = (p) => p.textContent('[data-testid="price-strip"]').then((t) => (t || "").replace(/\s+/g, " ").trim());
   const tap = (p, sel) => p.locator(sel).first().click();
   const overflow = (p) => p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -54,7 +57,7 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     const price0 = await strip(p);
     await shot("2-sample-bathroom");
     // walls: another finish family, then a colour
-    const fams = p.locator('[data-testid^="family-finish-"]');
+    const fams = p.locator(card("family-finish-"));
     must(await fams.count() >= 4, `4 wall finishes (${await fams.count()})`);
     await fams.nth(1).click();
     await p.locator('[data-testid="variants-finish"] button').last().click();
@@ -62,27 +65,26 @@ const must = (c, m) => { if (!c) throw new Error(m); };
     const price1 = await strip(p);
     await shot("3-walls");
     // base / tub
-    await p.getByRole("tab", { name: "Base" }).click();
-    const bases = p.locator('[data-testid^="family-base-"], [data-testid^="base-"]');
+    await openSec(p, "base");
+    const bases = p.locator(`${card("family-base-")}, ${card("base-")}`);
     must(await bases.count() >= 2, "2 bases or tubs");
     await bases.nth(1).click();
     await p.waitForTimeout(800);
     await shot("4-base");
     // faucet
-    await p.getByRole("tab", { name: "Faucet" }).click();
-    const fx = p.locator('[data-testid^="fixture-"]');
+    await openSec(p, "fixture");
+    const fx = p.locator(card("fixture-"));
     must(await fx.count() >= 2, "2 fixture packages");
     await fx.nth(1).click();
     await p.waitForTimeout(600);
     // door
-    await p.getByRole("tab", { name: "Door" }).click();
-    await p.locator('[data-testid^="enclosure-"]').nth(1).click().catch(() => {});
+    await openSec(p, "door");
+    await p.locator(card("enclosure-")).nth(1).click().catch(() => {});
     await p.waitForTimeout(600);
     await shot("5-door");
     // extras
-    await p.getByRole("tab", { name: "Extras" }).click();
-    const addBar = p.locator('[data-testid="add-grabBar"]');
-    if (await addBar.isEnabled().catch(() => false)) await addBar.click();
+    await openSec(p, "extras");
+    await p.locator(card("acc-")).first().click();
     await p.waitForTimeout(1000);
     const price2 = await strip(p);
     await shot("6-extras");

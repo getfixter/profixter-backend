@@ -71,6 +71,9 @@ async function main() {
     for (const url of ["/api/studio-preview/catalog"]) assert.strictEqual((await call("GET", url, { user: allSections })).status, 403);
     assert.strictEqual((await call("POST", "/api/studio-preview/quote", { user: allSections, body: {} })).status, 403);
     assert.strictEqual((await call("POST", "/api/studio-preview/submit", { user: allSections, body: {} })).status, 403);
+    assert.strictEqual((await call("POST", "/api/studio-preview/quote/options", { user: allSections, body: {} })).status, 403);
+    assert.strictEqual((await call("POST", "/api/studio-preview/quote/options", { body: {} })).status, 401);
+    assert.strictEqual((await call("POST", "/api/studio-preview/quote/options", { user: customer, body: {} })).status, 403);
     assert.strictEqual((await call("GET", "/api/studio-preview/catalog", { user: owner })).status, 200);
   });
 
@@ -106,6 +109,14 @@ async function main() {
     const bad = await call("POST", "/api/studio-preview/quote", { user: owner, body: { design: { ...d1, accessories: [{ key: "x", productId: "REAL-BAR-1", wall: "facing", u: 15, y: 36 }] }, projectType: "tub-to-shower" } });
     assert.strictEqual(bad.status, 400);
     assert.ok(!JSON.stringify(bad.body).includes("12345"));
+    // price differences: the same engine and the same DEMO totals, positive and negative, real products refused
+    const o = await call("POST", "/api/studio-preview/quote/options", { user: owner, body: { designs: [d1, d2], projectType: "tub-to-shower" } });
+    assert.strictEqual(o.status, 200, JSON.stringify(o.body));
+    assert.strictEqual(o.body.preview, true);
+    assert.deepStrictEqual(o.body.totals, [q1.body.totalCents, q2.body.totalCents]);
+    const ob = await call("POST", "/api/studio-preview/quote/options", { user: owner, body: { designs: [d1, { ...d1, accessories: [{ key: "x", productId: "REAL-BAR-1", wall: "facing", u: 15, y: 36 }] }], projectType: "tub-to-shower" } });
+    assert.strictEqual(ob.status, 400);
+    assert.ok(!JSON.stringify(ob.body).includes("12345"));
   });
 
   await test("a test request is checked like a real one, answered with a DEMO reference, and writes NOTHING and sends nothing", async () => {
@@ -130,6 +141,7 @@ async function main() {
     assert.strictEqual(r.body.enabled, false);
     assert.strictEqual((await call("POST", "/api/studio/designs", { body: {} })).status, 404);
     assert.strictEqual((await call("POST", "/api/studio/quote", { body: {} })).status, 404);
+    assert.strictEqual((await call("POST", "/api/studio/quote/options", { body: { designs: [{}] } })).status, 404);
   });
 
   server.close();
