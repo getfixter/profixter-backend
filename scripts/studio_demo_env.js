@@ -225,12 +225,11 @@ async function start({ frontend = true, demo = false } = {}) {
     // It goes to its own folder (.next-studio-demo) so it never mixes with other builds.
     const env = { ...process.env, NEXT_PUBLIC_API_URL: BACKEND_URL, NEXT_PUBLIC_STUDIO_DEMO: "1", NEXT_DIST_DIR: ".next-studio-demo", NEXT_TELEMETRY_DISABLED: "1" };
     log("frontend", "building the optimized demo site (about 2-3 minutes)...");
-    // next build rewrites tsconfig.json for the extra build folder: put it back afterwards (keep the code tree clean)
-    const tsconfig = path.join(FRONTEND_DIR, "tsconfig.json");
-    const tsconfigBefore = fs.readFileSync(tsconfig);
+    // next build rewrites tsconfig.json and next-env.d.ts for the extra build folder: put it back afterwards (keep the code tree clean)
+    const generated = ["tsconfig.json", "next-env.d.ts"].map((n) => path.join(FRONTEND_DIR, n)).filter((p) => fs.existsSync(p)).map((p) => [p, fs.readFileSync(p)]);
     const build = spawnChild("frontend-build", "npx", ["next", "build"], { cwd: FRONTEND_DIR, env });
     const code = await new Promise((resolve) => build.on("exit", resolve));
-    fs.writeFileSync(tsconfig, tsconfigBefore);
+    for (const [p, before] of generated) fs.writeFileSync(p, before);
     if (code !== 0) throw new Error(`The demo site did not build (see ${path.join(os.tmpdir(), "studio-qa-frontend-build.log")}).`);
     spawnChild("frontend", "npx", ["next", "start", "-p", String(FRONTEND_PORT), "-H", lan ? "0.0.0.0" : "127.0.0.1"], { cwd: FRONTEND_DIR, env: { ...env, PORT: String(FRONTEND_PORT) } });
     await waitForHttp(`http://127.0.0.1:${FRONTEND_PORT}/shower-studio`, "frontend", 300000);
