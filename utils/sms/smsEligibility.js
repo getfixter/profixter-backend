@@ -126,6 +126,39 @@ async function optOutFor(phone, OptOutModel = SmsOptOut) {
  * as a reason SMS should be allowed, and each of them is the exact inference
  * that made the campaign non-compliant.
  */
+/*
+ * A CONFIRMED HOMEPAGE VISIT, TEXTED ON THE CONSENT GIVEN FOR IT.
+ *
+ * The guest pressed "Book my free visit" under "By booking, you agree to be
+ * contacted by call or text about your visit" (the owner's chosen wording,
+ * 2026-10-23). The Booking stores that act - the text shown and when - in
+ * guestContactConsent. It covers messages ABOUT THAT VISIT and nothing else:
+ * its confirmation, reminders, a reschedule or cancellation, and who is coming.
+ * Never marketing, never another booking, never a different phone. An account
+ * that has explicitly switched service texts off still wins, and so does STOP,
+ * checked after this like for every message.
+ */
+const GUEST_VISIT_TYPES = new Set([
+  "FREE_VISIT_CONFIRMED",
+  "BOOKING_CONFIRMED",
+  "BOOKING_RESCHEDULED",
+  "BOOKING_CANCELLED",
+  "BOOKING_REMINDER_24H",
+  "BOOKING_REMINDER_60M",
+  "FIXTER_ASSIGNED",
+  "FIXTER_CHANGED",
+]);
+
+function guestBookingConsentAllows({ notificationType, booking, user, e164 }) {
+  if (!GUEST_VISIT_TYPES.has(notificationType)) return false;
+  if (!booking?.guestRequestId) return false;
+  const consent = booking.guestContactConsent || {};
+  if (!String(consent.text || "").trim() || !consent.at) return false;
+  if (!e164 || toE164(booking.phone) !== e164) return false;
+  if (user && user.smsPreferences?.transactionalEnabled === false) return false;
+  return true;
+}
+
 function accountAllows(user, notificationType) {
   const prefs = user?.smsPreferences || {};
 
@@ -159,6 +192,7 @@ async function checkEligibility({
   now = new Date(),
   sendWindow = null,
   requestConsent = null,
+  booking = null,
   OptOutModel = SmsOptOut,
   PhoneStatusModel = SmsPhoneStatus,
 }) {
@@ -243,6 +277,8 @@ async function checkEligibility({
     }
     if (toE164(requestConsent.phone) !== e164) return no("request_consent_other_phone");
     if (now.getTime() - at > 60 * 60 * 1000) return no("request_consent_stale");
+  } else if (guestBookingConsentAllows({ notificationType, booking, user, e164 })) {
+    /* Consent given on this guest visit, for this visit; see the function. */
   } else if (!user && notificationType === "OWNER_LEAD_ALERT") {
     const owner = toE164(process.env.OWNER_ALERT_PHONE || "");
     if (!owner || owner !== e164) return no("owner_alert_wrong_phone");

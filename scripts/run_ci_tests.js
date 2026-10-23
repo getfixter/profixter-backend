@@ -44,6 +44,8 @@ const SUITES = [
   "test_meta_tracking.js",
   // The homepage one-step free-visit request (in-memory Mongo): consent, Lead dedup, notifications.
   "test_free_visit_request.js",
+  // Guest requests reserve slots, Admin confirms, one lifetime free visit (in-memory replica set).
+  "test_free_visit_reservations_integration.js",
   "test_admin_overview.js",
   "test_admin_overview_finance.js",
   "test_meta_ad_spend.js",

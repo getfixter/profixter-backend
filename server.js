@@ -195,6 +195,21 @@ mongoose
     await require("./models/Request").syncIndexes();
     console.log("✅ Request indexes ready");
 
+    // The free-visit lock is written inside transactions; create its collection
+    // up front so that never depends on in-transaction collection creation.
+    await require("./models/FreeVisitLock").createCollection().catch(() => {});
+
+    /*
+     * Homepage free-visit requests made before requests reserved slots get the
+     * reservation they would get today (idempotent; a taken slot or a repeat
+     * person is flagged on the lead instead). Detached: never delays startup.
+     */
+    if (require("./utils/slotReservationService").reservationEngineEnabled()) {
+      require("./utils/freeVisit/guestVisit")
+        .backfillUnlinkedGuestRequests()
+        .catch((e) => console.error("❌ Free visit request backfill failed:", e.message));
+    }
+
     const u = await User.findOne();
     console.log(u ? "✅ MongoDB Test Passed" : "ℹ️ No users yet");
   })
@@ -215,6 +230,7 @@ app.use("/api/subscriptions", require("./routes/subscriptions"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/requests", require("./routes/requests"));
 app.use("/api/free-visit-requests", require("./routes/freeVisitRequests"));
+app.use("/api/admin/free-visits", require("./routes/adminFreeVisits"));
 // Public gallery read needs no token; the submission route inside it does.
 app.use("/api/recent-work", require("./routes/recentWork"));
 app.use("/api/membership-map", require("./routes/membershipMap"));

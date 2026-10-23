@@ -1190,6 +1190,14 @@ async function createBookingWithReservation({
   createdByType = "customer",
   actorUser = null,
   assignmentSource = "automatic",
+  /*
+   * Optional work that must commit or roll back with the booking: the free
+   * visit lifetime check (beforeCreate, so it cannot see the booking it is
+   * deciding about) and the guest request's lead (afterCreate). Both run on
+   * every transaction attempt, so they must be safe to repeat.
+   */
+  beforeCreate = null,
+  afterCreate = null,
   dependencies = {},
 }) {
   const BookingModel = dependencies.BookingModel || Booking;
@@ -1251,6 +1259,7 @@ async function createBookingWithReservation({
   try {
     return await runReservationTransactionWithRetry(async (session) => {
       await releaseExpired(session);
+      if (typeof beforeCreate === "function") await beforeCreate(session);
       const [booking] = await BookingModel.create(
         [{ ...bookingData, date: window.slotStart }],
         { session }
@@ -1310,6 +1319,9 @@ async function createBookingWithReservation({
         }],
         session,
       });
+      if (typeof afterCreate === "function") {
+        await afterCreate({ session, booking, reservation, technician });
+      }
       return { booking, reservation, technician };
     },
     Math.max(2, Number(availability.slot.totalCapacity || 1) + 1),

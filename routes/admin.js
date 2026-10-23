@@ -116,6 +116,7 @@ const legacyOnlyAdmin = async (req, res, next) => {
  */
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
+const { declineGuestVisit, isPendingGuest, syncLeadFromBooking } = require("../utils/freeVisit/guestVisit");
 const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 const customersManage = requirePermission(PERMISSIONS.CUSTOMERS_MANAGE);
 const blacklistManage = requirePermission(PERMISSIONS.BLACKLIST_MANAGE);
@@ -2254,6 +2255,21 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
   try {
     let booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    /*
+     * A homepage request awaiting confirmation is confirmed only through its
+     * review (address required, lifetime rule re-checked, one notification);
+     * see routes/adminFreeVisits. Cancel here means decline, done the same way.
+     */
+    if (isPendingGuest(booking)) {
+      if (String(status).toLowerCase() !== "canceled") {
+        return res.status(409).json({
+          code: "USE_FREE_VISIT_REVIEW",
+          message: "Open this free-visit request and use Confirm Visit: it needs the service address first.",
+        });
+      }
+      const declined = await declineGuestVisit({ bookingId: booking._id, actorUser: req.accessUser, kind: "declined" });
+      return res.json({ message: "Status updated", booking: declined.booking });
+    }
     const before = bookingSnapshot(booking);
     const useReservationEngine = reservationEngineEnabled();
     const assignmentRequested = Object.prototype.hasOwnProperty.call(
@@ -2491,6 +2507,13 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
       console.log("SMS status-change error:", e.message);
     }
 
+    // A homepage visit's lead says what its visit says: confirmed, done, canceled.
+    if (booking.guestRequestId) {
+      await syncLeadFromBooking(booking.toObject ? booking.toObject() : booking).catch((e) =>
+        console.error("free visit lead sync (admin status) failed:", e.message)
+      );
+    }
+
     if (prev.toLowerCase() !== "canceled" && status.toLowerCase() === "canceled") {
       await createAdminActivityLog(req, {
         action: "Booking Manually Canceled",
@@ -2624,6 +2647,11 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
       after: bookingSnapshot(booking),
       req,
     });
+    if (booking.guestRequestId) {
+      await syncLeadFromBooking(booking.toObject()).catch((e) =>
+        console.error("free visit lead sync (admin edit) failed:", e.message)
+      );
+    }
 
     /*
      * Reschedule and reassignment texts.
@@ -2857,6 +2885,17 @@ router.get("/requests", auth, ...leadsManage, async (_req, res) => {
 router.put("/requests/:id/status", auth, ...leadsManage, async (req, res) => {
   try {
     const { status } = req.body;
+
+    /* A free-visit lead with a visit takes its status from the visit, never by hand. */
+    if (mongoose.isValidObjectId(req.params.id)) {
+      const linked = await Request.findOne({ _id: req.params.id, bookingId: { $ne: null } }).select("_id").lean();
+      if (linked) {
+        return res.status(409).json({
+          code: "STATUS_FOLLOWS_VISIT",
+          message: "This lead's status follows its visit. Open the visit to confirm or decline it.",
+        });
+      }
+    }
 
     if (!["new", "pending_confirmation", "contacted", "won", "lost"].includes(String(status))) {
       return res.status(400).json({ message: "Invalid status" });

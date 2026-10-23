@@ -29,6 +29,24 @@ const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const mail = require("../utils/emailService");
 const { deletePublicObjects, putPublicObject } = require("../utils/s3");
 const { libraryLabel, readLibraryReference } = require("../utils/bookingLibrary");
+const { syncLeadFromBooking } = require("../utils/freeVisit/guestVisit");
+const {
+  CUSTOMER_MESSAGES: FREE_VISIT_MESSAGES,
+  acquireFreeVisitLock,
+  blockedError: freeVisitBlockedError,
+  checkFreeVisitEligibility,
+} = require("../utils/freeVisit/eligibility");
+
+/*
+ * The lifetime free-visit rule's refusal, in the codes the booker already
+ * understands: INTRO_VISIT_CONSUMED shows "used", INTRO_VISIT_CLAIMED "booked".
+ */
+function freeVisitRefusal(result) {
+  return {
+    code: result.code === "FREE_VISIT_USED" ? "INTRO_VISIT_CONSUMED" : "INTRO_VISIT_CLAIMED",
+    message: FREE_VISIT_MESSAGES[result.code] || "Your free first visit is not available.",
+  };
+}
 const {
   MAX_PHOTO_BYTES,
   MAX_PHOTOS,
@@ -372,6 +390,20 @@ router.get("/next", auth, async (req, res) => {
       // service-area gate, so an eligible-looking CTA is never rejected.
       freeFirstVisitAvailable = introState.isAvailable && introVisitServiceable;
 
+      // One free visit per person for life, across guest requests and accounts.
+      if (freeFirstVisitAvailable) {
+        const lifetime = await checkFreeVisitEligibility({
+          phone: me.phone,
+          email: me.email,
+          address: subdoc,
+          userId: me._id,
+        });
+        if (lifetime.decision === "blocked") {
+          freeFirstVisitAvailable = false;
+          introVisitStatus = lifetime.code === "FREE_VISIT_USED" ? INTRO_VISIT_STATUS.CONSUMED : INTRO_VISIT_STATUS.CLAIMED;
+        }
+      }
+
       if (freeFirstVisitAvailable) {
         plan = "free";
         bookingLimit = 1;
@@ -645,6 +677,13 @@ async function cancelOrDelete(req, res) {
           actorPosition: "",
         },
       });
+    }
+
+    // A confirmed homepage visit's lead follows its visit.
+    if (booking?.guestRequestId) {
+      await syncLeadFromBooking(booking.toObject ? booking.toObject() : booking).catch((e) =>
+        console.error("free visit lead sync (customer cancel) failed:", e.message)
+      );
     }
 
     // emails on cancel (best effort)
@@ -1778,6 +1817,7 @@ router.post(
     let bookingCommitted = false;
     // Declared out here so the catch block can release a reserved offer.
     let introVisitClaimed = false;
+    let lifetimeCheck = null;
 
     try {
       const me = await User.findById(req.user.id);
@@ -1925,6 +1965,23 @@ router.post(
               "Add a photo, or choose the closest Profixter example, so your technician can prepare.",
             code: "PHOTO_REQUIRED",
           });
+        }
+
+        /*
+         * ONE FREE VISIT PER PERSON, FOR LIFE - not only per address.
+         * Checked against every free visit on record, guest or account, by
+         * account, phone, email and address (utils/freeVisit/eligibility), and
+         * again under the shared lock inside the booking transaction below.
+         */
+        lifetimeCheck = await checkFreeVisitEligibility({
+          phone: me.phone,
+          email: me.email,
+          address: subdoc,
+          userId: me._id,
+        });
+        if (lifetimeCheck.decision === "blocked") {
+          const refusal = freeVisitRefusal(lifetimeCheck);
+          return res.status(403).json(refusal);
         }
 
         // Reserve the offer BEFORE creating the booking. Only one concurrent
@@ -2081,6 +2138,30 @@ router.post(
         libraryReference: library.key,
         status: "Pending",
       };
+      /*
+       * An eligible account's free visit is confirmed automatically - no call
+       * needed - so it is in the reminder and crew workflows at once. One the
+       * lifetime check could not decide alone (a shared address, a reused
+       * phone) stays Pending, flagged for the owner to verify.
+       */
+      const applyLifetime = (result) => {
+        const now = new Date();
+        bookingData.freeVisitIdentity = {
+          phone: result.identity.phone,
+          email: result.identity.email,
+          addressKey: result.identity.addressKey,
+          userId: me._id,
+          capturedAt: now,
+        };
+        bookingData.freeVisitReview = {
+          required: result.decision === "review",
+          reasons: result.decision === "review" ? result.reasons : [],
+          matches: result.matches.slice(0, 10),
+          checkedAt: now,
+        };
+        bookingData.status = result.decision === "review" ? "Pending" : "Confirmed";
+      };
+      if (usingFreeFirstVisit && lifetimeCheck) applyLifetime(lifetimeCheck);
       let booking;
       if (useReservationEngine) {
         const result = await createBookingWithReservation({
@@ -2089,6 +2170,19 @@ router.post(
           createdByType: "customer",
           actorUser: me,
           assignmentSource: "automatic",
+          // The same check again, under the lock, so a guest request and this
+          // booking for the same person cannot both get through at once.
+          beforeCreate: usingFreeFirstVisit
+            ? async (session) => {
+                await acquireFreeVisitLock(session);
+                const again = await checkFreeVisitEligibility(
+                  { phone: me.phone, email: me.email, address: subdoc, userId: me._id },
+                  { session, excludeAccountAddress: { userId: me._id, addressId: subdoc._id } }
+                );
+                if (again.decision === "blocked") throw freeVisitBlockedError(again);
+                applyLifetime(again);
+              }
+            : null,
         });
         booking = result.booking;
       } else {
@@ -2182,6 +2276,11 @@ router.post(
                     : ""
                 }
                 <li><strong>Customer photos:</strong> ${(booking.images || []).length || "Not added yet"}</li>
+                ${
+                  booking.freeVisitReview?.required
+                    ? `<li><strong>Verify this free visit:</strong> possible repeat customer (${(booking.freeVisitReview.reasons || []).join(", ").replace(/_/g, " ")}). It is left Pending until you confirm it.</li>`
+                    : ""
+                }
               </ul>
             `,
           logContext: {
@@ -2249,7 +2348,7 @@ router.post(
           service,
           date: bookingDate.toISOString(),
           time: nycTime,
-          status: "Pending",
+          status: booking.status || "Pending",
         },
       });
     } catch (error) {
@@ -2293,6 +2392,9 @@ router.post(
       }
 
       const msg = (error && (error.message || "")).toString();
+      if (error?.code === "FREE_VISIT_USED" || error?.code === "FREE_VISIT_ACTIVE") {
+        return res.status(403).json(freeVisitRefusal(error.eligibility || { code: error.code }));
+      }
       if (
         ["SLOT_UNAVAILABLE", "SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(
           error?.code

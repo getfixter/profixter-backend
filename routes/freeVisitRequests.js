@@ -7,11 +7,15 @@
  * visit" sends all of it here. Nothing else is asked: no address, no password,
  * no /signup.
  *
- * WHAT THIS IS, AND IS NOT. It saves a Request (serviceType
- * "free_visit_request", status "pending_confirmation") in the Leads list the
- * owner already works from. It is not a Booking and holds no slot: the owner
- * calls, confirms, and the visit is booked for real from there. The account can
- * come later; the confirmation email links to it, and nothing here waits on it.
+ * WHAT THIS IS. In one transaction: a Request (serviceType
+ * "free_visit_request", status "pending_confirmation") in the Leads list, and
+ * a Booking "Pending Confirmation" whose slot the reservation engine holds -
+ * the same rules, buckets and conflict checks as every other visit, so the time
+ * is gone for everyone else at once. The owner calls, adds the address, and
+ * confirms it in Admin (utils/freeVisit/guestVisit). The one-free-visit-per-
+ * person rule is checked under a lock inside that transaction
+ * (utils/freeVisit/eligibility). The account can come later; nothing here
+ * waits on it.
  *
  * After the Request is saved, and never before:
  *   - the owner gets an email and a text with everything needed to call back;
@@ -28,7 +32,9 @@ const Request = require("../models/Request");
 const User = require("../models/User");
 const mail = require("../utils/emailService");
 const metaCapi = require("../utils/metaCapi");
-const { putPublicObject } = require("../utils/s3");
+const { deletePublicObjects, putPublicObject } = require("../utils/s3");
+const { reserveGuestFreeVisit } = require("../utils/freeVisit/guestVisit");
+const { CUSTOMER_MESSAGES } = require("../utils/freeVisit/eligibility");
 const { libraryLabel, readLibraryReference } = require("../utils/bookingLibrary");
 const { MAX_PHOTO_BYTES, MAX_PHOTOS, ensureSanitized, sanitizeUploadedPhotos } = require("../utils/imageSanitizer");
 const { normalizePhoneE164 } = require("../utils/identity");
@@ -133,16 +139,18 @@ const safeName = (name) =>
   String(name || "photo").normalize("NFKD").replace(/[^\w.\-]+/g, "_").replace(/_+/g, "_").slice(0, 80);
 
 async function uploadPhotos(files, requestId) {
-  if (!files.length) return [];
-  if (!S3_BUCKET) return files.map((f) => `local://${safeName(f.originalname)}`);
+  if (!files.length) return { urls: [], keys: [] };
+  if (!S3_BUCKET) return { urls: files.map((f) => `local://${safeName(f.originalname)}`), keys: [] };
   const urls = [];
+  const keys = [];
   for (const [i, file] of files.entries()) {
     const ready = await ensureSanitized(file);
     // No customer filename in the key: it is a public URL (see the photo-bucket follow-up).
     const key = `${S3_PREFIX}/free-visit-requests/${requestId}/${Date.now()}-${i + 1}${ready.ext}`;
     urls.push(await putPublicObject({ Bucket: S3_BUCKET, Key: key, Body: ready.buffer, ContentType: ready.contentType }));
+    keys.push(key);
   }
-  return urls;
+  return { urls, keys };
 }
 
 /* A soft check: the slot is not held, but asking for a closed one is refused. */
@@ -170,7 +178,7 @@ async function existingAccountNote(email, phone) {
   }
 }
 
-async function notifyOwner(request, { when, existingAccount }) {
+async function notifyOwner(request, { when, existingAccount, booking = null }) {
   const attribution = request.attribution || {};
   const url = attribution.url || {};
   const photos = request.images || [];
@@ -200,10 +208,27 @@ async function notifyOwner(request, { when, existingAccount }) {
         ["Page", request.contactConsent?.pageUrl || request.sourcePage || "/"],
       ],
     },
+    ...(booking?.freeVisitReview?.required
+      ? [
+          {
+            title: "Verify before confirming",
+            fields: [
+              ["Possible repeat", (booking.freeVisitReview.reasons || []).join(", ").replace(/_/g, " ")],
+              [
+                "Matches",
+                (booking.freeVisitReview.matches || [])
+                  .map((m) => `${m.bookingNumber ? `#${m.bookingNumber}` : m.source} (${m.status}; same ${m.matchedOn.join(" + ")})`)
+                  .join("\n"),
+              ],
+            ],
+          },
+        ]
+      : []),
     {
       title: "Record",
       fields: [
-        ["Status", "Pending confirmation - no slot is held"],
+        ["Status", booking ? "Pending confirmation - the slot is reserved on the calendar until you confirm or decline" : "Pending confirmation - no slot is held"],
+        ...(booking ? [["Booking", `#${booking.bookingNumber}`]] : []),
         ["Existing account", existingAccount],
         ["Submitted", formatSubmittedAt(request.createdAt)],
         ["Consent shown", request.contactConsent?.text || ""],
@@ -342,6 +367,12 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     if (!slot.isValid() || slot.isBefore(moment()) || slot.isAfter(today.clone().add(MAX_DAYS_AHEAD, "days"))) {
       return res.status(400).json({ code: "DATE_UNAVAILABLE", field: "date", message: "Please pick another day." });
     }
+    /* The same press again (a retry, a double tap): the same answer, nothing new. */
+    const dedupeKey = eventId ? `free_visit:${eventId}` : `free_visit:${phone}:${date}:${time}:${Math.floor(Date.now() / 600000)}`;
+    if (await Request.exists({ dedupeKey })) {
+      return res.status(200).json({ success: true, duplicate: true, when: slot.format("dddd, MMMM D [at] h:mm A"), eventId });
+    }
+
     if (!(await slotIsOffered(date, time))) {
       return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time was just taken. Pick another - everything else is saved." });
     }
@@ -379,28 +410,75 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
       },
       metaEventId: eventId,
       // One press, one lead: a double tap or a retry of the same press carries the same event id.
-      dedupeKey: eventId ? `free_visit:${eventId}` : `free_visit:${phone}:${date}:${time}:${Math.floor(Date.now() / 600000)}`,
+      dedupeKey,
     });
 
+    let uploadedKeys = [];
     try {
-      request.images = await uploadPhotos(files, request._id);
+      const uploaded = await uploadPhotos(files, request._id);
+      request.images = uploaded.urls;
+      uploadedKeys = uploaded.keys;
     } catch (uploadErr) {
       // Keep the lead; the owner can ask for the photo on the call.
       console.error("free_visit_request photo upload failed; saving without photos", { message: uploadErr.message });
       request.images = [];
     }
 
+    /*
+     * The lead, the visit and its reserved slot: all three, or none.
+     * The lifetime free-visit rule is re-checked inside, under the lock.
+     */
+    let booking = null;
     try {
-      await request.save();
-    } catch (saveErr) {
-      if (saveErr?.code === 11000) {
-        // The same press, arriving twice. Same answer, nothing sent again.
+      if (!reservationEngineEnabled()) {
+        // Only where the reservation engine is off (never production): the
+        // lead alone, as before requests reserved slots.
+        await request.save();
+      } else ({ booking } = await reserveGuestFreeVisit({
+        request,
+        slotStart: slot.toDate(),
+        bookingData: {
+          name,
+          phone,
+          email,
+          note,
+          images: request.images,
+          libraryReference: library.key,
+          guestContactConsent: {
+            text: request.contactConsent.text,
+            at: request.contactConsent.at,
+            ip: request.contactConsent.ip,
+          },
+        },
+      }));
+    } catch (reserveErr) {
+      if (uploadedKeys.length) {
+        deletePublicObjects({ Bucket: S3_BUCKET, Keys: uploadedKeys }).catch(() => {});
+      }
+      // A concurrent copy of this same press won the race: it is one request.
+      if (await Request.exists({ dedupeKey })) {
         return res.status(200).json({ success: true, duplicate: true, when, eventId });
       }
-      throw saveErr;
+      if (reserveErr?.code === "FREE_VISIT_USED" || reserveErr?.code === "FREE_VISIT_ACTIVE") {
+        return res.status(403).json({ code: reserveErr.code, message: CUSTOMER_MESSAGES[reserveErr.code] });
+      }
+      if (["SLOT_UNAVAILABLE", "SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(reserveErr?.code)) {
+        return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time was just taken. Pick another - everything else is saved." });
+      }
+      if (reserveErr?.code === "TRANSACTIONS_UNAVAILABLE") {
+        return res.status(503).json({ code: "TRANSACTIONS_UNAVAILABLE", message: "Booking is temporarily unavailable. Please try again, or call or text 631-599-1363." });
+      }
+      throw reserveErr;
     }
 
-    console.log("✅ Free visit request saved:", { id: String(request._id), date, time, source: sourceLabel(request.attribution) });
+    console.log("✅ Free visit request saved:", {
+      id: String(request._id),
+      booking: booking?.bookingNumber || "(no reservation engine)",
+      date,
+      time,
+      review: booking?.freeVisitReview?.required ? booking.freeVisitReview.reasons : [],
+      source: sourceLabel(request.attribution),
+    });
 
     /* The server half of the Lead. Same event id as the browser's fbq call. */
     const [firstName, ...rest] = name.split(" ");
@@ -426,7 +504,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     const existingAccount = await existingAccountNote(email, phone);
     Promise.resolve()
       .then(async () => {
-        logOutcomes(request._id, "owner", await notifyOwner(request, { when, existingAccount }));
+        logOutcomes(request._id, "owner", await notifyOwner(request, { when, existingAccount, booking }));
         logOutcomes(request._id, "customer", await notifyCustomer(request, { when }));
       })
       .catch((error) => console.error("free_visit_request notifications threw", { message: error.message }));

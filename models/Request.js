@@ -40,7 +40,20 @@ const RequestSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: "new",
-    enum: ["new", "pending_confirmation", "contacted", "won", "lost"],
+    /*
+     * A free-visit request's status follows its visit (the Booking it is linked
+     * to): pending_confirmation, confirmed, completed, declined, canceled.
+     * Those are written by utils/freeVisit/guestVisit and nothing else.
+     */
+    enum: ["new", "pending_confirmation", "confirmed", "completed", "declined", "canceled", "contacted", "won", "lost"],
+  },
+  /* The reserved visit this free-visit request is. */
+  bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null, index: true },
+  /* Why a request could not get a reservation (backfill of older requests). */
+  reservationIssue: {
+    code: { type: String, default: "" },
+    message: { type: String, default: "" },
+    at: { type: Date, default: null },
   },
 
   /*

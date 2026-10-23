@@ -273,6 +273,7 @@ async function enqueueSms({
     now,
     sendWindow,
     requestConsent,
+    booking,
   });
 
   if (!eligibility.eligible) {

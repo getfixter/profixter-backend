@@ -1,17 +1,28 @@
 const mongoose = require('mongoose');
 
+/*
+ * A homepage free-visit request is a real Booking from the moment it is made,
+ * so its slot is reserved by the same engine as every other visit. Until the
+ * owner confirms it, it belongs to nobody's account and has no address yet:
+ * those two requirements are lifted for it, and only for it.
+ */
+function isGuestBooking() {
+  return Boolean(this.guestRequestId);
+}
+
 const BookingSchema = new mongoose.Schema({
   bookingNumber: { type: String, required: true },
   date: { type: Date, required: true },
   service: { type: String, required: true },
 
-  user:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  userId: { type: String, required: true },
+  user:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: function () { return !isGuestBooking.call(this); }, default: null },
+  userId: { type: String, required: function () { return !isGuestBooking.call(this); }, default: "" },
   name:   { type: String, required: true },
 
   addressId: { type: mongoose.Schema.Types.ObjectId, default: null },
 
-  address: { type: String, required: true, default: "" },
+  // A guest visit gets its address from the owner's call; Confirm Visit requires it.
+  address: { type: String, required: function () { return !isGuestBooking.call(this); }, default: "" },
   city:    { type: String, default: "" },
   state:   { type: String, default: "" },
   zip:     { type: String, default: "" },
@@ -62,6 +73,55 @@ const BookingSchema = new mongoose.Schema({
     // ✅ Free first visit tracking (per address)
   isFreeFirstVisit: { type: Boolean, default: false },
   freeFirstVisitClaimedAt: { type: Date, default: null },
+
+  /*
+   * The homepage request this visit came from (models/Request). Set only on
+   * guest free visits. While status is "Pending Confirmation" the slot is
+   * reserved but the owner has not called yet; isFreeFirstVisit becomes true
+   * only when the owner confirms, so nothing that counts booked free visits
+   * counts an unconfirmed request.
+   */
+  guestRequestId: { type: mongoose.Schema.Types.ObjectId, ref: "Request", default: null, index: true },
+  /*
+   * Who this free visit was for, frozen when it was claimed. The lifetime rule
+   * reads it, so a customer editing their phone or email later cannot make a
+   * used free visit disappear. Normalised: E.164 phone, canonical email,
+   * street|unit|zip address key.
+   */
+  freeVisitIdentity: {
+    phone: { type: String, default: "" },
+    email: { type: String, default: "" },
+    addressKey: { type: String, default: "" },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    capturedAt: { type: Date, default: null },
+  },
+  /* A possible repeat the server could not decide alone: the owner verifies it. */
+  freeVisitReview: {
+    required: { type: Boolean, default: false },
+    reasons: [{ type: String }],
+    matches: [{ type: mongoose.Schema.Types.Mixed }],
+    checkedAt: { type: Date, default: null },
+    acknowledgedAt: { type: Date, default: null },
+    acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  },
+  /*
+   * The consent a guest gave by pressing the button under "By booking, you
+   * agree to be contacted by call or text about your visit." It covers texts
+   * about THIS visit only; see utils/sms/smsEligibility.
+   */
+  guestContactConsent: {
+    text: { type: String, default: "" },
+    at: { type: Date, default: null },
+    ip: { type: String, default: "" },
+  },
+  /* The owner's confirmation, and the one-time claim on its notifications. */
+  freeVisitConfirmation: {
+    confirmedAt: { type: Date, default: null },
+    confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    notifyClaimedAt: { type: Date, default: null },
+    declinedAt: { type: Date, default: null },
+    declineReason: { type: String, default: "" },
+  },
 
 
   note: { type: String, default: "" },
@@ -196,6 +256,8 @@ BookingSchema.index({ user: 1, addressId: 1, date: 1, status: 1 });
 BookingSchema.index({ date: 1 });
 BookingSchema.index({ assignedFixterId: 1, date: 1 });
 BookingSchema.index({ bookingNumber: 1 }, { unique: false });
+BookingSchema.index({ "freeVisitIdentity.phone": 1 });
+BookingSchema.index({ "freeVisitIdentity.email": 1 });
 BookingSchema.index({
   status: 1,
   completedAt: 1,
