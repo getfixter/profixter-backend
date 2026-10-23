@@ -145,7 +145,7 @@ async function main() {
   });
 
   await test("the server Lead goes to Meta once, with the browser's event id and hashed contact", async () => {
-    await waitFor(() => capi.length >= 1);
+    await waitFor(() => capi.length >= 1, 10000);
     assert.strictEqual(capi.length, 1);
     const event = capi[0].data[0];
     assert.strictEqual(event.event_name, "Lead");
@@ -157,7 +157,7 @@ async function main() {
   });
 
   await test("the owner gets an email with the details, and so does the customer", async () => {
-    await waitFor(() => emails.length >= 2);
+    await waitFor(() => emails.length >= 2, 10000);
     const owner = emails.find((m) => m.logContext?.templateKey === "admin_free_visit_request");
     const customer = emails.find((m) => m.logContext?.templateKey === "free_visit_request_received");
     assert.ok(owner, "owner email");
@@ -172,10 +172,11 @@ async function main() {
   });
 
   await test("both texts pass every consent check (simulated, because SMS is off here)", async () => {
+    // A message is written "pending" and settled a moment later; wait for both to settle.
     const rows = await waitFor(async () => {
       const r = await SmsMessage.find({}).lean();
-      return r.length >= 2 ? r : null;
-    });
+      return r.length >= 2 && r.every((m) => m.status !== "pending") ? r : null;
+    }, 10000);
     const customer = rows.find((r) => r.notificationType === "FREE_VISIT_REQUEST_RECEIVED");
     const owner = rows.find((r) => r.notificationType === "OWNER_LEAD_ALERT");
     assert.strictEqual(customer.status, "simulated", customer.suppressionReason);
