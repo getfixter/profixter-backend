@@ -302,6 +302,25 @@ const TEMPLATES = {
     `${BRAND}: your free first visit is confirmed for ${whenPhrase(booking)}. ` +
     `There is no charge for this visit. We will text you a reminder beforehand.`,
 
+  /*
+   * The owner's wording, plus the opt-out line: this is usually the first text
+   * this number ever gets from us, and it was not given through /signup.
+   */
+  FREE_VISIT_REQUEST_RECEIVED: ({ when = "" }) =>
+    `Got it! A Profixter team member will call you shortly to confirm your free visit on ${clean(when)}. ` +
+    `${OPT_OUT_LINE}`,
+
+  /*
+   * To the owner only. Everything needed to call back, in one text. No email
+   * address: clean() strips anything shaped like a domain, and the owner's
+   * alert email carries it.
+   */
+  OWNER_LEAD_ALERT: ({ name = "", phone = "", when = "", job = "", photos = 0, source = "" }) =>
+    `New free visit request: ${clean(name)}, ${clean(phone)}. ` +
+    `Wants ${clean(when)}. Job: ${clean(job, 120)}` +
+    `${Number(photos) > 0 ? ` (${Number(photos)} photo${Number(photos) > 1 ? "s" : ""})` : ""}. ` +
+    `${source ? `Source: ${clean(source)}. ` : ""}Call them, then see Admin > Leads.`,
+
   ONE_TIME_VISIT_CONFIRMED: ({ booking = {} }) =>
     `${BRAND}: your One-Time Visit is confirmed for ${whenPhrase(booking)}. ` +
     `Your Fixter is booked for 90 minutes. Need to make a change? Call ${SUPPORT_PHONE}`,

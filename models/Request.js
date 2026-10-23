@@ -29,6 +29,10 @@ const RequestSchema = new mongoose.Schema({
       // The same Lead record as every other enquiry, so it lands in the one
       // Leads list the admin already works from.
       "membership_interest",
+      // The homepage free-visit booker, submitted without an account. It asks
+      // for a day and time, so it is a request to call and confirm, not a
+      // booking: no slot is held until the visit is booked for real.
+      "free_visit_request",
     ],
   },
   sourcePage: { type: String, trim: true, default: "" },
@@ -36,8 +40,33 @@ const RequestSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: "new",
-    enum: ["new", "contacted", "won", "lost"],
+    enum: ["new", "pending_confirmation", "contacted", "won", "lost"],
   },
+
+  /*
+   * Free-visit requests only (serviceType "free_visit_request"). Every other
+   * kind of Request leaves these empty.
+   */
+  requestedDate: { type: String, trim: true, default: "" }, // YYYY-MM-DD, New York
+  requestedTime: { type: String, trim: true, default: "" }, // HH:mm, New York
+  requestedAt: { type: Date, default: null },
+  images: [{ type: String }],
+  libraryReference: { type: String, trim: true, default: "" },
+  /* utm_* and click ids as they were on the page URL, plus the stored first touch. */
+  attribution: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  /*
+   * The evidence for texting this person about the visit: the exact line shown
+   * next to the button they pressed, when, from where. utils/sms/smsEligibility
+   * reads this, and only this, for FREE_VISIT_REQUEST_RECEIVED.
+   */
+  contactConsent: {
+    text: { type: String, default: "" },
+    at: { type: Date, default: null },
+    ip: { type: String, default: "" },
+    userAgent: { type: String, default: "" },
+    pageUrl: { type: String, default: "" },
+  },
+  metaEventId: { type: String, trim: true, default: "" },
 
   /**
    * Collapses repeat submissions of the same enquiry into one lead.

@@ -1021,6 +1021,15 @@ async function main() {
      * raw instant, because a production render showed the email's long date
      * being truncated into "Sun, Oct 4 at 9:". Only the five new bodies moved;
      * the thirty-one older ones were re-compared and are still identical.
+     *
+     * Re-pinned 2026-10-23 for the homepage free-visit request:
+     * FREE_VISIT_REQUEST_RECEIVED (the owner's own wording, plus the opt-out
+     * line) and OWNER_LEAD_ALERT (to OWNER_ALERT_PHONE only). Nineteen added
+     * lines, zero removed, zero modified; all thirty-six pre-existing types
+     * were rendered from the previous committed file and from this one with
+     * identical vars and compared character by character - identical. The
+     * owner chose the no-checkbox consent line for the first one knowingly,
+     * after being told it resembles the 30923 pattern; see smsEligibility.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1028,7 +1037,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "6d12e712929498bd45198cf370c3b2e42de340b914459760fbf6f34e1e78bec3",
+      "7e5fac24109f2c8c5d8447c62cbeb4aa79d5a3df802eccb1408841a211d8c5d4",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

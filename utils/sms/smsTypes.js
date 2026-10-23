@@ -99,6 +99,30 @@ const SMS_TYPES = {
     description: "A free first visit finished. Carries the tip link.",
   },
 
+  /*
+   * The homepage request: somebody with no account asked for a free visit and
+   * pressed the button under "By booking, you agree to be contacted by call or
+   * text about your visit." That line, stored on the Request with the time and
+   * IP, is the consent this message is sent on; see smsEligibility. Sent once,
+   * right after they pressed it.
+   */
+  FREE_VISIT_REQUEST_RECEIVED: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: true,
+    description: "A free-visit request from the homepage was received; we will call to confirm.",
+  },
+
+  /* ------------------------------ Internal ----------------------------- */
+  /*
+   * To the owner, never to a customer: a new homepage request to call back.
+   * Only ever sent to OWNER_ALERT_PHONE; see smsEligibility.
+   */
+  OWNER_LEAD_ALERT: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: true,
+    description: "Tells the owner a new free-visit request arrived, with the details to call back.",
+  },
+
   /* -------------------------- One-Time Visit --------------------------- */
   ONE_TIME_VISIT_CONFIRMED: {
     channelClass: TRANSACTIONAL,

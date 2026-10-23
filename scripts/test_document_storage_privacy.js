@@ -50,6 +50,8 @@ const PUBLIC_WRITERS = [
   "utils/bookingAttachments.js",
   "utils/recentWork/workPhotoImages.js",
   "routes/bookings.js",
+  // Homepage free-visit request photos: the same sanitised photo pipeline as bookings.
+  "routes/freeVisitRequests.js",
 ];
 
 console.log("\nDocument storage privacy\n");

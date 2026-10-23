@@ -218,6 +218,7 @@ async function enqueueSms({
   source = "",
   now = new Date(),
   sendWindow = null,
+  requestConsent = null,
   MessageModel = SmsMessage,
 }) {
   // Throws on an unknown type, deliberately: that is a programming error, not a
@@ -271,6 +272,7 @@ async function enqueueSms({
     phone: e164,
     now,
     sendWindow,
+    requestConsent,
   });
 
   if (!eligibility.eligible) {

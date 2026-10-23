@@ -2858,7 +2858,7 @@ router.put("/requests/:id/status", auth, ...leadsManage, async (req, res) => {
   try {
     const { status } = req.body;
 
-    if (!["new", "contacted", "won", "lost"].includes(String(status))) {
+    if (!["new", "pending_confirmation", "contacted", "won", "lost"].includes(String(status))) {
       return res.status(400).json({ message: "Invalid status" });
     }
 

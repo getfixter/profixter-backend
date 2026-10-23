@@ -158,6 +158,7 @@ async function checkEligibility({
   phone = null,
   now = new Date(),
   sendWindow = null,
+  requestConsent = null,
   OptOutModel = SmsOptOut,
   PhoneStatusModel = SmsPhoneStatus,
 }) {
@@ -218,7 +219,34 @@ async function checkEligibility({
    */
   const isInboundReply = notificationType === "INBOUND_INFO_REPLY";
 
-  if (user) {
+  /*
+   * TWO MORE NO-ACCOUNT MESSAGES, EACH WITH ITS OWN EVIDENCE, MATCHED EXACTLY.
+   *
+   * FREE_VISIT_REQUEST_RECEIVED: the owner chose (2026-10-23) to have the
+   * homepage request ask for no account and no checkbox. Its consent is the
+   * line "By booking, you agree to be contacted by call or text about your
+   * visit" next to the button the person pressed. That is only honest if the
+   * evidence exists, so the caller must pass the Request's stored
+   * contactConsent - the text that was shown, when, and the phone it was given
+   * for - and it must be recent: this is the one confirmation that follows the
+   * press, not a licence to text that number later. No other message may use it.
+   *
+   * OWNER_LEAD_ALERT: an internal alert, sent only to OWNER_ALERT_PHONE. Any
+   * other number is refused, so it can never reach a customer.
+   *
+   * Both still meet the STOP check, SMS_ENABLED and every check below.
+   */
+  if (!user && notificationType === "FREE_VISIT_REQUEST_RECEIVED") {
+    const at = requestConsent?.at ? new Date(requestConsent.at).getTime() : NaN;
+    if (!String(requestConsent?.text || "").trim() || !Number.isFinite(at)) {
+      return no("request_consent_missing");
+    }
+    if (toE164(requestConsent.phone) !== e164) return no("request_consent_other_phone");
+    if (now.getTime() - at > 60 * 60 * 1000) return no("request_consent_stale");
+  } else if (!user && notificationType === "OWNER_LEAD_ALERT") {
+    const owner = toE164(process.env.OWNER_ALERT_PHONE || "");
+    if (!owner || owner !== e164) return no("owner_alert_wrong_phone");
+  } else if (user) {
     if (!isInboundReply) {
       const account = accountAllows(user, notificationType);
       if (!account.eligible) return account;

@@ -80,6 +80,29 @@ const DEFINITIONS = {
     tokens: ({ booking = {} }) => ({ when: whenPhrase(booking) }),
   },
 
+  FREE_VISIT_REQUEST_RECEIVED: {
+    label: "Free visit request received (homepage, no account)",
+    template:
+      "Got it! A Profixter team member will call you shortly to confirm your free visit on {{when}}. " +
+      "{{optOutLine}}",
+    tokens: ({ when = "" }) => ({ when: clean(when) }),
+  },
+
+  OWNER_LEAD_ALERT: {
+    label: "Owner alert: new free visit request",
+    template:
+      "New free visit request: {{name}}, {{phone}}. " +
+      "Wants {{when}}. Job: {{job}}{{photos}}. {{source}}Call them, then see Admin > Leads.",
+    tokens: ({ name = "", phone = "", when = "", job = "", photos = 0, source = "" }) => ({
+      name: clean(name),
+      phone: clean(phone),
+      when: clean(when),
+      job: clean(job, 120),
+      photos: Number(photos) > 0 ? ` (${Number(photos)} photo${Number(photos) > 1 ? "s" : ""})` : "",
+      source: source ? `Source: ${clean(source)}. ` : "",
+    }),
+  },
+
   ONE_TIME_VISIT_CONFIRMED: {
     label: "One-Time Visit confirmed",
     template:

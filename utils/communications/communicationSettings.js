@@ -58,6 +58,19 @@ const SMS_SETTINGS = {
     appliesTo: "Free first visits only",
     schedule: "Immediately, on the booking event.",
   },
+  FREE_VISIT_REQUEST_RECEIVED: {
+    trigger: "Somebody with no account sends the homepage free-visit request.",
+    event: "routes/freeVisitRequests.js, after the Request is saved",
+    appliesTo:
+      "The phone typed into that request. Consent is the line next to the button, stored on the Request",
+    schedule: "Immediately, once per request, and only within an hour of the press.",
+  },
+  OWNER_LEAD_ALERT: {
+    trigger: "A homepage free-visit request is saved.",
+    event: "routes/freeVisitRequests.js, after the Request is saved",
+    appliesTo: "OWNER_ALERT_PHONE only - never a customer",
+    schedule: "Immediately, once per request.",
+  },
   ONE_TIME_VISIT_CONFIRMED: {
     trigger: "A One-Time Visit is booked and paid.",
     event: "notifyBookingConfirmed, routed by visit kind",

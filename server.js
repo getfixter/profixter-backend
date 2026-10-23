@@ -214,6 +214,7 @@ app.use("/api/password-reset", require("./routes/passwordReset"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/requests", require("./routes/requests"));
+app.use("/api/free-visit-requests", require("./routes/freeVisitRequests"));
 // Public gallery read needs no token; the submission route inside it does.
 app.use("/api/recent-work", require("./routes/recentWork"));
 app.use("/api/membership-map", require("./routes/membershipMap"));
