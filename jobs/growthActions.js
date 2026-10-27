@@ -97,8 +97,17 @@ async function logConsentAudit() {
   }
 }
 
+async function logAutomationAudit() {
+  try {
+    console.log(JSON.stringify({ event: "automation_audit", ...(await require("../utils/growth/automationAudit").automationAudit()) }));
+  } catch (error) {
+    console.error(JSON.stringify({ event: "automation_audit_failed", error: String(error?.message || error).slice(0, 200) }));
+  }
+}
+
 function startGrowthJobs() {
   setTimeout(logConsentAudit, 2 * 60 * 1000).unref?.();
+  setTimeout(logAutomationAudit, 2.5 * 60 * 1000).unref?.();
   cron.schedule("* * * * *", () => runGrowthCycle(new Date()), { timezone: TIMEZONE });
   cron.schedule("20 * * * *", () => runGrowthProposers(new Date()), { timezone: TIMEZONE });
   console.log(
@@ -106,4 +115,4 @@ function startGrowthJobs() {
   );
 }
 
-module.exports = { logConsentAudit, runGrowthCycle, runGrowthProposers, startGrowthJobs };
+module.exports = { logAutomationAudit, logConsentAudit, runGrowthCycle, runGrowthProposers, startGrowthJobs };

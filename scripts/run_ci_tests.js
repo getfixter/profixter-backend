@@ -99,6 +99,7 @@ const SUITES = [
   "test_sms_core.js",
   "test_sms_marketing_preference.js",
   "test_consent_system.js",
+  "test_marcus_followups.js",
   "test_sms_consent_mechanics.js",
   "test_legacy_consent_migration.js",
   "test_sms_inbound_safety.js",

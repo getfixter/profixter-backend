@@ -237,14 +237,30 @@ async function buildProfile(user, now = new Date(), options = {}) {
 
   const memberDays = daysSince(audienceInfo.memberSince, now);
 
+  /*
+   * ONE INBOX, TWO SENDERS. Marcus's playbook emails (GrowthAction
+   * playbook_email) are marketing too, so the weekly floor and "first contact"
+   * count them - otherwise this system could email somebody the day after a
+   * playbook did. Marcus counts these sends the same way in return.
+   */
+  const lastPlaybook = await require("../../models/GrowthAction")
+    .findOne({ type: "playbook_email", "subject.entityId": String(user._id), status: "succeeded" })
+    .sort({ executedAt: -1 })
+    .select("executedAt")
+    .lean();
+  const lastLifecycleAt = last ? last.sentAt || last.createdAt : null;
+  const lastPlaybookAt = lastPlaybook?.executedAt || null;
+  const lastMarketingAt =
+    lastPlaybookAt && (!lastLifecycleAt || new Date(lastPlaybookAt) > new Date(lastLifecycleAt)) ? lastPlaybookAt : lastLifecycleAt;
+
   return {
     user,
     now,
     ...audienceInfo,
     registeredAt: user.createdAt || null,
-    lastMarketingAt: last ? last.sentAt || last.createdAt : null,
+    lastMarketingAt,
     lastMarketingCategory: last ? last.category || "" : "",
-    everMarketed: ordered.length > 0,
+    everMarketed: ordered.length > 0 || Boolean(lastPlaybookAt),
     recentKinds: recent.map((r) => r.kind || KIND.SELL),
     helpShare: recent.length ? helpCount / recent.length : null,
     campaignLastSentAt,

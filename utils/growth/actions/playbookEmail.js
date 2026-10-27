@@ -104,6 +104,21 @@ async function recentlyEmailed(user, actionId, now) {
   return inWindow >= MAX_PER_WINDOW;
 }
 
+/*
+ * NO DOUBLE FOLLOW-UP. The lifecycle marketing system (utils/marketing) runs
+ * its own scripted emails for a non-member in the weeks after their free
+ * visit - the same people and the same purpose as "free_visit_undecided".
+ * While that sequence is running (and the lifecycle system is on for
+ * non-members), Marcus stays out; he picks up after it ends. The shared
+ * weekly floor (recentlyEmailed here, lastMarketingAt there) covers the rest.
+ */
+async function lifecycleSequenceActive(user, now) {
+  const { marketingEnabled, audienceEnabled } = require("../../marketing/marketingConfig");
+  if (!marketingEnabled() || !audienceEnabled("non_member")) return false;
+  const { buildProfile, inPostFreeVisitSequence } = require("../../marketing/marketingEligibility");
+  return inPostFreeVisitSequence(await buildProfile(user, now));
+}
+
 async function execute(payload, { action, now }) {
   const pb = await EmailPlaybook.findOne({ key: payload.playbookKey }).lean();
   if (!pb || pb.status !== "approved") return { outcome: "skip", reason: "playbook_not_approved" };
@@ -123,6 +138,7 @@ async function execute(payload, { action, now }) {
   const seg = segmentDef(pb.segment);
   if (!seg || !(await seg.includes(user, { now }))) return { outcome: "skip", reason: "no_longer_in_segment" };
   if (await recentlyEmailed(user, action._id, now)) return { outcome: "skip", reason: "emailed_recently" };
+  if (await lifecycleSequenceActive(user, now)) return { outcome: "skip", reason: "lifecycle_sequence_active" };
   // never a button to a page that does not exist, or the free visit to someone who already had it
   if (ctaRouteProblem(pb.segment, ctaRouteOf(pb))) return { outcome: "skip", reason: "button_link_not_allowed" };
 
@@ -201,4 +217,4 @@ async function proposePlaybookEmails({ propose, now = new Date() } = {}) {
   return { proposed };
 }
 
-module.exports = { ROUTES_BY_SEGMENT, TYPE, ctaRouteOf, ctaRouteProblem, execute, playbookText, proposePlaybookEmails, templateOf, validate };
+module.exports = { ROUTES_BY_SEGMENT, TYPE, ctaRouteOf, ctaRouteProblem, execute, lifecycleSequenceActive, playbookText, proposePlaybookEmails, templateOf, validate };
