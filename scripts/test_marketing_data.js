@@ -208,6 +208,8 @@ async function main() {
   await test("the funnel counts every step over the same days - since tracking began - and withholds rates until there is enough data", async () => {
     const { FunnelStep } = require("../models/FunnelStep");
     const { clearOverviewCache } = require("../utils/analytics/overview");
+    const { BOOKING_FLOW } = require("../utils/growth/commandCenter");
+    BOOKING_FLOW.since = null; // this test is about tracking start; the flow start has its own test
     const day = (d) => new Date(now - d * DAY).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     await FunnelStep.collection.insertMany([
       { date: day(2), step: "booking_page_view", source: "direct", count: 20 },
@@ -221,9 +223,63 @@ async function main() {
     assert.strictEqual(f.window.days, 3);
     assert.strictEqual(f.window.trackingBegan, day(2));
     assert.strictEqual(f.bookingPageViews, 20);
-    assert.strictEqual(f.firstFreeVisits, 1, "only C's first visit falls in the same 3 days (A's rebooking does not count, B's was before)");
+    assert.strictEqual(f.firstFreeVisitsWithAccount, 1, "only C's first visit falls in the same 3 days (A's rebooking does not count, B's was before)");
     assert.strictEqual(f.stepRatesPct, null, "no rates from 3 days of data");
     assert.match(f.caution, /only 3 day\(s\) of data/);
+    assert.ok(!("signupViewed" in f), "the retired sign-up step is not shown");
+  });
+
+  await test("Arthur sees the one-step booking: requests are counted (never twice), the funnel starts with the new flow, the old sign-up drop-off is gone", async () => {
+    const Request = require("../models/Request");
+    const { BOOKING_FLOW } = require("../utils/growth/commandCenter");
+    const { clearOverviewCache } = require("../utils/analytics/overview");
+    const day = (d) => new Date(now - d * DAY).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const { insertedIds } = await Request.collection.insertMany([
+      { serviceType: "free_visit_request", sourcePage: "/", createdAt: new Date(now - 2 * DAY) },
+      { serviceType: "free_visit_request", sourcePage: "/book/free?utm_source=google", createdAt: new Date(now - 1 * DAY) },
+      { serviceType: "free_visit_request", sourcePage: "/", createdAt: new Date(now - 3 * DAY) },
+    ]);
+    const [home, bookFree, linked] = [insertedIds[0], insertedIds[1], insertedIds[2]];
+    const someUser = await User.findOne({}).lean();
+    await Booking.collection.insertMany([
+      { guestRequestId: home, user: null, status: "Pending Confirmation", accessType: "free_first_visit", isFreeFirstVisit: false, createdAt: new Date(now - 2 * DAY) },
+      { guestRequestId: bookFree, user: null, status: "Confirmed", accessType: "free_first_visit", isFreeFirstVisit: true, createdAt: new Date(now - 1 * DAY) },
+      // confirmed and linked to an account: counted with the account bookings, not again here
+      { guestRequestId: linked, user: someUser._id, status: "Confirmed", accessType: "free_first_visit", isFreeFirstVisit: true, createdAt: new Date(now - 3 * DAY) },
+    ]);
+    BOOKING_FLOW.since = day(1);
+    clearOverviewCache();
+    const out = await TOOL_DEFS.get_acquisition.run({});
+    const r = out.oneStepFreeVisitRequests;
+    assert.strictEqual(r.last7, 2, "the two requests without an account");
+    assert.strictEqual(r.last30AwaitingCall, 1);
+    assert.strictEqual(r.last30Confirmed, 1);
+    assert.deepStrictEqual(r.last30ByPage, { homepage: 1, "/book/free": 1 });
+    assert.strictEqual(out.allNewFreeVisits.last7, out.firstFreeVisitBookings.last7 + 2, "the scoreboard is account bookings + requests");
+    assert.ok(out.allNewFreeVisits.trend.verdict, "with a trend verdict over both");
+    const f = out.bookingFunnel;
+    assert.strictEqual(f.window.from, day(1), "the funnel starts when the new flow began, not with the old sign-up flow");
+    assert.strictEqual(f.window.currentFlowSince, day(1));
+    assert.strictEqual(f.requestsSent, 1, "only the request sent since the flow began");
+    assert.ok(!("signupViewed" in f) && !JSON.stringify(f.stepRatesPct || {}).includes("signup"), "no sign-up step to 'drop out' of");
+    assert.match(out.bookingFlow.meaning, /ONE STEP/);
+    assert.match(out.bookingFlow.meaning, /not report it as a current problem/);
+    // told to Arthur and the knights, and in the tool everyone reads
+    assert.match(require("fs").readFileSync(require.resolve("../utils/council/arthur"), "utf8"), /THE BOOKING FLOW CHANGED/);
+    assert.match(SHARED_RULES, /ONE STEP since 2026-10-23/);
+    // the Admin Growth dashboard: one headline without duplicates, pending apart from confirmed, old funnel kept apart
+    const { acquisitionView } = require("../utils/growth/commandCenter");
+    const a = await acquisitionView({ now: new Date(now) });
+    assert.strictEqual(a.newFreeVisits.last7, a.firstFreeVisits.last7 + 2);
+    assert.strictEqual(a.newFreeVisits.last7Pending, 1);
+    assert.strictEqual(a.newFreeVisits.last7Confirmed, a.firstFreeVisits.last7 + 1);
+    assert.strictEqual(a.newFreeVisits.last7Pending + a.newFreeVisits.last7Confirmed, a.newFreeVisits.last7);
+    assert.strictEqual(a.funnel30.since, day(1), "the new funnel starts with the new flow");
+    assert.deepStrictEqual([a.funnelBefore.since, a.funnelBefore.through], [day(2), day(2)], "the old funnel covers only the days before it");
+    assert.strictEqual(a.funnelBefore.booking_page_view, 20, "old page views stay in the old funnel");
+    assert.strictEqual(a.funnel30.booking_page_view || 0, 0, "and are not mixed into the new one");
+    assert.match(TOOL_DEFS.get_acquisition.description, /no sign-up step any more/);
+    BOOKING_FLOW.since = "2026-10-27";
   });
 
   await test("the old weekly business report and billing notes leave the marketing view - archived, never deleted", async () => {

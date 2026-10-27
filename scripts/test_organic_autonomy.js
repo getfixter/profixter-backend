@@ -311,6 +311,53 @@ async function main() {
     social.setFetchForTests(null);
   });
 
+  await test("the Create Post body matches GoHighLevel's schema: media is an array, scheduleDate is future UTC ISO from the real clock (the 2026-10-15 422)", async () => {
+    const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
+    let sent = null;
+    social.setFetchForTests(async (url, opts = {}) => {
+      const u = new URL(url);
+      if (/\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts: [GOOGLE, FACEBOOK] } });
+      if (u.pathname === "/users/") return reply(200, { users: [{ id: "user-admin", roles: { role: "admin" } }] });
+      if (opts.method === "POST") {
+        sent = { body: JSON.parse(opts.body), at: Date.now(), headers: opts.headers };
+        return reply(201, { results: { post: { _id: "post-x" } } });
+      }
+      return reply(404, { message: "unknown" });
+    });
+    // the run's "now" is an hour old: the date must still come out in the future
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    const r = await social.createGbpPost({ summary: "Leaves are falling - a good time to have the gutters looked at before the first freeze.", title: "Fall gutter check", url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic", now: stale });
+    const b = sent.body;
+    assert.deepStrictEqual(b.media, [], "media is sent, as an empty array");
+    assert.match(b.scheduleDate, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "UTC ISO like the documented 2024-01-15T10:00:00Z");
+    assert.ok(Date.parse(b.scheduleDate) - sent.at >= 14 * 60 * 1000, "at least ~15 minutes ahead of the real clock");
+    assert.ok(Date.parse(b.scheduleDate) - sent.at <= 16 * 60 * 1000, "but not far ahead");
+    assert.strictEqual(r.scheduledFor, b.scheduleDate);
+    assert.deepStrictEqual(b.accountIds, ["acc-google"], "only the Google account");
+    assert.strictEqual(b.type, "post");
+    assert.strictEqual(b.status, "scheduled");
+    assert.strictEqual(b.userId, "user-admin");
+    assert.deepStrictEqual(b.gmbPostDetails, { gmbEventType: "STANDARD", actionType: "book", url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic", title: "Fall gutter check" });
+    assert.strictEqual(sent.headers.Version, "2021-07-28");
+    assert.strictEqual(sent.headers["Content-Type"], "application/json");
+
+    // the body that failed on Oct 15 is caught here, before it is sent
+    const old = { ...b, scheduleDate: new Date(Date.now() - 1000).toISOString() };
+    delete old.media;
+    const bad = social.gbpPostBodyProblems(old);
+    assert.ok(bad.some((p) => /media must be an array/.test(p)));
+    assert.ok(bad.some((p) => /scheduleDate/.test(p)));
+    assert.ok(social.gbpPostBodyProblems({ ...b, media: "x" }).length, "a string is not an array");
+    assert.ok(social.gbpPostBodyProblems({ ...b, media: [{ url: "https://x.com/a.jpg" }] }).length, "a media object needs its type");
+    assert.deepStrictEqual(social.gbpPostBodyProblems({ ...b, media: [{ url: "https://x.com/a.jpg", type: "image/jpeg" }] }), []);
+    assert.deepStrictEqual(social.gbpPostBodyProblems(b), []);
+
+    // rounding: always a whole minute, never in the past
+    const fixedClock = () => Date.parse("2026-10-27T14:03:27.512Z");
+    assert.strictEqual(social.scheduleDateFrom(new Date("2026-10-27T13:00:00Z"), fixedClock), "2026-10-27T14:19:00Z");
+    social.setFetchForTests(null);
+  });
+
   console.log("suspension, follow-up limits, action log");
 
   await test("a second failure within 7 days suspends the action type completely", async () => {

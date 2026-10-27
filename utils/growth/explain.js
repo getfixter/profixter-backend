@@ -525,7 +525,7 @@ function explainResults(office) {
   } else parts.push("I can't see this week's bookings right now.");
   if (f && f.last30 != null) parts.push(`In the last 30 full days: ${f.last30}${f.prev30 != null ? ` (the 30 days before: ${f.prev30})` : ""}.`);
   const fn = k.funnel30;
-  if (fn && fn.booking_page_view) parts.push(`${fn.booking_page_view} people looked at our booking page this month, and ${fn.firstFreeVisits ?? "some"} booked.`);
+  if (fn && fn.booking_page_view) parts.push(`Since ${fn.since}, ${fn.booking_page_view} people looked at our booking form and ${(fn.oneStepRequests || 0) + (fn.firstFreeVisits || 0)} booked a free visit.`);
   parts.push(office.approvals?.total ? `${office.approvals.total} ${office.approvals.total === 1 ? "thing is" : "things are"} waiting for your answer.` : "Nothing is waiting for your answer.");
   const say = parts.join(" ");
   const chatgpt = brief("How my business is doing - new customer bookings", [
@@ -536,9 +536,9 @@ function explainResults(office) {
         : "Not available right now.",
     },
     {
-      heading: "Booking funnel, last 30 days",
+      heading: "Booking funnel (the current one-step booking)",
       body: fn
-        ? `${lines({ "Saw the booking form": fn.booking_page_view, "Started filling it": fn.booker_started, "Picked a time": fn.slot_selected, "Went to sign up": fn.signup_view, "Booked a first free visit": fn.firstFreeVisits })}\n(Funnel steps are counted since ${fn.trackingSince}, once per browser per day; months before that are not comparable.)`
+        ? `${lines({ "Saw the booking form": fn.booking_page_view, "Started filling it": fn.booker_started, "Picked a time": fn.slot_selected, "Sent a free-visit request": fn.oneStepRequests, "Booked from an account": fn.firstFreeVisits })}\n(Counted since ${fn.since}, once per browser per day. The one-step booking - no account, no sign-up - began ${fn.flowSince || "recently"}; numbers from the old sign-up flow are not comparable.)`
         : "Not available.",
     },
     {

@@ -453,7 +453,7 @@ function ymdDaysAgo(days) {
 Object.assign(TOOL_DEFS, {
   get_acquisition: {
     description:
-      "THE MARKETING RESULT: new first free-visit bookings (last 7 and 30 days vs the previous periods; members' bookings never count), new membership purchases (the final conversion, once per customer, aggregate only), website visitors and registrations, all of them by first-touch source (Google, Instagram, Facebook, direct, referral...), the booking funnel (booking page -> booker started -> slot chosen -> sign-up -> first free visit), and the towns customers live in. No financial data.",
+      "THE MARKETING RESULT: new first free-visit bookings (last 7 and 30 days vs the previous periods; members' bookings never count), new membership purchases (the final conversion, once per customer, aggregate only), website visitors and registrations, all of them by first-touch source (Google, Instagram, Facebook, direct, referral...), one-step free-visit requests (homepage and /book/free, no account) and allNewFreeVisits = the two together (the scoreboard), the current booking flow and when it began, the booking funnel of the CURRENT flow (booking page -> started -> time picked -> request sent; there is no sign-up step any more), and the towns customers live in. No financial data.",
     input_schema: obj({}),
     run: async () => require("./marketingData").marketingResults(),
   },

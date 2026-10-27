@@ -31,29 +31,37 @@ const MIN_DAYS_FOR_RATES = 14;
  */
 function funnelView(f) {
   const n = (v) => (typeof v === "number" ? v : null);
+  /*
+   * The CURRENT flow only (since the one-step request went live): page ->
+   * started -> time picked -> request sent. There is no sign-up step any more,
+   * so none is shown - a near-zero "went to sign up" was being read as
+   * homeowners dropping out.
+   */
   const steps = {
     bookingPageViews: n(f.booking_page_view),
     bookerStarted: n(f.booker_started),
     slotChosen: n(f.slot_selected),
-    signupViewed: n(f.signup_view),
-    firstFreeVisits: n(f.firstFreeVisits),
+    requestsSent: n(f.oneStepRequests),
+    firstFreeVisitsWithAccount: n(f.firstFreeVisits),
   };
   const rate = (a, b) => (a && b != null ? Math.round((b / a) * 1000) / 10 : null);
   const enough = (f.days || 0) >= MIN_DAYS_FOR_RATES;
+  const began = [f.trackingSince, f.flowSince].filter(Boolean).sort().pop() || null;
   return {
-    window: { from: f.since || null, through: f.through || null, days: f.days ?? null, trackingBegan: f.trackingSince || null },
+    window: { from: f.since || null, through: f.through || null, days: f.days ?? null, trackingBegan: f.trackingSince || null, currentFlowSince: f.flowSince || null },
     ...steps,
     stepRatesPct: enough
       ? {
           startedOfPageViews: rate(steps.bookingPageViews, steps.bookerStarted),
           slotOfStarted: rate(steps.bookerStarted, steps.slotChosen),
-          signupOfSlot: rate(steps.slotChosen, steps.signupViewed),
-          bookedOfSignup: rate(steps.signupViewed, steps.firstFreeVisits),
+          sentOfSlot: rate(steps.slotChosen, steps.requestsSent),
         }
       : null,
     caution: enough
       ? null
-      : `Page tracking began ${f.trackingSince || "recently"}: only ${f.days ?? "a few"} day(s) of data. Step and conversion rates are withheld until there are ${MIN_DAYS_FOR_RATES}+ days.`,
+      : `The current booking flow (and its tracking) began ${began || "recently"}: only ${f.days ?? "a few"} day(s) of data. Step and conversion rates are withheld until there are ${MIN_DAYS_FOR_RATES}+ days. Older funnel numbers describe the retired sign-up flow and are not comparable.`,
+    notes:
+      "requestsSent = one-step free-visit requests not yet linked to an account (a time is held; the owner calls to confirm). firstFreeVisitsWithAccount = first free visits booked from a customer account. Signed-in customers book without a request, so the steps do not have to add up.",
   };
 }
 
@@ -81,8 +89,52 @@ async function marketingResults({ now = new Date() } = {}) {
       weekly: (f.weekly || []).map((w) => ({ from: w.from, through: w.through, firstFreeVisits: n(w.firstFreeVisits) })),
       trend: f.trend ? { last14Days: n(f.trend.last14), previous14Days: n(f.trend.prev14), verdict: TREND_WORDS[f.trend.verdict] || null } : null,
       howCounted:
-        "Once per home at its earliest free-visit booking, homeowner accounts only (staff and test accounts excluded). Complete days only, through yesterday - today's unfinished day is shown apart as todaySoFar. Quote the trend verdict; never call a change a decline when it says STEADY or TOO FEW.",
+        "Once per home at its earliest free-visit booking, homeowner accounts only (staff and test accounts excluded). Complete days only, through yesterday - today's unfinished day is shown apart as todaySoFar. ACCOUNT BOOKINGS ONLY: one-step requests are in oneStepFreeVisitRequests, and allNewFreeVisits is the two together - the number to judge. Quote the trend verdict; never call a change a decline when it says STEADY or TOO FEW.",
     },
+    /*
+     * Since 2026-10-23 most new homeowners send a one-step request instead of
+     * booking from an account, and those are not in firstFreeVisitBookings.
+     * The two together are the real number of new free visits.
+     */
+    oneStepFreeVisitRequests: a.oneStepRequests
+      ? {
+          last7: n(a.oneStepRequests.last7),
+          prev7: n(a.oneStepRequests.prev7),
+          last30: n(a.oneStepRequests.last30),
+          prev30: n(a.oneStepRequests.prev30),
+          todaySoFar: n(a.oneStepRequests.todaySoFar),
+          last30AwaitingCall: n(a.oneStepRequests.last30AwaitingCall),
+          last30Confirmed: n(a.oneStepRequests.last30Confirmed),
+          last30ByPage: a.oneStepRequests.last30ByPage || null,
+          howCounted:
+            "Free-visit requests from the homepage or /book/free (time + name, mobile, email; no account). The time is held at once and the owner calls to confirm. Counted when sent, complete days through yesterday, only while not linked to an account (a confirmed one linked to an account moves into firstFreeVisitBookings), so the two never overlap. Awaiting the owner's call is normal, not a drop-off.",
+        }
+      : null,
+    allNewFreeVisits: a.oneStepRequests
+      ? (() => {
+          const r = a.oneStepRequests;
+          const sum = (x, y) => (typeof x === "number" && typeof y === "number" ? x + y : null);
+          const last14 = sum(f.trend?.last14, r.last14);
+          const prev14 = sum(f.trend?.prev14, r.prev14);
+          const { _internal } = require("../analytics/overview");
+          return {
+            last7: sum(f.last7, r.last7),
+            prev7: sum(f.prev7, r.prev7),
+            last30: sum(f.last30, r.last30),
+            prev30: sum(f.prev30, r.prev30),
+            trend: last14 != null && prev14 != null ? { last14Days: last14, previous14Days: prev14, verdict: TREND_WORDS[_internal.trendVerdict(last14, prev14)] || null } : null,
+            howCounted: "THE SCOREBOARD: first free visits booked from an account + one-step requests. Judge new-customer bookings by this, not by either part alone.",
+          };
+        })()
+      : null,
+    bookingFlow: a.bookingFlow
+      ? {
+          currentFlowSince: a.bookingFlow.since,
+          changes: a.bookingFlow.changes,
+          meaning:
+            "The free-visit booking is now ONE STEP on both the homepage and /book/free: pick a time, enter name, mobile and email, send. No account, no photo, no sign-up page. The old drop-off between choosing a time and signing up belonged to the retired flow and was fixed by this change - do not report it as a current problem. Judge the new flow only on data since currentFlowSince.",
+        }
+      : null,
     // the acquisition's final step, counted once per customer - aggregate only, nothing about members
     newMembershipPurchases: a.newMembershipPurchases
       ? {

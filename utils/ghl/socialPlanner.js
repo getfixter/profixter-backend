@@ -149,6 +149,57 @@ async function postingUserId({ env = process.env } = {}) {
 
 const idOf = (data) => data?.results?.post?._id || data?.results?.post?.id || data?.results?._id || data?.results?.id || data?.post?._id || data?._id || data?.id || null;
 
+/*
+ * The 2026-10-15 post was refused (422): "media must be an array with media
+ * objects or an empty array, Schedule Date must be after current date in ISO
+ * format". The body had no media field at all, and the date was 5 minutes
+ * after the sweep's start time. Now media is always an array (empty: a text
+ * post with a Book button), and the date is taken from the clock at the moment
+ * of the request, a safe margin ahead, in GoHighLevel's documented UTC form
+ * ("2024-01-15T10:00:00Z", no milliseconds).
+ */
+const SCHEDULE_LEAD_MS = 15 * 60 * 1000;
+const MEDIA_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/gif", "video/mp4", "video/mov", "video/webm"];
+
+/** UTC, whole seconds: 2026-10-27T14:05:00Z. Rounded UP to the next minute. */
+function scheduleDateFrom(now = new Date(), clock = Date.now) {
+  const from = Math.max(now.getTime(), clock());
+  const at = Math.ceil((from + SCHEDULE_LEAD_MS) / 60000) * 60000;
+  return new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** The exact Create Post body, checked against GoHighLevel's schema before it leaves. */
+function gbpPostBody({ accountId, userId, summary, title, url, media = [], scheduleDate }) {
+  const body = {
+    accountIds: [accountId],
+    summary,
+    media: media.map((m) => ({ url: String(m.url), type: String(m.type) })),
+    type: "post",
+    status: "scheduled",
+    scheduleDate,
+    userId,
+    gmbPostDetails: { gmbEventType: "STANDARD", actionType: "book", url, ...(title ? { title } : {}) },
+  };
+  const bad = gbpPostBodyProblems(body);
+  if (bad.length) throw new SocialError(`Refused before sending: ${bad.join(" ")}`, 0, true);
+  return body;
+}
+
+function gbpPostBodyProblems(body, now = Date.now()) {
+  const out = [];
+  if (!Array.isArray(body.accountIds) || body.accountIds.length !== 1 || !body.accountIds[0]) out.push("Exactly one account id.");
+  if (!Array.isArray(body.media)) out.push("media must be an array.");
+  else if (body.media.some((m) => !m || typeof m !== "object" || !/^https:\/\//.test(m.url) || !MEDIA_TYPES.includes(m.type))) out.push("Each media item needs an https url and a supported type.");
+  if (!String(body.summary || "").trim() && !(body.media || []).length) out.push("Text or media is required.");
+  if (String(body.summary || "").length > 1500) out.push("Google allows 1500 characters.");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(String(body.scheduleDate || ""))) out.push("scheduleDate must be UTC ISO, e.g. 2026-10-27T14:05:00Z.");
+  else if (Date.parse(body.scheduleDate) - now < 5 * 60 * 1000) out.push("scheduleDate must be at least 5 minutes in the future.");
+  if (body.type !== "post" || body.status !== "scheduled") out.push("A scheduled standard post only.");
+  if (!body.userId) out.push("userId is required.");
+  if (body.gmbPostDetails?.gmbEventType !== "STANDARD") out.push("gmbEventType STANDARD.");
+  return out;
+}
+
 /**
  * Create ONE standard Google Business Profile post with a "Book" button.
  * Scheduled a few minutes ahead (the Social Planner publishes it), so the
@@ -159,18 +210,10 @@ async function createGbpPost({ summary, title, url, now = new Date(), env = proc
   const account = await googleBusinessAccount({ env });
   if (account.platform !== PLATFORM) throw new SocialError("Refused: only the Google Business Profile account may be posted to", 0, true);
   const userId = await postingUserId({ env });
-  const scheduleDate = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+  const scheduleDate = scheduleDateFrom(now);
   const data = await call("POST", `/social-media-posting/${locationId}/posts`, {
     env,
-    body: {
-      accountIds: [account.id],
-      summary,
-      type: "post",
-      status: "scheduled",
-      scheduleDate,
-      userId,
-      gmbPostDetails: { gmbEventType: "STANDARD", actionType: "book", url, ...(title ? { title } : {}) },
-    },
+    body: gbpPostBody({ accountId: account.id, userId, summary, title, url, scheduleDate }),
   });
   const postId = idOf(data);
   if (!postId) throw new SocialError("The Social Planner accepted the request but returned no post id", 0, true);
@@ -192,4 +235,4 @@ async function deletePost(postId, { env = process.env } = {}) {
   return { deleted: postId };
 }
 
-module.exports = { PLATFORM, SocialError, config, connectionCheck, createGbpPost, deletePost, googleBusinessAccount, postStatus, setFetchForTests };
+module.exports = { PLATFORM, SocialError, config, connectionCheck, createGbpPost, deletePost, gbpPostBody, gbpPostBodyProblems, googleBusinessAccount, postStatus, scheduleDateFrom, setFetchForTests };

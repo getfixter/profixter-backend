@@ -253,6 +253,69 @@ function buildAlerts({ capacity, queue, policies, registrationsLast72h, now }) {
 const nyDay = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 const shiftDay = (ymd, days) => new Date(new Date(`${ymd}T12:00:00Z`).getTime() + days * 864e5).toISOString().slice(0, 10);
 
+/*
+ * THE BOOKING FLOW CHANGED. The homepage became a one-step free-visit request
+ * on 2026-10-23 and /book/free followed on 2026-10-26 (deployed that evening):
+ * pick a time, leave name, mobile and email, done - no account, no photo, no
+ * /signup. So "went to sign up" is no longer a step, and a request is saved
+ * as a visit with no account, which the account-based count of first free
+ * visits cannot see. Reports that kept reading the old funnel showed
+ * homeowners "dropping out at sign-up" that no longer exists. The funnel now
+ * starts on the first full day of the new flow; tests may move the date.
+ */
+const BOOKING_FLOW = {
+  since: "2026-10-27",
+  changes: [
+    { date: "2026-10-23", what: "Homepage: the free visit became a one-step request (time + name, mobile, email). No account, no photo, no sign-up page." },
+    { date: "2026-10-26", what: "/book/free: the same one-step request as the homepage (live that evening)." },
+  ],
+};
+
+/*
+ * One-step requests that are not already in the account-based count: visits
+ * created by a request (guestRequestId) still without an account. Once the
+ * owner confirms one and it is linked to an existing account, it is counted
+ * there instead - so the two add up and nobody is counted twice.
+ */
+async function oneStepRequests({ today }) {
+  const Booking = require("../../models/Booking");
+  const Request = require("../../models/Request");
+  const { nyMidnight } = require("../analytics/overview");
+  const rows = await Booking.find({ guestRequestId: { $ne: null }, user: null, createdAt: { $gte: nyMidnight(shiftDay(today, -60)) } })
+    .select("createdAt status guestRequestId")
+    .lean();
+  const pages = new Map(
+    (await Request.find({ _id: { $in: rows.map((b) => b.guestRequestId) } }).select("sourcePage").lean()).map((r) => [String(r._id), r.sourcePage || "/"])
+  );
+  const between = (from, toExclusive) => rows.filter((b) => b.createdAt >= nyMidnight(from) && b.createdAt < nyMidnight(toExclusive));
+  // awaiting the owner's call, or confirmed; what happens to a visit after that is the owner's
+  const status = (b) => String(b.status || "").toLowerCase();
+  const last30 = between(shiftDay(today, -30), today);
+  const last7 = between(shiftDay(today, -7), today);
+  const awaiting = (list) => list.filter((b) => status(b) === "pending confirmation").length;
+  const confirmed = (list) => list.filter((b) => ["confirmed", "completed"].includes(status(b))).length;
+  const byPage = {};
+  for (const b of last30) {
+    const page = String(pages.get(String(b.guestRequestId)) || "/").split("?")[0] === "/book/free" ? "/book/free" : "homepage";
+    byPage[page] = (byPage[page] || 0) + 1;
+  }
+  return {
+    last7: last7.length,
+    last7AwaitingCall: awaiting(last7),
+    last7Confirmed: confirmed(last7),
+    prev7: between(shiftDay(today, -14), shiftDay(today, -7)).length,
+    last14: between(shiftDay(today, -14), today).length,
+    prev14: between(shiftDay(today, -28), shiftDay(today, -14)).length,
+    last30: last30.length,
+    prev30: between(shiftDay(today, -60), shiftDay(today, -30)).length,
+    todaySoFar: between(today, shiftDay(today, 1)).length,
+    last30AwaitingCall: awaiting(last30),
+    last30Confirmed: confirmed(last30),
+    last30ByPage: byPage,
+    since: (from) => between(from, shiftDay(today, 1)).length,
+  };
+}
+
 async function acquisitionView({ now = new Date() } = {}) {
   const { buildOverview, firstFreeVisitTrend } = require("../analytics/overview");
   const { FunnelStep, STEPS } = require("../../models/FunnelStep");
@@ -275,7 +338,10 @@ async function acquisitionView({ now = new Date() } = {}) {
    */
   const start30 = shiftDay(today, -29);
   const firstTracked = (await FunnelStep.findOne({}).sort({ date: 1 }).select("date").lean())?.date || null;
-  const since = firstTracked && firstTracked > start30 ? firstTracked : start30;
+  // the latest of: 30 days ago, tracking began, the new booking flow began (never after today)
+  const latest = [start30, firstTracked, BOOKING_FLOW.since].filter(Boolean).sort().pop();
+  const since = latest > today ? today : latest;
+  const { since: requestsSince, ...requests } = await oneStepRequests({ today });
   const days = Math.round((new Date(`${today}T12:00:00Z`) - new Date(`${since}T12:00:00Z`)) / 864e5) + 1;
   const oFunnel = await buildOverview({ range: "custom", from: since, to: today, now });
   const steps = await FunnelStep.aggregate([
@@ -284,7 +350,42 @@ async function acquisitionView({ now = new Date() } = {}) {
   ]);
   const byStep = Object.fromEntries(STEPS.map((s) => [s, steps.filter((x) => x._id.step === s).reduce((a, x) => a + x.n, 0)]));
   const fv = (o) => o?.kpis?.freeVisits || {};
+  /*
+   * THE OLD FUNNEL, KEPT APART. The days tracked before the one-step flow,
+   * with the sign-up step they really had - history to read on its own,
+   * never added to or compared with the new funnel. Nothing is deleted.
+   */
+  let funnelBefore = null;
+  if (firstTracked && BOOKING_FLOW.since && firstTracked < BOOKING_FLOW.since) {
+    const lastOld = shiftDay(BOOKING_FLOW.since, -1);
+    const [oldSteps, oOld] = await Promise.all([
+      FunnelStep.aggregate([{ $match: { date: { $gte: firstTracked, $lte: lastOld } } }, { $group: { _id: "$step", n: { $sum: "$count" } } }]),
+      buildOverview({ range: "custom", from: firstTracked, to: lastOld, now }),
+    ]);
+    funnelBefore = {
+      ...Object.fromEntries(STEPS.map((s) => [s, oldSteps.find((x) => x._id === s)?.n || 0])),
+      firstFreeVisits: fv(oOld).firstBooked ?? null,
+      since: firstTracked,
+      through: lastOld,
+    };
+  }
+  // the headline: account bookings + one-step requests (disjoint by construction), and how many still wait for a call
+  const plus = (a, b) => (typeof a === "number" && typeof b === "number" ? a + b : null);
+  const newFreeVisits = {
+    last7: plus(trend.last7, requests.last7),
+    prev7: plus(trend.prev7, requests.prev7),
+    last30: plus(trend.last30, requests.last30),
+    prev30: plus(trend.prev30, requests.prev30),
+    last7Pending: requests.last7AwaitingCall,
+    last7Confirmed: plus(trend.last7, requests.last7Confirmed),
+    last30Pending: requests.last30AwaitingCall,
+    last30Confirmed: plus(trend.last30, requests.last30Confirmed),
+    fromAccounts30: trend.last30,
+    fromRequests30: requests.last30,
+  };
   return {
+    newFreeVisits,
+    funnelBefore,
     firstFreeVisits: {
       last7: trend.last7,
       prev7: trend.prev7,
@@ -304,13 +405,17 @@ async function acquisitionView({ now = new Date() } = {}) {
       .filter((s) => s.visitors || s.freeVisits || s.firstFreeVisits || s.registrations)
       // first free visits once per home, so the sources add up to the headline number
       .map((s) => ({ key: s.key, label: s.label, visitors: s.visitors, registrations: s.registrations, freeVisits: s.firstFreeVisits ?? s.freeVisits })),
+    oneStepRequests: requests,
+    bookingFlow: { since: BOOKING_FLOW.since, changes: BOOKING_FLOW.changes },
     funnel30: {
       ...byStep,
       firstFreeVisits: fv(oFunnel).firstBooked ?? null,
+      oneStepRequests: requestsSince(since),
       since,
       through: today,
       days,
       trackingSince: firstTracked,
+      flowSince: BOOKING_FLOW.since,
       fullWindow: since === start30,
     },
     costPerFirstFreeVisitCents:
@@ -367,4 +472,4 @@ async function buildCommandCenter({ now = new Date() } = {}) {
   };
 }
 
-module.exports = { acquisitionView, buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts, publicAction };
+module.exports = { BOOKING_FLOW, acquisitionView, buildCommandCenter, capacityOutlook, recoveryOutcomes, waitlistDemand, buildAlerts, publicAction };
