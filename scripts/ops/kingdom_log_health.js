@@ -27,7 +27,7 @@ const KEEP = {
   council_review: ["reason", "status", "skipped"],
   council_review_crashed: ["error"],
   council_health: null, // counts only, by construction (utils/council/health.js) - kept whole
-  marketing_report_check: ["firstFreeVisits30", "sourcesTotal30", "adds_up", "funnelFirstFreeVisits", "ratesShown", "newMembershipPurchases30", "countedThrough", "trend", "noFirstTouchRecord30"],
+  marketing_report_check: ["firstFreeVisits30", "sourcesTotal30", "adds_up", "funnelFirstFreeVisits", "funnelRequestsSent", "requests30", "allNewFreeVisits30", "ratesShown", "newMembershipPurchases30", "countedThrough", "trend", "noFirstTouchRecord30"],
   kingdom_scope_archived: ["tasks", "notes", "records", "playbooks"],
   ghl_social_check: ["tokenLoaded", "auth", "accounts", "googleBusinessProfile", "postingUser", "postableByKingdom", "actionEngine", "enabledTypes", "error"],
   growth_action_failed: ["type", "reason"],
