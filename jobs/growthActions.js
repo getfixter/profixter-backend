@@ -99,6 +99,8 @@ async function logConsentAudit() {
 
 async function logAutomationAudit() {
   try {
+    // corrected drafts first (still drafts - nothing sends until the owner approves them)
+    await require("../utils/growth/playbookRevisions").applyPlaybookRevisions();
     console.log(JSON.stringify({ event: "automation_audit", ...(await require("../utils/growth/automationAudit").automationAudit()) }));
   } catch (error) {
     console.error(JSON.stringify({ event: "automation_audit_failed", error: String(error?.message || error).slice(0, 200) }));

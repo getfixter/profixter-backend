@@ -25,9 +25,10 @@ const { defineAction } = require("../actionRegistry");
  *     and no more than 3 follow-ups in 90 days
  *   - they have never received this playbook (idempotency key per person)
  *
- * Starts SUPERVISED (owner, 2026-10-12): the first sends each wait for the
- * owner's approval - the controlled check - then it runs on its own after 5
- * verified sends, and any failure drops it back (two in 7 days suspend it).
+ * AUTONOMOUS (owner, 2026-10-27): no per-email approval. The owner's gate is
+ * the PLAYBOOK - its wording is approved once, and a send happens only at the
+ * exact version approved. Two failures in 7 days still suspend it.
+ * (Before 2026-10-27 it started supervised: the first 5 sends each waited.)
  */
 const TYPE = "playbook_email";
 const QUIET_DAYS = 7;
@@ -176,10 +177,10 @@ defineAction({
   description:
     "One email from an owner-approved playbook to one customer in its segment. Email only, marketing rules, unsubscribe honoured, at most one per person per playbook, nothing within 7 days of another marketing email, at most 3 follow-ups per person in 90 days.",
   riskTier: "medium",
-  // owner authorized sending (2026-10-12): the first sends wait for approval, then it runs on its own after 5 verified
-  defaultMode: "supervised",
+  // owner, 2026-10-27: Marcus operates independently; approval is of the playbook wording, not each email
+  defaultMode: "autonomous",
   maxMode: "autonomous",
-  promoteAfter: 5,
+  promoteAfter: null,
   limits: { perDay: 12 },
   approvalTtlMs: 3 * 24 * 60 * 60 * 1000,
   verifyAfterMs: 5 * 60 * 1000,

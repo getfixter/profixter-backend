@@ -40,11 +40,16 @@ function engineEnabled() {
  * PER-TYPE SWITCH. With the global switch off, a type may still act when the
  * owner has turned on just that type: GROWTH_ACTIONS_ENABLED_TYPES lists them
  * (comma-separated). Only types in SELECTIVELY_ENABLEABLE can be turned on this
- * way - organic Google Business Profile posting (owner's standing approval,
- * 2026-10-12). Customer messages and website changes can never be switched on
- * by this list; they need the global switch.
+ * way:
+ *   gbp_post        organic Google Business Profile posting (owner's standing
+ *                   approval, 2026-10-12)
+ *   playbook_email  Marcus's follow-up emails from owner-approved playbooks
+ *                   (owner, 2026-10-27) - every send still re-checks approval,
+ *                   copy rules, membership, segment, unsubscribe and the caps
+ * Texts (post_free_visit_sms, any SMS) and website changes can never be
+ * switched on by this list; they need the global switch.
  */
-const SELECTIVELY_ENABLEABLE = new Set(["gbp_post"]);
+const SELECTIVELY_ENABLEABLE = new Set(["gbp_post", "playbook_email"]);
 
 function enabledTypes(env = process.env) {
   return String(env.GROWTH_ACTIONS_ENABLED_TYPES || "")

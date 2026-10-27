@@ -9,7 +9,7 @@
  *     Instagram); not connected = skipped, not pretended; once per 3 days;
  *     never the same text; verified by reading the post back; rollback deletes
  *   - suspension: a second failure in 7 days stops an action type (shadow)
- *   - Marcus's follow-ups start supervised, with 7-day / 3-per-90-day caps
+ *   - Marcus's follow-ups run on their own (approved wording only), with 7-day / 3-per-90-day caps
  *   - the action log carries agent, platform, action, time, outcome, cost
  *     and verification
  *
@@ -77,6 +77,7 @@ async function main() {
     const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
     if (opts.method === "GET" && /\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts } });
     if (opts.method === "GET" && u.pathname === "/users/") return reply(200, { users: [{ id: "user-admin", roles: { role: "admin" } }] });
+    if (opts.method === "POST" && /\/posts\/list$/.test(u.pathname)) return reply(201, { results: { posts: Object.entries(posts).map(([id, p]) => ({ _id: id, ...p })) } });
     if (opts.method === "POST" && /\/posts$/.test(u.pathname)) {
       const id = `post-${Object.keys(posts).length + 1}`;
       posts[id] = { _id: id, status: "scheduled" };
@@ -204,6 +205,20 @@ async function main() {
     assert.ok(!posts[r.result.postId], "deleted");
   });
 
+  await test("a post the Social Planner replaced when publishing is followed to its live copy (2026-10-27): verified, linked, and rollback deletes the live one", async () => {
+    posts = {};
+    const r = await gbp.execute({ ...GOOD, summary: `${GOOD.summary} Replaced.` }, ctxFor());
+    const ours = r.result.postId;
+    posts[ours] = { status: "scheduled", deleted: true, scheduleDate: new Date().toISOString() };
+    assert.strictEqual((await gbp.verify({ result: r.result })).passed, false, "deleted with no replacement = really deleted");
+    posts.live = { parentPostId: ours, status: "published", deleted: false, previewLink: "https://local.google.com/place?id=1&use=posts" };
+    const v = await gbp.verify({ result: r.result });
+    assert.deepStrictEqual(v, { passed: true, detail: "published at https://local.google.com/place?id=1&use=posts" });
+    assert.strictEqual((await social.postStatus(ours)).publishedPostId, "live");
+    await registry.getDefinition("gbp_post").rollback({ result: r.result });
+    assert.ok(!posts.live, "rollback removes the post people can see");
+  });
+
   await test("Odysseus may propose Google Business Profile posts; standing approval = autonomous, first failure suspends", () => {
     assert.ok(AGENTS.visibility.allowedActions.includes("gbp_post"));
     for (const a of ["outreach", "conversion"]) assert.ok(!AGENTS[a].allowedActions.includes("gbp_post"));
@@ -217,6 +232,9 @@ async function main() {
     await GrowthPolicy.deleteMany({});
     delete process.env.GROWTH_ACTIONS_ENABLED;
     process.env.GROWTH_ACTIONS_ENABLED_TYPES = "gbp_post, playbook_email, seo_page_update, post_free_visit_sms";
+    assert.deepStrictEqual(engine.enabledTypes(), ["gbp_post", "playbook_email"], "texts and website changes can never be switched on by the list");
+    assert.strictEqual(engine.typeEnabled("post_free_visit_sms"), false, "marketing SMS stays off");
+    process.env.GROWTH_ACTIONS_ENABLED_TYPES = "gbp_post, seo_page_update, post_free_visit_sms";
     assert.deepStrictEqual(engine.enabledTypes(), ["gbp_post"], "the list cannot switch on anything else");
     assert.strictEqual(engine.typeEnabled("playbook_email"), false);
     assert.strictEqual(engine.typeEnabled("seo_page_update"), false);
@@ -377,9 +395,9 @@ async function main() {
     assert.deepStrictEqual((await suspendedTypes()).map((s) => s.type), ["seo_page_update"]);
   });
 
-  await test("Marcus's follow-up emails start supervised", () => {
+  await test("Marcus's follow-up emails run on their own (owner, 2026-10-27); the gate is the approved playbook", () => {
     const def = registry.getDefinition("playbook_email");
-    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.promoteAfter], ["supervised", "autonomous", 5]);
+    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.promoteAfter], ["autonomous", "autonomous", null]);
     assert.match(def.description, /7 days[\s\S]*3 follow-ups per person in 90 days/);
   });
 

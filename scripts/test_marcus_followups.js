@@ -112,6 +112,37 @@ async function main() {
     assert.doesNotMatch(JSON.stringify(a), /homeowner-mail\.net|\+1631/, "no customer emails or phones");
   });
 
+  console.log("playbook wording");
+
+  await test("a corrected draft is saved as the next version, still a draft, once - and the old wording is kept in the log", async () => {
+    const { applyPlaybookRevisions, REVISIONS } = require("../utils/growth/playbookRevisions");
+    await EmailPlaybook.collection.insertOne({ key: "registered-never-booked-v1", name: "n", status: "draft", version: 1, approvedVersion: null, segment: "registered_never_booked", ctaRoute: "book", subject: "s", preheader: "p", headline: "h", paragraphs: ["It's free, one per home."], ctaLabel: "c", closing: "x", createdAt: new Date(), updatedAt: new Date() });
+    const logged = [];
+    const orig = console.log;
+    console.log = (line) => logged.push(String(line));
+    let applied;
+    try {
+      applied = await applyPlaybookRevisions();
+    } finally {
+      console.log = orig;
+    }
+    assert.deepStrictEqual(applied, [{ key: "registered-never-booked-v1", version: 2 }]);
+    assert.ok(logged.some((l) => l.includes("playbook_revised_previous") && l.includes("one per home")), "the replaced wording is logged");
+    const pb = await EmailPlaybook.findOne({ key: "registered-never-booked-v1" }).lean();
+    assert.deepStrictEqual([pb.status, pb.version, pb.approvedVersion], ["draft", 2, null], "not approved by this");
+    assert.deepStrictEqual(pb.paragraphs, REVISIONS[0].fields.paragraphs);
+    assert.deepStrictEqual(await applyPlaybookRevisions(), [], "idempotent");
+    const { automationAudit } = require("../utils/growth/automationAudit");
+    const row = (await automationAudit()).playbooks.find((p) => p.key === "registered-never-booked-v1");
+    assert.deepStrictEqual([row.copyProblems, row.buttonProblem], [[], null]);
+    assert.match(row.buttonGoesTo, /\/book\/free$/);
+    // a draft never sends
+    const { execute } = require("../utils/growth/actions/playbookEmail");
+    const u = await customer();
+    const r = await execute({ userId: String(u._id), playbookKey: "registered-never-booked-v1" }, { action: { _id: new mongoose.Types.ObjectId() }, now: new Date() });
+    assert.deepStrictEqual(r, { outcome: "skip", reason: "playbook_not_approved" });
+  });
+
   await mongoose.disconnect();
   await mongo.stop();
   console.log(`\n${passed} Marcus follow-up tests passed`);

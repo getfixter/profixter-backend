@@ -220,19 +220,61 @@ async function createGbpPost({ summary, title, url, now = new Date(), env = proc
   return { postId, account: account.name, scheduledFor: scheduleDate };
 }
 
-/** What the Social Planner says about a post: status, and any public link it reports. */
-async function postStatus(postId, { env = process.env } = {}) {
+/*
+ * THE POST WE CREATED IS NOT THE POST THAT GOES OUT. When the Social Planner
+ * publishes a scheduled post it marks ours deleted (its status still reads
+ * "scheduled") and publishes a NEW post whose parentPostId is our id
+ * (seen 2026-10-27: ours 6ae01c74... deleted at 03:53, its child 6ae0201c...
+ * published). Reading only ours would never see "published", and after 6
+ * hours a live post would be failed and posting suspended. So a replaced post
+ * is followed to the post that replaced it.
+ */
+async function readPost(postId, env) {
   const { locationId } = config(env);
   const data = await call("GET", `/social-media-posting/${locationId}/posts/${encodeURIComponent(postId)}`, { env });
-  const post = data?.results?.post || data?.post || data?.results || {};
-  const link = [post.postUrl, post.publishedUrl, post.permalink, post.url, ...(Array.isArray(post.publishedLinks) ? post.publishedLinks : [])].find((v) => typeof v === "string" && /^https?:\/\//.test(v)) || null;
-  return { status: String(post.status || "unknown"), link, error: post.error || post.failedReason || null };
+  return data?.results?.post || data?.post || data?.results || {};
+}
+
+async function replacementOf(post, env) {
+  const { locationId } = config(env);
+  const around = new Date(post.scheduleDate || post.displayDate || post.createdAt || Date.now());
+  const data = await call("POST", `/social-media-posting/${locationId}/posts/list`, {
+    env,
+    body: {
+      type: "all",
+      skip: "0",
+      limit: "50",
+      fromDate: new Date(around.getTime() - 2 * 864e5).toISOString(),
+      toDate: new Date(around.getTime() + 2 * 864e5).toISOString(),
+    },
+  });
+  const posts = data?.results?.posts || data?.posts || [];
+  return posts.find((p) => p.parentPostId === String(post._id || post.postId) && !p.deleted) || null;
+}
+
+async function resolvePost(postId, env) {
+  const post = await readPost(postId, env);
+  if (post.deleted === true && post.status !== "published") {
+    const child = await replacementOf({ ...post, _id: post._id || postId }, env);
+    if (child) return { post: child, id: String(child._id), replaced: true };
+    return { post: { ...post, status: "deleted" }, id: postId, replaced: false };
+  }
+  return { post, id: postId, replaced: false };
+}
+
+/** What the Social Planner says about a post: status, and any public link it reports. */
+async function postStatus(postId, { env = process.env } = {}) {
+  const { post, id, replaced } = await resolvePost(postId, env);
+  const link = [post.previewLink, post.postUrl, post.publishedUrl, post.permalink, ...(Array.isArray(post.publishedLinks) ? post.publishedLinks : [])].find((v) => typeof v === "string" && /^https?:\/\//.test(v)) || null;
+  return { status: String(post.status || "unknown"), link, error: post.error || post.failedReason || null, publishedPostId: replaced ? id : null };
 }
 
 async function deletePost(postId, { env = process.env } = {}) {
   const { locationId } = config(env);
-  await call("DELETE", `/social-media-posting/${locationId}/posts/${encodeURIComponent(postId)}`, { env });
-  return { deleted: postId };
+  // the live copy, if the Social Planner replaced ours when it published
+  const { id } = await resolvePost(postId, env);
+  await call("DELETE", `/social-media-posting/${locationId}/posts/${encodeURIComponent(id)}`, { env });
+  return { deleted: id };
 }
 
 module.exports = { PLATFORM, SocialError, config, connectionCheck, createGbpPost, deletePost, gbpPostBody, gbpPostBodyProblems, googleBusinessAccount, postStatus, scheduleDateFrom, setFetchForTests };

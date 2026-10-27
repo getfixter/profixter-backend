@@ -29,6 +29,7 @@ const KEEP = {
   council_health: null, // counts only, by construction (utils/council/health.js) - kept whole
   marketing_report_check: ["firstFreeVisits30", "sourcesTotal30", "adds_up", "funnelFirstFreeVisits", "funnelRequestsSent", "requests30", "allNewFreeVisits30", "ratesShown", "newMembershipPurchases30", "countedThrough", "trend", "noFirstTouchRecord30"],
   kingdom_scope_archived: ["tasks", "notes", "records", "playbooks"],
+  playbook_revised: ["key", "version", "status"],
   automation_audit: null, // playbook wording, policies, last GBP post - no customer data (utils/growth/automationAudit.js)
   automation_audit_failed: ["error"],
   consent_audit: null, // counts only, by construction (utils/consent/audit.js) - kept whole
