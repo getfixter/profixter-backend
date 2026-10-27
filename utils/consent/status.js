@@ -26,7 +26,7 @@ const { toE164 } = require("../sms/smsPhone");
  */
 function emailStatus(user, suppression) {
   if (!isMarketableAccount(user)) return "not_marketable";
-  if (EmailSuppression.isActive(suppression)) return suppression.reason === "unsubscribe" ? "unsubscribed" : "blocked";
+  if (EmailSuppression.isActive(suppression)) return suppression.reason === "unsubscribe" && !suppression.providerSuppressed?.at ? "unsubscribed" : "blocked";
   if (user.emailPreferences?.marketingConsentAt) return "opted_in";
   return "existing_customer";
 }

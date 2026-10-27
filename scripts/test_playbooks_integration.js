@@ -90,6 +90,9 @@ const good = {
   closing: "Questions? Just reply.",
 };
 
+/* Marcus queues sends only 9:00-18:00 New York time; the proposer tests run at 2 pm today. */
+const DAYTIME = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }) + "T14:00:00-04:00");
+
 async function main() {
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
@@ -129,14 +132,14 @@ async function main() {
     await freeVisitDone(inSeg, 10);
     const tooRecent = await makeUser();
     await freeVisitDone(tooRecent, 1);
-    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose })).proposed, 0);
+    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose, now: DAYTIME })).proposed, 0);
     await EmailPlaybook.updateOne({ key: good.key }, { $set: { status: "approved", approvedVersion: 1, approvedBy: "Owner" } });
-    const r = await proposePlaybookEmails({ propose: engine.propose });
+    const r = await proposePlaybookEmails({ propose: engine.propose, now: DAYTIME });
     assert.strictEqual(r.proposed, 1);
     const a = await GrowthAction.findOne({ type: "playbook_email" }).lean();
     assert.strictEqual(a.status, "shadow");
     assert.strictEqual(a.subject.entityId, String(inSeg._id));
-    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose })).proposed, 0, "idempotent per person");
+    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose, now: DAYTIME })).proposed, 0, "idempotent per person");
   });
 
   await test("revising an approved playbook sends it back to draft and stops its sends", async () => {
@@ -147,7 +150,7 @@ async function main() {
     assert.strictEqual(revised.version, 2);
     const u = await makeUser();
     await freeVisitDone(u, 10);
-    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose })).proposed, 0);
+    assert.strictEqual((await proposePlaybookEmails({ propose: engine.propose, now: DAYTIME })).proposed, 0);
   });
 
   await test("a send re-checks segment, unsubscribe and quiet period; sends once with unsubscribe", async () => {
@@ -167,24 +170,27 @@ async function main() {
     const joined = await makeUser();
     await freeVisitDone(joined, 10);
 
-    await proposePlaybookEmails({ propose: engine.propose });
+    await proposePlaybookEmails({ propose: engine.propose, now: DAYTIME });
     // Joined between proposal and send:
     await Subscription.collection.insertOne({
       user: joined._id, userId: joined.userId, addressId: new mongoose.Types.ObjectId(), subscriptionType: "basic",
       status: "active", accessStatus: "active", stripeSubscriptionId: "sub_x", startDate: new Date(),
       currentPeriodEnd: new Date(Date.now() + 20 * DAY), nextPaymentDate: new Date(), latestPaymentDate: new Date(),
     });
-    const pending = await GrowthAction.find({ type: "playbook_email", status: "awaiting_approval" }).lean();
-    assert.strictEqual(pending.length, 4);
-    const outcomes = {};
-    for (const a of pending) {
-      const done = await engine.approve(a._id, { kind: "owner", name: "Owner" });
-      outcomes[a.subject.entityId] = done.status === "succeeded" ? "sent" : done.result.reason;
-    }
-    assert.strictEqual(outcomes[String(ok._id)], "sent");
-    assert.strictEqual(outcomes[String(unsub._id)], "unsubscribed");
-    assert.strictEqual(outcomes[String(busy._id)], "emailed_recently");
-    assert.strictEqual(outcomes[String(joined._id)], "membership_purchased", "a membership stops follow-ups at the moment of sending");
+    // the unsubscribed and the recently emailed are not even queued (and not used up)
+    const queued = await GrowthAction.find({ type: "playbook_email" }).lean();
+    assert.deepStrictEqual(queued.map((a) => a.subject.entityId).sort(), [String(ok._id), String(joined._id)].sort());
+    const { execute: sendPlaybook } = require("../utils/growth/actions/playbookEmail");
+    const run = async (user) => {
+      const a = queued.find((q) => q.subject.entityId === String(user._id)) || { _id: new mongoose.Types.ObjectId(), payload: { userId: String(user._id), playbookKey: good.key } };
+      const out = await sendPlaybook(a.payload, { action: a, now: DAYTIME });
+      return out.outcome === "done" ? "sent" : out.outcome === "defer" ? "waits" : out.reason;
+    };
+    assert.strictEqual(await run(ok), "sent");
+    assert.strictEqual(await run(joined), "membership_purchased", "a membership stops follow-ups at the moment of sending");
+    // had they been queued before it changed: re-checked at the moment of sending
+    assert.strictEqual(await run(unsub), "unsubscribed");
+    assert.strictEqual(await run(busy), "waits", "emailed this week: waits, is not lost");
     assert.strictEqual(sent.length, 1);
     assert.ok(sent[0].headers["List-Unsubscribe"]);
     assert.strictEqual(sent[0].logContext.templateKey, "playbook:free-visit-undecided-v1");

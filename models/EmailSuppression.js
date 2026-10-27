@@ -28,6 +28,16 @@ const EmailSuppressionSchema = new mongoose.Schema(
      */
     resubscribedAt: { type: Date, default: null },
     resubscribeSource: { type: String, default: "" },
+    /*
+     * On Amazon SES's account suppression list (a hard bounce or a spam
+     * complaint), mirrored by utils/marketing/sesSuppressionSync. While set,
+     * the address is excluded whatever else this row says, and the customer
+     * cannot lift it; it clears only when SES delists the address.
+     */
+    providerSuppressed: {
+      reason: { type: String, default: "" },
+      at: { type: Date, default: null },
+    },
   },
   { timestamps: true }
 );
@@ -35,6 +45,7 @@ const EmailSuppressionSchema = new mongoose.Schema(
 /** Is this row still keeping marketing email away? */
 EmailSuppressionSchema.statics.isActive = function isActive(row) {
   if (!row) return false;
+  if (row.providerSuppressed?.at) return true;
   if (!row.resubscribedAt) return true;
   return new Date(row.resubscribedAt).getTime() < new Date(row.suppressedAt).getTime();
 };

@@ -35,6 +35,35 @@ const QUIET_DAYS = 7;
 // reasonable frequency (owner, 2026-10-12): at most this many Kingdom follow-up emails per person per window
 const MAX_PER_WINDOW = 3;
 const WINDOW_DAYS = 90;
+/*
+ * PACING (owner, 2026-10-27: never the whole audience as a batch). At most
+ * PER_DAY sends in any 24 hours - checked when a send is queued AND again at
+ * the moment it goes - at most PER_RUN queued per hourly run, and only in the
+ * daytime, New York time.
+ */
+const PER_DAY = 12;
+const PER_RUN = 3;
+const SEND_HOURS = { start: 9, end: 18 };
+const TIMEZONE = "America/New_York";
+const HOUR = 60 * 60 * 1000;
+
+function nyHour(now) {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone: TIMEZONE, hour: "numeric", hour12: false }).format(now)) % 24;
+}
+const inSendHours = (now) => {
+  const h = nyHour(now);
+  return h >= SEND_HOURS.start && h < SEND_HOURS.end;
+};
+/** The next whole hour inside the send hours (checked hour by hour; DST-proof). */
+function nextSendHour(now) {
+  let t = new Date(Math.ceil(now.getTime() / HOUR) * HOUR + 5 * 60 * 1000);
+  for (let i = 0; i < 48 && !inSendHours(t); i += 1) t = new Date(t.getTime() + HOUR);
+  return t;
+}
+
+async function sentInLast24h(now, excludeId = null) {
+  return GrowthAction.countDocuments({ type: TYPE, status: "succeeded", executedAt: { $gte: new Date(now.getTime() - 24 * HOUR) }, ...(excludeId ? { _id: { $ne: excludeId } } : {}) });
+}
 
 function validate(p = {}) {
   if (!mongoose.Types.ObjectId.isValid(String(p.userId || ""))) throw new Error("playbook_email needs a userId");
@@ -93,16 +122,25 @@ function playbookText(pb) {
   return [pb.subject, pb.preheader, pb.headline, ...(pb.paragraphs || []), pb.ctaLabel, pb.closing].join("\n");
 }
 
-async function recentlyEmailed(user, actionId, now) {
+/** Any marketing email (lifecycle or playbook) in the last 7 days. */
+async function emailedThisWeek(user, actionId, now) {
   const since = new Date(now.getTime() - QUIET_DAYS * 24 * 60 * 60 * 1000);
   const [marketing, playbook] = await Promise.all([
     MarketingSend.exists({ user: user._id, status: "sent", sentAt: { $gte: since } }),
     GrowthAction.exists({ _id: { $ne: actionId }, type: TYPE, "subject.entityId": String(user._id), status: "succeeded", executedAt: { $gte: since } }),
   ]);
-  if (marketing || playbook) return true;
+  return Boolean(marketing || playbook);
+}
+
+/** 3 follow-ups in 90 days already. */
+async function followUpCapReached(user, actionId, now) {
   const windowStart = new Date(now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const inWindow = await GrowthAction.countDocuments({ _id: { $ne: actionId }, type: TYPE, "subject.entityId": String(user._id), status: "succeeded", executedAt: { $gte: windowStart } });
   return inWindow >= MAX_PER_WINDOW;
+}
+
+async function recentlyEmailed(user, actionId, now) {
+  return (await emailedThisWeek(user, actionId, now)) || (await followUpCapReached(user, actionId, now));
 }
 
 /*
@@ -138,8 +176,12 @@ async function execute(payload, { action, now }) {
   if (await hasMembership(user._id)) return { outcome: "skip", reason: "membership_purchased" };
   const seg = segmentDef(pb.segment);
   if (!seg || !(await seg.includes(user, { now }))) return { outcome: "skip", reason: "no_longer_in_segment" };
-  if (await recentlyEmailed(user, action._id, now)) return { outcome: "skip", reason: "emailed_recently" };
-  if (await lifecycleSequenceActive(user, now)) return { outcome: "skip", reason: "lifecycle_sequence_active" };
+  if (await followUpCapReached(user, action._id, now)) return { outcome: "skip", reason: "follow_up_cap_reached" };
+  // temporary reasons WAIT rather than skip, so the person is not lost for this playbook
+  if (await emailedThisWeek(user, action._id, now)) return { outcome: "defer", until: new Date(now.getTime() + 24 * HOUR) };
+  if (await lifecycleSequenceActive(user, now)) return { outcome: "defer", until: new Date(now.getTime() + 3 * 24 * HOUR) };
+  if (!inSendHours(now)) return { outcome: "defer", until: nextSendHour(now) };
+  if ((await sentInLast24h(now, action._id)) >= PER_DAY) return { outcome: "defer", until: new Date(now.getTime() + HOUR) };
   // never a button to a page that does not exist, or the free visit to someone who already had it
   if (ctaRouteProblem(pb.segment, ctaRouteOf(pb))) return { outcome: "skip", reason: "button_link_not_allowed" };
 
@@ -181,7 +223,9 @@ defineAction({
   defaultMode: "autonomous",
   maxMode: "autonomous",
   promoteAfter: null,
-  limits: { perDay: 12 },
+  limits: { perDay: PER_DAY },
+  // over the limit: not stored, proposed again later - never parked in the owner's approvals
+  overLimit: "later",
   approvalTtlMs: 3 * 24 * 60 * 60 * 1000,
   verifyAfterMs: 5 * 60 * 1000,
   maxAttempts: 2,
@@ -192,16 +236,31 @@ defineAction({
   verify: async (a) => (a.result?.messageId ? { passed: true, detail: "accepted by the mail provider" } : { passed: false, detail: "no message id" }),
 });
 
-/** Hourly: propose one send per person for every approved playbook (idempotent). */
+/**
+ * Hourly: queue a few sends from the approved playbooks - PER_RUN at most,
+ * never past the daily limit, in the daytime only - and only to people who
+ * would pass the checks right now. Someone not ready yet (emailed this week,
+ * still in the lifecycle sequence, unsubscribed) is simply not queued, so
+ * they can be queued on a later run; nothing is used up on them.
+ */
 async function proposePlaybookEmails({ propose, now = new Date() } = {}) {
+  if (!inSendHours(now)) return { proposed: 0, reason: "outside_send_hours" };
+  const { usedToday } = require("../actionEngine");
+  let room = Math.min(PER_RUN, PER_DAY - (await usedToday(TYPE, now)));
+  if (room <= 0) return { proposed: 0, reason: "daily_limit" };
   const playbooks = await EmailPlaybook.find({ status: "approved" }).lean();
   let proposed = 0;
   for (const pb of playbooks) {
+    if (room <= 0) break;
     if (pb.approvedVersion !== pb.version) continue;
+    if (!ACQUISITION_SEGMENTS.includes(pb.segment)) continue;
     const seg = segmentDef(pb.segment);
     if (!seg) continue;
     const ids = await seg.members({ now, limit: 50 });
     for (const userId of ids) {
+      if (room <= 0) break;
+      if (await GrowthAction.exists({ idempotencyKey: `${TYPE}:${pb.key}:${userId}` })) continue;
+      if (!(await readyNow(userId, now))) continue;
       const { created } = await propose(
         TYPE,
         { userId, playbookKey: pb.key, version: pb.version },
@@ -212,10 +271,24 @@ async function proposePlaybookEmails({ propose, now = new Date() } = {}) {
           now,
         }
       );
-      if (created) proposed += 1;
+      if (created) {
+        proposed += 1;
+        room -= 1;
+      }
     }
   }
   return { proposed };
 }
 
-module.exports = { ROUTES_BY_SEGMENT, TYPE, ctaRouteOf, ctaRouteProblem, execute, lifecycleSequenceActive, playbookText, proposePlaybookEmails, templateOf, validate };
+/** The cheap per-person checks, before anything is queued. */
+async function readyNow(userId, now) {
+  const user = await User.findById(userId).select("_id userId email name firstName role isActive employeePosition excludeFromMarketing createdAt");
+  if (!user || !isMarketableAccount(user)) return false;
+  if (await isUnsubscribed(user.email)) return false;
+  if (await hasMembership(user._id)) return false;
+  if (await recentlyEmailed(user, null, now)) return false;
+  if (await lifecycleSequenceActive(user, now)) return false;
+  return true;
+}
+
+module.exports = { PER_DAY, PER_RUN, ROUTES_BY_SEGMENT, SEND_HOURS, TYPE, ctaRouteOf, inSendHours, nextSendHour, ctaRouteProblem, execute, lifecycleSequenceActive, playbookText, proposePlaybookEmails, templateOf, validate };

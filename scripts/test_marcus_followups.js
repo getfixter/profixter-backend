@@ -126,11 +126,12 @@ async function main() {
     } finally {
       console.log = orig;
     }
-    assert.deepStrictEqual(applied, [{ key: "registered-never-booked-v1", version: 2 }]);
+    assert.deepStrictEqual(applied, [{ key: "registered-never-booked-v1", version: 2 }, { key: "registered-never-booked-v1", version: 3 }], "v1 -> v2 -> the owner's final v3");
     assert.ok(logged.some((l) => l.includes("playbook_revised_previous") && l.includes("one per home")), "the replaced wording is logged");
     const pb = await EmailPlaybook.findOne({ key: "registered-never-booked-v1" }).lean();
-    assert.deepStrictEqual([pb.status, pb.version, pb.approvedVersion], ["draft", 2, null], "not approved by this");
-    assert.deepStrictEqual(pb.paragraphs, REVISIONS[0].fields.paragraphs);
+    assert.deepStrictEqual([pb.status, pb.version, pb.approvedVersion], ["draft", 3, null], "not approved by this");
+    assert.deepStrictEqual(pb.paragraphs, REVISIONS[1].fields.paragraphs);
+    assert.strictEqual(pb.paragraphs[2], "Booking is simple: choose an available day and time on our website and submit your request. We'll confirm your visit with you.");
     assert.deepStrictEqual(await applyPlaybookRevisions(), [], "idempotent");
     const { automationAudit } = require("../utils/growth/automationAudit");
     const row = (await automationAudit()).playbooks.find((p) => p.key === "registered-never-booked-v1");
@@ -141,6 +142,39 @@ async function main() {
     const u = await customer();
     const r = await execute({ userId: String(u._id), playbookKey: "registered-never-booked-v1" }, { action: { _id: new mongoose.Types.ObjectId() }, now: new Date() });
     assert.deepStrictEqual(r, { outcome: "skip", reason: "playbook_not_approved" });
+  });
+
+  console.log("pacing");
+
+  await test("never the whole audience at once: 3 per hourly run, 12 per day, daytime only, nothing parked for the owner, nobody used up", async () => {
+    const engine = require("../utils/growth/actionEngine");
+    const { proposePlaybookEmails, execute: send, PER_DAY, PER_RUN } = require("../utils/growth/actions/playbookEmail");
+    process.env.GROWTH_ACTIONS_ENABLED_TYPES = "playbook_email";
+    await EmailPlaybook.updateOne({ key: "registered-never-booked-v1" }, { $set: { status: "approved", approvedVersion: 3 } });
+    await GrowthAction.collection.deleteMany({});
+    for (let i = 0; i < 10; i += 1) await customer({ createdAt: new Date(Date.now() - 20 * DAY) });
+    const busy = await customer({ createdAt: new Date(Date.now() - 20 * DAY) });
+    await MarketingSend.collection.insertOne({ user: busy._id, email: busy.email, campaignId: "y", status: "sent", sentAt: new Date(Date.now() - 2 * DAY), createdAt: new Date(Date.now() - 2 * DAY) });
+    const ny = (h) => new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }) + `T${String(h).padStart(2, "0")}:30:00-04:00`);
+
+    assert.deepStrictEqual(await proposePlaybookEmails({ propose: engine.propose, now: ny(3) }), { proposed: 0, reason: "outside_send_hours" });
+    const r = await proposePlaybookEmails({ propose: engine.propose, now: ny(14) });
+    assert.strictEqual(r.proposed, PER_RUN, "3 per run");
+    assert.strictEqual(await GrowthAction.countDocuments({ type: "playbook_email", status: "approved" }), PER_RUN);
+    assert.ok(!(await GrowthAction.exists({ "subject.entityId": String(busy._id) })), "emailed this week: not queued, and not used up");
+
+    // the day's limit reached: nothing queued, nothing parked for approval
+    await GrowthAction.insertMany(Array.from({ length: PER_DAY }, (_, i) => ({ type: "playbook_email", idempotencyKey: `sent-${i}`, status: "succeeded", riskTier: "medium", modeAtProposal: "autonomous", executedAt: new Date(), subject: { entityType: "user", entityId: String(new mongoose.Types.ObjectId()) } })));
+    assert.deepStrictEqual(await proposePlaybookEmails({ propose: engine.propose, now: ny(15) }), { proposed: 0, reason: "daily_limit" });
+    assert.strictEqual(await GrowthAction.countDocuments({ type: "playbook_email", status: "awaiting_approval" }), 0, "never in the owner's approvals");
+
+    // and at the moment of sending: a queued email waits rather than going over 12
+    const queued = await GrowthAction.findOne({ type: "playbook_email", status: "approved" }).lean();
+    const out = await send(queued.payload, { action: queued, now: ny(15) });
+    assert.strictEqual(out.outcome, "defer", "12 already sent in 24 hours");
+    const night = await send(queued.payload, { action: queued, now: ny(23) });
+    assert.strictEqual(night.outcome, "defer", "not at night");
+    delete process.env.GROWTH_ACTIONS_ENABLED_TYPES;
   });
 
   await mongoose.disconnect();

@@ -57,7 +57,7 @@ function buildEligibleRecipients({
   );
   const suppressedEmails = new Set(
     // a customer who turned marketing back on themselves is no longer suppressed (models/EmailSuppression)
-    suppressions.filter((entry) => !entry.resubscribedAt || new Date(entry.resubscribedAt) < new Date(entry.suppressedAt)).map((entry) => normalizeEmail(entry.email)).filter(Boolean)
+    suppressions.filter((entry) => EmailSuppression.isActive({ suppressedAt: entry.suppressedAt || new Date(0), ...entry })).map((entry) => normalizeEmail(entry.email)).filter(Boolean)
   );
 
   const eligibleUsers = [];
@@ -205,7 +205,7 @@ async function resolveAudience(segmentInput, options = {}) {
       )
       .lean(),
     Blacklist.find().select("user email").lean(),
-    EmailSuppression.find().select("email reason suppressedAt resubscribedAt").lean(),
+    EmailSuppression.find().select("email reason suppressedAt resubscribedAt providerSuppressed").lean(),
   ]);
 
   const userIds = users.map((user) => user._id);

@@ -177,6 +177,34 @@ async function main() {
     assert.deepStrictEqual([r.body.status, r.body.canChange], ["not_marketable", false]);
   });
 
+  await test("Amazon SES's bounce/complaint list is mirrored: excluded from sends and counts, can't be lifted by the customer, and clears when SES delists", async () => {
+    const sync = require("../utils/marketing/sesSuppressionSync");
+    const bounced = await makeUser();
+    const unsubscribedFirst = await makeUser();
+    await EmailSuppression.create({ email: unsubscribedFirst.user.email, reason: "unsubscribe", source: "campaign_unsubscribe" });
+    let list = [
+      { EmailAddress: bounced.user.email.toUpperCase(), Reason: "BOUNCE", LastUpdateTime: new Date() },
+      { EmailAddress: unsubscribedFirst.user.email, Reason: "COMPLAINT", LastUpdateTime: new Date() },
+      { EmailAddress: "not-a-customer@elsewhere.org", Reason: "BOUNCE", LastUpdateTime: new Date() },
+    ];
+    const sent = [];
+    sync.setClientForTests({ send: async (cmd) => (sent.push(cmd.constructor.name), { SuppressedDestinationSummaries: list }) });
+    assert.deepStrictEqual(await sync.syncSesSuppressions(), { listed: 3, added: 2, flagged: 1, cleared: 0 });
+    assert.ok(sent.every((n) => n === "ListSuppressedDestinationsCommand"), "read-only toward AWS");
+    assert.strictEqual(await isUnsubscribed(bounced.user.email), true, "a bounced address is excluded from sends");
+    assert.strictEqual((await consentStatusFor(await User.findById(bounced.user._id).lean())).email, "blocked", "and from reachable counts");
+    const row = await EmailSuppression.findOne({ email: unsubscribedFirst.user.email }).lean();
+    assert.strictEqual(row.reason, "unsubscribe", "an earlier unsubscribe keeps its own reason and history");
+    const r = await call(bounced.token, "PUT", "/api/users/me/email-preferences", { marketingEnabled: true });
+    assert.strictEqual(r.status, 409, "the customer can't lift a provider block");
+    assert.deepStrictEqual(await sync.syncSesSuppressions(), { listed: 3, added: 0, flagged: 0, cleared: 0 }, "idempotent");
+    list = [];
+    assert.deepStrictEqual(await sync.syncSesSuppressions(), { listed: 0, added: 0, flagged: 0, cleared: 3 });
+    assert.strictEqual(await isUnsubscribed(bounced.user.email), false, "delisted by SES: reachable again");
+    assert.strictEqual(await isUnsubscribed(unsubscribedFirst.user.email), true, "the customer's own unsubscribe still stands");
+    sync.setClientForTests(null);
+  });
+
   console.log("SMS");
 
   await test("SMS settings: on and off are recorded per channel with the settings wording; marketing never switches service", async () => {

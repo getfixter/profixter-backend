@@ -127,6 +127,12 @@ async function propose(type, payload, { idempotencyKey, rationale = "", proposed
   } else {
     const perDay = def.limits?.perDay;
     if (perDay && (await usedToday(type, now)) >= perDay) {
+      /*
+       * Over the daily limit. "later": nothing is stored, so the same thing
+       * can be proposed again tomorrow (a follow-up email must not be lost,
+       * and must not wait in the owner's inbox either).
+       */
+      if (def.overLimit === "later") return { action: null, created: false, mode, heldReason: "daily_limit" };
       // a type the owner pre-approved never lands in their inbox: over the limit it is recorded, not done
       status = def.overLimit === "record" ? "shadow" : "awaiting_approval";
       heldReason = "daily_limit";
@@ -606,6 +612,7 @@ module.exports = {
   rollback,
   runSweeps,
   setPolicyMode,
+  usedToday,
   verificationSweep,
   // tests only
   _internal: { recordFailure },

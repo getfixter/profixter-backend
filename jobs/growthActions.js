@@ -97,6 +97,16 @@ async function logConsentAudit() {
   }
 }
 
+/* Amazon SES's bounce/complaint list -> EmailSuppression (read-only toward AWS). */
+async function runSesSuppressionSync() {
+  try {
+    const r = await require("../utils/marketing/sesSuppressionSync").syncSesSuppressions();
+    console.log(JSON.stringify({ event: "ses_suppression_sync", ...r }));
+  } catch (error) {
+    console.error(JSON.stringify({ event: "ses_suppression_sync_failed", error: String(error?.name || "") + ": " + String(error?.message || error).slice(0, 200) }));
+  }
+}
+
 async function logAutomationAudit() {
   try {
     // corrected drafts first (still drafts - nothing sends until the owner approves them)
@@ -108,6 +118,9 @@ async function logAutomationAudit() {
 }
 
 function startGrowthJobs() {
+  // first the SES list, so the consent audit below already counts it
+  setTimeout(runSesSuppressionSync, 60 * 1000).unref?.();
+  setInterval(runSesSuppressionSync, 6 * 60 * 60 * 1000).unref?.();
   setTimeout(logConsentAudit, 2 * 60 * 1000).unref?.();
   setTimeout(logAutomationAudit, 2.5 * 60 * 1000).unref?.();
   cron.schedule("* * * * *", () => runGrowthCycle(new Date()), { timezone: TIMEZONE });
@@ -117,4 +130,4 @@ function startGrowthJobs() {
   );
 }
 
-module.exports = { logAutomationAudit, logConsentAudit, runGrowthCycle, runGrowthProposers, startGrowthJobs };
+module.exports = { logAutomationAudit, logConsentAudit, runSesSuppressionSync, runGrowthCycle, runGrowthProposers, startGrowthJobs };
