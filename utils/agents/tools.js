@@ -402,7 +402,7 @@ Object.assign(TOOL_DEFS, {
       headline: str("Headline inside the email"),
       paragraphs: { type: "array", items: { type: "string" }, description: "2-4 short paragraphs (the greeting 'Hi <name>,' is added automatically)" },
       cta_label: str("Button text"),
-      cta_route: str("Where the button goes", { enum: ["membership", "plans", "book", "bookOneTime", "account", "services"] }),
+      cta_route: str("Where the button goes. registered_never_booked: bookFree (the free first visit), membership, plans or services. free_visit_undecided (already had their free visit - one per customer): membership, plans, bookOneTime or services.", { enum: ["bookFree", "membership", "plans", "bookOneTime", "services"] }),
       closing: str("One closing line"),
     }),
     run: async (input, ctx) => {
@@ -424,6 +424,8 @@ Object.assign(TOOL_DEFS, {
         closing: clip(input.closing, 300),
       };
       const problems = checkCopy([fields.subject, fields.preheader, fields.headline, ...fields.paragraphs, fields.ctaLabel, fields.closing].join("\n"));
+      const linkProblem = require("../growth/actions/playbookEmail").ctaRouteProblem(fields.segment, fields.ctaRoute);
+      if (linkProblem) problems.push(linkProblem);
       if (problems.length) throw new Error(`Rewrite needed: ${problems.join(" ")}`);
       const existing = await EmailPlaybook.findOne({ key });
       if (existing && existing.status === "retired") throw new Error("That playbook was retired by the owner; use a new key and say what changed.");

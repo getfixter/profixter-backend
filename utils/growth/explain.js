@@ -15,6 +15,21 @@
 const { AGENTS } = require("../agents/definitions");
 const { SEGMENT_DEFS } = require("./segments");
 
+/*
+ * The button's real address, from the same route table the email is rendered
+ * with. ctaRoute is a route KEY ("plans"), not a path: gluing it onto the site
+ * gave "https://www.profixter.complans" in every preview.
+ */
+function playbookLink(p) {
+  const { routeUrl } = require("../marketing/marketingConfig");
+  const { ctaRouteOf } = require("./actions/playbookEmail");
+  try {
+    return routeUrl(ctaRouteOf(p));
+  } catch {
+    return `(no such page: "${p.ctaRoute}" - this email cannot be sent until the button is fixed)`;
+  }
+}
+
 const SITE = "https://www.profixter.com";
 
 const ROBOT_NAMES = { visibility: "Odysseus", outreach: "Leonidas", conversion: "Marcus", conversation: "Marcus", growth_intelligence: "the weekly report", arthur: "King Arthur" };
@@ -51,7 +66,7 @@ I own Profixter (${SITE}), a handyman membership company serving homeowners in N
 
 Fixed business rules the agents must follow (they cannot change these):
 - AI never books visits. Homeowners book themselves on profixter.com.
-- The free first visit is up to 90 minutes of real handyman work, one per home - not an inspection or an estimate.
+- The free first visit is up to 90 minutes of real handyman work, one per customer (new customers only) - not an inspection or an estimate.
 - AI never offers discounts, deals or price changes, and never changes services, plans, memberships, booking rules or the service area.
 - Meta (Facebook/Instagram) ads are run by an outside agency; the AI can only read ad data.
 - No postcards or mail by AI. No texting or emailing purchased or imported contact lists.
@@ -275,7 +290,7 @@ function explainPlaybook(p) {
       },
       {
         heading: "The email (exact text)",
-        body: `Subject: ${p.subject}\nPreview line: ${p.preheader || "(none)"}\nHeadline: ${p.headline}\n\n${(p.paragraphs || []).join("\n\n")}\n\nButton: ${p.ctaLabel} → ${SITE}${p.ctaRoute}\n${p.closing || ""}`,
+        body: `Subject: ${p.subject}\nPreview line: ${p.preheader || "(none)"}\nHeadline: ${p.headline}\n\n${(p.paragraphs || []).join("\n\n")}\n\nButton: ${p.ctaLabel} → ${playbookLink(p)}\n${p.closing || ""}`,
       },
       { heading: "The question for me", body: ask },
       { heading: "My choices", body: "- Approve the wording (\"Yes, use it\")\n- Retire it (\"Not now\")" },

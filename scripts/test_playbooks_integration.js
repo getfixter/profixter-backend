@@ -104,6 +104,24 @@ async function main() {
     assert.strictEqual(await EmailPlaybook.countDocuments({}), 1);
   });
 
+  await test("the button goes to a real page: previews show the real link, never-booked goes to /book/free, the free visit is never offered twice", async () => {
+    const { explainPlaybook } = require("../utils/growth/explain");
+    const { templateOf, ctaRouteOf } = require("../utils/growth/actions/playbookEmail");
+    const { renderMarketingEmail } = require("../utils/marketing/marketingRenderer");
+    const preview = JSON.stringify(explainPlaybook({ ...good, ctaLabel: good.cta_label, ctaRoute: "plans" }));
+    assert.match(preview, /https:\/\/www\.profixter\.com\/membership\/plans/);
+    assert.doesNotMatch(preview, /profixter\.com(plans|book|membership)/, "never the route key glued onto the domain");
+    // an older draft said "book" for never-booked prospects: it means the free visit
+    const legacy = { key: "x", segment: "registered_never_booked", subject: "s", headline: "h", paragraphs: ["p"], ctaLabel: "Book your free visit", ctaRoute: "book" };
+    assert.strictEqual(ctaRouteOf(legacy), "bookFree");
+    assert.strictEqual(renderMarketingEmail(templateOf(legacy), { name: "A", email: "a@example.com" }).ctaUrl, "https://www.profixter.com/book/free");
+    await assert.rejects(() => TOOL_DEFS.save_email_playbook.run({ ...good, key: "fv-again", cta_route: "bookFree" }, ctx), /already had their free visit/);
+    await assert.rejects(() => TOOL_DEFS.save_email_playbook.run({ ...good, key: "per-home", paragraphs: ["The free visit is one per home."] }, ctx), /ONE PER CUSTOMER/);
+    const nb = await TOOL_DEFS.save_email_playbook.run({ ...good, key: "never-booked-v1", segment: "registered_never_booked", cta_route: "bookFree" }, ctx);
+    assert.strictEqual(nb.status, "draft");
+    await EmailPlaybook.deleteMany({ key: { $ne: good.key } });
+  });
+
   await test("drafts propose nothing; approved playbooks propose in shadow for the segment only", async () => {
     delete process.env.GROWTH_ACTIONS_ENABLED;
     await TOOL_DEFS.save_email_playbook.run(good, ctx);

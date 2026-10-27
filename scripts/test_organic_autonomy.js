@@ -284,6 +284,33 @@ async function main() {
     process.env.GHL_SOCIAL_TOKEN = "test-token";
   });
 
+  await test("'ready' includes the user posts are made as: a failing user lookup is not ready, and a set GHL_SOCIAL_USER_ID needs no lookup", async () => {
+    const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
+    const seen = [];
+    social.setFetchForTests(async (url, opts = {}) => {
+      const u = new URL(url);
+      seen.push(`${opts.method} ${u.pathname}`);
+      if (/\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts: [GOOGLE, FACEBOOK] } });
+      return reply(404, { message: "Not found" });
+    });
+    const c = await social.connectionCheck();
+    assert.strictEqual(c.auth, "ok");
+    assert.strictEqual(c.postingUser, "error");
+    assert.strictEqual(c.googleBusinessProfile, "no_posting_user");
+    assert.deepStrictEqual(c.postableByKingdom, []);
+    assert.match(c.error, /GHL_SOCIAL_USER_ID/, "says how to fix it");
+    await assert.rejects(social.createGbpPost({ summary: "x".repeat(90), url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic" }), (e) => e.permanent === true && /users to post as/.test(e.message));
+    assert.ok(!seen.some((s) => s.startsWith("POST")), "nothing was posted");
+    process.env.GHL_SOCIAL_USER_ID = "user-fixed";
+    seen.length = 0;
+    const fixed = await social.connectionCheck();
+    assert.strictEqual(fixed.postingUser, "ok");
+    assert.deepStrictEqual(fixed.postableByKingdom, ["google"]);
+    assert.ok(!seen.some((s) => s.includes("/users/")), "a configured user id is not looked up");
+    delete process.env.GHL_SOCIAL_USER_ID;
+    social.setFetchForTests(null);
+  });
+
   console.log("suspension, follow-up limits, action log");
 
   await test("a second failure within 7 days suspends the action type completely", async () => {

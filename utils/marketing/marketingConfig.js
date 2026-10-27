@@ -173,6 +173,7 @@ const BUSINESS = {
 /** Real routes only. A CTA is checked against this list before it can ship. */
 const ROUTES = {
   book: "/book",
+  bookFree: "/book/free",
   bookMembership: "/book?visit=membership",
   bookOneTime: "/book?visit=additional",
   bookFullDay: "/book?visit=full-day",

@@ -775,6 +775,32 @@ async function main() {
     assert.ok(text.trim().endsWith(CLOSING));
   });
 
+  await test("one record per topic: the same subject under a new key updates the open record; open duplicates merge into the oldest; a decision needs a recommendation", async () => {
+    const file = (over) => arthur.ARTHUR_TOOLS.file_for_owner.run({ category: "decision", simple: "Boss, x", detail: "d", agent: "visibility", recommendation: "Resume it", ...over }, { log: [] });
+    const first = await file({ subject: "Google Business Profile posting is suspended", dedupe_key: "gbp-suspended" });
+    const again = await file({ subject: "Google Business Profile posting suspended again", dedupe_key: "gbp:posting-failure" });
+    assert.strictEqual(again.id, first.id);
+    assert.strictEqual(again.updated_existing, true);
+    const other = await file({ subject: "Ask happy customers for Google reviews", dedupe_key: "reviews" });
+    assert.notStrictEqual(other.id, first.id, "a different topic is its own record");
+    assert.strictEqual(await CouncilDecision.countDocuments({ status: "open" }), 2);
+
+    const refused = await file({ subject: "Look at Yelp", recommendation: null, dedupe_key: "yelp" });
+    assert.strictEqual(refused.refused, true);
+    assert.match(refused.problems[0], /needs your recommendation/);
+
+    // duplicates that were already open before this fix
+    const old = { category: "decision", simple: "s", agent: "outreach", refs: [], inbox: "needs_you" };
+    const a = await CouncilDecision.create({ ...old, subject: "Follow-up email links are broken", dedupeKey: "arthur:links-1", createdAt: new Date("2026-10-20") });
+    const b = await CouncilDecision.create({ ...old, subject: "Broken links in follow-up emails", dedupeKey: "arthur:links-2" });
+    await require("../utils/council/inbox").sweep();
+    assert.strictEqual((await CouncilDecision.findById(a._id).lean()).status, "open", "the oldest stays");
+    const gone = await CouncilDecision.findById(b._id).lean();
+    assert.strictEqual(gone.status, "superseded");
+    assert.strictEqual(gone.resolution.choice, "merged");
+    assert.strictEqual(await CouncilDecision.countDocuments({}), 4, "nothing is deleted");
+  });
+
   await mongoose.disconnect();
   await mongo.stop();
   console.log(`\n${passed} council tests passed`);

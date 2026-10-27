@@ -100,18 +100,47 @@ async function connectionCheck({ env = process.env } = {}) {
     out.accounts = all.map((a) => ({ platform: a.platform, name: String(a.name || "").slice(0, 60), active: a.active !== false && !a.deleted, expired: Boolean(a.isExpired) }));
     const google = all.filter((a) => a.platform === PLATFORM && a.active !== false && !a.deleted && !a.isExpired);
     out.googleBusinessProfile = google.length === 1 ? "ready" : google.length ? "more_than_one" : "not_connected_or_expired";
-    out.postableByKingdom = google.length === 1 ? [PLATFORM] : [];
   } catch (error) {
     out.auth = "error";
-    out.error = String(error.message || error).replace(/pit-[\w-]+/gi, "[redacted]").slice(0, 200);
+    out.error = redact(error.message || error);
+    return out;
   }
+  /*
+   * A post also needs the GoHighLevel user it is made as. Checking only the
+   * accounts could say "ready" while every real post failed at this step, so
+   * the user lookup is part of "ready" now - still read-only.
+   */
+  try {
+    await postingUserId({ env });
+    out.postingUser = "ok";
+  } catch (error) {
+    out.postingUser = "error";
+    out.error = redact(error.message || error);
+  }
+  out.postableByKingdom = out.googleBusinessProfile === "ready" && out.postingUser === "ok" ? [PLATFORM] : [];
+  if (out.googleBusinessProfile === "ready" && out.postingUser !== "ok") out.googleBusinessProfile = "no_posting_user";
   return out;
 }
 
+function redact(message) {
+  return String(message).replace(/pit-[\w-]+/gi, "[redacted]").slice(0, 200);
+}
+
+/**
+ * The GoHighLevel user posts are made as (required for Google posts).
+ * GHL_SOCIAL_USER_ID wins - set it and nothing is looked up. Otherwise the
+ * location's users are read and an admin is chosen; any failure says exactly
+ * which step broke and how to fix it, and never retries (it will not fix itself).
+ */
 async function postingUserId({ env = process.env } = {}) {
   const { locationId, userId } = config(env);
   if (userId) return userId;
-  const data = await call("GET", "/users/", { query: { locationId }, env });
+  let data;
+  try {
+    data = await call("GET", "/users/", { query: { locationId }, env });
+  } catch (error) {
+    throw new SocialError(`Could not read the GoHighLevel users to post as (${error.message}). Set GHL_SOCIAL_USER_ID to the posting user's id.`, error.status || 0, true);
+  }
   const users = data?.users || [];
   const admin = users.find((u) => String(u.roles?.role || u.role || "").toLowerCase() === "admin") || users[0];
   if (!admin?.id) throw new SocialError("No GoHighLevel user found to post as (set GHL_SOCIAL_USER_ID)", 0, true);

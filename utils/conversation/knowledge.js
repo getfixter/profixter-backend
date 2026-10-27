@@ -76,7 +76,7 @@ async function factSheet() {
   }
   const text = `PROFIXTER FACTS (the only things you may state as fact)
 - Profixter is a handyman company serving homeowners in Nassau and Suffolk counties on Long Island, NY, with its own in-house Fixters.
-- FREE FIRST VISIT: a real handyman visit, up to 90 minutes of labor on one eligible task, free, one per home, no card needed. The homeowner books it themselves online, choosing a time from the live calendar, at ${SITE}${LINKS.free_visit}. It is real work, never an inspection or an estimate.
+- FREE FIRST VISIT: a real handyman visit, up to 90 minutes of labor on one eligible task, free, one per customer (new customers only), no card needed. The homeowner books it themselves online, choosing a time from the live calendar, at ${SITE}${LINKS.free_visit}. It is real work, never an inspection or an estimate.
 - Handyman jobs Profixter does: ${HANDYMAN_SERVICES.join("; ")}.
 - One-Time Visit: ${f.oneTimeDollars ? `$${f.oneTimeDollars}` : "a fixed price shown on the website"} for up to 90 minutes, booked online.${f.fullDayDollars ? ` Full Day: $${f.fullDayDollars}.` : ""}
 - Membership: ongoing handyman help. Plans: ${f.plans.map((p) => `${p.plan} $${p.monthly}/month`).join(", ")} (annual billing also available). Membership is a pace, not an allowance: Basic lets you have 1 visit booked at a time, Plus/Premium/Elite up to 2 at a time, as often as you need. Never say "unlimited" or "N visits per month".

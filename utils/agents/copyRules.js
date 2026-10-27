@@ -17,6 +17,7 @@ const RULES = [
   { re: /\bfree (first )?(visit|inspection)\b[^.]{0,40}\b(inspection|estimate|assessment|quote)\b|\bfree (inspection|estimate|assessment)\b/i, why: "The free first visit is real labor, never an inspection or estimate." },
   { re: /\b(first|only)\b[^.]{0,30}\bhandyman membership\b/i, why: 'Never claim to be the first or only handyman membership on Long Island.' },
   { re: /\bhouseholds?\b/i, why: 'Say "customers", not "households".' },
+  { re: /\b(one|once|1)\s+(free\s+(first\s+)?visit\s+)?(per|for each|each)\s+(home|house|address|property|household)\b/i, why: 'The free first visit is ONE PER CUSTOMER (new customers only), never "one per home" or "per address".' },
   { re: /\b\d+\s?%\s?off\b|\bdiscount|\bcoupon|\bpromo(tion)? code|\bon sale\b|\bfree month\b|\bspecial offer\b/i, why: "No discounts or offers: pricing and promotions are owner decisions." },
   { re: /\$\s?\d/, why: "No prices in agent copy: prices change and must come from the live catalogue." },
   { re: /\b(reviews? say|customers say|rated #?1|best in|award)/i, why: "No claimed reviews, ratings or awards in drafted copy." },

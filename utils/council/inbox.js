@@ -97,6 +97,7 @@ async function ownerDefer(id, { by }) {
 async function sweep({ now = new Date() } = {}) {
   // first close records whose item was decided anywhere (Requests, a knight panel), so every view agrees
   await require("./arthur").settleDecisions();
+  await require("./dedupe").mergeOpenDuplicates({ now });
   const moved = { toReview: 0, toYou: 0 };
   const open = await CouncilDecision.find({ status: "open", inbox: { $in: ["waiting", "review"] } }).lean();
   for (const d of open) {

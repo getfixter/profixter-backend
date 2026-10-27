@@ -295,6 +295,9 @@ const SUSPEND_AFTER_FAILURES = 2;
 const SUSPEND_WINDOW_MS = 7 * 864e5;
 
 async function recordFailure(def, reason) {
+  // the reason is in the log as well as the database, so a suspension can be diagnosed from the log alone
+  const why = require("./explain").redact(String(reason)).slice(0, 300);
+  console.log(JSON.stringify({ event: "growth_action_failed", type: def.type, reason: why }));
   const policy = await GrowthPolicy.findOneAndUpdate(
     { type: def.type },
     {
@@ -351,7 +354,7 @@ async function recordFailure(def, reason) {
     );
     if (suspended) {
       await audit("policy_suspended", { _id: suspended._id, type: def.type, summary: def.label }, null, { to: "shadow", failures7d: recentFailures, reason });
-      console.log(JSON.stringify({ event: "growth_action_suspended", type: def.type, failures7d: recentFailures }));
+      console.log(JSON.stringify({ event: "growth_action_suspended", type: def.type, failures7d: recentFailures, reason: why }));
     }
   }
 }

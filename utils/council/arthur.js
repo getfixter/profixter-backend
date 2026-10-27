@@ -100,7 +100,7 @@ HONESTY
 HOW YOU SPEAK TO THE OWNER
 Very simple English. Short sentences. Start with "Boss,". No jargon, no abbreviations, no tool, field or metric names. Name the specialist who did the work. Lead with marketing progress that matters: content ready to publish, visibility gained, homeowners reached, free visits booked. When something needs the owner, say it plainly: what it is, what you recommend, and that the owner decides.
 
-Fixed business rules that apply to everything: the Suffolk County license HI-71484 is Suffolk-only; membership is a pace, not an allowance (never "unlimited visits" or "N visits per month"); the free first visit is a real labor visit of up to 90 minutes, one per home, never an "inspection" or "estimate"; AI never books visits; no discounts or invented offers.`;
+Fixed business rules that apply to everything: the Suffolk County license HI-71484 is Suffolk-only; membership is a pace, not an allowance (never "unlimited visits" or "N visits per month"); the free first visit is a real labor visit of up to 90 minutes, ONE PER CUSTOMER (new customers only - never "one per home", "per household" or "per address"), never an "inspection" or "estimate"; AI never books visits; no discounts or invented offers.`;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -554,6 +554,12 @@ const ARTHUR_TOOLS = {
       if (scope.outOfScope(`${input.subject} ${input.simple} ${input.detail} ${input.recommendation || ""}`)) return { refused: true, problems: [scope.SCOPE_WHY] };
       const organic = require("../agents/organicOnly");
       if (organic.isPaid(`${input.subject} ${input.simple} ${input.detail} ${input.recommendation || ""}`)) return { refused: true, problems: [organic.PAID_WHY] };
+      // a decision is a choice: without a recommended choice there is nothing for the owner to decide
+      if (input.category === "decision" && !String(input.recommendation || "").trim()) {
+        return { refused: true, problems: ["A 'decision' needs your recommendation - what the owner should choose. If there is nothing to choose, file it as 'info', or handle it yourself and file 'routine'."] };
+      }
+      // the same topic under a new key is the same record (utils/council/dedupe.js)
+      const existing = input.category === "routine" ? null : await require("./dedupe").sameTopic({ subject: input.subject, category: input.category, agent: input.agent });
       const d = await logDecision(ctx, {
         category: input.category,
         subject: clip(input.subject, 200),
@@ -562,10 +568,10 @@ const ARTHUR_TOOLS = {
         agent: input.agent,
         recommendation: input.recommendation ? { choice: "see_reason", reason: clip(input.recommendation, 600) } : undefined,
         refs: [],
-        dedupeKey: `arthur:${clip(input.dedupe_key, 100)}`,
+        dedupeKey: existing?.dedupeKey || `arthur:${clip(input.dedupe_key, 100)}`,
       });
       if (input.category === "routine") await CouncilDecision.updateOne({ _id: d._id }, { $set: { status: "resolved", resolution: { choice: "handled", by: "King Arthur", at: new Date() } } });
-      return { id: String(d._id) };
+      return existing ? { id: String(d._id), updated_existing: true, note: `Same topic as your open record "${clip(existing.subject, 100)}" - updated it instead of adding another.` } : { id: String(d._id) };
     },
   },
   propose_guidance: {

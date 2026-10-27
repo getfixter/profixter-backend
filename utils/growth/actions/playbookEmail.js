@@ -42,6 +42,38 @@ function validate(p = {}) {
   return { userId: String(p.userId), playbookKey, version: Number(p.version) || null };
 }
 
+/*
+ * Where each acquisition audience's button may go. Someone who never booked is
+ * sent to the free visit itself (/book/free - the one-step request), not the
+ * general /book page. Someone who already had their free visit is never offered
+ * it again: it is one per customer.
+ */
+const ROUTES_BY_SEGMENT = {
+  registered_never_booked: ["bookFree", "membership", "plans", "services"],
+  free_visit_undecided: ["membership", "plans", "bookOneTime", "services"],
+};
+
+/**
+ * The route KEY the button really uses. A path ("/book/free") is read as the
+ * key it belongs to, and older drafts that said "book" to never-booked
+ * prospects meant the free visit.
+ */
+function ctaRouteOf(pb) {
+  const { ROUTES } = require("../../marketing/marketingConfig");
+  let route = String(pb.ctaRoute || "");
+  if (route.startsWith("/")) route = Object.keys(ROUTES).find((k) => ROUTES[k] === route) || route;
+  if (route === "book" && pb.segment === "registered_never_booked") return "bookFree";
+  return route;
+}
+
+/** Why a playbook's button cannot go where it says (null = fine). */
+function ctaRouteProblem(segment, route) {
+  const allowed = ROUTES_BY_SEGMENT[segment];
+  if (!allowed || allowed.includes(route)) return null;
+  if (route === "bookFree") return "These customers already had their free visit (one per customer) - send them to membership, plans, bookOneTime or services.";
+  return `The button for "${segment}" must go to one of: ${allowed.join(", ")}.`;
+}
+
 function templateOf(pb) {
   return {
     id: `playbook_${pb.key}`,
@@ -51,7 +83,7 @@ function templateOf(pb) {
     headline: pb.headline,
     paragraphs: [({ name }) => `Hi ${name},`, ...pb.paragraphs],
     ctaLabel: pb.ctaLabel,
-    ctaRoute: pb.ctaRoute,
+    ctaRoute: ctaRouteOf(pb),
     closing: pb.closing,
   };
 }
@@ -91,6 +123,8 @@ async function execute(payload, { action, now }) {
   const seg = segmentDef(pb.segment);
   if (!seg || !(await seg.includes(user, { now }))) return { outcome: "skip", reason: "no_longer_in_segment" };
   if (await recentlyEmailed(user, action._id, now)) return { outcome: "skip", reason: "emailed_recently" };
+  // never a button to a page that does not exist, or the free visit to someone who already had it
+  if (ctaRouteProblem(pb.segment, ctaRouteOf(pb))) return { outcome: "skip", reason: "button_link_not_allowed" };
 
   const rendered = renderMarketingEmail(templateOf(pb), {
     name: String(user.firstName || user.name || "there").split(" ")[0],
@@ -167,4 +201,4 @@ async function proposePlaybookEmails({ propose, now = new Date() } = {}) {
   return { proposed };
 }
 
-module.exports = { TYPE, execute, playbookText, proposePlaybookEmails, templateOf, validate };
+module.exports = { ROUTES_BY_SEGMENT, TYPE, ctaRouteOf, ctaRouteProblem, execute, playbookText, proposePlaybookEmails, templateOf, validate };
