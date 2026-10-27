@@ -60,6 +60,14 @@ router.post("/unsubscribe", async (req, res) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+    {
+      const User = require("../models/User");
+      const { recordConsent } = require("../utils/consent/ledger");
+      const owners = await User.find({ email }).select("_id").lean();
+      const base = { channel: "email", purpose: "marketing", action: "unsubscribed", source: "email_unsubscribe_link", email, req };
+      if (!owners.length) await recordConsent(base);
+      for (const u of owners) await recordConsent({ ...base, user: u._id });
+    }
     return res
       .status(200)
       .type("html")

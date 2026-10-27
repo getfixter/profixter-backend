@@ -120,7 +120,7 @@ async function isUnsubscribed(email) {
   const row = await EmailSuppression.findOne({
     email: String(email || "").trim().toLowerCase(),
   }).lean();
-  return !!row;
+  return EmailSuppression.isActive(row);
 }
 
 /**

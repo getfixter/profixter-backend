@@ -324,6 +324,23 @@ const UserSchema = new mongoose.Schema(
       optOutSource: { type: String, default: "" },
     },
 
+    /**
+     * Marketing EMAIL: the customer's own explicit choice, when they made one.
+     *
+     * Email follows the opt-out model US law (CAN-SPAM) sets for customers we
+     * already serve: a registered customer may be sent marketing until they
+     * unsubscribe, and every email carries a one-click unsubscribe. So the
+     * GATE is the suppression list (EmailSuppression), which every send reads;
+     * this records only the stronger evidence of somebody who switched it on
+     * themselves in their account. Absent = never asked (still emailable under
+     * the opt-out rule), never "agreed".
+     */
+    emailPreferences: {
+      marketingConsentAt: { type: Date, default: null },
+      marketingConsentSource: { type: String, default: "" },
+      marketingConsentVersion: { type: String, default: "" },
+    },
+
     // Non-subscriber nurture sequence tracking
     nurture: {
       email1SentAt: { type: Date, default: null },

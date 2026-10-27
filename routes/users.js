@@ -284,6 +284,25 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
      */
     await User.updateOne({ _id: me._id }, { $set: update });
 
+    {
+      const { recordConsent } = require("../utils/consent/ledger");
+      const { CURRENT } = require("../utils/consent/consentText");
+      for (const { channel, value } of requested) {
+        const purpose = channel.field === "marketingEnabled" ? "marketing" : "service";
+        await recordConsent({
+          user: me,
+          channel: "sms",
+          purpose,
+          action: value ? "granted" : "withdrawn",
+          source: "account_settings",
+          version: value ? CURRENT.sms_settings[purpose] : "",
+          phone: toE164(me.phone) || "",
+          req,
+          at: now,
+        });
+      }
+    }
+
     const fresh = await User.findById(me._id).select("phone smsPreferences");
     console.log(
       JSON.stringify({
@@ -296,6 +315,86 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
     return res.json(smsPreferenceDTO(fresh, optOut));
   } catch (e) {
     console.error("PUT /me/sms-preferences error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/*
+ * MARKETING EMAIL, from the account.
+ *
+ * The opt-out rule applies (models/User emailPreferences): a registered
+ * customer is subscribed until they say otherwise, and the suppression list
+ * is what every marketing email checks. Off writes (or re-activates) that
+ * suppression immediately; on lifts only the customer's OWN unsubscribe and
+ * records the explicit opt-in - a bounce, a spam complaint or a manual block
+ * is never lifted from here. Booking and account emails are not affected
+ * either way.
+ */
+async function emailPreferenceDTO(user) {
+  const EmailSuppression = require("../models/EmailSuppression");
+  const { emailStatus } = require("../utils/consent/status");
+  const row = await EmailSuppression.findOne({ email: String(user.email || "").trim().toLowerCase() }).lean();
+  const status = emailStatus(user, row);
+  return {
+    marketingEnabled: status === "opted_in" || status === "existing_customer",
+    status,
+    canChange: status !== "blocked" && status !== "not_marketable",
+    marketingConsentAt: user.emailPreferences?.marketingConsentAt || null,
+  };
+}
+
+const EMAIL_PREF_FIELDS = "email role isActive employeePosition excludeFromMarketing emailPreferences";
+
+router.get("/me/email-preferences", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id).select(EMAIL_PREF_FIELDS);
+    if (!me) return res.status(404).json({ message: "User not found" });
+    return res.json(await emailPreferenceDTO(me));
+  } catch (e) {
+    console.error("GET /me/email-preferences error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.put("/me/email-preferences", auth, async (req, res) => {
+  try {
+    const value = req.body?.marketingEnabled;
+    if (value !== true && value !== false) return res.status(400).json({ message: "marketingEnabled must be true or false" });
+    const EmailSuppression = require("../models/EmailSuppression");
+    const { recordConsent } = require("../utils/consent/ledger");
+    const { CURRENT } = require("../utils/consent/consentText");
+    const me = await User.findById(req.user.id).select(EMAIL_PREF_FIELDS);
+    if (!me) return res.status(404).json({ message: "User not found" });
+    const email = String(me.email || "").trim().toLowerCase();
+    const before = await emailPreferenceDTO(me);
+    if (!before.canChange) {
+      return res.status(409).json({ message: "Marketing email can't be changed for this address. Contact us if you think this is wrong.", ...before });
+    }
+    const now = new Date();
+    if (value === false) {
+      // an existing row keeps its first reason; a new one is this unsubscribe
+      await EmailSuppression.findOneAndUpdate(
+        { email },
+        { $set: { suppressedAt: now }, $setOnInsert: { reason: "unsubscribe", source: "account_settings" } },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
+      await recordConsent({ user: me, channel: "email", purpose: "marketing", action: "unsubscribed", source: "account_settings", email, req, at: now });
+    } else {
+      const row = await EmailSuppression.findOne({ email }).lean();
+      if (row && EmailSuppression.isActive(row)) {
+        await EmailSuppression.updateOne({ _id: row._id }, { $set: { resubscribedAt: now, resubscribeSource: "account_settings" } });
+      }
+      await User.updateOne(
+        { _id: me._id },
+        { $set: { "emailPreferences.marketingConsentAt": now, "emailPreferences.marketingConsentSource": "account_settings", "emailPreferences.marketingConsentVersion": CURRENT.email_settings.marketing } }
+      );
+      await recordConsent({ user: me, channel: "email", purpose: "marketing", action: row ? "resubscribed" : "granted", source: "account_settings", version: CURRENT.email_settings.marketing, email, req, at: now });
+    }
+    console.log(JSON.stringify({ event: "email_preference_changed", userId: String(me._id), marketingEnabled: value, source: "account_settings" }));
+    const fresh = await User.findById(me._id).select(EMAIL_PREF_FIELDS);
+    return res.json(await emailPreferenceDTO(fresh));
+  } catch (e) {
+    console.error("PUT /me/email-preferences error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 });

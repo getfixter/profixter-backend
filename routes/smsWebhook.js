@@ -411,6 +411,17 @@ async function applyOptOut(phone, keyword) {
       },
     }
   );
+  await recordHandset(phone, "stop", keyword, now);
+}
+
+/* The consent history: one row per account on the handset (or one with no account). */
+async function recordHandset(phone, action, keyword, at) {
+  const { recordConsent } = require("../utils/consent/ledger");
+  const query = userPhoneQuery(phone);
+  const users = query ? await User.find(query).select("_id").lean() : [];
+  const base = { channel: "sms", purpose: "all", action, source: "sms_keyword", phone, detail: `keyword ${String(keyword || "").slice(0, 20)}`, at };
+  if (!users.length) return recordConsent(base);
+  for (const u of users) await recordConsent({ ...base, user: u._id });
 }
 
 /**
@@ -462,6 +473,7 @@ async function applyOptIn(phone, keyword) {
     accounts,
     { $set: { "smsPreferences.optedOutAt": null, "smsPreferences.optOutSource": "" } }
   );
+  await recordHandset(phone, "start", keyword, now);
 }
 
 module.exports = router;

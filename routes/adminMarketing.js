@@ -33,6 +33,16 @@ const { previewCampaign, runMarketingCycle } = require("../utils/marketing/marke
 router.use(auth, requirePermission(PERMISSIONS.ADMIN));
 
 /** Is marketing on, is it due to run, and is anything blocking it. */
+/* The consent audit (utils/consent/audit): counts only, read-only, contacts nobody. */
+router.get("/consent-audit", async (req, res) => {
+  try {
+    res.json(await require("../utils/consent/audit").consentAudit());
+  } catch (error) {
+    console.error("consent audit failed:", error);
+    res.status(500).json({ message: "Could not run the consent audit." });
+  }
+});
+
 router.get("/status", async (req, res) => {
   try {
     const now = new Date();

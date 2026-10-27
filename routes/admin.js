@@ -1448,6 +1448,14 @@ router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async 
 
     await User.updateOne({ _id: existing._id }, write, { runValidators: false });
 
+    if (Object.keys(unsetOnPhoneChange).length) {
+      const { recordConsent } = require("../utils/consent/ledger");
+      const verdict = consentResetForPhoneChange({ previousPhone: existing.phone, nextPhone: updates.phone, smsPreferences: existing.smsPreferences });
+      for (const [purpose, cleared] of [["service", verdict.clearedTransactional], ["marketing", verdict.clearedMarketing]]) {
+        if (cleared) await recordConsent({ user: existing._id, channel: "sms", purpose, action: "reset", source: "admin_phone_change", phone: verdict.previous, detail: "consent covered the previous number only", req });
+      }
+    }
+
     const user = await User.findById(existing._id).select("-password").lean();
     res.json({
       message: Object.keys(unsetOnPhoneChange).length

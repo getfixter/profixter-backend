@@ -29,6 +29,8 @@ const KEEP = {
   council_health: null, // counts only, by construction (utils/council/health.js) - kept whole
   marketing_report_check: ["firstFreeVisits30", "sourcesTotal30", "adds_up", "funnelFirstFreeVisits", "funnelRequestsSent", "requests30", "allNewFreeVisits30", "ratesShown", "newMembershipPurchases30", "countedThrough", "trend", "noFirstTouchRecord30"],
   kingdom_scope_archived: ["tasks", "notes", "records", "playbooks"],
+  consent_audit: null, // counts only, by construction (utils/consent/audit.js) - kept whole
+  consent_audit_failed: ["error"],
   ghl_social_check: ["tokenLoaded", "auth", "accounts", "googleBusinessProfile", "postingUser", "postableByKingdom", "actionEngine", "enabledTypes", "error"],
   growth_action_failed: ["type", "reason"],
   growth_action_suspended: ["type", "failures7d", "reason"],

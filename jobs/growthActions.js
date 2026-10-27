@@ -65,7 +65,40 @@ async function runGrowthProposers(now = new Date()) {
   }
 }
 
+/*
+ * The consent audit, once per boot: counts only (no names, emails or phones),
+ * read-only, so the owner's questions - how many customers, who may be sent
+ * what - can be answered from the server log. It sends nothing.
+ */
+async function logConsentAudit() {
+  try {
+    const a = await require("../utils/consent/audit").consentAudit();
+    const { enabledTypes } = require("../utils/growth/actionEngine");
+    const { marketingEnabled: marketingEmailsEnabled } = require("../utils/marketing/marketingConfig");
+    const { smsMarketingEnabled } = require("../utils/sms/smsConfig");
+    console.log(
+      JSON.stringify({
+        event: "consent_audit",
+        ...a.summary,
+        byMembership: a.byMembership,
+        nonMembers: a.nonMembers,
+        smsService: a.smsService,
+        checks: a.checks,
+        switches: {
+          marketingEmails: marketingEmailsEnabled(),
+          smsMarketing: smsMarketingEnabled(),
+          growthActions: process.env.GROWTH_ACTIONS_ENABLED === "true",
+          growthTypes: enabledTypes(),
+        },
+      })
+    );
+  } catch (error) {
+    console.error(JSON.stringify({ event: "consent_audit_failed", error: String(error?.message || error).slice(0, 200) }));
+  }
+}
+
 function startGrowthJobs() {
+  setTimeout(logConsentAudit, 2 * 60 * 1000).unref?.();
   cron.schedule("* * * * *", () => runGrowthCycle(new Date()), { timezone: TIMEZONE });
   cron.schedule("20 * * * *", () => runGrowthProposers(new Date()), { timezone: TIMEZONE });
   console.log(
@@ -73,4 +106,4 @@ function startGrowthJobs() {
   );
 }
 
-module.exports = { runGrowthCycle, runGrowthProposers, startGrowthJobs };
+module.exports = { logConsentAudit, runGrowthCycle, runGrowthProposers, startGrowthJobs };

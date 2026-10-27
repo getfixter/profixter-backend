@@ -1,7 +1,7 @@
 const Booking = require("../../models/Booking");
 const User = require("../../models/User");
 const { SEGMENT_DEFS } = require("../growth/segments");
-const { isMarketableAccount, isUnsubscribed } = require("../marketing/marketingEligibility");
+const { consentStatusFor } = require("../consent/status");
 
 /**
  * THE KINGDOM MARKETS PROFIXTER; THE OWNER RUNS IT.
@@ -182,7 +182,7 @@ async function reengagementAudiences({ now = new Date(), sample = 150 } = {}) {
   for (const [key, a] of Object.entries(AUDIENCES)) {
     const def = SEGMENT_DEFS[a.segment];
     const ids = await def.members({ now, limit: sample });
-    const users = await User.find({ _id: { $in: ids } }).select("_id email role isActive employeePosition excludeFromMarketing createdAt smsPreferences").lean();
+    const users = await User.find({ _id: { $in: ids } }).select("_id email phone role isActive employeePosition excludeFromMarketing createdAt smsPreferences emailPreferences").lean();
     let inAudience = 0;
     let emailable = 0;
     let textOptIn = 0;
@@ -190,10 +190,11 @@ async function reengagementAudiences({ now = new Date(), sample = 150 } = {}) {
     for (const u of users) {
       if (!(await def.includes(u, { now }).catch(() => false))) continue;
       inAudience += 1;
-      const unsub = await isUnsubscribed(u.email);
-      if (unsub || u.excludeFromMarketing === true) optedOut += 1;
-      else if (isMarketableAccount(u)) emailable += 1;
-      if (u.smsPreferences?.marketingEnabled === true) textOptIn += 1;
+      // the same reading the send paths use: suppression list for email, opt-in + no STOP for texts
+      const st = await consentStatusFor(u);
+      if (st.email === "unsubscribed" || st.email === "blocked" || u.excludeFromMarketing === true) optedOut += 1;
+      else if (st.email === "opted_in" || st.email === "existing_customer") emailable += 1;
+      if (st.smsMarketing === "opted_in") textOptIn += 1;
     }
     out[key] = { audience: a.label, people: inAudience, mayEmail: emailable, optedInToMarketingTexts: textOptIn, optedOut, sampledUpTo: sample };
   }

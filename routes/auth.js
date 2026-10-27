@@ -511,6 +511,20 @@ router.post("/register", async (req, res) => {
     await markLeadRegistered(user);
 
     /*
+     * The consent history: each box the customer ticked, with the exact
+     * wording on this screen, the number it covers and where it came from.
+     * Nothing is recorded for a box left empty - "never asked" stays absent.
+     */
+    {
+      const { recordConsent } = require("../utils/consent/ledger");
+      const { CURRENT } = require("../utils/consent/consentText");
+      const prefs = user.smsPreferences || {};
+      const common = { user, channel: "sms", action: "granted", source: "signup_web_form", phone: e164Phone, email: user.email, req };
+      if (smsTransactionalConsent) await recordConsent({ ...common, purpose: "service", version: CURRENT.signup.service, at: prefs.transactionalConsentAt || new Date() });
+      if (smsMarketingConsent) await recordConsent({ ...common, purpose: "marketing", version: CURRENT.signup.marketing, at: prefs.marketingConsentAt || new Date() });
+    }
+
+    /*
      * Link this browser's anonymous first visit to the new account, so the
      * Overview funnel can follow Visitor -> Registered. Only an unclaimed row,
      * and never fatal: a missing visitor record must not cost a signup.
