@@ -311,6 +311,9 @@ async function main() {
     office.invalidateOffice();
     const o = await office.buildOffice({ fresh: true });
     assert.ok(!("report" in o));
+    assert.ok(o.kpis.newFreeVisits && "last30Pending" in o.kpis.newFreeVisits, "the office shows account bookings + requests, pending apart");
+    assert.ok(o.kpis.newFreeVisits.trend?.verdict, "with one trend over both");
+    assert.ok("funnelBefore" in o.kpis);
     assert.doesNotMatch(o.explained.chatgpt, /weekly report/i);
   });
 

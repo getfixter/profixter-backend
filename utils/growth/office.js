@@ -241,7 +241,10 @@ async function buildOffice({ now = new Date(), fresh = false } = {}) {
     robots,
     kpis: {
       firstFreeVisits: acquisition?.firstFreeVisits || null,
+      // the headline since the one-step booking: account bookings + requests, pending apart
+      newFreeVisits: acquisition?.newFreeVisits || null,
       funnel30: acquisition?.funnel30 || null,
+      funnelBefore: acquisition?.funnelBefore || null,
       visitors30: acquisition?.visitors30 ?? null,
       registrations30: acquisition?.registrations30 ?? null,
       bySource30: acquisition?.bySource30 || [],

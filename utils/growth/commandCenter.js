@@ -382,7 +382,15 @@ async function acquisitionView({ now = new Date() } = {}) {
     last30Confirmed: plus(trend.last30, requests.last30Confirmed),
     fromAccounts30: trend.last30,
     fromRequests30: requests.last30,
+    todaySoFar: plus(trend.todaySoFar, requests.todaySoFar),
+    through: trend.through,
   };
+  if (trend.trend && typeof requests.last14 === "number") {
+    const { _internal } = require("../analytics/overview");
+    const last14 = trend.trend.last14 + requests.last14;
+    const prev14 = trend.trend.prev14 + requests.prev14;
+    newFreeVisits.trend = { last14, prev14, verdict: _internal.trendVerdict(last14, prev14) };
+  }
   return {
     newFreeVisits,
     funnelBefore,

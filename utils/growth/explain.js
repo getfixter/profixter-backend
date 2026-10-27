@@ -509,7 +509,8 @@ function explainTeach(detail) {
 
 function explainResults(office) {
   const k = office.kpis || {};
-  const f = k.firstFreeVisits;
+  // account bookings + one-step requests (since 2026-10-23 most new customers send a request)
+  const f = k.newFreeVisits || k.firstFreeVisits;
   const parts = [];
   if (f && f.last7 != null) {
     const diff = f.prev7 != null ? f.last7 - f.prev7 : null;
@@ -532,7 +533,7 @@ function explainResults(office) {
     {
       heading: "Main goal: new first free-visit bookings",
       body: f
-        ? lines({ "Last 7 full days": f.last7, "Previous 7 days": f.prev7, "Last 30 full days": f.last30, "Previous 30 days": f.prev30, "Counted through": f.through, "Today so far": f.todaySoFar, "Last 14 days vs the 14 before": f.trend ? `${f.trend.last14} vs ${f.trend.prev14} (${f.trend.verdict})` : null, Definition: "a home's first-ever free visit, counted when booked; homeowner accounts only; complete days" })
+        ? lines({ "Last 7 full days": f.last7, "Previous 7 days": f.prev7, "Last 30 full days": f.last30, "Previous 30 days": f.prev30, "Counted through": f.through, "Today so far": f.todaySoFar, "Waiting for our call (last 30 days)": f.last30Pending, "Last 14 days vs the 14 before": f.trend ? `${f.trend.last14} vs ${f.trend.prev14} (${f.trend.verdict})` : null, Definition: k.newFreeVisits ? "a new customer's first free visit, counted when booked: bookings from an account plus one-step requests from the website (no account; we call to confirm), never the same visit twice; complete days" : "a home's first-ever free visit, counted when booked; homeowner accounts only; complete days" })
         : "Not available right now.",
     },
     {
