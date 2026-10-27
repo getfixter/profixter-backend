@@ -149,17 +149,17 @@ function oneTimeCheckoutHandler() {
   return layer.route.stack[layer.route.stack.length - 1].handle;
 }
 
-function mockReq({ requestedDate, requestedTime }) {
+function mockReq({ requestedDate, requestedTime, selectedTask = "Replace faucet", note = "Replace faucet in bathroom" }) {
   return {
     user: { id: String(userId) },
     authUser: { _id: userId, name: "Policy Tester", email: "policy@example.com" },
     body: {
       addressId: String(addressId),
-      selectedTask: "Replace faucet",
+      selectedTask,
       requestedDate,
       requestedTime,
       date: `${requestedDate}T${requestedTime}:00.000Z`,
-      note: "Replace faucet in bathroom",
+      note,
     },
     files: [
       {
@@ -255,6 +255,67 @@ function assertSourcePolicy() {
   );
 }
 
+/*
+ * PERMANENT RULE (owner, 2026-10-27): no booking is ever refused because of
+ * the work described. The owner reviews every appointment and decides. Every
+ * description below - including ones the old code refused - must reach
+ * Stripe checkout and land as a Pending booking awaiting that review.
+ */
+const BOOK_PAGE_TASKS = [
+  "Replace Light Fixture", "Replace Faucet", "Patch Small Hole", "Paint Door", "TV Mounting",
+  "Caulking & Sealing", "Shelves & Mirrors", "Assemble Small Furniture", "Wall Hangings", "Small Fix",
+];
+const DESCRIPTIONS = [
+  "Assemble shoe closet",
+  "Install ceiling fan",
+  "Fix leaking pipe",
+  "Replace electrical outlet",
+  "Repair drywall",
+  "Remodel bathroom",
+  "Install kitchen cabinets",
+  "Repair roof",
+  "Custom carpentry",
+  "Appliance repair, rewire the panel, multi-day large project renovation",
+  "Something unusual nobody has asked for before",
+];
+
+async function assertNoTaskBasedRefusal() {
+  const settingsSource = fs.readFileSync(path.join(__dirname, "..", "utils", "oneTimeVisitSettings.js"), "utf8");
+  const routeSource = fs.readFileSync(path.join(__dirname, "..", "routes", "bookings.js"), "utf8");
+  for (const src of [settingsSource, routeSource]) {
+    assert.doesNotMatch(src, /outside the One-Time|excluded project|ONE_TIME_TASK_(NOT_ALLOWED|EXCLUDED)|EXCLUDED_PATTERNS/, "a task-based refusal is back");
+  }
+  assert.doesNotMatch(routeSource, /redirectTo:\s*"\/projects"/, "checkout must never push a customer to estimates");
+
+  const cases = [
+    ...BOOK_PAGE_TASKS.map((task) => ({ task, note: `Please help with ${task.toLowerCase()} at home` })),
+    ...DESCRIPTIONS.map((d) => ({ task: d, note: d.split(/\s+/).length >= 3 ? d : `${d} at my house` })),
+    ...DESCRIPTIONS.map((d) => ({ task: "Small Fix", note: `${d} please, thank you` })),
+  ];
+  let day = 1;
+  for (const c of cases) {
+    const before = savedBookings.length;
+    const requestedDate = `2026-08-${String(day).padStart(2, "0")}`;
+    const requestedTime = `${String(8 + (day % 9)).padStart(2, "0")}:00`;
+    day = day >= 28 ? 1 : day + 1;
+    slotCounts.clear();
+    const res = await callOneTimeCheckout({ requestedDate, requestedTime, selectedTask: c.task, note: c.note });
+    assert.equal(res.statusCode, 200, `refused "${c.task}" / "${c.note}": ${JSON.stringify(res.body)}`);
+    assert.match(res.body.url, /checkout\.stripe\.test/);
+    assert.equal(savedBookings.length, before + 1);
+    const b = savedBookings[savedBookings.length - 1];
+    assert.equal(b.status, "Pending", "every request waits for the owner's review");
+    assert.equal(b.paymentState, "pending", "nothing is paid until Stripe checkout completes");
+    assert.equal(b.selectedTask, c.task.trim());
+  }
+
+  // Required field, still required - and its message never speaks of scope.
+  const missing = await callOneTimeCheckout({ requestedDate: "2026-09-01", requestedTime: "10:00", selectedTask: "  " });
+  assert.equal(missing.statusCode, 400);
+  assert.equal(missing.body.code, "TASK_REQUIRED");
+  assert.equal(missing.body.redirectTo, undefined);
+}
+
 async function run() {
   assertSourcePolicy();
 
@@ -298,6 +359,8 @@ async function run() {
   assert.equal(duplicateSlot.statusCode, 409);
   assert.equal(duplicateSlot.body.code, "SLOT_UNAVAILABLE");
   assert.match(duplicateSlot.body.message, /fully booked|choose another time/i);
+
+  await assertNoTaskBasedRefusal();
 
   console.log("One-Time Visit booking policy tests passed");
 }

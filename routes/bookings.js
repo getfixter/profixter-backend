@@ -873,13 +873,11 @@ router.post(
         });
       }
 
+      // Required field only. The owner, not this code, decides which jobs
+      // to take: never refuse or redirect on the task or the note.
       const scope = validateOneTimeTask(oneTimeSettings, selectedTask, note);
       if (!scope.ok) {
-        return res.status(400).json({
-          message: scope.message,
-          code: scope.code,
-          redirectTo: "/projects",
-        });
+        return res.status(400).json({ message: scope.message, code: scope.code });
       }
 
       const subdoc = me.addresses?.id?.(addressId);

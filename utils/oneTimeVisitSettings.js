@@ -28,17 +28,6 @@ const DEFAULT_EXCLUDED_SERVICES = [
   "Large projects",
 ];
 
-const EXCLUDED_PATTERNS = [
-  /appliance/i,
-  /paint(ing)?\s+(entire|whole|room|rooms)/i,
-  /renovation|remodel/i,
-  /roof/i,
-  /large\s+electrical|panel|rewire/i,
-  /plumbing\s+remodel/i,
-  /multi[-\s]?day/i,
-  /large\s+project/i,
-];
-
 function envNumber(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
@@ -143,29 +132,28 @@ async function upsertOneTimeVisitSettings(patch) {
   return normalizeSettings(record);
 }
 
-function validateOneTimeTask(settings, task, note = "") {
-  const selectedTask = String(task || "").trim();
-  const allowed = new Set(settings.allowedServices || []);
+/**
+ * The job type the customer picked: a required field, never a scope check.
+ *
+ * PERMANENT RULE (owner, 2026-10-27): Profixter never refuses a booking
+ * because of what the customer asks to have done. The owner reviews every
+ * appointment and is the only one who accepts or declines work. This used
+ * to refuse any task not on allowedServices (exact match - so 8 of the 10
+ * buttons on /book were always refused) and any note mentioning a remodel,
+ * roof, panel or appliance. allowedServices / excludedServices remain as
+ * display settings only; nothing here may read them to say no.
+ */
+const MAX_TASK_LENGTH = 120;
 
-  if (!allowed.has(selectedTask)) {
+function validateOneTimeTask(_settings, task, _note = "") {
+  const selectedTask = String(task || "").trim().slice(0, MAX_TASK_LENGTH);
+  if (!selectedTask) {
     return {
       ok: false,
-      message:
-        "That task is outside the One-Time Handyman Visit scope. Please request a Project Estimate for larger or excluded work.",
-      code: "ONE_TIME_TASK_NOT_ALLOWED",
+      message: "Choose the type of job.",
+      code: "TASK_REQUIRED",
     };
   }
-
-  const combined = `${selectedTask} ${note || ""}`;
-  if (EXCLUDED_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return {
-      ok: false,
-      message:
-        "That looks like a larger or excluded project. Please request a Project Estimate instead.",
-      code: "ONE_TIME_TASK_EXCLUDED",
-    };
-  }
-
   return { ok: true, selectedTask };
 }
 
