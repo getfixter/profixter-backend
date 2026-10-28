@@ -59,6 +59,9 @@ const {
   appendContentUpdate,
 } = require("../utils/bookingContentUpdates");
 const { buildUserSearchFields } = require("../utils/userSearchFields");
+const { completedBookingCountsForUsers, completedBookingCountForUser } = require("../utils/customerBookingCounts");
+const { adminLoyaltyForUsers, programActive: loyaltyProgramActive } = require("../utils/loyalty/adminLoyalty");
+const { effectiveAt: loyaltyEffectiveAt } = require("../utils/loyalty/loyaltyConfig");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -634,11 +637,12 @@ router.get("/users", auth, ...customersManage, async (req, res) => {
       .select("-password")
       .sort({ createdAt: -1 })
       .lean();
+    const completedBookings = await completedBookingCountsForUsers(users);
     const out = [];
 
     for (const u of users) {
       const addressesDetailed = await getAddressPlansForUser(u);
-      out.push({ ...u, addressesDetailed });
+      out.push({ ...u, addressesDetailed, completedBookings: completedBookings.get(String(u._id)) || 0 });
     }
 
     res.json(out);
@@ -658,6 +662,7 @@ router.get(
         .select("userId name email phone addresses defaultAddressId createdAt")
         .sort({ createdAt: -1 })
         .lean();
+      const completedBookings = await completedBookingCountsForUsers(users);
       const out = [];
       for (const user of users) {
         out.push({
@@ -668,12 +673,75 @@ router.get(
           phone: user.phone || "",
           createdAt: user.createdAt,
           addressesDetailed: await getAddressPlansForUser(user),
+          completedBookings: completedBookings.get(String(user._id)) || 0,
         });
       }
       return res.json(out);
     } catch (error) {
       console.error("Fetch members failed:", error);
       return res.status(500).json({ message: "Failed to get members" });
+    }
+  }
+);
+
+/*
+ * Loyalty Benefits for every property that has ever had a membership.
+ *
+ * Its own request, loaded after the member list has drawn, so the list never
+ * waits on the ledger. Each row is the same answer the customer detail gives
+ * for that property, so the two cannot disagree. Read only.
+ */
+router.get(
+  "/members/loyalty",
+  auth,
+  ...requirePermission(PERMISSIONS.MEMBERS_READ),
+  async (_req, res) => {
+    try {
+      const users = await User.find({ role: { $ne: "employee" } })
+        .select("_id userId addresses defaultAddressId")
+        .lean();
+      const rows = await adminLoyaltyForUsers(users);
+      return res.json({
+        programActive: loyaltyProgramActive(),
+        programStartedAt: loyaltyEffectiveAt(),
+        rows,
+      });
+    } catch (error) {
+      console.error("Fetch members loyalty failed:", error);
+      return res.status(500).json({ message: "Failed to load loyalty progress" });
+    }
+  }
+);
+
+/* One customer's completed visits and Loyalty Benefits at every property. Read only. */
+router.get(
+  "/users/:userId/loyalty",
+  auth,
+  ...requirePermission(PERMISSIONS.MEMBERS_READ),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      if (!mongoose.isValidObjectId(userId)) {
+        return res.status(400).json({ message: "Invalid user id" });
+      }
+      const user = await User.findById(userId)
+        .select("_id userId role addresses defaultAddressId")
+        .lean();
+      if (!user || user.role === "employee") return res.status(404).json({ message: "User not found" });
+
+      const [completedBookings, addresses] = await Promise.all([
+        completedBookingCountForUser(user),
+        adminLoyaltyForUsers([user], { allAddresses: true }),
+      ]);
+      return res.json({
+        programActive: loyaltyProgramActive(),
+        programStartedAt: loyaltyEffectiveAt(),
+        completedBookings,
+        addresses,
+      });
+    } catch (error) {
+      console.error("Fetch customer loyalty failed:", error);
+      return res.status(500).json({ message: "Failed to load loyalty progress" });
     }
   }
 );
