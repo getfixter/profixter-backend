@@ -249,7 +249,9 @@ test("the frontend never sends an authoritative amount or tax", () => {
 
   assert.deepStrictEqual(
     fields.sort(),
-    ["address", "durationMonths", "occasion", "personalMessage", "plan", "recipient"],
+    // forCustomer names the registered customer an Admin gift is for. It is a
+    // person, never an amount, and the money check below still applies to it.
+    ["address", "durationMonths", "forCustomer", "occasion", "personalMessage", "plan", "recipient"],
     "the checkout body must carry only these fields"
   );
 

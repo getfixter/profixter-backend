@@ -19,6 +19,8 @@ const {
   sanitizePersonalMessage,
 } = require("../utils/gifts/giftOccasions");
 const { readClaimToken, verifyClaimToken } = require("../utils/gifts/giftClaimToken");
+const { resolveAdminGiftTarget } = require("../utils/gifts/adminGiftTarget");
+const crypto = require("crypto");
 const { claimUrl, sendGiftClaimedAdminNotice } = require("../utils/gifts/giftEmails");
 const {
   claimGift,
@@ -230,6 +232,12 @@ router.post("/checkout-session", auth, async (req, res) => {
       return res.status(503).json({ message: "Payments are unavailable right now" });
     }
 
+    /*
+     * forCustomer is set only by Admin's Gift button: { userId, addressId } of
+     * the registered customer the owner is buying for. It names a person,
+     * never a price, and the recipient it resolves to is read from that
+     * person's account rather than from this request.
+     */
     const {
       plan,
       durationMonths,
@@ -237,6 +245,7 @@ router.post("/checkout-session", auth, async (req, res) => {
       address = {},
       occasion,
       personalMessage,
+      forCustomer,
     } = req.body || {};
 
     /*
@@ -270,6 +279,23 @@ router.post("/checkout-session", auth, async (req, res) => {
     if (!purchaser) return res.status(404).json({ message: "User not found" });
 
     /*
+     * Who the gift is for. Normally exactly what the purchaser typed. From
+     * Admin, the selected customer's own account: their registered email is
+     * the gift's identity, so it can only ever be claimed by them.
+     */
+    let giftRecipient = recipient;
+    let giftAddress = address;
+    let adminTarget = null;
+    if (forCustomer) {
+      adminTarget = await resolveAdminGiftTarget({ purchaser, forCustomer, recipient, address });
+      if (!adminTarget.ok) {
+        return res.status(adminTarget.status).json({ message: adminTarget.message, code: adminTarget.code });
+      }
+      giftRecipient = adminTarget.recipient;
+      giftAddress = adminTarget.address;
+    }
+
+    /*
      * Presentation only, and cleaned here rather than trusted. An unknown
      * occasion becomes the neutral greeting instead of an error: a gift
      * should never fail to be bought over the wording on the card.
@@ -281,8 +307,8 @@ router.post("/checkout-session", auth, async (req, res) => {
       purchaser,
       plan,
       durationMonths,
-      recipientEmail: recipient.email,
-      recipientPhone: recipient.phone,
+      recipientEmail: giftRecipient.email,
+      recipientPhone: giftRecipient.phone,
     });
     if (!validation.ok) {
       return res.status(400).json({
@@ -321,14 +347,20 @@ router.post("/checkout-session", auth, async (req, res) => {
        * absent key would be indistinguishable from a key we forgot to send.
        */
       recipientPhone: validation.recipientPhone || "",
-      recipientFirstName: String(recipient.firstName || "").slice(0, 80),
-      recipientLastName: String(recipient.lastName || "").slice(0, 80),
+      recipientFirstName: String(giftRecipient.firstName || "").slice(0, 80),
+      recipientLastName: String(giftRecipient.lastName || "").slice(0, 80),
       occasion: giftOccasion,
       personalMessage: giftMessage,
-      addressLine1: String(address.line1 || "").slice(0, 200),
-      addressCity: String(address.city || "").slice(0, 100),
-      addressState: String(address.state || "").slice(0, 40),
-      addressZip: String(address.zip || "").slice(0, 20),
+      addressLine1: String(giftAddress.line1 || "").slice(0, 200),
+      addressCity: String(giftAddress.city || "").slice(0, 100),
+      addressState: String(giftAddress.state || "").slice(0, 40),
+      addressZip: String(giftAddress.zip || "").slice(0, 20),
+      /*
+       * Bought from Admin for this account. A record of intent only: the
+       * webhook still creates the gift from the fields above, and claiming it
+       * still binds on recipientEmail.
+       */
+      ...(adminTarget ? { adminGiftRecipientId: adminTarget.customerId } : {}),
     };
 
     const sessionConfig = {
@@ -371,8 +403,10 @@ router.post("/checkout-session", auth, async (req, res) => {
       automatic_tax: { enabled: true },
       metadata,
       payment_intent_data: { metadata },
-      success_url: `${CLIENT_URL}/gift/confirmation?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${CLIENT_URL}/gift?canceled=true`,
+      success_url: adminTarget
+        ? `${CLIENT_URL}/admin?tab=users&gift=paid&session_id={CHECKOUT_SESSION_ID}`
+        : `${CLIENT_URL}/gift/confirmation?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: adminTarget ? `${CLIENT_URL}/admin?tab=users&gift=canceled` : `${CLIENT_URL}/gift?canceled=true`,
     };
 
     if (stripeCustomerId) {
@@ -387,7 +421,40 @@ router.post("/checkout-session", auth, async (req, res) => {
       sessionConfig.customer_email = purchaser.email;
     }
 
-    const session = await stripe.checkout.sessions.create(sessionConfig);
+    /*
+     * One checkout per Admin gift, however many times Pay is pressed.
+     *
+     * A double tap or a retried request inside the same ten minutes sends
+     * Stripe the same idempotency key with the same parameters, and Stripe
+     * answers with the session it already opened instead of a second one. A
+     * session can only be paid once, so the owner cannot be charged twice for
+     * one gift. Customer purchases are unchanged.
+     */
+    const createOptions = adminTarget
+      ? {
+          idempotencyKey: `admin-gift-${crypto
+            .createHash("sha256")
+            .update(
+              JSON.stringify([
+                String(purchaser._id),
+                adminTarget.customerId,
+                validation.plan,
+                Number(durationMonths),
+                giftRecipient,
+                giftAddress,
+                giftOccasion,
+                giftMessage,
+                Math.floor(Date.now() / (10 * 60 * 1000)),
+              ])
+            )
+            .digest("hex")
+            .slice(0, 40)}`,
+        }
+      : undefined;
+
+    const session = createOptions
+      ? await stripe.checkout.sessions.create(sessionConfig, createOptions)
+      : await stripe.checkout.sessions.create(sessionConfig);
     if (!session?.url) {
       return res.status(502).json({ message: "Checkout could not be opened. Please try again." });
     }
@@ -399,6 +466,7 @@ router.post("/checkout-session", auth, async (req, res) => {
         plan: validation.plan,
         durationMonths: Number(durationMonths),
         totalCents: validation.quote.totalCents,
+        ...(adminTarget ? { adminGift: true } : {}),
       })
     );
 

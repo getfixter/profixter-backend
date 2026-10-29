@@ -131,6 +131,7 @@ const SUITES = [
  *   test_membership_lead.js             boots an in-memory MongoDB binary
  *   test_sms_integration.js             boots an in-memory MongoDB binary
  *   test_gift_membership_integration.js boots an in-memory MongoDB binary
+ *   test_admin_gift_checkout.js         boots an in-memory MongoDB binary
  *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   test_full_day_capacity_integration.js   boots an in-memory MongoDB binary
  *   test_visibility_integration.js          boots an in-memory MongoDB binary
