@@ -63,7 +63,7 @@ function read(...parts) {
  */
 function sourceFiles(root) {
   const out = [];
-  // .next-studio-demo: the local Shower Studio demo build (BackEnd/scripts/studio_demo_env.js --demo)
+  // .next-studio-demo: an old local demo build folder, skipped if one is still lying around
   const skip = new Set(["node_modules", ".next", ".next-studio-demo", ".git", "dist", "build", "coverage"]);
   const selfPath = path.resolve(__filename);
   /*

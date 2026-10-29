@@ -95,8 +95,6 @@ methods: "GET,POST,PUT,PATCH,DELETE",
       "Authorization",
       "Content-Type",
       "x-ghl-secret",
-      // Shower Studio: a visitor's anonymous design is unlocked by this token
-      "x-studio-token",
     ],
   })
 );
@@ -113,13 +111,6 @@ app.post(
 
 // ⛔ MUST come BEFORE json body parser
 app.use("/api/bookings", (req, res, next) => next());
-
-// Shower Studio: mounted before the global 500mb parser so its own small
-// body limits (and upload limits) are the ones that apply.
-app.use("/api/studio", require("./routes/studioPublic"));
-app.use("/api/admin/studio", require("./routes/adminStudio"));
-// Owner-only live preview of the customer Studio: fixed demo catalog, demo prices, stateless (nothing saved or sent).
-app.use("/api/studio-preview", require("./routes/studioPreview"));
 
 // ✅ body parser for everything except bookings
 app.use(express.json({
@@ -396,15 +387,6 @@ app.use((err, req, res, next) => {
 });
 
 /* ============================================================================ */
-
-/* ================= Nightly Shower Studio data retention ================= */
-cron.schedule("40 6 * * *", async () => {
-  try {
-    await require("./utils/studio/retention").sweepStudioRetention();
-  } catch (err) {
-    console.error("studio retention sweep failed:", err.message);
-  }
-});
 
 /* ================= Nightly DB-only subscription auto-cancel ================= */
 cron.schedule(

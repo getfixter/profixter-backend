@@ -1,7 +1,15 @@
+/*
+ * The pages the chat may send someone to. Live pages only: the retired
+ * /home-support ("Profixter AI") and Shower Studio URLs must never come back
+ * (scripts/test_chatbot_lead_rules.js fails if any reply names one).
+ */
 const ABSOLUTE_URLS = {
   book: "https://profixter.com/book",
-  membership: "https://profixter.com/membership",
+  membership: "https://profixter.com/membership/plans",
   projects: "https://profixter.com/projects#estimate",
+  fullDay: "https://profixter.com/book?visit=full-day",
+  gift: "https://profixter.com/gift",
+  signup: "https://profixter.com/signup",
 };
 
 const CALLBACK_CONFIRMATION_MARKER = "Reply \"Yes, call me\"";
@@ -11,6 +19,10 @@ function normalizeText(value) {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function includesAny(text, keywords) {
+  return keywords.some((keyword) => text.includes(keyword));
 }
 
 function extractPhoneNumber(value) {
@@ -74,18 +86,47 @@ function hasCallbackNotification(messages = []) {
   );
 }
 
+/*
+ * Which page fits the message, checked from the most specific product to the
+ * most general. Order matters: "gift a membership" is a gift, not a plan
+ * question; "free first visit" is the new-customer offer, not a paid visit.
+ *
+ * "kitchen" or "bathroom" alone is not a project: "fix my bathroom faucet" is
+ * a handyman visit. It takes remodel/renovation words (or "new kitchen") to
+ * mean the estimate path.
+ */
 function getRoutingRecommendation(value) {
   const text = normalizeText(value);
   if (!text) return null;
 
+  if (includesAny(text, ["gift"])) {
+    return {
+      type: "gift",
+      label: "Gift a Membership",
+      url: ABSOLUTE_URLS.gift,
+      reason:
+        "You can give a Profixter membership as a gift. The gift page shows every plan and length with its price.",
+    };
+  }
+
+  if (includesAny(text, ["full day", "full-day", "whole day", "all day", "entire day"])) {
+    return {
+      type: "full_day",
+      label: "Full Day Fixter",
+      url: ABSOLUTE_URLS.fullDay,
+      reason:
+        "For a longer list, Full Day Fixter gives you one Fixter for about 8 hours. The booking page shows the price and the open days.",
+    };
+  }
+
   const projectKeywords = [
     "renovation",
+    "renovate",
     "remodel",
     "roof",
-    "roofing",
     "siding",
-    "kitchen",
-    "bathroom",
+    "new kitchen",
+    "new bathroom",
     "addition",
     "new house",
     "build house",
@@ -99,7 +140,7 @@ function getRoutingRecommendation(value) {
     "multi-day",
     "structural",
   ];
-  if (projectKeywords.some((keyword) => text.includes(keyword))) {
+  if (includesAny(text, projectKeywords)) {
     return {
       type: "projects",
       label: "Renovation Estimate",
@@ -109,9 +150,21 @@ function getRoutingRecommendation(value) {
     };
   }
 
+  if (/\bfree\b/.test(text) && /\b(visit|first|handyman|offer)\b/.test(text)) {
+    return {
+      type: "free_visit",
+      label: "First Visit Free",
+      url: ABSOLUTE_URLS.signup,
+      reason:
+        "New customers get their first handyman visit free: up to 90 minutes of labor, one per customer, no card needed, materials not included, subject to availability. Create an account and add your home, then book it on the Book page.",
+    };
+  }
+
   const membershipKeywords = [
     "membership",
     "member",
+    "subscription",
+    "subscribe",
     "monthly",
     "plan",
     "plans",
@@ -124,13 +177,13 @@ function getRoutingRecommendation(value) {
     "rush visit",
     "rush visits",
   ];
-  if (membershipKeywords.some((keyword) => text.includes(keyword))) {
+  if (includesAny(text, membershipKeywords)) {
     return {
       type: "membership",
       label: "Membership",
       url: ABSOLUTE_URLS.membership,
       reason:
-        "This sounds like ongoing home support, so Membership is the best place to compare plans.",
+        "This sounds like ongoing home help, so Membership is the best fit. You can compare the plans here.",
     };
   }
 
@@ -162,7 +215,7 @@ function getRoutingRecommendation(value) {
     "furniture",
     "hang",
   ];
-  if (bookingKeywords.some((keyword) => text.includes(keyword))) {
+  if (includesAny(text, bookingKeywords)) {
     return {
       type: "book",
       label: "Book Handyman",
@@ -175,6 +228,11 @@ function getRoutingRecommendation(value) {
   return null;
 }
 
+/*
+ * Route straight to a page only when the visitor is trying to act (book, buy,
+ * join, get a price). A question ("what does Plus include?") goes to the AI,
+ * which has the same facts and can answer it.
+ */
 function shouldRouteToProductPage(value, recommendation = getRoutingRecommendation(value)) {
   const text = normalizeText(value);
   if (!text || !recommendation) return false;
@@ -207,18 +265,24 @@ function shouldRouteToProductPage(value, recommendation = getRoutingRecommendati
     "how much",
     "plans",
   ];
-  if (directRoutingIntent.some((keyword) => text.includes(keyword))) {
+  if (includesAny(text, directRoutingIntent)) {
     return true;
   }
 
+  if (recommendation.type === "gift") {
+    return includesAny(text, ["buy", "give", "purchase", "send", "order"]);
+  }
+
+  if (recommendation.type === "free_visit") {
+    return includesAny(text, ["claim", "get my", "get a", "use my", "redeem"]);
+  }
+
   if (recommendation.type === "membership") {
-    return ["membership", "member", "monthly", "recurring", "ongoing"].some(
-      (keyword) => text.includes(keyword)
-    );
+    return includesAny(text, ["membership", "member", "monthly", "recurring", "ongoing"]);
   }
 
   if (recommendation.type === "projects") {
-    return [
+    return includesAny(text, [
       "renovation",
       "remodel",
       "project",
@@ -229,13 +293,11 @@ function shouldRouteToProductPage(value, recommendation = getRoutingRecommendati
       "new siding",
       "new kitchen",
       "new bathroom",
-    ].some((keyword) => text.includes(keyword));
+    ]);
   }
 
   if (recommendation.type === "book") {
-    return ["handyman", "one time", "one-time", "visit"].some((keyword) =>
-      text.includes(keyword)
-    );
+    return includesAny(text, ["handyman", "one time", "one-time", "visit"]);
   }
 
   return false;
@@ -246,6 +308,15 @@ function buildRoutingReply(recommendation) {
   return `${recommendation.reason}\n\nGo here: ${recommendation.url}`;
 }
 
+/** The main pages, one per line, for replies that point somewhere instead of collecting a lead. */
+function servicePageLines() {
+  return [
+    `- Membership plans: ${ABSOLUTE_URLS.membership}`,
+    `- Book a visit: ${ABSOLUTE_URLS.book}`,
+    `- Renovation Estimate: ${ABSOLUTE_URLS.projects}`,
+  ];
+}
+
 function buildCallbackConfirmationPrompt() {
   return [
     "I can ask the Profixter team to call you.",
@@ -254,9 +325,14 @@ function buildCallbackConfirmationPrompt() {
     `${CALLBACK_CONFIRMATION_MARKER} and include the best phone number if it is not already on your account.`,
     "",
     "If you are trying to book, choose the right page instead:",
-    `- Book Handyman: ${ABSOLUTE_URLS.book}`,
-    `- Membership: ${ABSOLUTE_URLS.membership}`,
-    `- Renovation Estimate: ${ABSOLUTE_URLS.projects}`,
+    ...servicePageLines(),
+  ].join("\n");
+}
+
+function buildDeclinedCallbackReply() {
+  return [
+    "No problem. If you are trying to book or request service, use the right page:",
+    ...servicePageLines(),
   ].join("\n");
 }
 
@@ -264,6 +340,7 @@ module.exports = {
   ABSOLUTE_URLS,
   CALLBACK_CONFIRMATION_MARKER,
   buildCallbackConfirmationPrompt,
+  buildDeclinedCallbackReply,
   buildRoutingReply,
   confirmsPhoneCall,
   declinesPhoneCall,

@@ -69,7 +69,11 @@ const EstimateLeadSchema = new mongoose.Schema(
 
     // ── Metadata ───────────────────────────────────────────────────────────
     source: { type: String, default: "estimate_builder" },
-    /* Set when the request came from the Shower Studio: the saved design staff open in Admin. */
+    /*
+     * Set on requests from the retired Shower Studio (2026). Kept so those
+     * leads still carry their design id; the studiodesigns collection is left
+     * in place, but nothing in the code reads it any more.
+     */
     studioDesignId: { type: mongoose.Schema.Types.ObjectId, ref: "StudioDesign", default: null, index: true },
     status: {
       type: String,
