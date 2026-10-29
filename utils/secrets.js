@@ -24,8 +24,6 @@ const ALLOWED = new Set([
   "DATAFORSEO_LOGIN",
   "DATAFORSEO_PASSWORD",
   "GHL_API_TOKEN",
-  // Shower Studio: signs private photo links (utils/studio/signedLinks.js).
-  "STUDIO_LINK_SECRET",
   // Google Business Profile posting only (utils/ghl/socialPlanner.js) - separate from GHL_API_TOKEN on purpose
   "GHL_SOCIAL_TOKEN",
 ]);
