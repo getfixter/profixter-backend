@@ -166,10 +166,14 @@ async function main() {
 
     await test("the database enforces it, not just the application", async () => {
       const indexes = await mongoose.connection.db.collection("users").indexes();
-      const compound = indexes.find((i) => i.name === "user_email_role_unique_idx");
+      // Renamed by utils/migrations/userEmailIndex when accounts without an
+      // email became possible: same keys, same uniqueness, applied to every
+      // account that HAS an email.
+      const compound = indexes.find((i) => i.name === "user_email_role_unique_partial_idx");
       assert.ok(compound, "the email/role index is missing");
       assert.strictEqual(compound.unique, true, "the email/role index is not unique");
       assert.deepStrictEqual(compound.key, { email: 1, role: 1 });
+      assert.deepStrictEqual(compound.partialFilterExpression, { email: { $type: "string" } }, "it must cover every real email");
       const bare = indexes.find((i) => i.name === "email_1" && i.unique);
       assert.ok(!bare, "the old single-field unique email index is still present");
     });

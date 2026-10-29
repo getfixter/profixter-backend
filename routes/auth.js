@@ -795,17 +795,25 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
 /* ───────── Google OAuth ───────── */
 router.post("/google", async (req, res) => {
   try {
-    const { idToken, accessToken } = req.body;
+    /*
+     * Rollback-safe Google sign-in: an ID token only, checked against OUR
+     * client id, with an email Google says it verified. The access-token path
+     * (no audience check) and the unchecked-audience case are gone.
+     */
+    const { idToken } = req.body;
 
-    if (!idToken && !accessToken) {
+    if (!idToken) {
       return res.status(400).json({ message: "Google token is required" });
+    }
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(503).json({ message: "Google sign-in isn't available right now." });
     }
 
     let googleEmail = "";
     let googleName = "";
     let googleId = "";
 
-    if (idToken) {
+    {
       const { OAuth2Client } = require("google-auth-library");
       const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -821,19 +829,9 @@ router.post("/google", async (req, res) => {
       }
 
       const payload = ticket.getPayload();
-      googleEmail = String(payload.email || "").toLowerCase();
-      googleName = payload.name || "";
-      googleId = payload.sub || "";
-    } else {
-      const profileResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-
-      if (!profileResponse.ok) {
-        return res.status(401).json({ message: "Invalid Google token" });
+      if (payload.email_verified !== true) {
+        return res.status(401).json({ message: "Your Google email is not verified." });
       }
-
-      const payload = await profileResponse.json();
       googleEmail = String(payload.email || "").toLowerCase();
       googleName = payload.name || "";
       googleId = payload.sub || "";

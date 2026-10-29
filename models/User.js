@@ -50,12 +50,16 @@ const AddressSchema = new mongoose.Schema(
 const UserSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, unique: true },
-    name: { type: String, required: true },
+    /*
+     * Optional since sign-in by phone or email code: a verified customer may
+     * not have told us their name yet, and is asked for it later, gently.
+     */
+    name: { type: String, default: "" },
     /**
      * Not unique on its own. See the {email, role} index below: one person may
      * hold a customer account and a separate Fixter account on the same address.
      */
-    email: { type: String, required: true, lowercase: true, trim: true },
+    email: { type: String, lowercase: true, trim: true },
     password: { type: String, required: false }, // Optional for Google OAuth users
     phone: { type: String, required: false }, // Optional for Google OAuth users
     firstName: { type: String, trim: true, default: "" },
@@ -107,6 +111,40 @@ const UserSchema = new mongoose.Schema(
 
     // Google OAuth
     googleId: { type: String, unique: true, sparse: true }, // Google user ID
+    /** Apple's stable `sub` for this person. Never changes, even if they hide their email. */
+    appleId: { type: String, unique: true, sparse: true },
+    /*
+     * PROOF, not presence. phone and email can hold values a customer typed
+     * years ago that nobody ever confirmed. These stamps are set only when the
+     * person proved control of the identifier (a code we sent, or a provider
+     * that verified it), and only verified identifiers can ever sign anybody
+     * into an existing account.
+     */
+    phoneVerifiedAt: { type: Date, default: null },
+    emailVerifiedAt: { type: Date, default: null },
+    /** Apple "Hide My Email" relay address: real and deliverable, but not their own inbox. */
+    emailIsAppleRelay: { type: Boolean, default: false },
+    /** How the account was first created, for reporting. Never used for access. */
+    signupMethod: {
+      type: String,
+      enum: ["password", "phone", "email_code", "google", "apple", "admin", null],
+      default: null,
+    },
+    /** Every way this person has signed in, e.g. ["password","phone","google"]. */
+    authProviders: { type: [String], default: [] },
+    /*
+     * Bumped when a password is reset, which ends every session issued before.
+     * Tokens carry it as "tv"; tokens from before this existed carry none and
+     * count as 0, so nobody is signed out by its arrival.
+     */
+    tokenVersion: { type: Number, default: 0 },
+    /*
+     * When and under which wording the person accepted the Terms and Privacy
+     * Policy by continuing (consentText "terms.continue.v1"). Accounts from
+     * the old form accepted with a checkbox and have neither field.
+     */
+    termsAcceptedAt: { type: Date, default: null },
+    termsVersion: { type: String, default: "" },
 
     // Legacy primary address (kept for backward compatibility)
     address: { type: String, default: "" },
@@ -379,8 +417,29 @@ const UserSchema = new mongoose.Schema(
  */
 UserSchema.index(
   { email: 1, role: 1 },
-  { unique: true, name: "user_email_role_unique_idx" }
+  {
+    unique: true,
+    // Replaces "user_email_role_unique_idx" via utils/migrations/userEmailIndex
+    // (built first, old one dropped second, so uniqueness never lapses).
+    name: "user_email_role_unique_partial_idx",
+    /*
+     * Only when there IS an email. A customer who signed in by phone has none,
+     * and without this every such customer would collide on "no email". The
+     * guarantee for real addresses is unchanged. New code never stores an
+     * empty string (that is still a string, and would collide); it leaves the
+     * field absent instead.
+     */
+    partialFilterExpression: { email: { $type: "string" } },
+  }
 );
+
+/*
+ * Phone numbers are deliberately NOT unique, verified or not: a household
+ * shares one mobile, and each person keeps their own account on it (see
+ * test_sms_integration "Shared phone numbers"). Signing in by phone code asks
+ * which account to open when more than one has verified the same handset.
+ */
+UserSchema.index({ phone: 1, phoneVerifiedAt: 1 }, { name: "user_phone_verified_idx" });
 
 UserSchema.index(
   { isDefaultFixter: 1 },
