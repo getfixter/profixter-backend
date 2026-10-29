@@ -29,6 +29,10 @@ const ConversationSchema = new mongoose.Schema(
   {
     visitorId: String, // session or messenger ID
     channel: String,   // web | messenger | sms
+    /*
+     * "home_support" belonged to the retired /home-support page (2026). Kept in
+     * the enum so conversations already stored with it stay valid on save.
+     */
     mode: {
       type: String,
       enum: ["sales", "home_support"],

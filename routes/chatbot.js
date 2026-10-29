@@ -2,7 +2,6 @@
 const express = require("express");
 const router = express.Router();
 const fetch = require("node-fetch");
-const multer = require("multer");
 const Lead = require("../models/Lead");
 const Conversation = require("../models/Conversation");
 const knowledge = require("../data/chatbotKnowledge");
@@ -25,19 +24,6 @@ const {
 // --- CONFIG ---
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const USE_STUB = !OPENAI_KEY;
-const HOME_SUPPORT_MODEL = process.env.HOME_SUPPORT_AI_MODEL || "gpt-4o-mini";
-const HOME_SUPPORT_MAX_TOTAL_UPLOAD_BYTES = 45 * 1024 * 1024;
-
-const homeSupportUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: Math.max(
-      1,
-      Number(process.env.HOME_SUPPORT_AI_MAX_UPLOAD_MB || 15)
-    ) * 1024 * 1024,
-    files: 4,
-  },
-});
 
 const SYSTEM_PROMPT = `
 You are the Profixter Assistant - a helpful, knowledgeable guide for Profixter, a modern AI-powered home platform and Long Island home services company serving Nassau and Suffolk County, NY.
@@ -72,95 +58,6 @@ ALWAYS:
 `;
 
 const KNOWLEDGE_BLOCK = knowledge.toModelContext();
-
-const HOME_SUPPORT_PROMPT = `
-You are Profixter AI, the personal AI for home questions for Nassau and Suffolk County homeowners.
-
-Positioning: "Our personal AI for all home questions." Help homeowners understand what is happening before they hire anyone.
-
-Primary scope:
-- Home maintenance, seasonal care, common home repairs, DIY planning, renovation planning, materials, tools, shopping lists, photos, PDFs, contractor quotes, contractor agreements, safety concerns, project research, and deciding whether to DIY or hire a professional.
-- Stay focused on homes, contractors, repairs, renovation, maintenance, materials, tools, safety, and homeowner decisions.
-
-Tone and structure:
-- Sound human, calm, practical, and reassuring. Do not sound robotic.
-- Give recommendations and options, not absolute commands.
-- Be specific enough to help, but avoid pretending you can see or know more than the user provided.
-- Ask concise follow-up questions when the situation is unclear.
-- Prefer clear sections such as "What I notice", "What I would do next", "Materials/tools", "When to hire a pro", and "Safety note" when useful.
-
-Off-topic handling:
-- If the user asks something unrelated, random, or outside homeowner help, briefly acknowledge it and redirect back to home help.
-- Do not answer general trivia, entertainment, politics, medical, finance, or unrelated personal questions unless they directly connect to home ownership or a home project.
-
-Safety:
-- For emergency danger, tell the user to contact 911, the utility company, or a licensed emergency provider as appropriate. Examples include active gas smell, sparking, fire risk, flooding, sewage backup, structural collapse risk, carbon monoxide concern, or shock risk.
-- Refuse step-by-step instructions for dangerous electrical, plumbing, gas, structural, roofing, or hazardous work.
-- You may recommend shutting off power, gas, or water only when it is safe to do so, keeping distance, documenting the issue, and contacting a licensed professional.
-- Do not encourage the user to open energized electrical panels, work on live circuits, alter gas lines, perform major plumbing, disturb suspected asbestos/lead/mold, or make structural changes.
-
-Contractor documents:
-- For contractor agreements, estimates, quotes, scopes, or PDFs, explain that you can give a practical homeowner opinion and questions to ask, but not legal advice.
-- Help identify unclear scope, missing exclusions, payment schedule concerns, material ambiguity, warranty questions, change-order language, permits, and red flags.
-
-Profixter company knowledge:
-- Profixter is a modern AI-powered home platform and local Long Island home service company based around four products: Profixter AI, Book Handyman, Membership, and Renovation.
-- Profixter serves Long Island homeowners in Nassau and Suffolk Counties, with local Babylon roots. Profixter is licensed and insured. License: HI-71484.
-- Profixter AI (/home-support): a free temporary AI assistant for home questions, photos, PDFs, contractor quotes, agreements, maintenance, repair planning, shopping lists, safety concerns, renovation research, and DIY-or-hire decisions.
-- Book Handyman (/book): a $99 One-Time Visit for one predefined small handyman task, up to 90 minutes. Customers choose task, date/time, notes/photos, then pay. Admin approval happens after payment. Customers can book multiple One-Time Visits as long as each is paid separately and the selected slot is available.
-- One-Time Visit examples include replacing a light fixture, replacing a faucet, patching a small hole, painting a door, TV mounting, caulking and sealing, shelves and mirrors, small furniture assembly, wall hangings, and small fixes.
-- Membership (/membership): better for ongoing home maintenance, recurring small jobs, seasonal care, more service flexibility, priority scheduling or rush benefits depending on plan, and better long-term value than paying $99 each visit. Use "Membership", "Member", and "Become a Member"; avoid "subscription" in customer-facing wording.
-- Members may receive discounts on larger projects. Some larger projects may qualify for up to 12 months of Membership.
-- Renovation Estimate (/projects#estimate): for roofing, siding, kitchens, bathrooms, full house renovation, build new house, additions, multi-day work, major electrical/plumbing remodels, structural work, or anything larger than a One-Time Visit. Profixter acts as a General Contractor for larger projects.
-- About Us (/about): use when someone wants the company story, trust, local background, founder story, or how Profixter works.
-- Phone: 631-599-1363.
-- Recommendations should feel like practical advice, not advertising. Recommend Book Handyman for one small repair, Membership for recurring jobs or ongoing maintenance, and Renovation Estimate for larger projects.
-- If a user is trying to book, schedule, find availability, or make an appointment, navigate them to the proper page instead of treating it as a call lead: Book Handyman (/book), Membership (/membership), or Renovation Estimate (/projects#estimate).
-- If a user asks for a phone call, verify first. Ask them to confirm with "Yes, call me" and provide the best phone number if needed. Do not imply the team has been notified until that confirmation is clear.
-
-Appliances:
-- Profixter does not offer appliance repair.
-- Never offer appliance repair or appliance troubleshooting as a Profixter service.
-- If the user asks about an appliance, suggest checking the manual, manufacturer support, warranty support, or an appliance repair specialist. You may still help with non-repair homeowner context, such as measuring space for a renovation or planning cabinet layout around an appliance.
-`;
-
-function parseHomeSupportHistory(raw) {
-  try {
-    const parsed = JSON.parse(String(raw || "[]"));
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((message) =>
-        ["user", "assistant"].includes(String(message?.role || "")) &&
-        String(message?.content || "").trim()
-      )
-      .slice(-8)
-      .map((message) => ({
-        role: String(message.role),
-        content: String(message.content).trim().slice(0, 2000),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function attachmentKind(file) {
-  const type = String(file?.mimetype || "").toLowerCase();
-  if (type.startsWith("image/")) return "image";
-  if (type === "application/pdf") return "pdf";
-  return "other";
-}
-
-function outputTextFromResponse(data) {
-  if (data?.output_text) return String(data.output_text);
-  const chunks = [];
-  for (const item of data?.output || []) {
-    for (const content of item?.content || []) {
-      if (content?.text) chunks.push(content.text);
-      if (content?.type === "output_text" && content?.text) chunks.push(content.text);
-    }
-  }
-  return chunks.join("\n").trim();
-}
 
 function sendSseReply(res, text) {
   res.write(`data: ${JSON.stringify({ token: text })}\n\n`);
@@ -227,68 +124,6 @@ async function saveAssistantBranch(convo, input, reply, meta = {}) {
   await convo.save();
 }
 
-async function callHomeSupportAI({ input, history, files }) {
-  if (USE_STUB) {
-    return "I can help think this through. I would start with safety, then separate what looks like DIY planning, a small 90-minute handyman task, ongoing maintenance, or a larger renovation. If you upload a photo, quote, agreement, or PDF when OpenAI is configured, I can review it more specifically.";
-  }
-
-  const content = [
-    {
-      type: "input_text",
-      text: [
-        "User question:",
-        input,
-        "",
-        "Recent conversation:",
-        history
-          .slice(-8)
-          .filter((message) => message.role !== "system")
-          .map((message) => `${message.role}: ${message.content}`)
-          .join("\n"),
-      ].join("\n"),
-    },
-  ];
-
-  for (const file of files || []) {
-    const base64 = file.buffer.toString("base64");
-    const kind = attachmentKind(file);
-    if (kind === "image") {
-      content.push({
-        type: "input_image",
-        image_url: `data:${file.mimetype};base64,${base64}`,
-      });
-    } else if (kind === "pdf") {
-      content.push({
-        type: "input_file",
-        filename: file.originalname || "document.pdf",
-        file_data: `data:application/pdf;base64,${base64}`,
-      });
-    }
-  }
-
-  const resp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: HOME_SUPPORT_MODEL,
-      instructions: `${HOME_SUPPORT_PROMPT}\n\n${KNOWLEDGE_BLOCK}`,
-      input: [{ role: "user", content }],
-      max_output_tokens: 900,
-    }),
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`OpenAI home support request failed: ${resp.status} ${text}`);
-  }
-
-  const data = await resp.json();
-  return outputTextFromResponse(data) || "I had trouble reviewing that. Please try again with a little more detail.";
-}
-
 // ========== AI CALL (Streaming Support) ==========
 async function callOpenAI(history, onChunk) {
   if (USE_STUB) {
@@ -334,96 +169,6 @@ async function callOpenAI(history, onChunk) {
   }
   return fullText.trim() || "Sorry, I had trouble replying.";
 }
-
-router.post(
-  "/home-support/message",
-  homeSupportUpload.array("files", 4),
-  async (req, res) => {
-    try {
-      const { input, history: rawHistory } = req.body || {};
-      const trimmedInput = String(input || "").trim();
-      if (!trimmedInput) {
-        return res.status(400).json({ message: "Missing input" });
-      }
-
-      const files = req.files || [];
-      const totalBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
-      if (totalBytes > HOME_SUPPORT_MAX_TOTAL_UPLOAD_BYTES) {
-        return res.status(400).json({
-          message: "Please upload less than 45 MB total across images and PDFs.",
-        });
-      }
-      const unsupported = files.find(
-        (file) => !["image", "pdf"].includes(attachmentKind(file))
-      );
-      if (unsupported) {
-        return res.status(400).json({
-          message: "Home Support AI accepts images and PDFs only.",
-        });
-      }
-
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-      const history = parseHomeSupportHistory(rawHistory);
-      const awaitingCallback = isAwaitingCallbackConfirmation(history);
-      const phone = extractPhoneNumber(trimmedInput) || phoneFromMessages(history);
-
-      if (awaitingCallback && confirmsPhoneCall(trimmedInput)) {
-        if (!phone) {
-          return sendSseReply(
-            res,
-            "Yes, I can help with that. Please send the best phone number for the callback, then I can pass it to the Profixter team."
-          );
-        }
-        await sendAiCallbackAdminEmail({
-          input: trimmedInput,
-          sourcePage: "/home-support",
-          phoneOverride: phone,
-        });
-        return sendSseReply(
-          res,
-          "Confirmed. I sent your callback request to the Profixter team. If you were trying to book a visit, you can still use https://profixter.com/book any time."
-        );
-      }
-
-      if (awaitingCallback && declinesPhoneCall(trimmedInput)) {
-        return sendSseReply(
-          res,
-          "No problem. If you are trying to book or request service, use the right page: Book Handyman https://profixter.com/book, Membership https://profixter.com/membership, or Renovation Estimate https://profixter.com/projects#estimate."
-        );
-      }
-
-      if (wantsPhoneCall(trimmedInput)) {
-        return sendSseReply(res, buildCallbackConfirmationPrompt());
-      }
-
-      const recommendation = getRoutingRecommendation(trimmedInput);
-      if (shouldRouteToProductPage(trimmedInput, recommendation)) {
-        return sendSseReply(res, buildRoutingReply(recommendation));
-      }
-
-      send({ status: "typing" });
-      const replyText = await callHomeSupportAI({
-        input: trimmedInput,
-        history,
-        files,
-      });
-
-      send({ token: replyText });
-      send({ done: true });
-      return res.end();
-    } catch (err) {
-      console.error("Home Support AI error:", err);
-      if (!res.headersSent) {
-        return res.status(500).json({ message: "Home Support AI failed" });
-      }
-      res.write(`data: ${JSON.stringify({ error: "Home Support AI failed" })}\n\n`);
-      return res.end();
-    }
-  }
-);
 
 const LEAD_CLIENT_FIELDS = [
   "name",
