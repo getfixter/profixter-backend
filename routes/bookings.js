@@ -14,6 +14,7 @@ const moment = require("moment-timezone");
 
 const Booking = require("../models/Booking");
 const User = require("../models/User");
+const { contactRequiredBody, missingBookingContact } = require("../utils/bookingContact");
 const Subscription = require("../models/Subscription");
 const VisitEntitlement = require("../models/VisitEntitlement");
 const CalendarConfig = require("../models/CalendarConfig");
@@ -852,6 +853,8 @@ router.post(
       if (!me) {
         return res.status(401).json({ message: "User not found or session expired." });
       }
+      const missingContact = missingBookingContact(me);
+      if (missingContact.length) return res.status(400).json(contactRequiredBody(missingContact));
 
       const { addressId, selectedTask, note, date, requestedDate, requestedTime } = req.body;
       if (!addressId || !mongoose.isValidObjectId(addressId)) {
@@ -1373,6 +1376,8 @@ router.post(
       if (!me) {
         return res.status(401).json({ message: "User not found or session expired." });
       }
+      const missingContact = missingBookingContact(me);
+      if (missingContact.length) return res.status(400).json(contactRequiredBody(missingContact));
 
       const { addressId, date, note } = req.body;
       if (!addressId || !mongoose.isValidObjectId(addressId)) {
@@ -1611,6 +1616,8 @@ router.post(
       if (!me) {
         return res.status(401).json({ message: "User not found or session expired." });
       }
+      const missingContact = missingBookingContact(me);
+      if (missingContact.length) return res.status(400).json(contactRequiredBody(missingContact));
 
       const { addressId, date, note } = req.body;
       if (!addressId || !mongoose.isValidObjectId(addressId)) {
@@ -1822,6 +1829,8 @@ router.post(
       if (!me) {
         return res.status(401).json({ message: "User not found or session expired." });
       }
+      const missingContact = missingBookingContact(me);
+      if (missingContact.length) return res.status(400).json(contactRequiredBody(missingContact));
 
       const { service, date, note, requestedDate, requestedTime } = req.body;
       const addressId = req.body.addressId;

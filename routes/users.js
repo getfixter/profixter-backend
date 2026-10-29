@@ -12,6 +12,8 @@ const {
   verifySubscriptionAccess,
 } = require("../utils/subscriptionManagement");
 const { findDuplicateAddress } = require("../utils/introVisitEligibility");
+const { buildSignupAddress } = require("../utils/addressVerification");
+const { countyForZip, isZipInServiceArea } = require("../utils/serviceArea");
 const { toE164 } = require("../utils/sms/smsPhone");
 // The eligibility layer's own reading of an opt-out row, reused rather than
 // reimplemented so the account screen and the send path cannot disagree.
@@ -221,6 +223,15 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
         message: "Provide transactionalEnabled and/or marketingEnabled as true or false",
       });
     }
+    /*
+     * Where the choice was made, for the consent record. The booking step only
+     * ever offers SERVICE texts (one optional, unticked box); offers can be
+     * switched on in account settings only, so they are refused from there.
+     */
+    const consentSource = req.body?.source === "booking_step" ? "booking_step" : "account_settings";
+    if (consentSource === "booking_step" && requested.some((r) => r.channel.field !== "transactionalEnabled")) {
+      return res.status(400).json({ message: "Only service texts can be switched on while booking." });
+    }
 
     const me = await User.findById(req.user.id).select("phone smsPreferences");
     if (!me) return res.status(404).json({ message: "User not found" });
@@ -268,7 +279,7 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
       update[channel.enabledPath] = value;
       if (value === true) {
         update[channel.atPath] = now;
-        update[channel.sourcePath] = "account_settings";
+        update[channel.sourcePath] = consentSource;
       }
     }
 
@@ -294,8 +305,8 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
           channel: "sms",
           purpose,
           action: value ? "granted" : "withdrawn",
-          source: "account_settings",
-          version: value ? CURRENT.sms_settings[purpose] : "",
+          source: consentSource,
+          version: value ? (consentSource === "booking_step" ? CURRENT.booking.service : CURRENT.sms_settings[purpose]) : "",
           phone: toE164(me.phone) || "",
           req,
           at: now,
@@ -309,7 +320,7 @@ router.put("/me/sms-preferences", auth, async (req, res) => {
         event: "sms_preference_changed",
         userId: String(me._id),
         changed: Object.fromEntries(requested.map((r) => [r.channel.field, r.value])),
-        source: "account_settings",
+        source: consentSource,
       })
     );
     return res.json(smsPreferenceDTO(fresh, optOut));
@@ -400,6 +411,75 @@ router.put("/me/email-preferences", auth, async (req, res) => {
 });
 
 // Add a new address
+/*
+ * "What should we call you?" A customer who signed in by phone or email code
+ * may not have given a name; they are asked later, gently, and can skip it.
+ */
+router.patch("/me/profile", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+    const name = String(req.body?.name || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!name) return res.status(400).json({ message: "Please enter your name.", field: "name" });
+    me.name = name;
+    const [first, ...rest] = name.split(" ");
+    if (!me.firstName) me.firstName = first.slice(0, 60);
+    if (!me.lastName && rest.length) me.lastName = rest.join(" ").slice(0, 60);
+    await me.save();
+    const { authUserDTO, buildPerAddressCoverage } = require("./auth");
+    return res.json({ user: authUserDTO(me, await buildPerAddressCoverage(me)) });
+  } catch (e) {
+    console.error("PATCH /me/profile error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/*
+ * "Add your home", asked for when a service first needs a location.
+ *
+ * The same verification sign-up used: the ZIP is normalised, the county is
+ * derived (never accepted from the browser), Places coordinates are kept only
+ * when they agree with their own ZIP. Whether the home is in the service area
+ * is REPORTED, not enforced here - adding a home has never been restricted;
+ * the free first visit and the Full Day enforce the area at booking, as before.
+ */
+router.post("/me/addresses", auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    const built = buildSignupAddress(req.body || {});
+    if (!built.ok) {
+      return res.status(400).json({
+        message: built.field === "zip" ? "That ZIP code does not look right." : "Please enter your complete address.",
+        field: built.field,
+      });
+    }
+    const label = String(req.body?.label || "").trim().slice(0, 40);
+    const candidate = { ...built.address, label: label || (me.addresses.length ? "Home" : "Primary") };
+
+    let address = findDuplicateAddress(me, candidate);
+    const deduplicated = Boolean(address);
+    if (!address) {
+      me.addresses.push(candidate);
+      address = me.addresses[me.addresses.length - 1];
+      if (!me.defaultAddressId) me.defaultAddressId = address._id;
+      await me.save();
+    }
+
+    const { authUserDTO, buildPerAddressCoverage } = require("./auth");
+    return res.status(deduplicated ? 200 : 201).json({
+      user: authUserDTO(me, await buildPerAddressCoverage(me)),
+      address: toAddressDTO(address),
+      deduplicated,
+      serviceArea: { inArea: isZipInServiceArea(address.zip), county: countyForZip(address.zip) || null },
+    });
+  } catch (e) {
+    console.error("POST /me/addresses error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
 router.post("/addresses", auth, async (req, res) => {
   try {
     const me = await User.findById(req.user.id);

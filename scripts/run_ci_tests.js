@@ -117,6 +117,10 @@ const SUITES = [
 /**
  * Suites intentionally NOT run in CI, and why:
  *   test_loyalty_integration.js     boots an in-memory MongoDB binary
+ *   test_auth_v2_integration.js     boots an in-memory MongoDB binary
+ *   test_signup_to_booking_journey.js  boots an in-memory MongoDB replica set
+ *   test_user_email_index_migration.js boots an in-memory MongoDB binary
+ *   check_auth_providers.js          provider readiness check, needs real credentials
  *   test_admin_loyalty_integration.js  boots an in-memory MongoDB binary
  *   test_intro_visit_flows_live.js   needs a live MongoDB
  *   test_booking_reminders_integration.js  boots an in-memory MongoDB binary

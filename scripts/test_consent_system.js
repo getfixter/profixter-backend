@@ -10,8 +10,15 @@
  *   - email marketing: opt-out in the account, opt back in, a bounce or
  *     complaint can never be lifted by the customer, the link unsubscribe is
  *     recorded, and the send-time check agrees with the screen
- *   - SMS: signup ticks, settings on/off, STOP wins over everything, START
- *     lifts the block but grants nothing, re-consent after START
+ *   - SMS: signup ticks (legacy register route), the booking-step box,
+ *     settings on/off, STOP wins over everything, START lifts the block but
+ *     grants nothing, re-consent after START
+ *
+ * Registration 2.0 (2026-10-28): the new sign-up asks for no SMS consent (codes
+ * go through Twilio Verify, outside the campaign). Service texts are offered as
+ * one optional unticked box at the booking step - recorded as
+ * "sms_service.booking.v1" from source "booking_step" - and in settings;
+ * marketing texts in settings only, so the booking step may never grant them.
  *   - no fabrication: the audit changes nothing, unknown stays unknown, a
  *     guest's visit consent never becomes marketing, and a guest who later
  *     registers starts with only what they tick
@@ -217,6 +224,30 @@ async function main() {
     assert.deepStrictEqual(h.map((e) => [e.purpose, e.action]), [["marketing", "granted"], ["marketing", "withdrawn"]]);
     assert.strictEqual(h[0].consentText, VERSIONS[CURRENT.sms_settings.marketing].text);
     assert.strictEqual(h[1].consentVersion, "", "a withdrawal needs no wording");
+  });
+
+  await test("the booking-step box records service texts in its own wording, and can never grant marketing", async () => {
+    const { user, token } = await makeUser();
+    const refused = await call(token, "PUT", "/api/users/me/sms-preferences", { marketingEnabled: true, source: "booking_step" });
+    assert.strictEqual(refused.status, 400, "marketing is offered in account settings only");
+    const bundled = await call(token, "PUT", "/api/users/me/sms-preferences", { transactionalEnabled: true, marketingEnabled: true, source: "booking_step" });
+    assert.strictEqual(bundled.status, 400, "and cannot ride along with the service box");
+    assert.strictEqual((await history(user._id)).length, 0, "a refused request records nothing");
+    const ok = await call(token, "PUT", "/api/users/me/sms-preferences", { transactionalEnabled: true, source: "booking_step" });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const u = await User.findById(user._id).lean();
+    assert.strictEqual(u.smsPreferences.transactionalEnabled, true);
+    assert.strictEqual(u.smsPreferences.transactionalConsentSource, "booking_step");
+    assert.notStrictEqual(u.smsPreferences.marketingEnabled, true, "one box is one consent");
+    const h = await history(user._id);
+    assert.strictEqual(h.length, 1);
+    assert.strictEqual(h[0].purpose, "service");
+    assert.strictEqual(h[0].source, "booking_step");
+    assert.strictEqual(h[0].consentVersion, CURRENT.booking.service);
+    assert.strictEqual(h[0].consentVersion, "sms_service.booking.v1");
+    assert.strictEqual(h[0].consentText, VERSIONS["sms_service.booking.v1"].text);
+    assert.match(h[0].consentText, /"Text me about my visits" \(optional, unticked\)/, "the record names the box and that it was unticked");
+    assert.strictEqual((await consentStatusFor(u)).smsMarketing, "unknown", "marketing stays never-asked");
   });
 
   await test("STOP wins over every preference; START lifts the block but grants nothing; re-consent is a new, recorded tick", async () => {

@@ -1601,21 +1601,38 @@ async function handleCheckoutCompleted(session, eventId) {
     return result;
   }
 
+  /*
+   * WHO PAID: the account that opened this checkout, first.
+   *
+   * Membership checkout stamps the account on the session (metadata.userId:
+   * the public id, or the Mongo id for older accounts). Matching on that is
+   * exact. The email the customer typed at Stripe is only a fallback, for
+   * sessions opened before the stamp existed - and an account that signed up
+   * by phone may have no email at all, or Stripe may hold a different one.
+   */
+  let user = null;
+  const stampedUserId = String(session.metadata?.userId || "").trim();
+  if (stampedUserId) {
+    const byId = /^[a-f0-9]{24}$/i.test(stampedUserId) ? { _id: stampedUserId } : { userId: stampedUserId };
+    user = await User.findOne(byId);
+  }
+
   let email = session.customer_email || session?.customer_details?.email || null;
+  if (!user) {
+    if (!email && session.customer) {
+      const customer = await stripe.customers.retrieve(session.customer);
+      email = customer?.email || null;
+    }
 
-  if (!email && session.customer) {
-    const customer = await stripe.customers.retrieve(session.customer);
-    email = customer?.email || null;
+    if (!email) {
+      logWebhook("warn", "checkout_completed_missing_email", {
+        stripeSessionId: session.id,
+      });
+      return;
+    }
+
+    user = await findBillingUserByEmail(email);
   }
-
-  if (!email) {
-    logWebhook("warn", "checkout_completed_missing_email", {
-      stripeSessionId: session.id,
-    });
-    return;
-  }
-
-  const user = await findBillingUserByEmail(email);
   if (!user) {
     logWebhook("warn", "checkout_completed_user_not_found", {
       stripeSessionId: session.id,
@@ -1719,7 +1736,8 @@ async function handleCheckoutCompleted(session, eventId) {
       billingCycle,
     },
     user: {
-      email: String(email).toLowerCase(),
+      // Never hash "null"/"undefined": an account may have no email at all.
+      email: (user.email || email) ? String(user.email || email).toLowerCase() : undefined,
       phone: prevLP.phone || user.phone || "",
       firstName: user.firstName,
       lastName: user.lastName,
@@ -1742,11 +1760,16 @@ async function handleCheckoutCompleted(session, eventId) {
   // than after only so a mail failure cannot skip it; neither can throw.
   await smsNotify.notifyMembershipStarted(subscription, user, "stripeWebhook");
 
-  await mail.sendTx(
+  /*
+   * The account's email, else the one they typed at Stripe checkout. A
+   * phone-only account that left no email anywhere simply gets the text above.
+   */
+  const confirmationTo = user.email || email || null;
+  if (confirmationTo) await mail.sendTx(
     "subscription_started",
-    user.email,
+    confirmationTo,
     {
-      name: user.name || email.split("@")[0],
+      name: user.name || String(confirmationTo).split("@")[0],
       plan: (plan || "").replace(/^./, (char) => char.toUpperCase()),
       billingCycle,
       address: subscription.addressSnapshot
@@ -1758,9 +1781,9 @@ async function handleCheckoutCompleted(session, eventId) {
       logContext: {
         userId: user._id,
         customerName: user.name || "",
-        customerEmail: user.email,
+        customerEmail: confirmationTo,
         recipientName: user.name || "",
-        recipientEmail: user.email,
+        recipientEmail: confirmationTo,
         emailType: "billing",
         source: "stripeWebhook",
       },

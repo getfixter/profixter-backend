@@ -278,6 +278,11 @@ router.post("/checkout-session", auth, async (req, res) => {
     const purchaser = await User.findById(req.user.id);
     if (!purchaser) return res.status(404).json({ message: "User not found" });
 
+    // The purchase confirmation and the gift receipt go to the purchaser's email.
+    if (!String(purchaser.email || "").trim()) {
+      return res.status(400).json({ code: "CONTACT_REQUIRED", missing: ["email"], message: "Add your email address to continue." });
+    }
+
     /*
      * Who the gift is for. Normally exactly what the purchaser typed. From
      * Admin, the selected customer's own account: their registered email is

@@ -258,6 +258,24 @@ const frame = (content, opts = {}) => {
 /* ============================ TEMPLATES ============================ */
 
 const TEMPLATES = {
+  /*
+   * Sign-in by email code. Plain and short: the code is the whole message.
+   * The email log keeps a redacted copy (logContext.redactBody), never the code.
+   */
+  login_code: ({ code }) => ({
+    subject: `${code} is your Profixter sign-in code`,
+    html: frame(`
+      <h2 style="font-size:22px;font-weight:800;margin:0 0 10px">Your sign-in code</h2>
+      <p>Enter this code to continue to Profixter. It expires in <strong>10 minutes</strong>.</p>
+      <div style="font-size:32px; letter-spacing:6px; font-weight:800; background:#f3f4f6;
+                  padding:14px 18px; border-radius:10px; display:inline-block; margin:10px 0;">
+        ${code}
+      </div>
+      <p>If you didn't try to sign in, you can ignore this email. Nobody can get in without this code.</p>
+    `, { preheader: "Your Profixter sign-in code. Expires in 10 minutes." }),
+    text: `Your Profixter sign-in code is ${code}. It expires in 10 minutes. If you didn't try to sign in, ignore this email.`,
+  }),
+
   password_otp: ({ name = "there", otp }) => ({
     subject: "Your Profixter verification code",
     html: frame(`
@@ -1035,11 +1053,13 @@ function buildEmailLogPayload({
   const recipientEmail = normalizeEmailValue(
     logContext.recipientEmail || to
   );
-  const htmlSnapshot = snapshotValue(html);
-  const textSnapshot = snapshotValue(text);
+  // One-time codes are never kept in the log, only the fact that one was sent.
+  const redacted = logContext.redactBody === true;
+  const htmlSnapshot = redacted ? "[redacted: one-time sign-in code]" : snapshotValue(html);
+  const textSnapshot = redacted ? "[redacted: one-time sign-in code]" : snapshotValue(text);
   return {
     templateKey: String(logContext.templateKey || "").trim(),
-    subject: String(subject || "").trim(),
+    subject: redacted ? "[redacted] Profixter sign-in code" : String(subject || "").trim(),
     /*
      * The content as rendered, for this row only. Marked present so Admin can
      * tell "this email had no body" apart from "this row predates snapshots".

@@ -32,6 +32,22 @@ const VERSIONS = {
     purpose: "marketing",
     text: '"Text me occasional ProFixter offers." Optional, and separate from the service texts above. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.',
   },
+  /*
+   * Registration 2.0. Sign-up asks for no text consent at all: the one-time
+   * verification code is requested by the person and sent through Twilio
+   * Verify, outside the A2P campaign. Service texts are offered later, as an
+   * optional unticked box at the booking step, and in account settings.
+   */
+  "sms_service.booking.v1": {
+    channel: "sms",
+    purpose: "service",
+    text: 'Checkbox "Text me about my visits" (optional, unticked) at the booking step, linking to profixter.com/communication-consent#service-texts: booking confirmations, appointment reminders and arrival updates. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.',
+  },
+  "terms.continue.v1": {
+    channel: "terms",
+    purpose: "terms",
+    text: 'Line under the sign-in button: "By continuing, you agree to the Terms and Privacy Policy and to receive a one-time verification text. Msg & data rates may apply." with links to profixter.com/terms, /privacy and /communication-consent. No checkbox; continuing is the acceptance. No marketing consent of any kind.',
+  },
   "email_marketing.settings.v1": {
     channel: "email",
     purpose: "marketing",
@@ -44,6 +60,8 @@ const CURRENT = {
   signup: { service: "sms_service.signup.v1", marketing: "sms_marketing.signup.v1" },
   sms_settings: { service: "sms_service.settings.v1", marketing: "sms_marketing.settings.v1" },
   email_settings: { marketing: "email_marketing.settings.v1" },
+  booking: { service: "sms_service.booking.v1" },
+  continue_terms: "terms.continue.v1",
 };
 
 function wording(version) {

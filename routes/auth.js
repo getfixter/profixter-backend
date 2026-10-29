@@ -1,10 +1,8 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
-const RepAttribution = require("../models/RepAttribution");
-const { normalizeEmail, normalizePhone, normalizePhoneE164 } = require("../utils/identity");
+const { normalizeEmail, normalizePhoneE164 } = require("../utils/identity");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
 const {
@@ -18,6 +16,11 @@ const SiteVisitor = require("../models/SiteVisitor");
 const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
+const authAccounts = require("../utils/auth/accounts");
+const { hitAll } = require("../utils/auth/authRateLimit");
+const { clientIp } = require("../utils/auth/clientIp");
+const { markLeadRegistered } = authAccounts;
+const { ProviderTokenError, verifyGoogleAccessToken, verifyGoogleIdToken } = require("../utils/auth/providerTokens");
 const {
   findCustomerByEmail,
   findUsersByEmail,
@@ -52,9 +55,21 @@ function authUserDTO(user, coverageMap) {
   return {
     userId: user.userId,
     id: user.userId,
-    name: user.name,
-    email: user.email,
+    name: user.name || "",
+    email: user.email || "",
     phone: user.phone || "",
+    /*
+     * Proof and gaps, so the app can ask for what is missing at the moment it
+     * matters instead of up front, and never re-ask for what it has.
+     */
+    phoneVerified: Boolean(user.phoneVerifiedAt),
+    emailVerified: Boolean(user.emailVerifiedAt),
+    emailIsAppleRelay: Boolean(user.emailIsAppleRelay),
+    hasPassword: Boolean(user.password),
+    /* Whether service texts (booking confirmations, reminders) are switched on. */
+    smsServiceTexts: user.smsPreferences?.transactionalEnabled === true,
+    needsName: !String(user.name || "").trim(),
+    authProviders: Array.isArray(user.authProviders) ? user.authProviders : [],
     subscription: user.subscription || null,
     subscriptionExpiry: user.subscriptionExpiry || null,
     subscriptionStart: user.subscriptionStart || null,
@@ -229,98 +244,9 @@ function toAddressDTOWithCoverage(a, coverageMap) {
   };
 }
 
-// ── Cold lead matching helpers
-async function findBestLeadMatch({ email, phone }) {
-  const phoneNormalized = normalizePhone(phone);
-  const emailNormalized = normalizeEmail(email);
+// Cold-lead matching (findBestLeadMatch, markLeadRegistered) lives in
+// utils/auth/accounts so every way of signing up credits reps the same way.
 
-  let doc = null;
-
-  if (phoneNormalized) {
-    doc = await RepAttribution.findOne({
-      phoneNormalized,
-      status: { $in: ["active", "registered", "subscribed"] },
-    }).sort({ assignedAt: -1, createdAt: -1 });
-  }
-
-  if (!doc && emailNormalized) {
-    doc = await RepAttribution.findOne({
-      emailNormalized,
-      status: { $in: ["active", "registered", "subscribed"] },
-    }).sort({ assignedAt: -1, createdAt: -1 });
-  }
-
-  return doc;
-}
-
-async function markLeadRegistered(user) {
-  try {
-    const match = await findBestLeadMatch({
-      email: user.email,
-      phone: user.phone,
-    });
-
-    if (!match) {
-      console.log("ℹ️ No cold-lead match found on registration for:", user.email);
-      return;
-    }
-
-    match.matchedUserId = user._id;
-    match.emailRaw = user.email || match.emailRaw;
-    match.emailNormalized = normalizeEmail(user.email) || match.emailNormalized;
-    match.phoneRaw = user.phone || match.phoneRaw;
-    match.phoneNormalized = normalizePhone(user.phone) || match.phoneNormalized;
-
-    if (!match.fullName && user.name) match.fullName = user.name;
-    if (!match.cityAtAssignment && user.city) match.cityAtAssignment = user.city;
-    if (!match.stateAtAssignment && user.state) match.stateAtAssignment = user.state;
-
-    if (match.status !== "subscribed") {
-      match.status = "registered";
-    }
-
-    if (match.conversionType === "none") {
-      match.conversionType = "registered";
-    }
-
-    if (!match.registeredAt) {
-      match.registeredAt = new Date();
-    }
-
-    match.lastSyncedAt = new Date();
-
-    await match.save();
-
-    /*
-     * The conversion is recorded HERE, in ProFixter, and nowhere else.
-     *
-     * This used to also push the conversion back into GoHighLevel, moving an
-     * opportunity through a pipeline. That is gone: a registered ProFixter
-     * customer no longer touches GHL for any reason, including attribution.
-     *
-     * Nothing about rep tracking is lost. The RepAttribution record above is
-     * the source of truth and is saved before this point - status, timestamps
-     * and commission are all computed and persisted in our own database. The
-     * GHL half was only ever a mirror, and it had never once succeeded: every
-     * one of the 31,180 attribution records still has a null ghlOpportunityId,
-     * because the opportunity lookup always threw and the error was caught and
-     * logged. Removing it changes no numbers.
-     *
-     * The lead record in GHL is left exactly as it is. A prospect who later
-     * becomes a customer keeps their history over there; we simply stop
-     * writing to it.
-     */
-    console.log("✅ Lead marked as registered:", {
-      id: String(match._id),
-      email: match.emailRaw,
-      phone: match.phoneRaw,
-    });
-  } catch (e) {
-    console.error("❌ markLeadRegistered failed:", e.message);
-  }
-}
-
-/* ───────── Register (REQUIRED address) ───────── */
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password, phone, address, city, state, zip } = req.body;
@@ -454,7 +380,8 @@ router.post("/register", async (req, res) => {
       employeePosition: null,
       isActive: true,
       mustChangePassword: false,
-
+      signupMethod: "password",
+      authProviders: ["password"],
       address: signupAddress.line1,
       city: signupAddress.city,
       state: signupAddress.state,
@@ -665,7 +592,7 @@ router.post("/register", async (req, res) => {
       );
     }
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+    const token = authAccounts.issueSession(user);
 
     const coverageMap = await buildPerAddressCoverage(user);
 
@@ -686,6 +613,24 @@ router.post("/login", async (req, res) => {
     const { password } = req.body;
     if (!cleanEmail || !password) {
       return res.status(400).json({ message: "Missing credentials" });
+    }
+
+    /*
+     * Brute-force limits, shared by every server: per email (someone guessing
+     * one person's password) and per IP (someone spraying many accounts).
+     * Generous enough that a person mistyping never meets them.
+     */
+    const ipKey = require("crypto").createHash("sha256").update(clientIp(req)).digest("hex").slice(0, 32);
+    const loginLimit = await hitAll([
+      { key: `login:email:${cleanEmail}`, limit: 20, windowMs: 15 * 60 * 1000 },
+      { key: `login:ip:${ipKey}`, limit: 60, windowMs: 15 * 60 * 1000 },
+    ]);
+    if (!loginLimit.allowed) {
+      return res.status(429).json({
+        message: "Too many sign-in attempts. Please wait a few minutes, or sign in with a code.",
+        code: "RATE_LIMITED",
+        retryAfterSeconds: loginLimit.retryAfterSeconds,
+      });
     }
 
     /*
@@ -727,13 +672,26 @@ router.post("/login", async (req, res) => {
     }
 
     await ensurePrimaryFromLegacy(user);
-
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-
+    /*
+     * The password proves this account; a link token proves the phone the
+     * person verified a moment ago. Both together join them. Without a valid
+     * token, sign-in is exactly what it always was.
+     */
+    let linkedPhone = false;
+    const link = req.body?.linkToken ? authAccounts.readLinkToken(req.body.linkToken) : null;
+    if (link && effectiveRole(user) !== "employee") {
+      linkedPhone = (await authAccounts.attachVerifiedPhone(user, link.phone)).ok;
+    }
+    if (effectiveRole(user) !== "employee" && !(user.authProviders || []).includes("password")) {
+      authAccounts.addProvider(user, "password");
+      await user.save();
+    }
+    const token = authAccounts.issueSession(user);
     const coverageMap = await buildPerAddressCoverage(user);
     return res.json({
       token,
       user: authUserDTO(user, coverageMap),
+      ...(link ? { linkedPhone } : {}),
     });
   } catch (err) {
     console.error("❌ Login Error:", err.stack || err.message);
@@ -775,6 +733,13 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    if (!user.password) {
+      // Signed up by code or Google/Apple: there is no password to compare.
+      return res.status(400).json({
+        message: "Your account doesn't use a password. Use \"Forgot password\" to create one.",
+        code: "NO_PASSWORD",
+      });
+    }
     const match = await bcrypt.compare(currentPassword, user.password);
     if (!match) {
       return res.status(400).json({ message: "Current password is incorrect" });
@@ -793,133 +758,76 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
 });
 
 /* ───────── Google OAuth ───────── */
+/**
+ * Continue with Google.
+ *
+ * Identity comes only from a token Google signed for OUR client id. An
+ * existing account is opened by its Google id, or by an email Google says it
+ * verified - the same proof a password reset accepts. An unverified email
+ * never links to anybody. New people get an account with no address and no
+ * password, and are sent straight in.
+ */
 router.post("/google", async (req, res) => {
   try {
-    const { idToken, accessToken } = req.body;
-
+    const { idToken, accessToken } = req.body || {};
     if (!idToken && !accessToken) {
       return res.status(400).json({ message: "Google token is required" });
     }
 
-    let googleEmail = "";
-    let googleName = "";
-    let googleId = "";
+    let identity;
+    try {
+      identity = idToken ? await verifyGoogleIdToken(idToken) : await verifyGoogleAccessToken(accessToken);
+    } catch (error) {
+      if (error instanceof ProviderTokenError && error.code === "GOOGLE_NOT_CONFIGURED") {
+        return res.status(503).json({ message: "Google sign-in isn't available right now.", code: "GOOGLE_NOT_CONFIGURED" });
+      }
+      return res.status(401).json({ message: "Invalid Google token", code: "INVALID_PROVIDER_TOKEN" });
+    }
 
-    if (idToken) {
-      const { OAuth2Client } = require("google-auth-library");
-      const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
-      let ticket;
-      try {
-        ticket = await client.verifyIdToken({
-          idToken,
-          audience: process.env.GOOGLE_CLIENT_ID,
+    let user = await User.findOne({ googleId: identity.sub, role: { $ne: "employee" } });
+    if (!user && identity.email) {
+      user = await findCustomerByEmail(identity.email);
+      if (user && user.googleId && user.googleId !== identity.sub) {
+        // That account already belongs to a different Google account.
+        return res.status(409).json({
+          message: "This email is linked to a different Google account. Sign in another way.",
+          code: "IDENTIFIER_IN_USE",
         });
-      } catch (error) {
-        console.error("Google ID token verification failed:", error.message);
-        return res.status(401).json({ message: "Invalid Google token" });
       }
-
-      const payload = ticket.getPayload();
-      googleEmail = String(payload.email || "").toLowerCase();
-      googleName = payload.name || "";
-      googleId = payload.sub || "";
-    } else {
-      const profileResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-
-      if (!profileResponse.ok) {
-        return res.status(401).json({ message: "Invalid Google token" });
-      }
-
-      const payload = await profileResponse.json();
-      googleEmail = String(payload.email || "").toLowerCase();
-      googleName = payload.name || "";
-      googleId = payload.sub || "";
+      if (user) user.googleId = identity.sub;
     }
 
-    if (!googleEmail || !googleId) {
-      return res.status(401).json({ message: "Google account profile is incomplete" });
-    }
-
-    // Google sign-in is the customer app's front door, so it resolves the
-    // customer record. A Fixter account on the same address is not it, and
-    // must not be handed a customer session.
-    let user = await findCustomerByEmail(googleEmail);
-
+    let created = false;
     if (user) {
-      if (!user.googleId) {
-        user.googleId = googleId;
-        await user.save();
-      }
-    } else {
-      user = new User({
-        userId: generateUserId(),
-        name: googleName,
-        email: googleEmail,
-        googleId,
-        phone: "",
-        address: "",
-        city: "",
-        state: "NY",
-        zip: "",
-        county: "",
-        subscription: "none",
-        addresses: [],
-        defaultAddressId: null,
-        role: "customer",
-        employeePosition: null,
-        isActive: true,
-        mustChangePassword: false,
-        /*
-         * First touch for a new Google account, same rules as /register. An
-         * existing account is never touched: its first touch already happened.
-         */
-        attribution: sanitizeAttribution(req.body?.attribution) || undefined,
-      });
-
+      if (identity.email && user.email === identity.email && !user.emailVerifiedAt) user.emailVerifiedAt = new Date();
+      if (!user.name && identity.name) user.name = identity.name;
+      authAccounts.addProvider(user, "google");
       await user.save();
-
+    } else {
       try {
-        await mail.sendTx("welcome", user.email, { name: user.name }, {
-          logContext: {
-            userId: user._id,
-            customerName: user.name || "",
-            customerEmail: user.email,
-            recipientName: user.name || "",
-            recipientEmail: user.email,
-            emailType: "transactional",
-            source: "googleAuth",
-          },
+        user = await authAccounts.createCustomer({
+          signupMethod: "google",
+          googleId: identity.sub,
+          email: identity.email || null,
+          emailVerified: Boolean(identity.email),
+          name: identity.name,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          attribution: req.body?.attribution,
         });
-      } catch (emailError) {
-        console.log("Welcome email failed:", emailError.message);
+        created = true;
+      } catch (error) {
+        if (!authAccounts.isDuplicateKey(error)) throw error;
+        user = await User.findOne({ googleId: identity.sub });
+        if (!user) throw error;
       }
-
-      // Google sign-up often has no phone number on the account; the
-      // eligibility check records that as no_valid_phone and sends nothing.
-      await smsNotify.notifyAccountCreated(user, "googleAuth");
-
-      try {
-        await sendAdminLeadNotification({
-          leadId: String(user._id),
-          leadType: "Google Registration",
-          service: "Customer account registration",
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          sourcePage: "/signin",
-          submittedAt: user.createdAt,
+      if (created) {
+        await authAccounts.afterAccountCreated(user, {
+          req,
+          metaEventId: req.body?.metaEventId,
+          fbp: req.body?.fbp,
+          fbc: req.body?.fbc,
         });
-      } catch (emailError) {
-        console.error(
-          "Google registration admin notification failed; user was saved:",
-          {
-            userId: user.userId,
-            message: emailError.message,
-          }
-        );
       }
     }
 
@@ -927,20 +835,13 @@ router.post("/google", async (req, res) => {
       return res.status(403).json({ message: "Employee account is inactive" });
     }
 
-    const token = jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, {
-      expiresIn: "30d",
-    });
-
+    const token = authAccounts.issueSession(user);
     await ensurePrimaryFromLegacy(user);
     const coverageMap = await buildPerAddressCoverage(user);
-
-    return res.json({
-      token,
-      user: authUserDTO(user, coverageMap),
-    });
+    return res.json({ token, user: authUserDTO(user, coverageMap), created });
   } catch (error) {
     console.error("❌ Google OAuth Error:", error.stack || error.message);
-    return res.status(500).json({ message: "Google authentication failed", error: error.message });
+    return res.status(500).json({ message: "Google authentication failed" });
   }
 });
 
@@ -952,3 +853,4 @@ module.exports = router;
  * time. Attaching it to the router keeps the route file the owner.
  */
 module.exports.buildPerAddressCoverage = buildPerAddressCoverage;
+module.exports.authUserDTO = authUserDTO;

@@ -3,6 +3,7 @@ const router = express.Router();
 const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const User = require("../models/User");
+const { contactRequiredBody, missingBookingContact } = require("../utils/bookingContact");
 const Subscription = require("../models/Subscription");
 const {
   stripe,
@@ -89,6 +90,14 @@ router.post("/create-checkout-session", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
+    /*
+     * A membership needs a way to reach the member: the receipt and renewal
+     * emails, and the Fixter's call. Asked for at this step if missing, rather
+     * than taken from whatever is typed at Stripe - an unverified email saved
+     * onto the account could later be used to open it.
+     */
+    const missingContact = missingBookingContact(user);
+    if (missingContact.length) return res.status(400).json(contactRequiredBody(missingContact));
 
     const email = user.email;
 

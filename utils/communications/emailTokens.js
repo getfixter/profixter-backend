@@ -106,6 +106,20 @@ const EMAIL_DEFINITIONS = {
       },
     }),
   },
+  login_code: {
+    label: "Sign-in code",
+    preheader: "Your Profixter sign-in code. Expires in 10 minutes.",
+    /* As with the reset code: the code is the email, and no rewording may drop it. */
+    protectedTokens: ["verificationCode"],
+    tokens: (v) => ({
+      verificationCode: {
+        __html:
+          `<div style="font-size:32px;letter-spacing:6px;font-weight:800;background:#f3f4f6;` +
+          `padding:14px 18px;border-radius:10px;display:inline-block;margin:10px 0;">` +
+          `${String(v.code || "").replace(/[^0-9]/g, "")}</div>`,
+      },
+    }),
+  },
   password_changed: {
     label: "Password changed",
     preheader: "Your Profixter password has been updated.",

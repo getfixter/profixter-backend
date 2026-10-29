@@ -157,10 +157,23 @@ mongoose
   .then(async () => {
     console.log("✅ MongoDB Connected");
 
-    // 🔽 make sure schema indexes (incl. unique lowercased email) are in sync
-    await require("./models/User").syncIndexes()
-      .then(() => console.log("✅ User indexes in sync"))
-      .catch(e => console.warn("⚠️ Could not sync User indexes:", e.message));
+    /*
+     * The email-uniqueness index changes shape, and must never lapse while it
+     * does: the migration builds the new index beside the old one before
+     * dropping it. syncIndexes runs only after that succeeds, because on its
+     * own it would drop the old index first and build the new one second.
+     */
+    {
+      const User = require("./models/User");
+      const { migrateUserEmailIndex } = require("./utils/migrations/userEmailIndex");
+      try {
+        await migrateUserEmailIndex(User.collection, { log: (entry) => console.log(JSON.stringify(entry)) });
+        await User.syncIndexes();
+        console.log("✅ User indexes in sync");
+      } catch (e) {
+        console.error("❌ User email index migration failed; indexes left untouched:", e.message);
+      }
+    }
 
     // Before Admin traffic matters: an employee who had Overview keeps Growth.
     await require("./utils/adminAccessMigration").migrateAdminSections()
@@ -222,6 +235,8 @@ mongoose
 
 // ✅ 6. API Routes
 app.use("/api/auth", require("./routes/auth"));
+// Sign-in 2.0: phone code, email code, Apple. Same sessions as above.
+app.use("/api/auth", require("./routes/authV2"));
 app.use("/api/stripe/checkout", require("./routes/stripe"));
 app.use("/api/ghl", require("./routes/ghl"));
 

@@ -18,9 +18,13 @@ module.exports = async function (req, res, next) {
     req.user = { id: decoded.id };
 
     const user = await User.findById(decoded.id)
-      .select("name email role employeePosition employeeTitle adminSections isActive mustChangePassword")
+      .select("name email role employeePosition employeeTitle adminSections isActive mustChangePassword tokenVersion")
       .lean();
     if (!user) return res.status(401).json({ message: "User not found" });
+    // Ended by a password reset since this token was issued.
+    if (Number(decoded.tv || 0) !== Number(user.tokenVersion || 0)) {
+      return res.status(401).json({ message: "Session ended. Please sign in again." });
+    }
     if (user.role === "employee" && user.isActive === false) {
       return res.status(403).json({ message: "Employee account is inactive" });
     }

@@ -23,6 +23,15 @@
  * or can send: the four production switches are forced off for the whole run
  * and the final case asserts they stayed that way.
  *
+ * REGISTRATION 2.0 (2026-10-28). The claim is unchanged and now holds more
+ * simply: sign-up asks for no SMS consent at all. Sign-in codes are sent
+ * through Twilio Verify, outside the A2P campaign, and a code the person
+ * requests needs no checkbox. Service texts moved to one optional unticked box
+ * at the booking step, plus account settings; marketing texts are offered in
+ * account settings only. The frontend cases that pinned the two sign-up boxes
+ * now pin that flow. The legacy /api/auth/register route below still takes the
+ * old fields and is tested as it stands.
+ *
  *   node scripts/test_sms_consent_mechanics.js
  */
 
@@ -205,146 +214,121 @@ async function main() {
   section("The signup page a carrier reviewer actually opens");
   /* ================================================================== */
 
+  /*
+   * REGISTRATION 2.0. The registered campaign makes text consent optional and
+   * asks for none at sign-up: the sign-in code is a one-time text the person
+   * requests, sent through Twilio Verify outside the campaign. So sign-up has
+   * no SMS boxes; service texts are one optional unticked box at the booking
+   * step and in account settings; marketing texts only in account settings.
+   * These cases used to pin the two sign-up boxes and now pin that flow.
+   */
   const signup = FRONTEND_PRESENT ? readSource(SIGNUP_PAGE) : "";
+  const fe = (...parts) => readSource(path.join(FRONTEND, ...parts));
+  const stripComments = (src) => src.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  await frontendTest("both SMS consents start unchecked", () => {
+  await frontendTest("sign-up holds no SMS consent state and no checkbox", () => {
+    /*
+     * Nothing to pre-tick and nothing to require, because nothing is asked.
+     * The phone sheet that completes an account before booking is held to the
+     * same rule.
+     */
+    for (const [name, src] of [
+      ["signup", signup],
+      ["ContactCompletion", fe("app", "components", "auth", "ContactCompletion.tsx")],
+    ]) {
+      const code = stripComments(src);
+      assert.ok(!/type="checkbox"/.test(code), `${name} renders a checkbox`);
+      for (const state of ["smsTransactionalConsent", "smsMarketingConsent", "agreeTerms", "serviceConsent", "marketingConsent"]) {
+        assert.ok(!new RegExp(`\\b${state}\\b`).test(code), `${name} still carries ${state}`);
+      }
+    }
+  });
+
+  await frontendTest("the booking box starts unchecked", () => {
     /*
      * A pre-ticked box is not affirmative consent under TCPA/CTIA or Twilio's
      * web form opt-in standard, and it is the first thing a reviewer checks.
      */
-    for (const state of ["smsTransactionalConsent", "smsMarketingConsent"]) {
-      assert.ok(
-        new RegExp(`const \\[${state}, set\\w+\\] = useState\\(false\\)`).test(signup),
-        `${state} must initialise to false`
+    const optIn = fe("app", "components", "booking", "ServiceTextsOptIn.tsx");
+    assert.ok(
+      /const \[serviceTexts, setServiceTexts\] = useState\(false\)/.test(optIn),
+      "the booking opt-in must initialise to false"
+    );
+    assert.ok(!/defaultChecked|checked=\{true\}/.test(optIn), "nothing may render it ticked");
+  });
+
+  await frontendTest("service and marketing stay two separate controls, in account settings", () => {
+    const prefs = fe("app", "components", "account", "SmsPreferences.tsx");
+    for (const field of ["transactionalEnabled", "marketingEnabled"]) {
+      assert.strictEqual(
+        (prefs.match(new RegExp(`field: "${field}"`, "g")) || []).length,
+        1,
+        `${field} must be its own control, asked once`
       );
     }
+    assert.ok(prefs.includes('label: "Text me about my ProFixter visits."'));
+    assert.ok(prefs.includes('label: "Text me occasional ProFixter offers."'));
   });
 
-  await frontendTest("service and marketing are two separate controls", () => {
-    for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
-      assert.ok(signup.includes(`id="${id}"`), `missing checkbox ${id}`);
-    }
-    assert.notStrictEqual(
-      signup.indexOf("sms-service-consent"),
-      signup.indexOf("sms-marketing-consent")
-    );
-  });
-
-  await frontendTest("Terms acceptance is a third, separate control", () => {
-    assert.ok(signup.includes('id="agree-terms"'), "the Terms checkbox is gone");
+  await frontendTest("requesting a code carries no SMS consent", () => {
     /*
-     * Bundling is the specific defect. The Terms box must not be the thing that
-     * carries an SMS consent, so nothing may set either SMS state from it.
+     * Bundling is the specific defect this file was written against. The code
+     * request is the one thing sign-up sends, so it is where bundling would
+     * hide: it must carry the number and nothing else.
      */
-    const termsBlock = signup.slice(
-      signup.indexOf('id="agree-terms"'),
-      signup.indexOf("</ConsentCheckbox>", signup.indexOf('id="agree-terms"'))
-    );
-    for (const state of ["setSmsTransactionalConsent", "setSmsMarketingConsent"]) {
-      assert.ok(!termsBlock.includes(state), `Terms acceptance must not touch ${state}`);
+    for (const [name, src] of [
+      ["signup", signup],
+      ["ContactCompletion", fe("app", "components", "auth", "ContactCompletion.tsx")],
+    ]) {
+      const calls = src.match(/startPhoneOtp\(\{[^}]*\}\)/g) || [];
+      assert.ok(calls.length >= 2, `${name}: expected the send and the resend`);
+      for (const call of calls) {
+        assert.ok(!/Consent/.test(call), `${name} sends a consent with the code: ${call}`);
+      }
     }
   });
 
-  await frontendTest("marketing takes no part in validation; service now does", () => {
+  await frontendTest("no validator reads a text-message choice", () => {
     /*
      * THE COMPLIANCE CLAIM RESTS ON THIS CASE.
      *
      * A checkbox labelled optional but read by a validator is not optional.
-     * Service SMS is now deliberately required and a validator reads it; the
-     * promotional box must never join it, because bundling marketing into the
-     * condition of having an account is a different and larger problem than
-     * requiring service texts.
+     * Sign-up has no choice to read, and the booking flows must never make the
+     * booking wait on the box: the box is saved after the booking succeeds.
      */
     const validators = signup.match(/const validate\w+Step = \(\) => \{[\s\S]*?\n  \};/g) || [];
-    assert.ok(validators.length >= 4, "expected the four step validators to be found");
-    const joined = validators.join("\n");
-    assert.ok(
-      !joined.includes("smsMarketingConsent"),
-      "a validator reads smsMarketingConsent; marketing must stay optional"
-    );
-    assert.ok(
-      joined.includes("smsTransactionalConsent"),
-      "service SMS is required, so a validator must enforce it"
-    );
-  });
-
-  await frontendTest("the two choices are separate controls, asked once", () => {
-    /*
-     * These boxes have now been in three places. They started on step 4, moved
-     * to an always-visible panel to answer a Twilio opt-in check, and the owner
-     * has moved them back to the final step because the panel had turned the
-     * whole four-step registration into a compliance form.
-     *
-     * What has to hold in all three arrangements, and is what this checks:
-     * there are exactly two of them, they are separate controls rather than one
-     * bundled box, and each appears once. Where they sit is asserted in
-     * test_a2p_public_evidence.js, which owns the layout question.
-     */
-    for (const id of ["sms-service-consent", "sms-marketing-consent"]) {
-      assert.strictEqual(
-        (signup.match(new RegExp(`id="${id}"`, "g")) || []).length,
-        1,
-        `${id} must appear exactly once`
-      );
+    assert.ok(validators.length >= 2, "expected the phone and email step validators");
+    assert.ok(!/consent|sms/i.test(validators.join("\n")), "a sign-up validator reads a consent");
+    for (const file of [
+      ["app", "components", "booking", "FreeVisitBooker.tsx"],
+      ["app", "components", "sections", "BookingSection.tsx"],
+      ["app", "book", "page.tsx"],
+      ["app", "components", "booking", "FullDayVisitPanel.tsx"],
+    ]) {
+      const src = fe(...file);
+      assert.ok(src.includes("applyServiceTextsOptIn"), `${file.join("/")} must offer the booking box`);
+      assert.ok(!/\bserviceTexts\b/.test(src), `${file.join("/")} reads the tick directly; it may only render it and save it`);
     }
-    assert.ok(
-      signup.indexOf('id="sms-service-consent"') !== signup.indexOf('id="sms-marketing-consent"'),
-      "the two consents must be two controls, never one"
-    );
   });
 
-  await frontendTest("the markup knows which texts are required, even though the page no longer prints it", () => {
-    /*
-     * This has moved twice. It was a sentence in the disclosure paragraph -
-     * "Service texts are required to create an account; offers are optional
-     * and separate" - then one word beside each label, and is now in neither
-     * place: the final step shows two names and two boxes and nothing else.
-     *
-     * Where it went is the point of this case. The distinction still exists in
-     * the source, still reaches a screen reader, and is still enforced at
-     * submit by both ends. What it must never become is a form where the two
-     * boxes are indistinguishable to the code as well as to the eye.
-     */
+  await frontendTest("the booking box is service-only and asked once", () => {
+    const optIn = fe("app", "components", "booking", "ServiceTextsOptIn.tsx");
+    const code = stripComments(optIn);
+    assert.strictEqual((code.match(/type="checkbox"/g) || []).length, 1, "one box");
+    assert.strictEqual((code.match(/id="booking-service-texts"/g) || []).length, 1);
     assert.ok(
-      /requirement="Required"/.test(signup) && /requirement="Optional"/.test(signup),
-      "each box must carry its own status in the markup"
+      code.includes('API.put("/api/users/me/sms-preferences", { transactionalEnabled: true, source: "booking_step" })'),
+      "it sends service texts from the booking step, and only that"
     );
-    assert.ok(
-      /label="Service text messages"[\s\S]{0,400}?requirement="Required"/.test(signup),
-      "the required one must be the service box"
-    );
-    assert.ok(
-      /label="Offers &(amp;)? promotions"[\s\S]{0,400}?requirement="Optional"/.test(signup),
-      "marketing must never be the required one"
-    );
-    assert.ok(
-      !/Text messages &mdash; optional/i.test(signup),
-      "the old blanket 'optional' heading is misleading above a required box"
-    );
-    /*
-     * And the inline failure names the service box alone. A shared message
-     * would read as though declining offers had blocked the account.
-     */
-    assert.ok(
-      /Service texts are required to create your account\./.test(signup),
-      "the submit-time error must name service texts specifically"
-    );
+    assert.ok(!/marketingEnabled/.test(code), "it can never switch on marketing");
+    assert.ok(/const LABEL = "Text me about my visits";/.test(code), "the registered label");
   });
 
-  await frontendTest("the required CTIA disclosures are one tap from the checkbox", () => {
+  await frontendTest("the required CTIA disclosures are at the box and one tap from it", () => {
     /*
-     * THIS IS A WEAKER GUARANTEE THAN IT WAS, ON PURPOSE, AND THE DIFFERENCE
-     * IS WORTH STATING RATHER THAN QUIETLY RELAXING.
-     *
-     * These five disclosures used to be printed underneath the checkboxes, at
-     * the point of consent, which is where CTIA's guidance puts them. The
-     * owner removed that paragraph as part of simplifying registration, so
-     * they are now on /communication-consent, reached by the checkbox label,
-     * which is itself the link.
-     *
-     * So the test follows them: they must all still exist, the label must
-     * still be a working link to the page that holds them, and if that link
-     * ever stops being a link this fails.
+     * Frequency, rates, STOP and HELP are printed under the booking box, and
+     * the Details link reaches the page that carries all of it plus the
+     * sending number.
      */
     const consent = readSource(path.join(FRONTEND, "app", "communication-consent", "page.tsx"));
     for (const phrase of [
@@ -356,28 +340,28 @@ async function main() {
     ]) {
       assert.ok(consent.includes(phrase), `the consent page is missing: ${phrase}`);
     }
-    const rows = signup.slice(signup.indexOf("function ConsentRow("));
-    assert.ok(
-      /<a\b[\s\S]{0,200}href=\{href\}/.test(rows),
-      "the consent label must be an anchor, or the disclosures are unreachable from the form"
-    );
-    assert.ok(
-      (signup.match(/href="\/communication-consent/g) || []).length >= 2,
-      "both labels must link to the page carrying the disclosures"
-    );
+    const optIn = fe("app", "components", "booking", "ServiceTextsOptIn.tsx");
+    for (const phrase of ["Message frequency varies", "Message and data rates may apply", "Reply STOP to opt out or HELP for help"]) {
+      assert.ok(optIn.includes(phrase), `the booking box is missing: ${phrase}`);
+    }
+    assert.ok(optIn.includes('href="/communication-consent#service-texts"'), "Details must reach the disclosures");
+    assert.ok(consent.includes('id="service-texts"'), "and the anchor must exist");
   });
 
-  await frontendTest("the old forced-consent sentence is gone", () => {
+  await frontendTest("the old forced-consent sentences are gone", () => {
     /*
      * Comments are stripped first. The file explains in a comment what the
      * page used to say and why it changed, which is worth keeping and is not
-     * something a customer or a reviewer can read - scanning raw source would
-     * fail on the explanation of the fix rather than on the defect.
+     * something a customer or a reviewer can read.
      */
-    const rendered = signup.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rendered = stripComments(signup);
     assert.ok(
       !/We text you about your visits/i.test(rendered),
       "the page must not assert that we will text them"
+    );
+    assert.ok(
+      !/Service texts are required/i.test(rendered),
+      "sign-up must not make texts a condition of the account"
     );
   });
 
@@ -1133,8 +1117,16 @@ async function main() {
       path.join(FRONTEND, "app", "communication-consent", "page.tsx")
     ).replace(/\s+/g, " ");
     assert.ok(
-      /Service texts are part of having an account/i.test(consent),
-      "the consent page must describe service texts as required to register"
+      /Service texts are optional/i.test(consent),
+      "the consent page must describe service texts as optional"
+    );
+    assert.ok(
+      /Signing up asks for no SMS consent/i.test(consent),
+      "the consent page must say sign-up asks for no SMS consent"
+    );
+    assert.ok(
+      !/Service texts are part of having an account|Service texts are required to create an account/i.test(consent),
+      "the old required-service sentences are back on the consent page"
     );
     assert.ok(
       /Marketing texts require a second, separate opt-in/i.test(consent),
