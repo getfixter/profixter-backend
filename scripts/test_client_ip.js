@@ -9,4 +9,5 @@ t("a forged header cannot change the key", () => assert.strictEqual(clientIp(req
 t("garbage in the header is ignored", () => assert.strictEqual(clientIp(req("evil<script>, 203.0.113.9", "10.0.0.2")), "203.0.113.9"));
 t("direct connection without a header", () => assert.strictEqual(clientIp(req("", "::ffff:198.51.100.7")), "198.51.100.7"));
 t("local development falls back to the socket", () => assert.strictEqual(clientIp(req("", "127.0.0.1")), "127.0.0.1"));
+t("two customers behind the same load balancer get different keys", () => assert.notStrictEqual(clientIp(req("203.0.113.9, 10.0.1.5", "127.0.0.1")), clientIp(req("198.51.100.20, 10.0.1.5", "127.0.0.1"))));
 console.log(`\n${n} passed`);
