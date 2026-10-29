@@ -73,6 +73,8 @@ const SUITES = [
   "test_admin_access.js",
   "test_client_ip.js",
   "test_chatbot_lead_rules.js",
+  // Admin edits a customer: owner-only phone/email, verification reset, audit (in-memory Mongo).
+  "test_admin_customer_edit.js",
   "test_attribution.js",
   "test_transactional_email_system.js",
   "test_admin_customer_calendar_integration.js",
