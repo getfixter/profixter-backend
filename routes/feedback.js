@@ -5,10 +5,19 @@ const {
   sendAdminLeadNotification,
 } = require("../utils/adminLeadNotification");
 
-const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const { rateLimit } = require("../utils/rateLimit");
+const { clientIp } = require("../utils/auth/clientIp");
 
-router.post("/", upload.array("files", 3), async (req, res) => {
+const router = express.Router();
+/*
+ * Attachments are held in memory and e-mailed to the owner, so both their size
+ * and how often a stranger can send them are capped: without limits one script
+ * could exhaust the server's memory or flood the admin inbox.
+ */
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 3 } });
+const feedbackLimiter = rateLimit({ limit: 10, windowMs: 60 * 60 * 1000, keyResolver: (req) => `feedback:${clientIp(req)}` });
+
+router.post("/", feedbackLimiter, upload.array("files", 3), async (req, res) => {
   const message = String(req.body.message || "").trim();
   const name = String(req.body.name || "").trim();
   const email = String(req.body.email || "").trim().toLowerCase();
