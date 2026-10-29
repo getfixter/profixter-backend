@@ -10,6 +10,7 @@ const { optOutFor } = require("../utils/sms/smsEligibility");
 const { toE164, maskPhone } = require("../utils/sms/smsPhone");
 const { consentResetForPhoneChange } = require("../utils/sms/consentOnPhoneChange");
 const { normalizePhoneE164 } = require("../utils/identity");
+const { maskPhone: maskPhoneForLog } = require("../utils/customerProfileEdit");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Referral = require("../models/Referral");
@@ -1309,6 +1310,11 @@ router.get("/activity-log", auth, ...activityRead, async (req, res) => {
       AdminActivityLog.countDocuments(query),
     ]);
 
+    // Full phone/email values from customer edits are the owner's to see.
+    if (req.accessRole !== "admin") {
+      for (const item of items) if (item.details && item.details.ownerOnly) delete item.details.ownerOnly;
+    }
+
     return res.json({
       items,
       total,
@@ -1417,6 +1423,12 @@ router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
   }
 });
 
+/*
+ * Correcting a customer's names, phone, email and addresses, with the
+ * verification, consent and audit rules that edit needs. See the file.
+ */
+router.use(require("./adminCustomerProfile")({ getAddressPlansForUser }));
+
 // ✅ UPDATE User Info (name, phone, legacy subscription)
 router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
   const allowedFields = ["name", "phone", "subscription"];
@@ -1461,6 +1473,23 @@ router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async 
   try {
     const existing = await User.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ message: "User not found" });
+
+    /*
+     * A phone is a way into the account (phone-code sign-in opens accounts that
+     * verified the number), so a genuine change is the owner's alone and the
+     * new number starts unverified, exactly as PATCH /users/:id/profile does.
+     * Without this the old verification stamp stayed on the new number, and
+     * whoever held that number could sign in.
+     */
+    let phoneNumberChanged = false;
+    if (updates.phone !== undefined) {
+      const before = normalizePhoneE164(existing.phone) || String(existing.phone || "").trim();
+      phoneNumberChanged = before !== updates.phone;
+      if (phoneNumberChanged && req.accessRole !== "admin") {
+        return res.status(403).json({ code: "OWNER_ONLY_FIELDS", message: "Only the owner can change a customer's phone or email." });
+      }
+      if (phoneNumberChanged) updates.phoneVerifiedAt = null;
+    }
 
     /*
      * CONSENT DOES NOT TRAVEL WITH THE ACCOUNT. IT BELONGS TO THE NUMBER.
@@ -1515,6 +1544,21 @@ router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async 
     if (Object.keys(unsetOnPhoneChange).length) write.$unset = unsetOnPhoneChange;
 
     await User.updateOne({ _id: existing._id }, write, { runValidators: false });
+
+    if (phoneNumberChanged) {
+      await createAdminActivityLog(req, {
+        action: "Customer Profile Updated",
+        entityType: "User",
+        entityId: existing._id,
+        entityName: existing.name || existing.userId,
+        details: {
+          summary: "Changed: Phone",
+          changes: [{ field: "phone", label: "Phone", from: maskPhoneForLog(existing.phone), to: maskPhoneForLog(updates.phone), sensitive: true }],
+          ownerOnly: { changes: [{ field: "phone", label: "Phone", from: existing.phone || "", to: updates.phone }] },
+          adminOverride: { phoneVerificationCleared: Boolean(existing.phoneVerifiedAt), emailVerificationCleared: false },
+        },
+      });
+    }
 
     if (Object.keys(unsetOnPhoneChange).length) {
       const { recordConsent } = require("../utils/consent/ledger");
