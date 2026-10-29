@@ -39,11 +39,8 @@ function logTip(level, event, details = {}) {
   else console.log(payload);
 }
 
-function clientIp(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (forwarded) return String(forwarded).split(",")[0].trim();
-  return req.socket?.remoteAddress || "";
-}
+/* Spoof-resistant behind the load balancer; see utils/auth/clientIp. */
+const { clientIp } = require("../utils/auth/clientIp");
 
 function requestToken(req) {
   return String(req.body?.token || req.query?.token || "").trim();

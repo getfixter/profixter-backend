@@ -18,6 +18,7 @@
  * digits and the output is a boolean and a county name.
  */
 const express = require("express");
+const { clientIp } = require("../utils/auth/clientIp");
 const router = express.Router();
 
 const { normalizeZip, isZipInServiceArea, countyForZip, SERVICE_AREA_LABEL } =
@@ -72,7 +73,7 @@ const waitlistLimiter = rateLimit({
   limit: 10,
   windowMs: 60 * 60 * 1000,
   keyResolver: (req) =>
-    String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null,
+    clientIp(req) || null,
 });
 
 router.post("/waitlist", waitlistLimiter, async (req, res) => {

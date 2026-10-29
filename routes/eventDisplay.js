@@ -23,14 +23,13 @@ const express = require("express");
 const sharp = require("sharp");
 const { getObjectBuffer } = require("../utils/s3");
 const { rateLimit } = require("../utils/rateLimit");
+const { clientIp: realClientIp } = require("../utils/auth/clientIp");
 const { displayIndex, keyFromUrl } = require("../utils/eventDisplayLibrary");
 
 const router = express.Router();
 
-function clientIp(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return (forwarded || req.ip || req.socket?.remoteAddress || "").slice(0, 64);
-}
+/* Spoof-resistant behind the load balancer; see utils/auth/clientIp. */
+const clientIp = (req) => realClientIp(req).slice(0, 64);
 
 /*
  * Each limiter needs its OWN key. utils/rateLimit keeps one counter per

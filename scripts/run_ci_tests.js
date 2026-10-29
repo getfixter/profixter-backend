@@ -72,6 +72,7 @@ const SUITES = [
   "test_office_explain_integration.js",
   "test_admin_access.js",
   "test_studio_engine_sync.js",
+  "test_client_ip.js",
   "test_studio_client_ip.js",
   "test_studio_manufacturer_import.js",
   "test_studio_preview.js",

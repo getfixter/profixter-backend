@@ -1,4 +1,5 @@
 const express = require("express");
+const { clientIp } = require("../utils/auth/clientIp");
 const jwt = require("jsonwebtoken");
 const router = express.Router();
 const User = require("../models/User");
@@ -244,7 +245,7 @@ router.post("/meta", optionalAuth, async (req, res) => {
 const visitLimiter = rateLimit({
   limit: 20,
   windowMs: 10 * 60 * 1000,
-  keyResolver: (req) => String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null,
+  keyResolver: (req) => clientIp(req) || null,
 });
 const BOT_UA = /bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexternalhit|pingdom|monitor/i;
 
@@ -257,7 +258,7 @@ const BOT_UA = /bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexter
 const stepLimiter = rateLimit({
   limit: 60,
   windowMs: 10 * 60 * 1000,
-  keyResolver: (req) => String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null,
+  keyResolver: (req) => clientIp(req) || null,
 });
 
 router.post("/step", stepLimiter, async (req, res) => {

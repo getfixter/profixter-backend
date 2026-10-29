@@ -25,6 +25,7 @@
  * None of those can fail the request. The lead is the thing worth keeping.
  */
 const express = require("express");
+const { clientIp } = require("../utils/auth/clientIp");
 const multer = require("multer");
 const moment = require("moment-timezone");
 
@@ -78,7 +79,7 @@ const upload = multer({
 const ipLimit = rateLimit({
   limit: 10,
   windowMs: 60 * 60 * 1000,
-  keyResolver: (req) => `free_visit_ip:${String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim()}`,
+  keyResolver: (req) => `free_visit_ip:${clientIp(req)}`,
   message: "Too many requests just now. Please call or text 631-599-1363.",
 });
 
@@ -404,7 +405,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
       contactConsent: {
         text: CONTACT_CONSENT_TEXT,
         at: new Date(),
-        ip: String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim(),
+        ip: clientIp(req),
         userAgent: clean(req.headers["user-agent"], 300),
         pageUrl,
       },
