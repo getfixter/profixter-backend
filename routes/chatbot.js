@@ -10,6 +10,7 @@ const {
 } = require("../utils/adminLeadNotification");
 const {
   buildCallbackConfirmationPrompt,
+  buildDeclinedCallbackReply,
   buildRoutingReply,
   confirmsPhoneCall,
   declinesPhoneCall,
@@ -20,40 +21,41 @@ const {
   shouldRouteToProductPage,
   wantsPhoneCall,
 } = require("../utils/chatbotLeadRules");
+const { consume } = require("../utils/rateLimit");
+const { clientIp } = require("../utils/auth/clientIp");
 
 // --- CONFIG ---
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const USE_STUB = !OPENAI_KEY;
 
 const SYSTEM_PROMPT = `
-You are the Profixter Assistant - a helpful, knowledgeable guide for Profixter, a modern AI-powered home platform and Long Island home services company serving Nassau and Suffolk County, NY.
+You are the Profixter Assistant, the chat on profixter.com. Profixter is a Long Island handyman company serving Nassau and Suffolk County, NY. Its main product is a handyman Membership for your home: a monthly plan, and Members book visits as often as they need.
 
-Profixter has four customer products:
-1. PROFIXTER AI - free home-focused AI guidance.
-2. BOOK HANDYMAN - $99 One-Time Visits for predefined small handyman tasks, up to 90 minutes.
-3. MEMBERSHIP - ongoing home support for Members who need recurring help and better long-term value.
-4. RENOVATION - larger projects and estimates for roofing, siding, kitchens, bathrooms, full house renovation, build new house, additions, and other General Contractor work.
+What Profixter offers (details are in the knowledge base - use only those facts):
+1. MEMBERSHIP - the monthly handyman plan (Basic, Plus, Premium, Elite). Plans: https://profixter.com/membership/plans
+2. FIRST VISIT FREE - new customers get their first 90-minute handyman visit free. Create an account at https://profixter.com/signup, then book at https://profixter.com/book
+3. ONE-TIME VISIT - $99 for one predefined small handyman task, up to 90 minutes: https://profixter.com/book
+4. FULL DAY FIXTER - one Fixter for about 8 hours: https://profixter.com/book?visit=full-day
+5. GIFT MEMBERSHIPS - give a membership to another homeowner: https://profixter.com/gift
+6. RENOVATION ESTIMATE - roofing, siding, kitchens, bathrooms and other larger projects: https://profixter.com/projects#estimate
 
-TONE: Warm, direct, and confident. Like a knowledgeable team member, not a generic chatbot. Short replies (2-4 sentences) unless the user asks for detail. No fluff.
+TONE: Warm, direct and confident, like a knowledgeable team member. Short replies (2-4 sentences) unless the user asks for detail. Plain text, no markdown headings. No fluff.
 
-NEVER SAY:
-- "unlimited visits"
-- "free trial"
-- "cancel anytime" (say: active through current billing period after cancellation)
-- "book every 3 days" or any specific booking frequency
-- "Mr. Fixter"
-- Any overpromise about service availability or pricing
+NEVER:
+- Say "unlimited visits", "free trial", "book every 3 days" or any specific booking frequency, or "Mr. Fixter".
+- Say "cancel anytime" (say: month-to-month, and the membership stays active through the end of the current billing period after cancellation).
+- Invent a price, discount, promo code, guarantee, warranty, timeline, availability or policy that is not in the knowledge base. If you do not know, say so and offer 631-599-1363.
+- Promise a booking, an appointment time or that a person will call. Only the booking pages and the callback flow do that.
+- Offer appliance repair, or any work on the NOT HANDYMAN WORK list as a handyman visit.
+- Link to any page other than the LINKS in the knowledge base. There is no separate AI product, photo upload, design studio or 3D tool - do not mention one.
+- Call the license a New York State license.
 
 ALWAYS:
-- Use the knowledge base facts for accurate answers.
-- Use customer-facing words Membership, Member, and Become a Member. Avoid "subscription" unless the user asks about billing mechanics.
-- For one small predefined handyman task, direct to: https://profixter.com/book
-- For membership, direct to: https://profixter.com/membership
-- For larger projects, direct to the Renovation Estimate: https://profixter.com/projects#estimate
-- If the user is trying to book, schedule, find availability, or make an appointment, route them to the correct page instead of collecting an admin lead.
-- Only treat a phone call as an admin callback request after the user explicitly confirms they want a phone call. If they are just trying to book, send them to the booking page.
-- If asked to cancel, confirm they are an active Member before sharing the cancellation phone number.
-- Never offer appliance repair as a Profixter service.
+- Use the words Membership, Member and Become a Member. "Subscription" is fine when the user asks about billing.
+- If the user is trying to book, schedule, find availability or make an appointment, send them to the right page instead of collecting a lead.
+- Only treat a phone call as a callback request after the user explicitly confirms they want a phone call.
+- If asked to cancel, confirm they are an active Member before sharing the phone number for cancellations.
+- For danger at home (gas smell, sparking, flooding, smoke, carbon monoxide), tell them to leave if unsafe and contact 911 or the utility first.
 - Keep the Profixter brand name consistent.
 `;
 
@@ -127,7 +129,7 @@ async function saveAssistantBranch(convo, input, reply, meta = {}) {
 // ========== AI CALL (Streaming Support) ==========
 async function callOpenAI(history, onChunk) {
   if (USE_STUB) {
-    return `Got it! Profixter serves Nassau and Suffolk County, NY. You can explore Membership at https://profixter.com/membership or request a Renovation Estimate at https://profixter.com/projects#estimate.`;
+    return `Got it! Profixter serves Nassau and Suffolk County, NY. You can compare Membership plans at https://profixter.com/membership/plans or book a visit at https://profixter.com/book.`;
   }
 
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -170,6 +172,39 @@ async function callOpenAI(history, onChunk) {
   return fullText.trim() || "Sorry, I had trouble replying.";
 }
 
+/*
+ * Abuse limits for the public chat. Every message can cost an OpenAI call and
+ * write a Lead, so a script must not be able to loop it. A real visitor sends a
+ * handful of messages a minute at most; 30 per 10 minutes per IP leaves room for
+ * a long conversation (and for a household or office sharing one address)
+ * while capping what one source can spend. Inputs are capped too: nobody types
+ * 1,000 characters into a support bubble, and a pasted essay is all tokens.
+ *
+ * Answered as an SSE message, not a 429, because the widget is already reading
+ * a stream and shows the `error` text to the visitor as it is.
+ */
+const CHAT_LIMIT = { limit: 30, windowMs: 10 * 60 * 1000 };
+const MAX_INPUT_CHARS = 1000;
+const MAX_VISITOR_ID_CHARS = 100;
+const RATE_LIMITED_MESSAGE =
+  "You have sent a lot of messages in a short time. Please wait a few minutes and try again, or call Profixter at 631-599-1363.";
+
+function chatbotRateLimit(req, res, next) {
+  const result = consume({ key: `chatbot:${clientIp(req) || "unknown"}`, ...CHAT_LIMIT });
+  if (result.allowed) return next();
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Retry-After", String(result.retryAfterSeconds));
+  res.write(
+    `data: ${JSON.stringify({
+      error: RATE_LIMITED_MESSAGE,
+      code: "rate_limited",
+      retryAfterSeconds: result.retryAfterSeconds,
+    })}\n\n`
+  );
+  return res.end();
+}
+
 const LEAD_CLIENT_FIELDS = [
   "name",
   "email",
@@ -183,12 +218,14 @@ const LEAD_CLIENT_FIELDS = [
 ];
 
 // ========== MAIN ENDPOINT ==========
-router.post("/message", async (req, res) => {
+router.post("/message", chatbotRateLimit, async (req, res) => {
   console.log("💬 New chatbot request:", req.body?.visitorId, req.body?.channel);
 
   try {
-    const { visitorId, channel = "web", input, lead } = req.body;
+    const { channel = "web", input, lead } = req.body || {};
     const trimmedInput = String(input || "").trim();
+    // A missing visitorId would match every stored conversation without one.
+    const visitorId = typeof req.body?.visitorId === "string" ? req.body.visitorId.trim().slice(0, MAX_VISITOR_ID_CHARS) : "";
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -196,6 +233,17 @@ router.post("/message", async (req, res) => {
     const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
     if (!trimmedInput) {
       send({ error: "Missing input" });
+      return res.end();
+    }
+    if (!visitorId) {
+      send({ error: "Missing visitor id" });
+      return res.end();
+    }
+    if (trimmedInput.length > MAX_INPUT_CHARS) {
+      send({
+        error: `That message is too long. Please keep it under ${MAX_INPUT_CHARS} characters.`,
+        code: "input_too_long",
+      });
       return res.end();
     }
 
@@ -301,8 +349,7 @@ router.post("/message", async (req, res) => {
     }
 
     if (awaitingCallback && declinesPhoneCall(trimmedInput)) {
-      const reply =
-        "No problem. If you are trying to book or request service, use the right page: Book Handyman https://profixter.com/book, Membership https://profixter.com/membership, or Renovation Estimate https://profixter.com/projects#estimate.";
+      const reply = buildDeclinedCallbackReply();
       await saveAssistantBranch(convo, trimmedInput, reply);
       return sendSseReply(res, reply);
     }
@@ -332,7 +379,16 @@ router.post("/message", async (req, res) => {
     let replyText = "";
     send({ status: "typing" });
 
-    const history = convo.messages.map((m) => ({ role: m.role, content: m.content }));
+    /*
+     * Stored system messages are left out: every conversation saved the prompt
+     * of its day as its first message, and an old one would contradict the
+     * current SYSTEM_PROMPT that callOpenAI always sends first. The last 20
+     * turns are plenty for a support chat and keep the request small.
+     */
+    const history = convo.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-20)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     replyText = await callOpenAI(history, (chunk) => send({ token: chunk }));
 
@@ -349,3 +405,8 @@ router.post("/message", async (req, res) => {
 });
 
 module.exports = router;
+// Read by scripts/test_chatbot_lead_rules.js, which checks it never names a retired page.
+module.exports.SYSTEM_PROMPT = SYSTEM_PROMPT;
+module.exports.chatbotRateLimit = chatbotRateLimit;
+module.exports.CHAT_LIMIT = CHAT_LIMIT;
+module.exports.MAX_INPUT_CHARS = MAX_INPUT_CHARS;

@@ -71,6 +71,7 @@ const SUITES = [
   "test_organic_autonomy.js",
   "test_office_explain_integration.js",
   "test_admin_access.js",
+  "test_chatbot_lead_rules.js",
   "test_attribution.js",
   "test_transactional_email_system.js",
   "test_admin_customer_calendar_integration.js",
