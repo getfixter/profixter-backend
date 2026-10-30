@@ -235,6 +235,7 @@ app.use("/api/ghl", require("./routes/ghl"));
 app.use("/api/password-reset", require("./routes/passwordReset"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
 app.use("/api/bookings", require("./routes/bookings"));
+app.use("/api/pay", require("./routes/pay"));
 app.use("/api/requests", require("./routes/requests"));
 app.use("/api/free-visit-requests", require("./routes/freeVisitRequests"));
 app.use("/api/admin/free-visits", require("./routes/adminFreeVisits"));

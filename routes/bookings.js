@@ -2056,6 +2056,8 @@ router.post(
         user: req.user.id,
         addressId: subdoc._id,
         date: { $gte: new Date() },
+        // A "Free Visit — Admin" is the owner's gift, never part of the plan's allowance.
+        accessType: { $ne: "admin" },
       })
         .select("status")
         .lean();
@@ -2504,3 +2506,6 @@ router.post(
 );
 
 module.exports = router;
+/* Reused by Admin's "Create Visit" (utils/admin/adminVisits.js) so a member's limit is one rule. */
+module.exports.resolveBookingSubscription = resolveBookingSubscription;
+module.exports.resolvePlanCapacity = resolvePlanCapacity;

@@ -276,6 +276,22 @@ const SMS_SETTINGS = {
     notes: "Never sent by a webhook or sync. Claimed before sending, so it cannot go out twice.",
   },
 
+  ADMIN_ACCOUNT_CREATED: {
+    trigger: "Admin creates a customer account during a call, or resends the sign-in details.",
+    event: "routes/adminCustomers.js",
+    appliesTo: "Customers Admin signed up by phone",
+    schedule: "Immediately, once per account (and once per resend).",
+    notes: "Carries the temporary password (the customer's phone number). It opens only the new-password screen and expires.",
+  },
+
+  PAYMENT_LINK: {
+    trigger: "Admin sends a payment link for a membership, One-Time Visit or Full Day.",
+    event: "routes/adminSales.js",
+    appliesTo: "The one customer or guest the link was made for",
+    schedule: "Immediately, when Admin presses Send.",
+    notes: "The link re-checks for an existing membership before it opens Stripe, so it can never double-bill a home.",
+  },
+
   INBOUND_INFO_REPLY: {
     trigger: "Somebody texts 631-888-6340 something that is not STOP, START or HELP.",
     event: "routes/smsWebhook.js -> replyThatNobodyIsReading",

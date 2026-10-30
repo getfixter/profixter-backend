@@ -1,6 +1,11 @@
 // middleware/auth.js
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const temporaryPassword = require("../utils/auth/temporaryPassword");
+
+const PASSWORD_CHANGE_PATHS = new Set(["/api/auth/me", "/api/auth/change-password"]);
+const TEMP_EXPIRED_MESSAGE =
+  "Your temporary password has expired. Use \"Forgot password\" or sign in with a code, or call us for a new one.";
 
 module.exports = async function (req, res, next) {
   try {
@@ -18,7 +23,7 @@ module.exports = async function (req, res, next) {
     req.user = { id: decoded.id };
 
     const user = await User.findById(decoded.id)
-      .select("name email role employeePosition employeeTitle adminSections isActive mustChangePassword tokenVersion")
+      .select("name email role employeePosition employeeTitle adminSections isActive mustChangePassword tokenVersion temporaryPassword")
       .lean();
     if (!user) return res.status(401).json({ message: "User not found" });
     // Ended by a password reset since this token was issued.
@@ -27,6 +32,21 @@ module.exports = async function (req, res, next) {
     }
     if (user.role === "employee" && user.isActive === false) {
       return res.status(403).json({ message: "Employee account is inactive" });
+    }
+    /*
+     * A session opened with an Admin-issued temporary password can do one
+     * thing: replace it. Enforced here, not only in the app, so no screen or
+     * script can use the account before the customer has a password of their
+     * own. Accounts without a temporary password are untouched by this.
+     */
+    if (temporaryPassword.isIssued(user) && user.mustChangePassword) {
+      if (temporaryPassword.isExpired(user)) {
+        return res.status(401).json({ message: TEMP_EXPIRED_MESSAGE, code: "TEMP_PASSWORD_EXPIRED" });
+      }
+      const path = String(req.originalUrl || "").split("?")[0];
+      if (!PASSWORD_CHANGE_PATHS.has(path)) {
+        return res.status(403).json({ message: "Please create a new password to continue.", code: "PASSWORD_CHANGE_REQUIRED" });
+      }
     }
     req.authUser = user;
 

@@ -140,6 +140,7 @@ const SUITES = [
  *   test_project_financials_integration.js  boots an in-memory MongoDB binary
  *   test_full_day_capacity_integration.js   boots an in-memory MongoDB binary
  *   test_visibility_integration.js          boots an in-memory MongoDB binary
+ *   test_admin_tools_integration.js         boots an in-memory MongoDB replica set
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test
  */

@@ -1204,9 +1204,38 @@ async function sendRaw({
   }
 }
 
+/*
+ * Booking notices a customer's "Service email" switch can stop (Admin →
+ * customer → Communication). Deliberately a short explicit list: sign-in
+ * codes, password, billing, membership, gift and loyalty emails are not here
+ * and always go, because an account must never be left unable to sign in or
+ * unaware of a charge.
+ */
+const SERVICE_EMAIL_KEYS = new Set([
+  "booking_created",
+  "booking_confirmed",
+  "booking_completed",
+  "booking_canceled",
+  "booking_reminder_24h",
+  "booking_reminder_60m",
+  "booking_review_request",
+]);
+
+async function serviceEmailSwitchedOff(to) {
+  const email = String(to || "").trim().toLowerCase();
+  if (!email) return false;
+  const User = require("../models/User");
+  return Boolean(await User.exists({ email, role: { $ne: "employee" }, "emailPreferences.serviceEnabled": false }));
+}
+
 async function sendTx(key, to, vars = {}, opts = {}) {
   const t = TEMPLATES[key];
   if (!t) throw new Error(`Unknown template: ${key}`);
+
+  if (SERVICE_EMAIL_KEYS.has(key) && (await serviceEmailSwitchedOff(to).catch(() => false))) {
+    console.log(JSON.stringify({ event: "service_email_suppressed", templateKey: key, reason: "service_email_off" }));
+    return { suppressed: true, reason: "service_email_off" };
+  }
 
   /*
    * An admin's saved version, when one exists for this template.

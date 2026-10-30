@@ -149,9 +149,26 @@ const GUEST_VISIT_TYPES = new Set([
   "FIXTER_CHANGED",
 ]);
 
+/*
+ * A VISIT ADMIN BOOKED BY PHONE FOR SOMEBODY WITH NO ACCOUNT (booking.adminGuest).
+ *
+ * The same rule as the homepage request, with the same evidence on the same
+ * booking: guestContactConsent records that the caller agreed, on that call,
+ * to be texted about this visit, and which staff member recorded it
+ * (routes/adminSales.js). It covers this visit's own messages - its payment
+ * link, its paid confirmation, reminders, changes - and nothing else.
+ */
+const ADMIN_GUEST_VISIT_TYPES = new Set([
+  ...GUEST_VISIT_TYPES,
+  "ONE_TIME_VISIT_CONFIRMED",
+  "FULL_DAY_CONFIRMED",
+  "PAYMENT_LINK",
+]);
+
 function guestBookingConsentAllows({ notificationType, booking, user, e164 }) {
-  if (!GUEST_VISIT_TYPES.has(notificationType)) return false;
-  if (!booking?.guestRequestId) return false;
+  const types = booking?.adminGuest ? ADMIN_GUEST_VISIT_TYPES : GUEST_VISIT_TYPES;
+  if (!types.has(notificationType)) return false;
+  if (!booking?.guestRequestId && !booking?.adminGuest) return false;
   const consent = booking.guestContactConsent || {};
   if (!String(consent.text || "").trim() || !consent.at) return false;
   if (!e164 || toE164(booking.phone) !== e164) return false;

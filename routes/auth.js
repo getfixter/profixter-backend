@@ -18,6 +18,7 @@ const { activeGiftsByAddress } = require("../utils/gifts/giftAccess");
 const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const authAccounts = require("../utils/auth/accounts");
+const temporaryPassword = require("../utils/auth/temporaryPassword");
 const { hitAll } = require("../utils/auth/authRateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
 const { markLeadRegistered } = authAccounts;
@@ -67,6 +68,8 @@ function authUserDTO(user, coverageMap) {
     emailVerified: Boolean(user.emailVerifiedAt),
     emailIsAppleRelay: Boolean(user.emailIsAppleRelay),
     hasPassword: Boolean(user.password),
+    /* Signed in with an Admin-issued temporary password: show only "set a new password". */
+    temporaryPassword: temporaryPassword.isIssued(user),
     /* Whether service texts (booking confirmations, reminders) are switched on. */
     smsServiceTexts: user.smsPreferences?.transactionalEnabled === true,
     needsName: !String(user.name || "").trim(),
@@ -648,6 +651,7 @@ router.post("/login", async (req, res) => {
     for (const candidate of candidates) {
       if (!candidate.password) continue;
       if (await bcrypt.compare(password, candidate.password)) matches.push(candidate);
+      else if (await temporaryPassword.matches(candidate, password)) matches.push(candidate);
     }
     if (!matches.length) return res.status(400).json({ message: "Invalid credentials" });
 
@@ -671,6 +675,13 @@ router.post("/login", async (req, res) => {
 
     if (effectiveRole(user) === "employee" && user.isActive === false) {
       return res.status(403).json({ message: "Employee account is inactive" });
+    }
+    // An Admin-issued temporary password stops opening anything once it expires.
+    if (temporaryPassword.isExpired(user)) {
+      return res.status(401).json({
+        message: "Your temporary password has expired. Use \"Forgot password\" or sign in with a code, or call us for a new one.",
+        code: "TEMP_PASSWORD_EXPIRED",
+      });
     }
 
     await ensurePrimaryFromLegacy(user);
@@ -726,15 +737,36 @@ router.post("/change-password", require("../middleware/auth"), async (req, res) 
   try {
     const { currentPassword, newPassword } = req.body;
 
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    /*
+     * Replacing an Admin-issued temporary password. The session itself was
+     * opened with it moments ago (middleware/auth.js lets such a session reach
+     * only this route), so it is not asked for again.
+     */
+    if (temporaryPassword.isLive(user)) {
+      const next = String(newPassword || "");
+      if (next.length < 8) {
+        return res.status(400).json({ message: "New password must be at least 8 characters" });
+      }
+      if (await temporaryPassword.matches(user, next)) {
+        return res.status(400).json({ message: "Choose a password that isn't your phone number.", code: "SAME_AS_TEMPORARY" });
+      }
+      user.password = await bcrypt.hash(next, 10);
+      temporaryPassword.clear(user);
+      if (!(user.authProviders || []).includes("password")) authAccounts.addProvider(user, "password");
+      await user.save();
+      const coverageMap = await buildPerAddressCoverage(user);
+      return res.json({ message: "Password updated successfully", user: authUserDTO(user, coverageMap) });
+    }
+
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ message: "Both current and new password are required" });
     }
     if (String(newPassword).length < 8) {
       return res.status(400).json({ message: "New password must be at least 8 characters" });
     }
-
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
 
     if (!user.password) {
       // Signed up by code or Google/Apple: there is no password to compare.
@@ -839,6 +871,7 @@ router.post("/google", async (req, res) => {
     }
 
     await linkGuestFreeVisitsQuietly(user);
+    await temporaryPassword.retireAfterOtherSignIn(user);
     const token = authAccounts.issueSession(user);
     await ensurePrimaryFromLegacy(user);
     const coverageMap = await buildPerAddressCoverage(user);

@@ -101,6 +101,26 @@ const UserSchema = new mongoose.Schema(
      */
     excludeFromMarketing: { type: Boolean, default: false },
     mustChangePassword: { type: Boolean, default: false },
+    /*
+     * A one-time password Admin issued (utils/auth/temporaryPassword.js).
+     * While issuedAt is set the account's password IS the temporary one: it
+     * opens only the set-a-new-password screen, and stops working at
+     * expiresAt or the moment a real password replaces it.
+     */
+    temporaryPassword: {
+      issuedAt: { type: Date, default: null },
+      expiresAt: { type: Date, default: null },
+      issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      issuedByName: { type: String, default: "" },
+    },
+    /* Set when Admin created this account by phone. Provenance only. */
+    adminCreated: {
+      at: { type: Date, default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      byName: { type: String, default: "" },
+      accessEmailSentAt: { type: Date, default: null },
+      accessSmsSentAt: { type: Date, default: null },
+    },
     isDefaultFixter: { type: Boolean, default: false },
     employeeAvailabilityStatus: {
       type: String,
@@ -377,6 +397,14 @@ const UserSchema = new mongoose.Schema(
       marketingConsentAt: { type: Date, default: null },
       marketingConsentSource: { type: String, default: "" },
       marketingConsentVersion: { type: String, default: "" },
+      /*
+       * Booking notices by email (utils/emailService SERVICE_EMAIL_KEYS).
+       * Absent = on. Only Admin switches it off today; security, billing and
+       * membership emails are never affected.
+       */
+      serviceEnabled: { type: Boolean, default: undefined },
+      serviceChangedAt: { type: Date, default: null },
+      serviceChangeSource: { type: String, default: "" },
     },
 
     // Non-subscriber nurture sequence tracking

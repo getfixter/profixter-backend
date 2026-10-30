@@ -53,6 +53,27 @@ const VERSIONS = {
     purpose: "marketing",
     text: '"Email me ProFixter tips and offers." Optional. Seasonal home tips, news and offers, at most once a week. Every email has a one-click unsubscribe. Turning this off never stops your booking confirmations, reminders or receipts.',
   },
+  /*
+   * Given by phone, recorded by staff. Used when Admin creates an account for
+   * a caller or switches a channel on for them (utils/admin/communicationControls.js).
+   * The record names the staff member who took it; the customer can turn any
+   * of it off in their account, and STOP / unsubscribe always win.
+   */
+  "sms_service.admin_phone.v1": {
+    channel: "sms",
+    purpose: "service",
+    text: "Agreed by phone with ProFixter staff, who recorded it in Admin: text messages about this customer's account and visits - account access, booking confirmations, reminders, arrival and service updates, billing notices. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.",
+  },
+  "sms_marketing.admin_phone.v1": {
+    channel: "sms",
+    purpose: "marketing",
+    text: "Agreed by phone with ProFixter staff, who recorded it in Admin: occasional ProFixter offers and promotions by text. Optional and not required to buy anything. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.",
+  },
+  "email_marketing.admin_phone.v1": {
+    channel: "email",
+    purpose: "marketing",
+    text: "Agreed by phone with ProFixter staff, who recorded it in Admin: ProFixter home tips, news and offers by email, at most once a week. Every email has a one-click unsubscribe.",
+  },
 };
 
 /* What each surface shows today. */
@@ -62,6 +83,11 @@ const CURRENT = {
   email_settings: { marketing: "email_marketing.settings.v1" },
   booking: { service: "sms_service.booking.v1" },
   continue_terms: "terms.continue.v1",
+  admin_phone: {
+    service: "sms_service.admin_phone.v1",
+    marketing: "sms_marketing.admin_phone.v1",
+    emailMarketing: "email_marketing.admin_phone.v1",
+  },
 };
 
 function wording(version) {

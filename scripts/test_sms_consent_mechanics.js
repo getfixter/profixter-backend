@@ -1021,6 +1021,15 @@ async function main() {
      * modified; all thirty-eight pre-existing types were rendered from the
      * committed file and from this one with identical vars across both visit
      * kinds and compared character by character - identical.
+     *
+     * Re-pinned 2026-10-30 for the owner's Admin tools: ADMIN_ACCOUNT_CREATED
+     * (sign-in details for a customer Admin signed up by phone, with the STOP
+     * line because it is their first text) and PAYMENT_LINK (a link Admin
+     * sent for something the customer asked for), plus a visitVocabulary
+     * branch so a "Free Visit — Admin" is called a visit, not a membership
+     * visit. All thirty-nine pre-existing types were rendered from the
+     * committed file and from this one across five visit kinds (195 renders)
+     * and compared character by character - identical.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1028,7 +1037,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "458533974b63fca90e89d7075e7b76989cb26cb0111aa60879ff6c6388f1fb5d",
+      "e7cc408d425e7e3c97f40882f31742a88b1b92d9f336562781d37215c9e7faba",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });
@@ -1147,20 +1156,29 @@ async function main() {
     );
   });
 
-  await test("no admin route can write a customer's consent", () => {
+  await test("admin writes consent only through the one audited writer", () => {
     /*
-     * Admin may READ consent. A button that set it would manufacture a record
-     * saying the customer did something they did not, which is worse than
-     * having no record - it is a false one.
+     * Admin may READ consent anywhere. Since 2026-10-30 the owner has decided
+     * that staff taking a call may switch a caller's channels on or off, and
+     * that the call is the consent. That is allowed in exactly one place,
+     * utils/admin/communicationControls.js, which records every change in the
+     * consent ledger with an admin source, the staff member and the wording -
+     * so the record says truthfully who did what. No admin ROUTE file may
+     * write the flags itself, and the writer may not lose its ledger entries.
      */
+    for (const file of ["admin.js", "adminCustomers.js", "adminSales.js", "adminCustomerProfile.js"]) {
+      const src = readSource(path.join(__dirname, "..", "routes", file));
+      const writes = src.match(/smsPreferences\.(transactionalEnabled|marketingEnabled)/g) || [];
+      assert.strictEqual(writes.length, 0, `routes/${file} references a consent flag for writing`);
+    }
     const adminSrc = readSource(path.join(__dirname, "..", "routes", "admin.js"));
-    const writes =
-      adminSrc.match(/smsPreferences\.(transactionalEnabled|marketingEnabled)/g) || [];
-    assert.strictEqual(writes.length, 0, "an admin route references a consent flag for writing");
-    assert.ok(
-      adminSrc.includes('router.get("/users/:id/sms-consent"'),
-      "the read-only consent view is missing"
-    );
+    assert.ok(adminSrc.includes('router.get("/users/:id/sms-consent"'), "the read-only consent view is missing");
+
+    const writer = readSource(path.join(__dirname, "..", "utils", "admin", "communicationControls.js"));
+    assert.ok(/source = enabled \? "admin_phone" : "admin_change"/.test(writer), "admin changes must be labelled as admin");
+    assert.ok((writer.match(/recordConsent\(/g) || []).length >= 4, "every switch must write a ledger entry");
+    assert.ok(/handsetStopped\(optOut\)/.test(writer), "a STOP from the handset must lock the SMS switches");
+    assert.ok(/LOCKED_/.test(writer), "a locked switch must be refused, not overridden");
   });
 
   /* ================================================================== */

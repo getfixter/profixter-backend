@@ -1428,6 +1428,8 @@ router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
  * verification, consent and audit rules that edit needs. See the file.
  */
 router.use(require("./adminCustomerProfile")({ getAddressPlansForUser }));
+router.use(require("./adminCustomers"));
+router.use(require("./adminSales"));
 
 // ✅ UPDATE User Info (name, phone, legacy subscription)
 router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {

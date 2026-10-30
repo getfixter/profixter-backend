@@ -302,7 +302,7 @@ test("every occasion produces a sane email", () => {
 console.log("\nContinuation must not bill over gift coverage\n");
 
 const stripeRouteSource = fs.readFileSync(
-  path.join(__dirname, "..", "routes", "stripe.js"),
+  path.join(__dirname, "..", "utils", "membershipCheckout.js"),
   "utf8"
 );
 
@@ -489,7 +489,7 @@ test("gift checkout accepts promotion codes, through Stripe's own system", () =>
   }
 
   // And membership checkout is unchanged.
-  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8");
+  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "utils", "membershipCheckout.js"), "utf8");
   assert.match(stripeRoute, /allow_promotion_codes:\s*true/);
 });
 
@@ -532,7 +532,7 @@ test("the money recorded is Stripe's, discount included", () => {
 test("the trial floor matches Stripe's measured minimum", () => {
   // Measured against live Stripe: 48h accepted, 47h rejected, with the error
   // "The `trial_end` date has to be at least 2 days in the future."
-  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8");
+  const stripeRoute = fs.readFileSync(path.join(__dirname, "..", "utils", "membershipCheckout.js"), "utf8");
   assert.match(stripeRoute, /MIN_TRIAL_SECONDS = 48 \* 60 \* 60/);
 });
 

@@ -18,6 +18,7 @@ const {
   handleGiftRefund,
   isGiftSession,
 } = require("../utils/gifts/giftWebhook");
+const { markLinkPaidFromSession: markAdminPaymentLinkPaid } = require("../utils/admin/paymentLinks");
 const {
   recordRenewal: recordLoyaltyRenewal,
   reverseFromCharge: reverseLoyaltyFromCharge,
@@ -774,6 +775,11 @@ async function buildNewMemberAdminSections({
   ];
 }
 
+/* The contact a no-account Admin booking carries, shaped like the User fields the senders read. */
+function guestContactFromBooking(booking) {
+  return { _id: null, userId: "", name: booking.name || "", email: booking.email || "", phone: booking.phone || "", addresses: [], isGuest: true };
+}
+
 async function sendOneTimePaymentEmails({ booking, user, entitlement, session }) {
   const address = [booking.address, booking.city, booking.state, booking.zip]
     .filter(Boolean)
@@ -823,7 +829,7 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
    * right for this product and wrong for the other three. The visit
    * vocabulary in the templates picks the wording from the booking itself.
    */
-  await smsNotify.notifyBookingConfirmed(booking, user, "stripeWebhookOneTime");
+  await smsNotify.notifyBookingConfirmed(booking, user?.isGuest ? null : user, "stripeWebhookOneTime");
 
   try {
     /*
@@ -989,8 +995,14 @@ async function handleOneTimeCheckoutCompleted(session) {
     return null;
   }
 
-  const user = await User.findById(booking.user);
-  if (!user) {
+  /*
+   * A visit Admin booked for somebody with no account (booking.adminGuest)
+   * has no User: its own contact fields stand in for one, so it is confirmed
+   * and announced exactly like any other paid visit.
+   */
+  const user = booking.user ? await User.findById(booking.user) : null;
+  const contact = user || (booking.adminGuest ? guestContactFromBooking(booking) : null);
+  if (!contact) {
     logWebhook("error", "one_time_checkout_user_not_found", {
       stripeSessionId: session.id,
       bookingId,
@@ -998,7 +1010,7 @@ async function handleOneTimeCheckoutCompleted(session) {
     return null;
   }
 
-  if (session.customer && !user.stripeCustomerId) {
+  if (user && session.customer && !user.stripeCustomerId) {
     user.stripeCustomerId = String(session.customer);
     await user.save();
   }
@@ -1057,7 +1069,7 @@ async function handleOneTimeCheckoutCompleted(session) {
     await entitlement.save();
   }
 
-  await sendOneTimePaymentEmails({ booking, user, entitlement, session });
+  await sendOneTimePaymentEmails({ booking, user: contact, entitlement, session });
 
   /*
    * Purchase - a single paid visit, which is the only thing this event means.
@@ -1073,7 +1085,7 @@ async function handleOneTimeCheckoutCompleted(session) {
    *
    * Detached: a Meta outage must never leave a paid booking unconfirmed.
    */
-  reportPaidVisitPurchase({ session, user, booking, contentName: "one_time_visit" });
+  if (user) reportPaidVisitPurchase({ session, user, booking, contentName: "one_time_visit" });
 
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
@@ -1258,8 +1270,14 @@ async function handleFullDayCheckoutCompleted(session) {
     return null;
   }
 
-  const user = await User.findById(booking.user);
-  if (!user) {
+  /*
+   * A visit Admin booked for somebody with no account (booking.adminGuest)
+   * has no User: its own contact fields stand in for one, so it is confirmed
+   * and announced exactly like any other paid visit.
+   */
+  const user = booking.user ? await User.findById(booking.user) : null;
+  const contact = user || (booking.adminGuest ? guestContactFromBooking(booking) : null);
+  if (!contact) {
     logWebhook("error", "full_day_checkout_user_not_found", {
       stripeSessionId: session.id,
       bookingId,
@@ -1267,7 +1285,7 @@ async function handleFullDayCheckoutCompleted(session) {
     return null;
   }
 
-  if (session.customer && !user.stripeCustomerId) {
+  if (user && session.customer && !user.stripeCustomerId) {
     user.stripeCustomerId = String(session.customer);
     await user.save();
   }
@@ -1329,9 +1347,9 @@ async function handleFullDayCheckoutCompleted(session) {
     await entitlement.save();
   }
 
-  await sendFullDayPaidEmails({ booking, user, entitlement, session });
+  await sendFullDayPaidEmails({ booking, user: contact, entitlement, session });
   // Previously no server Purchase at all for the most valuable single sale.
-  reportPaidVisitPurchase({ session, user, booking, contentName: "full_day_visit" });
+  if (user) reportPaidVisitPurchase({ session, user, booking, contentName: "full_day_visit" });
   return {
     bookingId: String(booking._id),
     entitlementId: entitlement ? String(entitlement._id) : null,
@@ -2531,6 +2549,10 @@ module.exports = async (req, res) => {
     switch (event.type) {
       case "checkout.session.completed":
         syncResult = await handleCheckoutCompleted(event.data.object, event.id);
+        // An Admin payment link this checkout came from is now paid (no-op for everything else).
+        await markAdminPaymentLinkPaid(event.data.object).catch((error) =>
+          logWebhook("warn", "admin_payment_link_mark_paid_failed", { stripeSessionId: event.data.object?.id, message: error?.message })
+        );
         break;
 
       case "charge.refunded":

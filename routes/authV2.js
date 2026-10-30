@@ -7,6 +7,7 @@ const { OtpError, startChallenge, verifyChallenge } = require("../utils/auth/otp
 const { OtpDeliveryError } = require("../utils/auth/otpDelivery");
 const { ProviderTokenError, verifyAppleIdToken } = require("../utils/auth/providerTokens");
 const accounts = require("../utils/auth/accounts");
+const temporaryPassword = require("../utils/auth/temporaryPassword");
 const { clientIp } = require("../utils/auth/clientIp");
 
 const router = express.Router();
@@ -100,6 +101,8 @@ async function requireSignedInUser(req) {
 async function sessionResponse(user, { created = false, extra = {} } = {}) {
   // An earlier callback request with this proved phone or email joins the account.
   await linkGuestFreeVisitsQuietly(user);
+  // A code or Apple just proved the account: an Admin-issued temporary password is no longer needed.
+  await temporaryPassword.retireAfterOtherSignIn(user);
   const { authUserDTO, buildPerAddressCoverage } = require("./auth");
   const coverage = await buildPerAddressCoverage(user);
   return { status: "signed_in", token: accounts.issueSession(user), user: authUserDTO(user, coverage), created, ...extra };

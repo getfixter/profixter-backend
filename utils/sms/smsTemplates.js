@@ -191,6 +191,20 @@ function visitVocabulary(booking = {}) {
     };
   }
 
+  /*
+   * A visit the owner gave from Admin ("Free Visit — Admin"). Same messages as
+   * a membership visit, but never called one: the customer may not be a member.
+   */
+  if (accessType === "admin") {
+    return {
+      kind: "membership",
+      noun: "visit",
+      shortNoun: "visit",
+      wholeDay: false,
+      completionNote: "Thanks for choosing ProFixter.",
+    };
+  }
+
   return {
     kind: "membership",
     noun: "membership visit",
@@ -583,6 +597,20 @@ const TEMPLATES = {
     `Hi ${firstNameOf(name)}! This is Profixter. We apologize for the inconvenience with your membership. ` +
     `The technical issue has been fixed, and your membership is now active. ` +
     `You can book your handyman visit anytime at https://www.profixter.com. Thank you for your patience!`,
+
+  /*
+   * Admin created this account during a call (routes/adminCustomers.js). The
+   * temporary password is the customer's phone number, which the owner chose
+   * so it can be said aloud; it opens only the set-a-new-password screen and
+   * expires (utils/auth/temporaryPassword.js). The first text this number
+   * gets from us, so it carries the opt-out.
+   */
+  ADMIN_ACCOUNT_CREATED: ({ tempPassword }) =>
+    `${BRAND}: your account is ready. Sign in at ${SITE}/signin with your email and temp password ${tempPassword || "your phone no."}, then set a new one. Reply STOP to opt out.`,
+
+  /* Admin sent a link to pay for something the customer asked for on the phone. */
+  PAYMENT_LINK: ({ itemLabel, payUrl }) =>
+    `${BRAND}: here is your secure payment link for ${itemLabel || "your order"}: ${payUrl || "https://www.profixter.com/pay"}`,
 
   PAYMENT_FAILED: () =>
     `${BRAND}: we could not process your membership payment. ` +

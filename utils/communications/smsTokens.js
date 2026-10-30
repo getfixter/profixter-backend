@@ -405,6 +405,22 @@ const DEFINITIONS = {
     tokens: ({ name }) => ({ firstName: firstNameOf(name) }),
   },
 
+  ADMIN_ACCOUNT_CREATED: {
+    label: "Account created by Admin",
+    template:
+      "{{brand}}: your account is ready. Sign in at {{site}}/signin with your email and temp password {{tempPassword}}, then set a new one. Reply STOP to opt out.",
+    tokens: ({ tempPassword }) => ({ tempPassword: tempPassword || "your phone no." }),
+  },
+
+  PAYMENT_LINK: {
+    label: "Payment link from Admin",
+    template: "{{brand}}: here is your secure payment link for {{itemLabel}}: {{payUrl}}",
+    tokens: ({ itemLabel, payUrl }) => ({
+      itemLabel: itemLabel || "your order",
+      payUrl: payUrl || "https://www.profixter.com/pay",
+    }),
+  },
+
   /* --------------------------- The number itself ------------------------ */
   INBOUND_INFO_REPLY: {
     label: "Reply to an unmonitored inbound text",

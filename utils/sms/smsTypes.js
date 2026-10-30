@@ -209,6 +209,16 @@ const SMS_TYPES = {
     timeCritical: false,
     description: "One-off apology after a repair restored a membership's access.",
   },
+  ADMIN_ACCOUNT_CREATED: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Admin created the account by phone: how to sign in, with the temporary password.",
+  },
+  PAYMENT_LINK: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "Admin sent a secure link to pay for a membership or visit the customer asked for.",
+  },
 
   /* -------------------------- Loyalty Benefits -------------------------- */
   /*

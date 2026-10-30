@@ -552,7 +552,11 @@ test("no transactional message is padded with marketing", () => {
    * text a homepage requester ever gets from us, to a number given without an
    * account or /signup.
    */
-  const DISCLOSURE_EXEMPT = new Set(["ACCOUNT_CREATED", "INBOUND_INFO_REPLY", "FREE_VISIT_REQUEST_RECEIVED"]);
+  /*
+   * ADMIN_ACCOUNT_CREATED too: the first text a customer Admin signed up by
+   * phone ever receives, carrying their temporary password.
+   */
+  const DISCLOSURE_EXEMPT = new Set(["ACCOUNT_CREATED", "ADMIN_ACCOUNT_CREATED", "INBOUND_INFO_REPLY", "FREE_VISIT_REQUEST_RECEIVED"]);
   for (const type of types.typesOfClass("transactional")) {
     if (DISCLOSURE_EXEMPT.has(type)) continue;
     const body = templates.renderSms(type, {

@@ -33,14 +33,14 @@ function test(name, fn) {
 }
 
 const src = fs
-  .readFileSync(path.join(__dirname, "..", "routes", "stripe.js"), "utf8")
+  .readFileSync(path.join(__dirname, "..", "utils", "membershipCheckout.js"), "utf8")
   .replace(/\r\n/g, "\n");
 
 console.log("\nStripe checkout return URLs\n");
 
 test("cancel_url returns to the plan comparison, not the homepage", () => {
-  const match = src.match(/cancel_url:\s*`([^`]+)`/);
-  assert.ok(match, "no cancel_url found in routes/stripe.js");
+  const match = src.match(/cancel_url:\s*(?:\w+\s*\|\|\s*)?`([^`]+)`/);
+  assert.ok(match, "no cancel_url found in utils/membershipCheckout.js");
   const url = match[1];
   assert.ok(
     url.includes("/membership/plans"),
@@ -53,14 +53,14 @@ test("cancel_url returns to the plan comparison, not the homepage", () => {
 });
 
 test("cancel_url carries the selection forward", () => {
-  const url = src.match(/cancel_url:\s*`([^`]+)`/)[1];
+  const url = src.match(/cancel_url:\s*(?:\w+\s*\|\|\s*)?`([^`]+)`/)[1];
   for (const param of ["canceled=true", "plan=", "billingCycle="]) {
     assert.ok(url.includes(param), `cancel_url is missing ${param}: ${url}`);
   }
 });
 
 test("success_url still carries the Stripe session id", () => {
-  const match = src.match(/success_url:\s*`([^`]+)`/);
+  const match = src.match(/success_url:\s*(?:\w+\s*\|\|\s*)?`([^`]+)`/);
   assert.ok(match, "no success_url found");
   const url = match[1];
   assert.ok(url.includes("/confirmationpage"), `success_url points at ${url}`);

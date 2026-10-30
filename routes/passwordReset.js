@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
+const temporaryPassword = require("../utils/auth/temporaryPassword");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
@@ -139,6 +140,8 @@ router.post("/set-password", async (req, res) => {
     }
 
     user.password = await bcrypt.hash(password, 10);
+    // A password the customer chose replaces any Admin-issued temporary one.
+    if (temporaryPassword.isIssued(user)) temporaryPassword.clear(user);
     user.tokenVersion = Number(user.tokenVersion || 0) + 1; // signs out every other device
     if (!(user.authProviders || []).includes("password")) user.authProviders = [...(user.authProviders || []), "password"];
     await user.save();

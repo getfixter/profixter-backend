@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
  * those two requirements are lifted for it, and only for it.
  */
 function isGuestBooking() {
-  return Boolean(this.guestRequestId);
+  return Boolean(this.guestRequestId || this.adminGuest);
 }
 
 const BookingSchema = new mongoose.Schema({
@@ -82,6 +82,19 @@ const BookingSchema = new mongoose.Schema({
    * counts an unconfirmed request.
    */
   guestRequestId: { type: mongoose.Schema.Types.ObjectId, ref: "Request", default: null, index: true },
+  /*
+   * Booked by Admin for somebody with no account (routes/adminSales.js). The
+   * contact fields and address on this booking are the whole record of them.
+   * NOT a free first visit and never counted as one: free-visit eligibility
+   * reads guestRequestId / isFreeFirstVisit / accessType, none of which this sets.
+   */
+  adminGuest: { type: Boolean, default: false },
+  /* Who in Admin created this booking, when Admin did. Provenance only. */
+  createdByAdmin: {
+    by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    byName: { type: String, default: "" },
+    at: { type: Date, default: null },
+  },
   /*
    * How a free first visit was asked for. "callback": the homepage request
    * (guestRequestId set, no account, the owner calls). "online": booked by a
