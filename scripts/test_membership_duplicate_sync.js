@@ -464,6 +464,50 @@ async function main() {
       assert.strictEqual(String(rows[0]._id), String(manual._id));
       assert.strictEqual(rows[0].stripeSubscriptionId, "sub_for_manual");
     });
+    await check("an unlinked paying member (no Stripe metadata) is linked once, then every event finds her", async () => {
+      // Larisa's shape: Stripe subscription from an old, deleted account, no metadata; her current
+      // account holds an admin-created active record and no Stripe customer id.
+      sequence += 1;
+      const member = await User.create({
+        userId: `8611${sequence}${Date.now() % 10000}`, name: "Larisa", email: `lar${sequence}@example.test`,
+        phone: `+1516555${String(3300 + sequence).padStart(4, "0")}`, role: "customer",
+        addresses: [{ label: "Home", line1: "2129 Washington Ave", city: "Seaford", state: "NY", zip: "11783" }],
+        smsPreferences: { transactionalEnabled: true, transactionalConsentAt: new Date() },
+      });
+      const homeId = member.addresses[0]._id;
+      const manual = await Subscription.create({ user: member._id, userId: member.userId, subscriptionType: "basic", addressId: homeId, startDate: new Date("2026-05-05"), latestPaymentDate: new Date("2026-05-05"), nextPaymentDate: new Date("2026-06-05"), status: "active", accessStatus: "active" });
+      const sub = makeSub({ id: "sub_unlinked", customer: "cus_unlinked", status: "active", created: "2025-07-21T18:53:02Z", periodStart: "2026-10-21T18:53:02Z", periodEnd: "2026-11-21T18:53:02Z", metadata: {} });
+
+      const before = sentEmails.length;
+      const smsBefore = await SmsMessage.countDocuments({});
+      // Before linking, her events reach nobody - which is the defect being repaired.
+      await deliver("invoice.paid", { id: "in_unlinked_0", object: "invoice", subscription: sub.id, customer: "cus_unlinked", status: "paid", created: T("2026-10-21T18:53:02Z") });
+      assert.ok(!(await fresh(manual._id)).stripeSubscriptionId, "still unlinked");
+
+      // The repair: the customer id on her account, then one sync with her home as the hint.
+      await User.collection.updateOne({ _id: member._id, stripeCustomerId: null }, { $set: { stripeCustomerId: "cus_unlinked" } });
+      const linked = await subsModule.upsertSubscriptionFromStripe({ stripeSubscription: await stripe.subscriptions.retrieve(sub.id), user: await User.findById(member._id), addressIdHint: String(homeId) });
+      assert.strictEqual(String(linked._id), String(manual._id), "her existing record is the one linked");
+      assert.deepStrictEqual([linked.stripeSubscriptionId, linked.status, linked.accessStatus], ["sub_unlinked", "active", "active"]);
+
+      // A failed renewal reaches her record.
+      sub.status = "past_due";
+      await deliver("customer.subscription.updated", sub);
+      assert.deepStrictEqual([(await fresh(manual._id)).status, (await fresh(manual._id)).accessStatus], ["past_due", "inactive"]);
+      // Paying it restores her.
+      sub.status = "active";
+      await deliver("invoice.paid", { id: "in_unlinked_1", object: "invoice", subscription: sub.id, customer: "cus_unlinked", status: "paid", created: T("2026-11-21T18:53:02Z"), status_transitions: { paid_at: T("2026-11-21T18:53:02Z") } });
+      assert.deepStrictEqual([(await fresh(manual._id)).status, (await fresh(manual._id)).accessStatus], ["active", "active"]);
+      // Canceling in Stripe ends her access here too.
+      sub.status = "canceled";
+      await deliver("customer.subscription.deleted", sub);
+      assert.strictEqual((await fresh(manual._id)).status, "canceled");
+      assert.strictEqual(await Subscription.countDocuments({ user: member._id }), 1, "never a second record");
+      // The link itself sent nothing; only the genuine cancellation notified her.
+      const linkMail = sentEmails.slice(before).filter((e) => e.templateKey !== "subscription_canceled");
+      assert.deepStrictEqual(linkMail.map((e) => e.templateKey), []);
+      void smsBefore;
+    });
     await check("failed renewal then payment: the same membership becomes active again", async () => {
       const m = await makeMember();
       const sub = makeSub({ id: "sub_recovers", customer: m.stripeCustomerId, status: "past_due", addressId: m.addresses[0]._id, userId: m.userId, created: "2026-09-01T00:00:00Z", periodEnd: "2026-11-01T00:00:00Z" });
