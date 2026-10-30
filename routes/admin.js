@@ -120,7 +120,7 @@ const legacyOnlyAdmin = async (req, res, next) => {
  */
 const onlyAdmin = requirePermission(PERMISSIONS.ADMIN);
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
-const { declineGuestVisit, isPendingGuest, syncLeadFromBooking } = require("../utils/freeVisit/guestVisit");
+const { declineGuestVisit, isPendingFreeVisit, syncLeadFromBooking } = require("../utils/freeVisit/guestVisit");
 const bookingsAssign = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 const customersManage = requirePermission(PERMISSIONS.CUSTOMERS_MANAGE);
 const blacklistManage = requirePermission(PERMISSIONS.BLACKLIST_MANAGE);
@@ -2380,11 +2380,13 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
      * review (address required, lifetime rule re-checked, one notification);
      * see routes/adminFreeVisits. Cancel here means decline, done the same way.
      */
-    if (isPendingGuest(booking)) {
+    if (isPendingFreeVisit(booking)) {
       if (String(status).toLowerCase() !== "canceled") {
         return res.status(409).json({
           code: "USE_FREE_VISIT_REVIEW",
-          message: "Open this free-visit request and use Confirm Visit: it needs the service address first.",
+          message: booking.guestRequestId
+            ? "Open this free-visit request and use Confirm Visit: it needs the service address first."
+            : "Open this online free visit and use Approve: the free-visit rules are checked there.",
         });
       }
       const declined = await declineGuestVisit({ bookingId: booking._id, actorUser: req.accessUser, kind: "declined" });

@@ -230,7 +230,7 @@ async function routes() {
     });
 
     await test("the admin e-mail names the example and says no customer photo yet", async () => {
-      const adminMail = sent.filter((m) => m.channel === "mail" && /New Booking Created/.test(JSON.stringify(m.args))).pop();
+      const adminMail = sent.filter((m) => m.channel === "mail" && /New Booking Created|awaiting your approval/.test(JSON.stringify(m.args))).pop();
       assert.ok(adminMail, "admin mail sent");
       const html = JSON.stringify(adminMail.args);
       assert.ok(html.includes("Job type (Profixter example):</strong> Faucet & Leak"), "names the example");

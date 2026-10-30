@@ -12,6 +12,14 @@
  *
  * The Booking is the visit and the Request is its lead. Every status change
  * goes through syncLeadFromBooking so the two never disagree.
+ *
+ * ONLINE FREE VISITS (freeVisitChannel "online") use the same review: the
+ * customer booked with their own account and address, the booking waits in
+ * "Pending Confirmation" with its slot reserved, and the owner approves or
+ * declines it here. They have no lead and are already on an account, so
+ * confirm skips the account linking and the owner cannot rewrite the
+ * customer's contact details or address from this screen - those live on the
+ * account (Admin > Users > Edit).
  */
 const moment = require("moment-timezone");
 
@@ -40,6 +48,7 @@ const {
   canonicalEmail,
   checkFreeVisitEligibility,
 } = require("./eligibility");
+const { releaseIntroVisitClaim } = require("../introVisitEligibility");
 
 const TIMEZONE = "America/New_York";
 const PENDING = "Pending Confirmation";
@@ -55,6 +64,29 @@ function serviceError(code, message, statusCode = 409, extra = {}) {
 
 function isPendingGuest(booking) {
   return Boolean(booking?.guestRequestId) && String(booking.status || "").toLowerCase() === PENDING.toLowerCase();
+}
+
+function isOnlineFreeVisit(booking) {
+  return !booking?.guestRequestId && booking?.freeVisitChannel === "online" && Boolean(booking?.user);
+}
+
+/** A free visit the owner reviews on the free-visit screen: callback or online. */
+function isReviewableFreeVisit(booking) {
+  return Boolean(booking?.guestRequestId) || isOnlineFreeVisit(booking);
+}
+
+/** Either kind, still waiting for the owner. */
+function isPendingFreeVisit(booking) {
+  return isReviewableFreeVisit(booking) && String(booking.status || "").toLowerCase() === PENDING.toLowerCase();
+}
+
+function channelOf(booking) {
+  return booking?.guestRequestId ? "callback" : isOnlineFreeVisit(booking) ? "online" : "";
+}
+
+/* Online visits are booked through the engine in production; the legacy path has no reservation to require. */
+function reservationRequired() {
+  return process.env.ENABLE_RESERVATION_ENGINE === "true";
 }
 
 function nextBookingNumber() {
@@ -147,6 +179,7 @@ async function reserveGuestFreeVisit({ request, bookingData, slotStart, existing
     address: "",
     ...bookingData,
     guestRequestId: request._id,
+    freeVisitChannel: "callback",
   };
 
   const result = await createBookingWithReservation({
@@ -229,9 +262,16 @@ function hasValidAddress(booking) {
  */
 async function updateGuestVisit({ bookingId, fields = {}, req = null, actorUser = null }) {
   let booking = await Booking.findById(bookingId);
-  if (!booking?.guestRequestId) throw serviceError("NOT_A_GUEST_VISIT", "This is not a homepage free-visit request.", 404);
-  if (!isPendingGuest(booking)) {
+  if (!isReviewableFreeVisit(booking)) throw serviceError("NOT_A_GUEST_VISIT", "This is not a free-visit request.", 404);
+  if (!isPendingFreeVisit(booking)) {
     throw serviceError("NOT_PENDING", "Only a visit awaiting confirmation can be edited here.", 409);
+  }
+  if (isOnlineFreeVisit(booking) && (fields.name !== undefined || fields.phone !== undefined || fields.email !== undefined || fields.address)) {
+    throw serviceError(
+      "EDIT_ON_ACCOUNT",
+      "This visit was booked online with the customer's account. Change their contact details or address on the account instead.",
+      400
+    );
   }
   const before = bookingSnapshot(booking);
 
@@ -343,7 +383,8 @@ async function linkedCustomerAccount({ phone, email }, session) {
  */
 async function confirmGuestVisit({ bookingId, actorUser = null, req = null, acknowledgeReview = false }) {
   const existing = await Booking.findById(bookingId);
-  if (!existing?.guestRequestId) throw serviceError("NOT_A_GUEST_VISIT", "This is not a homepage free-visit request.", 404);
+  if (!isReviewableFreeVisit(existing)) throw serviceError("NOT_A_GUEST_VISIT", "This is not a free-visit request.", 404);
+  if (isOnlineFreeVisit(existing)) return confirmOnlineVisit({ existing, actorUser, req, acknowledgeReview });
   const status = String(existing.status || "").toLowerCase();
   if (status === "confirmed" && existing.freeVisitConfirmation?.confirmedAt) {
     const notified = await notifyConfirmedOnce(existing._id);
@@ -449,6 +490,79 @@ async function confirmGuestVisit({ bookingId, actorUser = null, req = null, ackn
 }
 
 /**
+ * The owner approves a free visit the customer booked online. The account,
+ * address and per-address claim were all settled when it was booked; what is
+ * left is the lifetime rule once more under the lock (something may have
+ * changed while it waited), the status, and the one confirmation.
+ */
+async function confirmOnlineVisit({ existing, actorUser, req, acknowledgeReview }) {
+  const bookingId = existing._id;
+  const status = String(existing.status || "").toLowerCase();
+  if (status === "confirmed" && existing.freeVisitConfirmation?.confirmedAt) {
+    const notified = await notifyConfirmedOnce(existing._id);
+    return { booking: existing, alreadyConfirmed: true, notified };
+  }
+  if (!isPendingFreeVisit(existing)) {
+    throw serviceError("NOT_PENDING", `This visit is ${existing.status}; it cannot be confirmed.`, 409);
+  }
+  if (!hasValidAddress(existing)) {
+    throw serviceError("ADDRESS_REQUIRED", "This booking has no complete service address.", 400);
+  }
+  if (!isAddressInServiceArea({ zip: existing.zip })) {
+    throw serviceError("OUT_OF_SERVICE_AREA", outOfServiceAreaMessage(), 400);
+  }
+  if (reservationRequired() && !existing.slotReservationId) {
+    throw serviceError("RESERVATION_MISSING", "This visit has no reserved slot. Pick a time and save first.", 409);
+  }
+  const before = bookingSnapshot(existing);
+
+  let eligibility = null;
+  await runReservationTransaction(async (session) => {
+    await acquireFreeVisitLock(session);
+    const booking = await Booking.findById(bookingId).session(session);
+    if (!isPendingFreeVisit(booking)) throw serviceError("NOT_PENDING", "This visit was changed while you were confirming it.", 409);
+    const owner = await User.findById(booking.user).select("_id phone email").session(session).lean();
+    const addressKey = addressMatchKey({ line1: booking.address, city: booking.city, state: booking.state, zip: booking.zip });
+    eligibility = await checkFreeVisitEligibility(
+      { phone: owner?.phone || booking.phone, email: owner?.email || booking.email, address: addressKey, userId: booking.user },
+      {
+        session,
+        excludeBookingId: booking._id,
+        excludeAccountAddress: booking.addressId ? { userId: booking.user, addressId: booking.addressId } : null,
+      }
+    );
+    if (eligibility.decision === "blocked") {
+      throw serviceError(eligibility.code, "This customer has already used or booked a free visit.", 409, { eligibility });
+    }
+    if (eligibility.decision === "review" && !acknowledgeReview) {
+      throw serviceError("REVIEW_REQUIRED", "Possible repeat customer: verify, then confirm again.", 409, { eligibility });
+    }
+
+    const now = new Date();
+    booking.statusHistory = (booking.statusHistory || []).concat({ status: booking.status, date: now });
+    booking.status = "Confirmed";
+    booking.freeVisitReview = {
+      ...reviewFrom(eligibility, now),
+      acknowledgedAt: eligibility.decision === "review" ? now : null,
+      acknowledgedBy: eligibility.decision === "review" ? actorUser?._id || null : null,
+    };
+    booking.freeVisitConfirmation = {
+      ...(booking.freeVisitConfirmation?.toObject?.() || {}),
+      confirmedAt: now,
+      confirmedBy: actorUser?._id || null,
+      notifyClaimedAt: null,
+    };
+    resetBookingReminderEmailStateForDateChange(booking, booking.date);
+    await booking.save({ session });
+  });
+
+  const booking = await Booking.findById(bookingId);
+  await logBookingChanges({ bookingId: booking._id, before, after: bookingSnapshot(booking), req });
+  const notified = await notifyConfirmedOnce(booking._id);
+  return { booking, alreadyConfirmed: false, notified, eligibility };
+}
+
+/**
  * The customer's confirmed-appointment email and text, and the crew's copy.
  * Claimed with one conditional write, so a retried or double-clicked Confirm
  * (or two Admin tabs) sends them once.
@@ -532,7 +646,7 @@ async function notifyConfirmedOnce(bookingId) {
  */
 async function declineGuestVisit({ bookingId, actorUser = null, reason = "", kind = "declined" }) {
   const booking = await Booking.findById(bookingId);
-  if (!booking?.guestRequestId) throw serviceError("NOT_A_GUEST_VISIT", "This is not a homepage free-visit request.", 404);
+  if (!isReviewableFreeVisit(booking)) throw serviceError("NOT_A_GUEST_VISIT", "This is not a free-visit request.", 404);
   const status = String(booking.status || "").toLowerCase();
   if (["canceled", "cancelled"].includes(status)) {
     await syncLeadFromBooking(booking.toObject());
@@ -541,12 +655,27 @@ async function declineGuestVisit({ bookingId, actorUser = null, reason = "", kin
   if (["completed", "complete", "done"].includes(status)) {
     throw serviceError("ALREADY_COMPLETED", "A completed visit cannot be declined.", 409);
   }
-  const result = await cancelBookingWithReservation({
-    bookingId: booking._id,
-    actorUser,
-    createdByType: "admin",
-    reason: kind === "declined" ? "Free visit request declined by Admin" : "Free visit canceled by Admin",
-  });
+  const online = isOnlineFreeVisit(booking);
+  let result;
+  if (booking.slotReservationId || reservationRequired()) {
+    result = await cancelBookingWithReservation({
+      bookingId: booking._id,
+      actorUser,
+      createdByType: "admin",
+      reason: kind === "declined" ? "Free visit request declined by Admin" : "Free visit canceled by Admin",
+    });
+  } else {
+    booking.statusHistory = (booking.statusHistory || []).concat({ status: booking.status, date: new Date() });
+    booking.status = "Canceled";
+    await booking.save();
+    result = { booking };
+  }
+  // The account's per-address offer goes back with it: a declined visit is not a used one.
+  if (online && booking.addressId) {
+    await releaseIntroVisitClaim({ UserModel: User, userId: booking.user, addressId: booking.addressId }).catch((error) =>
+      console.error("free visit decline: intro claim release failed", { bookingId: String(booking._id), message: error.message })
+    );
+  }
   const updated = await Booking.findOneAndUpdate(
     { _id: booking._id },
     {
@@ -558,7 +687,46 @@ async function declineGuestVisit({ bookingId, actorUser = null, reason = "", kin
     { new: true }
   );
   await syncLeadFromBooking(updated.toObject());
+  if (online) await notifyOnlineDeclined(updated);
   return { booking: updated || result.booking, alreadyClosed: false };
+}
+
+/*
+ * An online customer was told "booked, awaiting confirmation", so a decline is
+ * news they must get. Email only, with the existing cancellation template: no
+ * new text message type, and an owner who wants to explain will call anyway.
+ * Reached once per visit: an already-closed visit returns before this.
+ */
+async function notifyOnlineDeclined(booking) {
+  if (!booking?.email) return;
+  try {
+    await mail.sendTx(
+      "booking_canceled",
+      booking.email,
+      {
+        name: booking.name || String(booking.email).split("@")[0],
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        service: booking.service,
+        address: addressLine(booking),
+      },
+      {
+        bccAdmin: false,
+        logContext: {
+          bookingId: booking._id,
+          bookingNumber: booking.bookingNumber,
+          customerName: booking.name || "",
+          customerEmail: booking.email || "",
+          recipientName: booking.name || "",
+          recipientEmail: booking.email,
+          emailType: "transactional",
+          source: "freeVisitDecline",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("free visit decline email failed", { bookingId: String(booking._id), message: error.message });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -628,6 +796,10 @@ async function backfillUnlinkedGuestRequests({ now = new Date(), logger = consol
 
 module.exports = {
   PENDING,
+  channelOf,
+  isOnlineFreeVisit,
+  isPendingFreeVisit,
+  isReviewableFreeVisit,
   backfillUnlinkedGuestRequests,
   confirmGuestVisit,
   declineGuestVisit,

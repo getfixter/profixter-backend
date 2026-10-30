@@ -42,6 +42,30 @@ const {
  * The lifetime free-visit rule's refusal, in the codes the booker already
  * understands: INTRO_VISIT_CONSUMED shows "used", INTRO_VISIT_CLAIMED "booked".
  */
+/*
+ * What a repeated online free-visit submit gets back: the booking the first
+ * press made, in the same shape as a fresh one, so the browser shows the same
+ * confirmation however many times the request arrived.
+ */
+function bookingCreatedBody(booking, extra = {}) {
+  return {
+    message: "Booking created",
+    ...extra,
+    booking: {
+      bookingNumber: booking.bookingNumber,
+      service: booking.service,
+      date: new Date(booking.date).toISOString(),
+      time: moment.tz(booking.date, "America/New_York").format("HH:mm"),
+      status: booking.status || "Pending",
+    },
+  };
+}
+
+function readClientKey(value) {
+  const key = String(value || "");
+  return /^[A-Za-z0-9_-]{8,64}$/.test(key) ? key : "";
+}
+
 function freeVisitRefusal(result) {
   return {
     code: result.code === "FREE_VISIT_USED" ? "INTRO_VISIT_CONSUMED" : "INTRO_VISIT_CLAIMED",
@@ -1823,6 +1847,7 @@ router.post(
     // Declared out here so the catch block can release a reserved offer.
     let introVisitClaimed = false;
     let lifetimeCheck = null;
+    let clientKey = "";
 
     try {
       const me = await User.findById(req.user.id);
@@ -1841,6 +1866,20 @@ router.post(
       const library = readLibraryReference(req.body);
       if (!library.ok) {
         return res.status(library.status).json({ message: library.message, code: library.code });
+      }
+
+      /*
+       * The same online free-visit submit again - a double tap, a refresh
+       * while the first was in flight, a retry after a dropped connection -
+       * returns the booking it already made. Checked before every free-visit
+       * rule, because once the first press has booked, those rules would
+       * (correctly) refuse a second free visit and the customer would read a
+       * refusal for the booking they just made.
+       */
+      clientKey = readClientKey(req.body.clientRequestId);
+      if (clientKey) {
+        const made = await Booking.findOne({ user: me._id, freeVisitClientKey: clientKey }).lean();
+        if (made) return res.json(bookingCreatedBody(made, { duplicate: true }));
       }
 
       if (!addressId || !mongoose.isValidObjectId(addressId)) {
@@ -2145,11 +2184,17 @@ router.post(
         libraryReference: library.key,
         status: "Pending",
       };
+      if (usingFreeFirstVisit) {
+        bookingData.freeVisitChannel = "online";
+        if (clientKey) bookingData.freeVisitClientKey = clientKey;
+      }
       /*
-       * An eligible account's free visit is confirmed automatically - no call
-       * needed - so it is in the reminder and crew workflows at once. One the
-       * lifetime check could not decide alone (a shared address, a reused
-       * phone) stays Pending, flagged for the owner to verify.
+       * An online free visit is never approved by the booking itself. It is
+       * reserved, then waits in "Pending Confirmation" for the owner, exactly
+       * like a callback request (utils/freeVisit/guestVisit: confirm/decline),
+       * and the confirmed-appointment email and text go out only then. A
+       * possible repeat the lifetime check could not decide alone is flagged
+       * on the same booking for the owner to verify before approving.
        */
       const applyLifetime = (result) => {
         const now = new Date();
@@ -2166,7 +2211,7 @@ router.post(
           matches: result.matches.slice(0, 10),
           checkedAt: now,
         };
-        bookingData.status = result.decision === "review" ? "Pending" : "Confirmed";
+        bookingData.status = "Pending Confirmation";
       };
       if (usingFreeFirstVisit && lifetimeCheck) applyLifetime(lifetimeCheck);
       let booking;
@@ -2266,9 +2311,14 @@ router.post(
         );
 
         await mail.sendPromo(process.env.MAIL_ADMIN || "getfixter@gmail.com", {
-          subject: adminSubjects.booking("New Booking", { name: me.name, date: bookingDate }),
+          subject: adminSubjects.booking(usingFreeFirstVisit ? "Free visit to approve" : "New Booking", { name: me.name, date: bookingDate }),
           html: `
-              <h2>New Booking Created</h2>
+              <h2>${usingFreeFirstVisit ? "Online free visit - awaiting your approval" : "New Booking Created"}</h2>
+              ${
+                usingFreeFirstVisit
+                  ? "<p>Booked online with the customer's own account and address. The time is held; nothing is sent to the customer as confirmed until you approve it in Admin &gt; Jobs.</p>"
+                  : ""
+              }
               <ul>
                 <li><strong>Name:</strong> ${me.name}</li>
                 <li><strong>Email:</strong> ${me.email}</li>
@@ -2285,7 +2335,7 @@ router.post(
                 <li><strong>Customer photos:</strong> ${(booking.images || []).length || "Not added yet"}</li>
                 ${
                   booking.freeVisitReview?.required
-                    ? `<li><strong>Verify this free visit:</strong> possible repeat customer (${(booking.freeVisitReview.reasons || []).join(", ").replace(/_/g, " ")}). It is left Pending until you confirm it.</li>`
+                    ? `<li><strong>Verify this free visit:</strong> possible repeat customer (${(booking.freeVisitReview.reasons || []).join(", ").replace(/_/g, " ")}). Check before you approve it.</li>`
                     : ""
                 }
               </ul>
@@ -2315,10 +2365,12 @@ router.post(
        * needed here and none is added, which keeps the booking response
        * unaffected by anything the SMS system does.
        */
-      await smsNotify.notifyBookingConfirmed(booking, me, "bookingCreate");
+      // An online free visit is not confirmed yet: its confirmation text and
+      // the crew's copy are sent once, when the owner approves it.
+      if (!usingFreeFirstVisit) await smsNotify.notifyBookingConfirmed(booking, me, "bookingCreate");
 
       // Crew copy, kept separate so it cannot affect the customer or Admin mail.
-      try {
+      if (!usingFreeFirstVisit) try {
         await generalFixterNotify.bookingCreated(mail, {
           bookingId: booking._id,
           bookingNumber: booking.bookingNumber,
@@ -2396,6 +2448,14 @@ router.post(
           "S3 booking upload cleanup failed:",
           cleanupError?.message || cleanupError
         );
+      }
+
+      // A concurrent copy of the same submit won: answer with its booking.
+      if (clientKey && !bookingCommitted) {
+        try {
+          const made = await Booking.findOne({ user: req.user.id, freeVisitClientKey: clientKey }).lean();
+          if (made) return res.json(bookingCreatedBody(made, { duplicate: true }));
+        } catch (_) {}
       }
 
       const msg = (error && (error.message || "")).toString();

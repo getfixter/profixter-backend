@@ -463,22 +463,62 @@ async function main() {
     assert.strictEqual((await Request.findOne({ bookingId: b._id }).lean()).status, "declined");
   });
 
-  section("7. Registered customers still book automatically");
+  section("7. Online bookings are reserved, then wait for the owner's approval");
   ctx = await reset();
   const d7 = openDay(5);
   const reg = await customer({ phone: "+16315554001", email: "gil@example.com" });
   let regBooking;
-  await test("an eligible account books, reserved and confirmed, with the normal messages", async () => {
+  await test("an eligible account books online: reserved, Pending Confirmation, no confirmation sent yet", async () => {
     const res = await registeredBook(reg, d7, "10:30");
     assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.strictEqual(res.body.booking.status, "Pending Confirmation");
     regBooking = await Booking.findOne({ user: reg.user._id }).lean();
-    assert.strictEqual(regBooking.status, "Confirmed");
+    assert.strictEqual(regBooking.status, "Pending Confirmation");
+    assert.strictEqual(regBooking.freeVisitChannel, "online");
     assert.strictEqual(regBooking.isFreeFirstVisit, true);
     assert.strictEqual(await activeReservations(regBooking._id), 1);
-    assert.ok(emails.some((e) => e.kind === "tx" && e.key === "booking_created"));
+    assert.ok(emails.some((e) => e.kind === "tx" && e.key === "booking_created"), "the 'booking received' email");
+    assert.ok(emails.some((e) => e.kind === "promo" && /awaiting your approval/.test(e.html || "")), "the owner is asked to approve");
+    assert.strictEqual(confirmedTx().length, 0, "no confirmed-appointment email before approval");
+    await wait(300);
+    assert.strictEqual(await SmsMessage.countDocuments({}), 0, "no text before approval");
+    assert.strictEqual(regBooking.freeVisitIdentity.phone, "+16315554001");
+  });
+  await test("the plain status control cannot approve an online free visit", async () => {
+    const res = await api(`/api/admin/bookings/${regBooking._id}/status`, { method: "PUT", token: ctx.adminToken, body: { status: "Confirmed" } });
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, "USE_FREE_VISIT_REVIEW");
+  });
+  await test("the review screen opens an online visit with its channel and nothing missing", async () => {
+    const res = await api(`/api/admin/free-visits/${regBooking._id}`, { token: ctx.adminToken });
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.strictEqual(res.body.booking.channel, "online");
+    assert.deepStrictEqual(res.body.booking.missing, []);
+    assert.strictEqual(res.body.eligibility.decision, "eligible");
+  });
+  await test("the owner cannot rewrite an online customer's contact details from the review", async () => {
+    const res = await api(`/api/admin/free-visits/${regBooking._id}`, { method: "PUT", token: ctx.adminToken, body: { phone: "6315550000" } });
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.code, "EDIT_ON_ACCOUNT");
+    const note = await api(`/api/admin/free-visits/${regBooking._id}`, { method: "PUT", token: ctx.adminToken, body: { adminNote: "Called, all good" } });
+    assert.strictEqual(note.status, 200, JSON.stringify(note.body));
+  });
+  await test("approving confirms it and sends the confirmation once, however often it is pressed", async () => {
+    const [a, b] = await Promise.all([
+      api(`/api/admin/free-visits/${regBooking._id}/confirm`, { method: "POST", token: ctx.adminToken, body: {} }),
+      api(`/api/admin/free-visits/${regBooking._id}/confirm`, { method: "POST", token: ctx.adminToken, body: {} }),
+    ]);
+    assert.ok([a.status, b.status].includes(200), JSON.stringify([a.body, b.body]));
+    const again = await api(`/api/admin/free-visits/${regBooking._id}/confirm`, { method: "POST", token: ctx.adminToken, body: {} });
+    assert.strictEqual(again.status, 200);
+    regBooking = await Booking.findById(regBooking._id).lean();
+    assert.strictEqual(regBooking.status, "Confirmed");
+    assert.strictEqual(confirmedTx().length, 1);
     const sms = await waitFor(() => SmsMessage.findOne({ notificationType: "FREE_VISIT_CONFIRMED" }).lean());
     assert.strictEqual(sms.status, "simulated");
-    assert.strictEqual(regBooking.freeVisitIdentity.phone, "+16315554001");
+    await wait(300);
+    assert.strictEqual(await SmsMessage.countDocuments({ notificationType: "FREE_VISIT_CONFIRMED" }), 1);
+    assert.strictEqual(await activeReservations(regBooking._id), 1, "the same reservation, not a second one");
   });
 
   section("8. One free visit per person, across both systems");
@@ -515,7 +555,7 @@ async function main() {
     const res = await registeredBook(jo, openDay(6), "15:30");
     assert.strictEqual(res.status, 200, JSON.stringify(res.body));
     const b = await Booking.findOne({ user: jo.user._id }).lean();
-    assert.strictEqual(b.status, "Pending");
+    assert.strictEqual(b.status, "Pending Confirmation");
     assert.deepStrictEqual(b.freeVisitReview.reasons, ["same_phone_different_email"]);
     const ownerMail = emails.find((e) => e.kind === "promo" && /Verify this free visit/.test(e.html || ""));
     assert.ok(ownerMail, "the owner's booking email says to verify it");
@@ -556,7 +596,10 @@ async function main() {
     const res = await registeredBook(neighbor, openDay(8), "08:00");
     assert.strictEqual(res.status, 200, JSON.stringify(res.body));
     const b = await Booking.findOne({ user: neighbor.user._id }).lean();
-    assert.strictEqual(b.status, "Pending", "held for the owner to verify, not auto-confirmed");
+    assert.strictEqual(b.status, "Pending Confirmation", "held for the owner to verify, not auto-confirmed");
+    const blind = await api(`/api/admin/free-visits/${b._id}/confirm`, { method: "POST", token: ctx.adminToken, body: {} });
+    assert.strictEqual(blind.status, 409);
+    assert.strictEqual(blind.body.code, "REVIEW_REQUIRED");
     assert.deepStrictEqual(b.freeVisitReview.reasons, ["same_address_different_person"]);
   });
   await test("an ambiguous guest needs the owner to acknowledge before confirming", async () => {
@@ -633,6 +676,144 @@ async function main() {
     const lead = await Request.findOne({ dedupeKey: "old-2" }).lean();
     assert.strictEqual(lead.reservationIssue.code, "SLOT_UNAVAILABLE");
     assert.strictEqual(await Booking.countDocuments({}), 1);
+  });
+
+  /* ================================================================ */
+  section("11. Free Visit 2.0: one submission, one booking; both channels share one free visit");
+  const { linkGuestFreeVisits } = require("../utils/freeVisit/guestLink");
+  const onlineBook = (c, date, time, extra = {}) =>
+    api("/api/bookings", {
+      method: "POST",
+      token: c.token,
+      body: {
+        service: "Labor Only", date: at(date, time).toISOString(), note: "Patch a hole in the hallway wall",
+        addressId: String(c.addressId), libraryReference: "faucet", requestedDate: date, requestedTime: time, ...extra,
+      },
+    });
+
+  await test("a refreshed or retried submit returns the booking it already made", async () => {
+    ctx = await reset();
+    const kim = await customer({ phone: "+16315557001", email: "kim@example.com" });
+    const first = await onlineBook(kim, openDay(1), "08:00", { clientRequestId: "fv_draft_abc12345" });
+    assert.strictEqual(first.status, 200, JSON.stringify(first.body));
+    const again = await onlineBook(kim, openDay(1), "08:00", { clientRequestId: "fv_draft_abc12345" });
+    assert.strictEqual(again.status, 200, JSON.stringify(again.body));
+    assert.strictEqual(again.body.duplicate, true);
+    assert.strictEqual(again.body.booking.bookingNumber, first.body.booking.bookingNumber);
+    assert.strictEqual(await Booking.countDocuments({ user: kim.user._id }), 1);
+    assert.strictEqual(emails.filter((e) => e.kind === "tx" && e.key === "booking_created").length, 1, "one 'received' email");
+  });
+  await test("a double tap sends two submits at once: one booking, one reservation", async () => {
+    ctx = await reset();
+    const lee = await customer({ phone: "+16315557002", email: "lee@example.com" });
+    const results = await Promise.all([
+      onlineBook(lee, openDay(1), "10:30", { clientRequestId: "fv_draft_tap00001" }),
+      onlineBook(lee, openDay(1), "10:30", { clientRequestId: "fv_draft_tap00001" }),
+    ]);
+    const bookings = await Booking.find({ user: lee.user._id }).lean();
+    assert.strictEqual(bookings.length, 1, JSON.stringify(results.map((r) => r.body)));
+    assert.strictEqual(await activeReservations(bookings[0]._id), 1);
+    assert.ok(results.some((r) => r.status === 200));
+  });
+  await test("a different submission by the same customer is refused: one free visit", async () => {
+    ctx = await reset();
+    const max = await customer({ phone: "+16315557003", email: "max@example.com" });
+    assert.strictEqual((await onlineBook(max, openDay(1), "13:00", { clientRequestId: "fv_draft_one00001" })).status, 200);
+    const second = await onlineBook(max, openDay(2), "13:00", { clientRequestId: "fv_draft_two00002" });
+    assert.strictEqual(second.status, 403, JSON.stringify(second.body));
+    assert.strictEqual(second.body.code, "INTRO_VISIT_CLAIMED");
+  });
+  await test("a second home on the same account cannot get a second free visit", async () => {
+    ctx = await reset();
+    const ned = await customer({ phone: "+16315557004", email: "ned@example.com" });
+    assert.strictEqual((await onlineBook(ned, openDay(1), "08:00")).status, 200);
+    const otherHome = new mongoose.Types.ObjectId();
+    await User.updateOne(
+      { _id: ned.user._id },
+      { $push: { addresses: { _id: otherHome, label: "Beach", line1: "9 Ocean Ave", city: "Babylon", state: "NY", zip: "11702", county: "Suffolk" } } }
+    );
+    const res = await onlineBook({ ...ned, addressId: otherHome }, openDay(2), "08:00");
+    assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+  });
+  await test("callback first, then online with the same phone: refused as already requested", async () => {
+    ctx = await reset();
+    assert.strictEqual((await guest({ date: openDay(1), time: "08:00", phone: "6315557005", email: "ora@example.com", name: "Ora Bell" })).status, 201);
+    const ora = await customer({ phone: "+16315557005", email: "ora@example.com" });
+    const next = await api(`/api/bookings/next?addressId=${ora.addressId}`, { token: ora.token });
+    assert.strictEqual(next.body.freeFirstVisitAvailable, false);
+    assert.strictEqual(next.body.introVisitStatus, "claimed", "shown as already requested, not as used up");
+    const res = await onlineBook(ora, openDay(2), "08:00");
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.body.code, "INTRO_VISIT_CLAIMED");
+  });
+  await test("online first, then a callback with the same email: refused", async () => {
+    ctx = await reset();
+    const pat = await customer({ phone: "+16315557006", email: "pat@example.com" });
+    assert.strictEqual((await onlineBook(pat, openDay(1), "08:00")).status, 200);
+    const res = await guest({ date: openDay(2), time: "10:30", phone: "6315557999", email: "pat@example.com", name: "Pat Other" });
+    assert.strictEqual(res.status, 403, JSON.stringify(res.body));
+    assert.strictEqual(res.body.code, "FREE_VISIT_ACTIVE");
+  });
+  await test("concurrent callback and online claims by one person: only one wins", async () => {
+    ctx = await reset();
+    const quinn = await customer({ phone: "+16315557007", email: "quinn@example.com" });
+    const [g, o] = await Promise.all([
+      guest({ date: openDay(1), time: "08:00", phone: "6315557007", email: "quinn@example.com", name: "Quinn Ash" }),
+      onlineBook(quinn, openDay(1), "10:30"),
+    ]);
+    const live = await Booking.countDocuments({ status: "Pending Confirmation" });
+    assert.strictEqual(live, 1, JSON.stringify([g.body, o.body]));
+  });
+  await test("a time taken while the customer was signing up is refused, and nothing is held", async () => {
+    ctx = await reset();
+    const rae = await customer({ phone: "+16315557008", email: "rae@example.com" });
+    assert.strictEqual((await guest({ date: openDay(1), time: "13:00", phone: "6315557900", email: "someone@example.com", name: "Some One" })).status, 201);
+    const res = await onlineBook(rae, openDay(1), "13:00", { clientRequestId: "fv_draft_taken001" });
+    assert.strictEqual(res.status, 409, JSON.stringify(res.body));
+    assert.strictEqual(res.body.code, "SLOT_UNAVAILABLE");
+    assert.strictEqual(await Booking.countDocuments({ user: rae.user._id }), 0);
+    const fresh = await api(`/api/bookings/next?addressId=${rae.addressId}`, { token: rae.token });
+    assert.strictEqual(fresh.body.freeFirstVisitAvailable, true, "the free visit is still theirs");
+  });
+  await test("declining an online visit frees the time, gives the free visit back, and emails the customer once", async () => {
+    ctx = await reset();
+    const sam = await customer({ phone: "+16315557009", email: "sam@example.com" });
+    assert.strictEqual((await onlineBook(sam, openDay(1), "15:30")).status, 200);
+    const b = await Booking.findOne({ user: sam.user._id }).lean();
+    const res = await api(`/api/admin/free-visits/${b._id}/decline`, { method: "POST", token: ctx.adminToken, body: { reason: "Out of scope" } });
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    await api(`/api/admin/free-visits/${b._id}/decline`, { method: "POST", token: ctx.adminToken, body: {} });
+    assert.strictEqual((await Booking.findById(b._id).lean()).status, "Canceled");
+    assert.strictEqual(await activeReservations(b._id), 0);
+    assert.strictEqual(emails.filter((e) => e.kind === "tx" && e.key === "booking_canceled").length, 1);
+    const next = await api(`/api/bookings/next?addressId=${sam.addressId}`, { token: sam.token });
+    assert.strictEqual(next.body.freeFirstVisitAvailable, true);
+  });
+  await test("a callback request joins the account that later proves the same phone", async () => {
+    ctx = await reset();
+    await guest({ date: openDay(1), time: "08:00", phone: "6315557010", email: "tia@example.com", name: "Tia Moss" });
+    const tia = await customer({ phone: "+16315557010", email: "tia.new@example.com" });
+    assert.strictEqual(await linkGuestFreeVisits(await User.findById(tia.user._id)), 0, "an unproved phone links nothing");
+    await User.updateOne({ _id: tia.user._id }, { $set: { phoneVerifiedAt: new Date() } });
+    assert.strictEqual(await linkGuestFreeVisits(await User.findById(tia.user._id)), 1);
+    const b = await Booking.findOne({ guestRequestId: { $ne: null } }).lean();
+    assert.strictEqual(String(b.user), String(tia.user._id));
+    assert.strictEqual(b.status, "Pending Confirmation", "linking never changes the visit");
+    const mine = await api("/api/bookings", { token: tia.token });
+    assert.ok((Array.isArray(mine.body) ? mine.body : mine.body.bookings || []).some((x) => String(x._id) === String(b._id)), "it shows in My Home");
+    assert.strictEqual(await linkGuestFreeVisits(await User.findById(tia.user._id)), 0, "idempotent");
+    const conf = await api(`/api/admin/free-visits/${b._id}`, { method: "PUT", token: ctx.adminToken, body: { address: ADDRESS } });
+    assert.strictEqual(conf.status, 200);
+    const ok = await api(`/api/admin/free-visits/${b._id}/confirm`, { method: "POST", token: ctx.adminToken, body: { acknowledgeReview: true } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+  });
+  await test("a callback whose email belongs to another account is never linked by phone", async () => {
+    ctx = await reset();
+    await guest({ date: openDay(1), time: "10:30", phone: "6315557011", email: "uma@example.com", name: "Uma Reed" });
+    await customer({ phone: "+16315550999", email: "uma@example.com" });
+    const other = await customer({ phone: "+16315557011", email: "uma.partner@example.com" });
+    await User.updateOne({ _id: other.user._id }, { $set: { phoneVerifiedAt: new Date() } });
+    assert.strictEqual(await linkGuestFreeVisits(await User.findById(other.user._id)), 0);
   });
 
   server.close();

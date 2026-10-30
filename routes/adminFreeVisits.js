@@ -22,12 +22,7 @@ const Booking = require("../models/Booking");
 const Request = require("../models/Request");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
 const { addressMatchKey, checkFreeVisitEligibility } = require("../utils/freeVisit/eligibility");
-const {
-  confirmGuestVisit,
-  declineGuestVisit,
-  hasValidAddress,
-  updateGuestVisit,
-} = require("../utils/freeVisit/guestVisit");
+const { channelOf, confirmGuestVisit, declineGuestVisit, hasValidAddress, isReviewableFreeVisit, updateGuestVisit } = require("../utils/freeVisit/guestVisit");
 
 const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
 const TIMEZONE = "America/New_York";
@@ -61,24 +56,42 @@ function validId(req, res) {
 /** The visit as the review screen shows it. */
 async function presentVisit(bookingId) {
   const booking = await Booking.findById(bookingId).lean();
-  if (!booking?.guestRequestId) return null;
-  const request = await Request.findById(booking.guestRequestId).lean();
+  if (!isReviewableFreeVisit(booking)) return null;
+  const channel = channelOf(booking);
+  const request = booking.guestRequestId ? await Request.findById(booking.guestRequestId).lean() : null;
   const isOpen = /^pending confirmation$/i.test(String(booking.status || ""));
   const addressKey = hasValidAddress(booking)
     ? addressMatchKey({ line1: booking.address, city: booking.city, state: booking.state, zip: booking.zip })
     : "";
-  const eligibility = isOpen
-    ? await checkFreeVisitEligibility(
-        { phone: booking.phone, email: booking.email, address: addressKey },
-        { excludeBookingId: booking._id, excludeRequestId: booking.guestRequestId }
-      )
-    : null;
+  const eligibility = !isOpen
+    ? null
+    : channel === "online"
+      ? await checkFreeVisitEligibility(
+          { phone: booking.phone, email: booking.email, address: addressKey, userId: booking.user },
+          {
+            excludeBookingId: booking._id,
+            excludeAccountAddress: booking.addressId ? { userId: booking.user, addressId: booking.addressId } : null,
+          }
+        )
+      : await checkFreeVisitEligibility(
+          { phone: booking.phone, email: booking.email, address: addressKey },
+          { excludeBookingId: booking._id, excludeRequestId: booking.guestRequestId }
+        );
+  /* What the owner still has to collect on the call before Confirm will work. */
+  const missing = [
+    !String(booking.name || "").trim() ? "name" : "",
+    !String(booking.phone || "").trim() ? "phone" : "",
+    !String(booking.email || "").trim() ? "email" : "",
+    !hasValidAddress(booking) ? "address" : "",
+  ].filter(Boolean);
   const when = moment.tz(booking.date, TIMEZONE);
   return {
     booking: {
       _id: String(booking._id),
       bookingNumber: booking.bookingNumber,
       status: booking.status,
+      channel,
+      missing,
       date: booking.date,
       requestedDate: when.format("YYYY-MM-DD"),
       requestedTime: when.format("HH:mm"),

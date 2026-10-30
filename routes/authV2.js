@@ -1,4 +1,5 @@
 const express = require("express");
+const { linkGuestFreeVisitsQuietly } = require("../utils/freeVisit/guestLink");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { normalizeEmail, normalizePhoneE164 } = require("../utils/identity");
@@ -97,6 +98,8 @@ async function requireSignedInUser(req) {
 }
 
 async function sessionResponse(user, { created = false, extra = {} } = {}) {
+  // An earlier callback request with this proved phone or email joins the account.
+  await linkGuestFreeVisitsQuietly(user);
   const { authUserDTO, buildPerAddressCoverage } = require("./auth");
   const coverage = await buildPerAddressCoverage(user);
   return { status: "signed_in", token: accounts.issueSession(user), user: authUserDTO(user, coverage), created, ...extra };
@@ -158,6 +161,7 @@ router.post("/otp/phone/verify", async (req, res) => {
     if (attach) {
       const attached = await accounts.attachVerifiedPhone(signedIn, phone);
       if (!attached.ok) throw new AuthFlowError(attached.code);
+      await linkGuestFreeVisitsQuietly(signedIn);
       return res.json({ status: "attached", user: await userDTO(signedIn) });
     }
 
@@ -278,6 +282,7 @@ router.post("/otp/email/verify", async (req, res) => {
     if (attach) {
       const attached = await accounts.attachVerifiedEmail(signedIn, email);
       if (!attached.ok) throw new AuthFlowError(attached.code);
+      await linkGuestFreeVisitsQuietly(signedIn);
       return res.json({ status: "attached", user: await userDTO(signedIn) });
     }
 

@@ -83,6 +83,20 @@ const BookingSchema = new mongoose.Schema({
    */
   guestRequestId: { type: mongoose.Schema.Types.ObjectId, ref: "Request", default: null, index: true },
   /*
+   * How a free first visit was asked for. "callback": the homepage request
+   * (guestRequestId set, no account, the owner calls). "online": booked by a
+   * signed-in customer with their own address. Both wait in "Pending
+   * Confirmation" until the owner approves them; empty on every other booking
+   * and on free visits made before this field existed.
+   */
+  freeVisitChannel: { type: String, enum: ["", "online", "callback"], default: "" },
+  /*
+   * The browser's id for one online free-visit submission, so a retried or
+   * refreshed submit returns the booking it already made instead of a second
+   * one or a refusal. Unique per account; absent everywhere else.
+   */
+  freeVisitClientKey: { type: String, default: undefined },
+  /*
    * Who this free visit was for, frozen when it was claimed. The lifetime rule
    * reads it, so a customer editing their phone or email later cannot make a
    * used free visit disappear. Normalised: E.164 phone, canonical email,
@@ -258,6 +272,10 @@ BookingSchema.index({ assignedFixterId: 1, date: 1 });
 BookingSchema.index({ bookingNumber: 1 }, { unique: false });
 BookingSchema.index({ "freeVisitIdentity.phone": 1 });
 BookingSchema.index({ "freeVisitIdentity.email": 1 });
+BookingSchema.index(
+  { user: 1, freeVisitClientKey: 1 },
+  { unique: true, partialFilterExpression: { freeVisitClientKey: { $type: "string" } }, name: "free_visit_client_key_unique" }
+);
 BookingSchema.index({
   status: 1,
   completedAt: 1,

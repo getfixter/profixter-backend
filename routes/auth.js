@@ -1,4 +1,5 @@
 const express = require("express");
+const { linkGuestFreeVisitsQuietly } = require("../utils/freeVisit/guestLink");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
@@ -592,6 +593,7 @@ router.post("/register", async (req, res) => {
       );
     }
 
+    await linkGuestFreeVisitsQuietly(user);
     const token = authAccounts.issueSession(user);
 
     const coverageMap = await buildPerAddressCoverage(user);
@@ -686,6 +688,7 @@ router.post("/login", async (req, res) => {
       authAccounts.addProvider(user, "password");
       await user.save();
     }
+    await linkGuestFreeVisitsQuietly(user);
     const token = authAccounts.issueSession(user);
     const coverageMap = await buildPerAddressCoverage(user);
     return res.json({
@@ -835,6 +838,7 @@ router.post("/google", async (req, res) => {
       return res.status(403).json({ message: "Employee account is inactive" });
     }
 
+    await linkGuestFreeVisitsQuietly(user);
     const token = authAccounts.issueSession(user);
     await ensurePrimaryFromLegacy(user);
     const coverageMap = await buildPerAddressCoverage(user);

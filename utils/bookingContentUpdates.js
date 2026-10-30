@@ -1,4 +1,4 @@
-const CUSTOMER_EDITABLE_STATUSES = new Set(["pending", "confirmed"]);
+const CUSTOMER_EDITABLE_STATUSES = new Set(["pending", "pending confirmation", "confirmed"]);
 const CUSTOMER_UPDATE_WINDOW_HOURS = 48;
 
 function appointmentStartTime(booking) {
