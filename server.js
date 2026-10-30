@@ -239,7 +239,12 @@ app.use("/api/free-visit-requests", require("./routes/freeVisitRequests"));
 app.use("/api/admin/free-visits", require("./routes/adminFreeVisits"));
 // Public gallery read needs no token; the submission route inside it does.
 app.use("/api/recent-work", require("./routes/recentWork"));
-app.use("/api/membership-map", require("./routes/membershipMap"));
+/*
+ * The public membership map is retired (2026-10-30): member homes, even as
+ * jittered points, are not shown or served to the public. routes/membershipMap
+ * and utils/membershipMap stay - the Admin overview map and address checks use
+ * the same geometry - so the route can be re-mounted if that ever changes.
+ */
 app.use("/api/service-area", require("./routes/serviceArea"));
 /* Public, read-only: live search wording overrides (written only by the growth engine). */
 app.use("/api/seo", require("./routes/seo"));
