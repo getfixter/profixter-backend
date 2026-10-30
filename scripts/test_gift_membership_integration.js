@@ -1059,6 +1059,21 @@ async function run() {
       captured = config;
       return { id: "cs_test_captured", url: "https://checkout.stripe.com/c/pay/cs_test" };
     };
+    /*
+     * Checkout also asks Stripe whether the home is already billed and closes
+     * any earlier checkout for it (2026-10-30). None exists for these
+     * recipients: an empty account, so the gift deferral is what is measured.
+     */
+    const originalReads = {
+      subscriptionsList: subsModule.stripe.subscriptions.list,
+      sessionsList: subsModule.stripe.checkout.sessions.list,
+    };
+    subsModule.stripe.subscriptions.list = () => {
+      const empty = Promise.resolve({ object: "list", data: [], has_more: false });
+      empty[Symbol.asyncIterator] = async function* none() {};
+      return empty;
+    };
+    subsModule.stripe.checkout.sessions.list = async () => ({ object: "list", data: [] });
 
     const express = require("express");
     const http = require("http");
@@ -1119,6 +1134,8 @@ async function run() {
     });
 
     subsModule.stripe.checkout.sessions.create = originalCreate;
+    subsModule.stripe.subscriptions.list = originalReads.subscriptionsList;
+    subsModule.stripe.checkout.sessions.list = originalReads.sessionsList;
     return { response, captured };
   }
 

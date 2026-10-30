@@ -11,6 +11,8 @@ const {
   resolveStripePriceId,
   normalizeBillingCycle,
   resolveUserStripeCustomerId,
+  billingStripeSubscriptionsForAddress,
+  PAYMENT_RECOVERY_STATUSES,
 } = require("../utils/subscriptionManagement");
 const { projectedGiftCoverageEnd } = require("../utils/gifts/giftAccess");
 
@@ -39,6 +41,41 @@ function logCheckout(level, event, details = {}) {
   if (level === "error") console.error(payload);
   else if (level === "warn") console.warn(payload);
   else console.log(payload);
+}
+
+const CHECKOUT_LOCK_MS = 20 * 1000;
+
+/**
+ * Close any membership checkout for this home still open at Stripe.
+ *
+ * Found two ways: the session this account last opened (which also covers a
+ * first purchase, before Stripe has a customer to search by), and the
+ * customer's open sessions. An expired session can no longer be paid. A
+ * failure is logged, not fatal - the webhook's duplicate alert is the backstop.
+ */
+async function expireOpenMembershipCheckouts({ user, stripeCustomerId, addressId, requestId }) {
+  const ids = new Set();
+  const raw = (await User.collection.findOne({ _id: user._id }, { projection: { pendingMembershipCheckout: 1 } }))
+    ?.pendingMembershipCheckout;
+  if (raw?.sessionId && String(raw.addressId) === addressId) ids.add(String(raw.sessionId));
+  try {
+    if (stripeCustomerId) {
+      const open = await stripe.checkout.sessions.list({ customer: String(stripeCustomerId), status: "open", limit: 20 });
+      for (const session of open.data || []) {
+        if (session.mode === "subscription" && String(session.metadata?.addressId || "") === addressId) ids.add(session.id);
+      }
+    }
+    for (const id of ids) {
+      const session = await stripe.checkout.sessions.retrieve(id);
+      if (session?.status === "open") await stripe.checkout.sessions.expire(id);
+    }
+  } catch (error) {
+    logCheckout("warn", "subscription_checkout_expire_previous_failed", {
+      requestId,
+      userId: String(user._id),
+      message: error?.message || String(error),
+    });
+  }
 }
 
 router.post("/create-checkout-session", auth, async (req, res) => {
@@ -87,6 +124,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     return res.status(400).json({ message: "Missing or invalid addressId" });
   }
 
+  let lockHeld = false;
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -116,6 +154,57 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         code: "ADDRESS_ALREADY_SUBSCRIBED",
       });
     }
+
+    /*
+     * ONE MEMBERSHIP PER HOME THAT STRIPE IS STILL BILLING.
+     *
+     * Asked of Stripe, not of our records - our records are what can be wrong,
+     * and a past-due membership is still a live subscription Stripe will keep
+     * trying to charge. On 2026-10-30 a customer whose renewal had failed was
+     * let through here, bought a second membership for the same home, and
+     * Stripe was set to charge the first again two days later. A failed
+     * renewal is fixed by paying it, so that is where they are sent.
+     * Canceled and expired memberships are over and never block a fresh start.
+     */
+    const stripeCustomerId = await resolveUserStripeCustomerId(user);
+    const billing = await billingStripeSubscriptionsForAddress({
+      stripeCustomerId,
+      addressId: address._id,
+    });
+    if (billing.some((s) => !PAYMENT_RECOVERY_STATUSES.has(s.status))) {
+      return res.status(409).json({
+        message: "This address already has an active plan.",
+        code: "ADDRESS_ALREADY_SUBSCRIBED",
+      });
+    }
+    if (billing.length) {
+      return res.status(409).json({
+        message: "This home's membership payment needs attention. Update your payment to keep your membership; there is no need to buy a new one.",
+        code: "MEMBERSHIP_PAYMENT_RECOVERY_REQUIRED",
+        addressId: String(address._id),
+      });
+    }
+
+    /*
+     * One checkout opening at a time per account (two taps, two tabs), and
+     * any earlier membership checkout for this home still open at Stripe is
+     * closed first. Otherwise both pages could be paid and the home billed
+     * twice. The lock is short and self-expiring, so a crashed request can
+     * never stop somebody buying.
+     */
+    const lockNow = new Date();
+    const lock = await User.collection.updateOne(
+      { _id: user._id, "membershipCheckoutLock.until": { $not: { $gt: lockNow } } },
+      { $set: { membershipCheckoutLock: { until: new Date(lockNow.getTime() + CHECKOUT_LOCK_MS) } } }
+    );
+    if (!lock.modifiedCount) {
+      return res.status(409).json({
+        message: "Your secure checkout is already opening. Please wait a moment.",
+        code: "CHECKOUT_ALREADY_OPENING",
+      });
+    }
+    lockHeld = true;
+    await expireOpenMembershipCheckouts({ user, stripeCustomerId, addressId: String(address._id), requestId });
 
     const fbp = getCookie(req, "_fbp");
     const fbc = getCookie(req, "_fbc");
@@ -191,7 +280,6 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       trialEndUnix = Math.max(Math.floor(giftCoverageEndsAt.getTime() / 1000), earliest);
     }
 
-    const stripeCustomerId = await resolveUserStripeCustomerId(user);
     const sessionConfig = {
       mode: "subscription",
       payment_method_types: ["card"],
@@ -253,6 +341,11 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       });
     }
 
+    await User.collection.updateOne(
+      { _id: user._id },
+      { $set: { pendingMembershipCheckout: { sessionId: session.id, addressId: String(addressId), createdAt: new Date() } } }
+    );
+
     logCheckout("info", "subscription_checkout_session_created", {
       requestId,
       stripeSessionId: session.id,
@@ -286,6 +379,12 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       message: "Unable to start secure checkout right now. Please try again.",
       code: "CHECKOUT_SESSION_CREATE_FAILED",
     });
+  } finally {
+    if (lockHeld) {
+      await User.collection
+        .updateOne({ _id: new mongoose.Types.ObjectId(String(req.user.id)) }, { $unset: { membershipCheckoutLock: "" } })
+        .catch(() => {});
+    }
   }
 });
 

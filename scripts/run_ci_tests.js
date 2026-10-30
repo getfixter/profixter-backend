@@ -131,6 +131,7 @@ const SUITES = [
  *   test_native_signing_integration.js  boots an in-memory MongoDB binary
  *   test_native_signing_routes.js       boots an in-memory MongoDB binary
  *   test_fixter_tips_integration.js     boots an in-memory MongoDB binary
+ *   test_membership_duplicate_sync.js   boots an in-memory MongoDB binary
  *   test_dual_account_users.js          boots an in-memory MongoDB binary
  *   test_membership_lead.js             boots an in-memory MongoDB binary
  *   test_sms_integration.js             boots an in-memory MongoDB binary

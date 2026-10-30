@@ -100,6 +100,13 @@ const APPOINTMENT = new Date("2026-03-03T19:00:00.000Z");
  * message so it cannot quietly grow.
  */
 const UNICODE_BY_DESIGN = new Set(["GIFT_INVITATION"]);
+/*
+ * Exempt from one-segment, by the owner's explicit instruction: the apology
+ * after a membership repair (2026-10-30) is their exact wording and runs to
+ * two segments. Sent once per repair by hand, so the cost is trivial; it is
+ * still held to GSM-7 and to two segments below.
+ */
+const OWNER_APPROVED_TWO_SEGMENT = new Set(["MEMBERSHIP_RESTORED"]);
 const SITE_URL = "https://www.profixter.com";
 
 const BOOKINGS = {
@@ -470,9 +477,11 @@ test("only the canonical URLs are ever used", () => {
     )
     .join(" ");
   const urls = allBodies.match(/https?:\/\/\S+/g) || [];
-  for (const url of urls) {
+  for (const raw of urls) {
+    // The bare homepage is canonical too; trailing sentence punctuation is not part of the link.
+    const url = raw.replace(/[.,!?]+$/, "");
     assert.ok(
-      url.startsWith("https://www.profixter.com/"),
+      url === "https://www.profixter.com" || url.startsWith("https://www.profixter.com/"),
       `unexpected link in an SMS: ${url}`
     );
   }
@@ -1370,6 +1379,10 @@ test("EVERY message is exactly one segment", () => {
   const multi = [];
   for (const { type, body } of everyRenderedBody()) {
     if (UNICODE_BY_DESIGN.has(type)) continue;
+    if (OWNER_APPROVED_TWO_SEGMENT.has(type)) {
+      assert.ok(phone.estimateSegments(body) <= 2, `${type} grew past two segments`);
+      continue;
+    }
     if (phone.estimateSegments(body) > 1) multi.push(`${type} (${body.length} chars)`);
   }
   assert.deepEqual(multi, [], "these messages are multi-segment");
@@ -1395,7 +1408,7 @@ test("the gift invitation stays inside its own budget", () => {
 
 test("no message exceeds the 160-character GSM-7 single-segment limit", () => {
   for (const { type, body } of everyRenderedBody()) {
-    if (UNICODE_BY_DESIGN.has(type)) continue;
+    if (UNICODE_BY_DESIGN.has(type) || OWNER_APPROVED_TWO_SEGMENT.has(type)) continue;
     assert.ok(body.length <= 160, `${type} is ${body.length} chars: ${body}`);
   }
 });

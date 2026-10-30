@@ -574,6 +574,16 @@ const TEMPLATES = {
     `${BRAND}: your membership has now ended. Thank you for being a member. ` +
     `You are welcome back anytime at ${SITE}/membership`,
 
+  /*
+   * Sent once, by operator request only (jobs/membershipNotices.js), to a
+   * member whose paid membership a fault had locked. Worded as the owner
+   * approved it; the first name is the only variable.
+   */
+  MEMBERSHIP_RESTORED: ({ name }) =>
+    `Hi ${firstNameOf(name)}! This is Profixter. We apologize for the inconvenience with your membership. ` +
+    `The technical issue has been fixed, and your membership is now active. ` +
+    `You can book your handyman visit anytime at https://www.profixter.com. Thank you for your patience!`,
+
   PAYMENT_FAILED: () =>
     `${BRAND}: we could not process your membership payment. ` +
     `Please update your card to keep your visits active: ${SITE}/account`,

@@ -148,6 +148,15 @@ const NON_REGISTRY_EMAILS = {
     trigger: "Somebody sends the homepage free-visit request (no account).",
     source: "routes/freeVisitRequests.js",
   },
+  membership_restored: {
+    label: "Membership restored (apology)",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Customer",
+    channelClass: "transactional",
+    trigger: "Sent once after an operator repairs a member's locked membership.",
+    source: "utils/membershipRestoredNotice.js",
+  },
   admin_event_notification: {
     label: "Admin: generic event",
     category: "B",
@@ -210,6 +219,15 @@ const NON_REGISTRY_EMAILS = {
     channelClass: "internal",
     trigger: "A membership is cancelled.",
     source: "routes/subscriptions.js",
+  },
+  admin_duplicate_membership_billing: {
+    label: "Admin: two memberships billing one home",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Internal",
+    channelClass: "internal",
+    trigger: "A membership checkout completes for a home Stripe is already billing.",
+    source: "routes/webhook.js",
   },
   admin_retention_offer_accepted: {
     label: "Admin: retention offer accepted",

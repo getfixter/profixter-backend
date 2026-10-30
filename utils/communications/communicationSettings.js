@@ -268,6 +268,14 @@ const SMS_SETTINGS = {
       "an actionable problem; a routine charge is not something we volunteer a text about.",
   },
 
+  MEMBERSHIP_RESTORED: {
+    trigger: "An operator requests it after repairing a member's locked membership.",
+    event: "jobs/membershipNotices.js, once per request",
+    appliesTo: "One member, by hand",
+    schedule: "Within two minutes of the request, once the membership is verified active.",
+    notes: "Never sent by a webhook or sync. Claimed before sending, so it cannot go out twice.",
+  },
+
   INBOUND_INFO_REPLY: {
     trigger: "Somebody texts 631-888-6340 something that is not STOP, START or HELP.",
     event: "routes/smsWebhook.js -> replyThatNobodyIsReading",

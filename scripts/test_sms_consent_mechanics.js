@@ -1014,6 +1014,13 @@ async function main() {
      * identical vars and compared character by character - identical. The
      * owner chose the no-checkbox consent line for the first one knowingly,
      * after being told it resembles the 30923 pattern; see smsEligibility.
+     *
+     * Re-pinned 2026-10-30 for MEMBERSHIP_RESTORED, a one-off apology the
+     * owner wrote word for word, sent only by operator request after a repair
+     * (jobs/membershipNotices.js). Ten added lines, zero removed, zero
+     * modified; all thirty-eight pre-existing types were rendered from the
+     * committed file and from this one with identical vars across both visit
+     * kinds and compared character by character - identical.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1021,7 +1028,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "7e5fac24109f2c8c5d8447c62cbeb4aa79d5a3df802eccb1408841a211d8c5d4",
+      "458533974b63fca90e89d7075e7b76989cb26cb0111aa60879ff6c6388f1fb5d",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

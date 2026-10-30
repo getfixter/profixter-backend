@@ -339,6 +339,58 @@ function normalizeStripeStatus(status) {
   return allowed.has(normalized) ? normalized : "incomplete";
 }
 
+/* Stripe will not bill these again. */
+const ENDED_STRIPE_STATUSES = new Set(["canceled", "incomplete_expired", "expired"]);
+/* Stripe is billing, or still trying to: a second membership for the same home must not start. */
+const BILLING_STRIPE_STATUSES = new Set(["active", "trialing", "past_due", "unpaid"]);
+/* Waiting on the customer's payment rather than over: the fix is to pay, not to buy again. */
+const PAYMENT_RECOVERY_STATUSES = new Set(["past_due", "unpaid"]);
+/*
+ * Set on a Stripe subscription just before it is canceled because another
+ * subscription for the same home replaced it. The sync records the reason, and
+ * the webhook sends the customer no "your membership has ended" notice for a
+ * membership that, from their side, has not ended.
+ */
+const REPLACED_BY_METADATA_KEY = "profixterReplacedBy";
+/* Thrown by the upsert when a home is already covered by another subscription's active record. */
+const HOME_ALREADY_ACTIVE = "HOME_ALREADY_ACTIVE";
+
+/** May a record be linked to this Stripe subscription? Only if no other one already owns it. */
+function isAdoptableRecord(record, stripeSubscriptionId) {
+  const owner = String(record?.stripeSubscriptionId || "");
+  return !owner || owner === String(stripeSubscriptionId || "");
+}
+
+/**
+ * The customer's Stripe subscriptions for one home that Stripe is still billing.
+ *
+ * Read from Stripe, not from our records, because our records are exactly what
+ * can be wrong. A subscription belongs to the home when its metadata says so,
+ * or - for subscriptions from before checkout stamped the address - when our
+ * record for that subscription id says so.
+ */
+async function billingStripeSubscriptionsForAddress({ stripeCustomerId, addressId, stripeClient = stripe }) {
+  if (!stripeCustomerId || !addressId) return [];
+  const local = await Subscription.find({ addressId, stripeSubscriptionId: { $nin: [null, ""] } })
+    .select("stripeSubscriptionId")
+    .lean();
+  const localIds = new Set(local.map((record) => String(record.stripeSubscriptionId)));
+
+  const found = [];
+  for await (const stripeSubscription of stripeClient.subscriptions.list({
+    customer: String(stripeCustomerId),
+    status: "all",
+    limit: 100,
+  })) {
+    if (!BILLING_STRIPE_STATUSES.has(normalizeStripeStatus(stripeSubscription.status))) continue;
+    const stamped = String(stripeSubscription.metadata?.addressId || "");
+    if (stamped ? stamped === String(addressId) : localIds.has(String(stripeSubscription.id))) {
+      found.push(stripeSubscription);
+    }
+  }
+  return found;
+}
+
 function deriveAccessStatus(subscription) {
   const status = normalizeStripeStatus(subscription?.status);
   return ["active", "trialing"].includes(status) ? "active" : "inactive";
@@ -1128,16 +1180,29 @@ async function upsertSubscriptionRecordFromStripe({
     throw new Error(`Unable to map Stripe price to local plan: ${priceId || "missing price id"}`);
   }
 
+  /*
+   * ONE STRIPE SUBSCRIPTION, ONE RECORD - MATCHED BY ITS OWN ID.
+   *
+   * A record that already belongs to a different Stripe subscription is never
+   * taken over. It used to be: any live record for the same user and address
+   * would do, so when a customer whose renewal had failed bought again, a
+   * later sync of the OLD past-due subscription found the NEW subscription's
+   * record and wrote itself over it. The customer had paid and was shown as
+   * locked out (2026-10-30). The only records that may be adopted are ones no
+   * Stripe subscription has claimed yet: legacy and admin-created memberships.
+   */
   const metadata = canonicalStripeSubscription.metadata || {};
+  const stripeStatus = normalizeStripeStatus(canonicalStripeSubscription.status);
   let subscription =
     (await Subscription.findOne({ stripeSubscriptionId: canonicalStripeSubscription.id })) ||
     null;
 
   if (!subscription && metadata.localSubscriptionId) {
-    subscription = await Subscription.findOne({
+    const stamped = await Subscription.findOne({
       _id: metadata.localSubscriptionId,
       user: user._id,
     });
+    if (stamped && isAdoptableRecord(stamped, canonicalStripeSubscription.id)) subscription = stamped;
   }
 
   const addressId = metadata.addressId || addressIdHint || subscription?.addressId || null;
@@ -1153,6 +1218,21 @@ async function upsertSubscriptionRecordFromStripe({
   }
   const address = addressId ? user.addresses?.id(addressId) : null;
   if (!address) {
+    /*
+     * An ended subscription nobody can place - typically one from before
+     * checkout stamped the address - is history, not an error. Throwing here
+     * failed the whole webhook event, Stripe retried it for days, and every
+     * retry re-ran the sync of the customer's other subscriptions.
+     */
+    if (ENDED_STRIPE_STATUSES.has(stripeStatus)) {
+      if (subscription && subscription.status !== stripeStatus) {
+        subscription.status = stripeStatus;
+        subscription.accessStatus = "inactive";
+        subscription.cancellationDate = subscription.cancellationDate || toDate(canonicalStripeSubscription.ended_at) || new Date();
+        await subscription.save();
+      }
+      return subscription || null;
+    }
     throw new Error("Unable to resolve subscription address for Stripe subscription");
   }
 
@@ -1162,6 +1242,7 @@ async function upsertSubscriptionRecordFromStripe({
         user: user._id,
         addressId: address._id,
         status: { $in: ["active", "trialing", "past_due", "unpaid", "incomplete"] },
+        $or: [{ stripeSubscriptionId: null }, { stripeSubscriptionId: "" }, { stripeSubscriptionId: { $exists: false } }],
       }).sort({ updatedAt: -1 })) || null;
   }
 
@@ -1227,6 +1308,10 @@ async function upsertSubscriptionRecordFromStripe({
   if (["active", "trialing"].includes(String(subscription.status || "").toLowerCase()) && !subscription.cancelAtPeriodEnd) {
     subscription.cancellationReason = null;
   }
+  /* Ended because another subscription for this home replaced it (see REPLACED_BY_METADATA_KEY). */
+  if (subscription.status === "canceled" && metadata[REPLACED_BY_METADATA_KEY]) {
+    subscription.cancellationReason = "replaced_by_new_subscription";
+  }
   subscription.pendingPlan = pendingChange.pendingPlan;
   subscription.pendingBillingCycle = pendingChange.pendingBillingCycle;
   subscription.pendingStripePriceId = pendingChange.pendingStripePriceId;
@@ -1234,12 +1319,39 @@ async function upsertSubscriptionRecordFromStripe({
   subscription.planPrice = getPlanPrice(plan, billingCycle);
   subscription.paymentMethod = "card";
 
-  await subscription.save();
+  try {
+    await subscription.save();
+  } catch (error) {
+    /*
+     * The home already has an active record backed by another Stripe
+     * subscription, and the database allows one. The home stays covered by
+     * that record; this is a double-billing problem for a person, not
+     * something a retry can fix, so callers alert Admin and move on.
+     */
+    if (error?.code === 11000 && String(error?.message || "").includes("subscription_one_active_per_address_idx")) {
+      const existing = await Subscription.findOne({
+        user: user._id,
+        addressId: address._id,
+        status: { $in: ["active", "trialing"] },
+      });
+      throw Object.assign(new Error("This home already has an active membership record"), {
+        code: HOME_ALREADY_ACTIVE,
+        existing,
+        stripeSubscription: canonicalStripeSubscription,
+      });
+    }
+    throw error;
+  }
 
-  // Cancel any other active subscriptions for the same address.
-  // Stripe is the single source of truth; the record we just synced is canonical.
-  // This is the only place new active state is ever written, so running dedup here
-  // covers every code path: checkout, webhook, upgrade, downgrade, reactivate.
+  // Retire any other active membership record for the same address that no
+  // Stripe subscription backs (legacy and admin-created ones): the record we
+  // just synced supersedes it. This is the only place new active state is ever
+  // written, so running dedup here covers every code path.
+  //
+  // A record backed by a DIFFERENT Stripe subscription is never touched. Marking
+  // it canceled here would hide a subscription Stripe is still billing; two live
+  // Stripe subscriptions for one home is a billing problem for a person to
+  // resolve, and checkout surfaces it to Admin (see liveStripeSubscriptionSiblings).
   if (subscription.addressId && ["active", "trialing"].includes(subscription.status)) {
     await Subscription.updateMany(
       {
@@ -1247,6 +1359,7 @@ async function upsertSubscriptionRecordFromStripe({
         addressId: subscription.addressId,
         _id: { $ne: subscription._id },
         status: { $in: ["active", "trialing"] },
+        $or: [{ stripeSubscriptionId: null }, { stripeSubscriptionId: "" }, { stripeSubscriptionId: { $exists: false } }],
       },
       {
         $set: {
@@ -1520,7 +1633,13 @@ async function getOwnedSubscriptionForAddress({ userId, addressId, statuses = nu
     query.status = { $in: statuses };
   }
 
-  return Subscription.findOne(query).sort({ updatedAt: -1 });
+  /*
+   * A home can hold more than one record - a past-due membership beside the one
+   * that replaced it - so "most recently touched" is not good enough: whichever
+   * a background sync wrote last would win. The record that grants access wins.
+   */
+  const candidates = await Subscription.find(query).sort({ updatedAt: -1 });
+  return selectCurrentSubscription(candidates);
 }
 
 module.exports = {
@@ -1542,6 +1661,13 @@ module.exports = {
   getPlanAndBillingFromPrice,
   mapStripePriceToPlan,
   normalizeStripeStatus,
+  ENDED_STRIPE_STATUSES,
+  BILLING_STRIPE_STATUSES,
+  PAYMENT_RECOVERY_STATUSES,
+  REPLACED_BY_METADATA_KEY,
+  HOME_ALREADY_ACTIVE,
+  isAdoptableRecord,
+  billingStripeSubscriptionsForAddress,
   deriveAccessStatus,
   subscriptionGrantsAccess,
   compareSubscriptionAccess,

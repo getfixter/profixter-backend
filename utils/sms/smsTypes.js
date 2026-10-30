@@ -204,6 +204,11 @@ const SMS_TYPES = {
     timeCritical: false,
     description: "A membership payment failed and needs attention.",
   },
+  MEMBERSHIP_RESTORED: {
+    channelClass: TRANSACTIONAL,
+    timeCritical: false,
+    description: "One-off apology after a repair restored a membership's access.",
+  },
 
   /* -------------------------- Loyalty Benefits -------------------------- */
   /*

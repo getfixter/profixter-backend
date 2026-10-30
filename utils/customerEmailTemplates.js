@@ -687,11 +687,12 @@ function createCustomerEmailTemplates({
         content: `
           <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Payment method needs attention</h1>
           <p style="margin:0 0 16px;">${greeting(name)}</p>
-          <p style="margin:0 0 16px;">We could not process your Profixter membership payment. Please review your payment method to avoid an interruption in service.</p>
+          <p style="margin:0 0 16px;">We could not process your Profixter membership payment. Your membership has not ended, but booking new visits is paused until the payment goes through.</p>
+          <p style="margin:0 0 16px;">We will try your card again automatically. To restore booking now, pay or update your card from your account. There is no need to buy a new membership.</p>
           ${detailCard(rows)}
-          ${button(`${ACCOUNT_URL}?tab=plan`, "Review billing details")}
+          ${button(`${ACCOUNT_URL}?tab=plan`, "Update payment")}
           <p class="email-muted" style="margin:18px 0 0;color:#64748b;font-size:14px;">If you recently updated your payment method, no further action may be needed.</p>`,
-        text: `${greeting(name)}\n\nWe could not process your Profixter membership payment. Please review your payment method to avoid an interruption in service.\n\n${textDetails(rows)}\n\nReview billing details: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\nWe could not process your Profixter membership payment. Your membership has not ended, but booking new visits is paused until the payment goes through.\n\nWe will try your card again automatically. To restore booking now, pay or update your card from your account. There is no need to buy a new membership.\n\n${textDetails(rows)}\n\nUpdate payment: ${ACCOUNT_URL}?tab=plan\n\n${SUPPORT_EMAIL}`,
       });
     },
 

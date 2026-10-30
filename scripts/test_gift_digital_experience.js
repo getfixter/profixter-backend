@@ -325,7 +325,7 @@ test("the deferral can only ever delay a charge, never advance one", () => {
   // little late rather than billing over covered time.
   const clamp = stripeRouteSource.slice(
     stripeRouteSource.indexOf("const MIN_TRIAL_SECONDS"),
-    stripeRouteSource.indexOf("const stripeCustomerId")
+    stripeRouteSource.indexOf("const sessionConfig")
   );
   assert.match(clamp, /Math\.max\(Math\.floor\(giftCoverageEndsAt/);
   assert(!/Math\.min\(/.test(clamp), "nothing may pull the billing date earlier");

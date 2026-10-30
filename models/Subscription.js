@@ -116,6 +116,24 @@ const SubscriptionSchema = new mongoose.Schema(
     pendingStripePriceId: { type: String, default: null },
     pendingChangeEffectiveDate: { type: Date, default: null },
 
+    /* Stamped once when Admin was told this home is billed by two subscriptions. */
+    duplicateBillingAlertedAt: { type: Date, default: null },
+    /*
+     * A one-off "your membership is working again" notice after a repair.
+     * Requested by an operator (scripts/ops/request_membership_restored_notice.js),
+     * claimed and sent exactly once by jobs/membershipNotices.js. See there.
+     */
+    restorationNotice: {
+      requestedAt: { type: Date, default: null },
+      requestedBy: { type: String, default: null },
+      claimedAt: { type: Date, default: null },
+      emailSentAt: { type: Date, default: null },
+      emailError: { type: String, default: null },
+      smsMessageId: { type: String, default: null },
+      smsStatus: { type: String, default: null },
+      smsError: { type: String, default: null },
+      skippedReason: { type: String, default: null },
+    },
     renewalAttempts: { type: Number, default: 0 },
     planPrice: { type: Number, default: 0 },
     paymentMethod: { type: String, default: "card" },

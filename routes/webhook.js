@@ -54,6 +54,10 @@ const {
   upsertSubscriptionFromStripe,
   syncCustomerFromStripe,
   handlePaymentFailure,
+  ENDED_STRIPE_STATUSES,
+  REPLACED_BY_METADATA_KEY,
+  HOME_ALREADY_ACTIVE,
+  billingStripeSubscriptionsForAddress,
 } = require("../utils/subscriptionManagement");
 const {
   applyOneTimePaymentSuccessToBooking,
@@ -1561,6 +1565,68 @@ async function handleTipChargeRefunded(charge) {
   return { tipId: String(tip._id), ...result };
 }
 
+/**
+ * Tell Admin, once, when a home is now billed by two Stripe subscriptions.
+ *
+ * Checkout refuses a second membership for a home Stripe is still billing, so
+ * this should never fire. It exists because "should never" is how the
+ * 2026-10-30 duplicate happened: if it does fire, money is being collected
+ * twice, and that needs a person the same day, not a customer finding it on a
+ * statement. Nothing is canceled or refunded automatically - which of the two
+ * to keep, and whether to refund, is a decision.
+ *
+ * Never throws: an alert failing must not stop the membership being recorded.
+ */
+async function alertIfHomeBilledTwice({ user, subscription, stripeSubscription }) {
+  try {
+    if (!subscription?.addressId || subscription.duplicateBillingAlertedAt) return;
+    const customerId = String(stripeSubscription?.customer || subscription.stripeCustomerId || "");
+    const billing = await billingStripeSubscriptionsForAddress({
+      stripeCustomerId: customerId,
+      addressId: subscription.addressId,
+    });
+    const others = billing.filter((s) => s.id !== subscription.stripeSubscriptionId);
+    if (!others.length) return;
+
+    const claimed = await Subscription.updateOne(
+      { _id: subscription._id, duplicateBillingAlertedAt: null },
+      { $set: { duplicateBillingAlertedAt: new Date() } }
+    );
+    if (!claimed.modifiedCount) return;
+
+    logWebhook("error", "home_billed_by_two_subscriptions", {
+      userId: String(user._id),
+      addressId: String(subscription.addressId),
+      newStripeSubscriptionId: subscription.stripeSubscriptionId,
+      otherStripeSubscriptionIds: others.map((s) => `${s.id}:${s.status}`),
+    });
+    await sendAdminEventNotification({
+      subject: `Action needed: two memberships billing one home - ${user.name || user.email}`,
+      heading: "Two memberships are billing the same home",
+      templateKey: "admin_duplicate_membership_billing",
+      replyToEmail: user.email,
+      customerName: user.name || "",
+      customerEmail: user.email,
+      source: "stripeWebhook",
+      who: user.name || user.email,
+      highlight: "A new membership was bought for a home that already has one Stripe is billing. Decide which to keep; nothing was canceled automatically.",
+      fields: [
+        ["Email", user.email],
+        ["Phone", user.phone],
+        ["Address", formatAddressParts(subscription.addressSnapshot || {})],
+        ["Subscription on record", subscription.stripeSubscriptionId],
+        ...others.map((s) => ["Also billing", `${s.id} (${s.status})`]),
+      ],
+      action: { label: "View Customer", url: adminLink.customer(user._id) },
+    }, { logContext: { userId: user._id } });
+  } catch (error) {
+    logWebhook("warn", "duplicate_billing_check_failed", {
+      userId: String(user?._id || ""),
+      message: error?.message || String(error),
+    });
+  }
+}
+
 async function handleCheckoutCompleted(session, eventId) {
   if (isFixterTipCheckoutSession(session)) {
     return handleFixterTipCheckoutCompleted(session, eventId);
@@ -1657,12 +1723,22 @@ async function handleCheckoutCompleted(session, eventId) {
 
   const stripeSubscription = await retrieveStripeSubscription(stripeSubscriptionId);
 
-  const subscription = await upsertSubscriptionFromStripe({
-    stripeSubscription,
-    user,
-    addressIdHint: session.metadata?.addressId || session.client_reference_id || null,
-    stripeCheckoutSessionId: session.id,
-  });
+  let subscription;
+  try {
+    subscription = await upsertSubscriptionFromStripe({
+      stripeSubscription,
+      user,
+      addressIdHint: session.metadata?.addressId || session.client_reference_id || null,
+      stripeCheckoutSessionId: session.id,
+    });
+  } catch (error) {
+    if (error?.code !== HOME_ALREADY_ACTIVE) throw error;
+    // Covered already; the new subscription is a second bill for the same home.
+    await alertIfHomeBilledTwice({ user, subscription: error.existing, stripeSubscription });
+    return error.existing;
+  }
+
+  await alertIfHomeBilledTwice({ user, subscription, stripeSubscription });
 
   const plan = String(subscription.subscriptionType || "").toLowerCase();
   const billingCycle = subscription.billingCycle || "monthly";
@@ -1911,17 +1987,30 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
     stripeSubscriptionId: canonicalStripeSubscription.id,
   });
   const wasScheduledForCancellation = existingSub?.cancelAtPeriodEnd === true;
+  /*
+   * Replaced, not ended: another subscription for the same home took over.
+   * From the customer's side their membership carries straight on, so the
+   * "your membership has ended" email and text would be false.
+   */
+  const replacedByNewSubscription = !!canonicalStripeSubscription?.metadata?.[REPLACED_BY_METADATA_KEY];
   const wasAlreadyCanceled = existingSub?.status === "canceled";
   const hadPaymentFailureCancellation = existingSub?.cancellationReason === "payment_failed";
 
   const incomingStatus = String(canonicalStripeSubscription?.status || "").toLowerCase();
   const incomingCancelAtPeriodEnd = !!canonicalStripeSubscription.cancel_at_period_end;
 
-  const subscription = await upsertSubscriptionFromStripe({
-    stripeSubscription: canonicalStripeSubscription,
-    user,
-    addressIdHint: canonicalStripeSubscription.metadata?.addressId || null,
-  });
+  let subscription;
+  try {
+    subscription = await upsertSubscriptionFromStripe({
+      stripeSubscription: canonicalStripeSubscription,
+      user,
+      addressIdHint: canonicalStripeSubscription.metadata?.addressId || null,
+    });
+  } catch (error) {
+    if (error?.code !== HOME_ALREADY_ACTIVE) throw error;
+    await alertIfHomeBilledTwice({ user, subscription: error.existing, stripeSubscription: canonicalStripeSubscription });
+    return null;
+  }
 
   if (!subscription) return null;
 
@@ -1971,7 +2060,7 @@ async function syncStripeSubscriptionRecord(stripeSubscription) {
 
   // Send subscription_canceled email only on the transition → canceled,
   // and only when not caused by payment failure (payment_failed email covers that case).
-  if (incomingStatus === "canceled" && !wasAlreadyCanceled && !hadPaymentFailureCancellation) {
+  if (incomingStatus === "canceled" && !wasAlreadyCanceled && !hadPaymentFailureCancellation && !replacedByNewSubscription) {
     try {
       const endedDate = subscription.cancellationDate || subscription.currentPeriodEnd;
       await mail.sendTx("subscription_canceled", user.email, {
@@ -2265,6 +2354,22 @@ async function handleCustomerUpdated(customer) {
   return user ? { userId: String(user._id) } : null;
 }
 
+/*
+ * A card was attached to a customer.
+ *
+ * Refreshes the records of the customer's subscriptions so payment details
+ * stay current. Two rules, both learned the hard way (2026-10-30):
+ *
+ *   - Each subscription only ever updates ITS OWN record (matched by Stripe
+ *     id inside upsertSubscriptionFromStripe), so an old past-due subscription
+ *     cannot overwrite the membership that replaced it.
+ *   - One subscription that cannot be synced - an ended one from before
+ *     checkout stamped the address - is logged and skipped. It used to fail
+ *     the whole event, and Stripe's retries re-ran the sync for days.
+ *
+ * Ended subscriptions with no record of their own are skipped outright: there
+ * is nothing to refresh, and nothing a card can change about them.
+ */
 async function handlePaymentMethodAttached(paymentMethod) {
   const customerId = paymentMethod?.customer ? String(paymentMethod.customer) : null;
   if (!customerId) return null;
@@ -2279,15 +2384,32 @@ async function handlePaymentMethodAttached(paymentMethod) {
   });
 
   let synced = 0;
+  let skipped = 0;
   for (const stripeSubscription of subscriptions.data || []) {
-    const updated = await upsertSubscriptionFromStripe({
-      stripeSubscription,
-      user,
-      addressIdHint: stripeSubscription.metadata?.addressId || null,
-    });
-    if (updated) synced++;
+    try {
+      if (ENDED_STRIPE_STATUSES.has(String(stripeSubscription.status || "").toLowerCase())) {
+        const known = await Subscription.exists({ stripeSubscriptionId: stripeSubscription.id });
+        if (!known) {
+          skipped++;
+          continue;
+        }
+      }
+      const updated = await upsertSubscriptionFromStripe({
+        stripeSubscription,
+        user,
+        addressIdHint: stripeSubscription.metadata?.addressId || null,
+      });
+      if (updated) synced++;
+    } catch (error) {
+      skipped++;
+      logWebhook("warn", "payment_method_attached_subscription_skipped", {
+        stripeSubscriptionId: stripeSubscription.id,
+        status: stripeSubscription.status,
+        message: error?.message || String(error),
+      });
+    }
   }
-  return { userId: String(user._id), synced };
+  return { userId: String(user._id), synced, skipped };
 }
 
 function eventStripeIds(event) {

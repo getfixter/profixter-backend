@@ -33,6 +33,8 @@ const {
   clearStripeSubscriptionSchedule,
   subscriptionGrantsAccess,
   verifySubscriptionAccess,
+  billingStripeSubscriptionsForAddress,
+  PAYMENT_RECOVERY_STATUSES,
 } = require("../utils/subscriptionManagement");
 const {
   loyaltyStatusForSubscription,
@@ -1006,6 +1008,72 @@ router.post("/manage/address/:addressId/reactivate", auth, async (req, res) => {
     return res.status(500).json({
       message: "Unable to reactivate subscription right now",
     });
+  }
+});
+
+/**
+ * Fix a failed membership payment.
+ *
+ * A past-due membership has not ended: Stripe is still retrying the renewal,
+ * and paying it brings the membership straight back with nothing lost. So
+ * this is the way out of a failed payment - never a second purchase, which is
+ * what the account screen used to suggest (2026-10-30).
+ *
+ *   kind "invoice"  Stripe's own page for the unpaid renewal: pay it with this
+ *                   or another card, and the membership is active again.
+ *   kind "portal"   No unpaid invoice to point at: the billing portal, where
+ *                   the card for the next attempt can be changed.
+ *
+ * Only a subscription on this account, for this home, that Stripe itself
+ * reports as past_due or unpaid. Read from Stripe so a stale record can never
+ * send somebody to pay an invoice that is already settled or void.
+ */
+router.post("/manage/address/:addressId/payment-recovery", auth, async (req, res) => {
+  try {
+    const { addressId } = req.params;
+    if (!mongoose.isValidObjectId(addressId)) {
+      return res.status(400).json({ message: "Invalid addressId" });
+    }
+    const { user, address } = await getOwnedAddress(req.user.id, addressId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!address) return res.status(404).json({ message: "Address not found" });
+    if (!user.stripeCustomerId) {
+      return res.status(404).json({ message: "No membership payment needs attention.", code: "NO_PAYMENT_RECOVERY" });
+    }
+
+    const billing = await billingStripeSubscriptionsForAddress({
+      stripeCustomerId: user.stripeCustomerId,
+      addressId: address._id,
+    });
+    const recovering = billing.find((s) => PAYMENT_RECOVERY_STATUSES.has(s.status));
+    if (!recovering) {
+      return res.status(404).json({ message: "No membership payment needs attention.", code: "NO_PAYMENT_RECOVERY" });
+    }
+
+    const latestInvoiceId =
+      typeof recovering.latest_invoice === "string" ? recovering.latest_invoice : recovering.latest_invoice?.id;
+    if (latestInvoiceId) {
+      const invoice = await stripe.invoices.retrieve(String(latestInvoiceId));
+      if (
+        invoice?.status === "open" &&
+        invoice.hosted_invoice_url &&
+        String(invoice.customer) === String(user.stripeCustomerId)
+      ) {
+        return res.json({ kind: "invoice", url: invoice.hosted_invoice_url, amountDue: invoice.amount_due });
+      }
+    }
+
+    const portalParams = {
+      customer: user.stripeCustomerId,
+      return_url: `${process.env.CLIENT_URL || "https://www.profixter.com"}/account?tab=plan`,
+    };
+    const portalConfigurationId = resolveBillingPortalConfigurationId();
+    if (portalConfigurationId) portalParams.configuration = portalConfigurationId;
+    const portal = await stripe.billingPortal.sessions.create(portalParams);
+    return res.json({ kind: "portal", url: portal.url });
+  } catch (err) {
+    console.error("POST /subscriptions/manage/address/:addressId/payment-recovery error:", err);
+    return res.status(500).json({ message: "Unable to open the payment page right now" });
   }
 });
 

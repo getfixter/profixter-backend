@@ -396,6 +396,15 @@ const DEFINITIONS = {
     tokens: () => ({}),
   },
 
+  MEMBERSHIP_RESTORED: {
+    label: "Membership restored (apology)",
+    template:
+      "Hi {{firstName}}! This is Profixter. We apologize for the inconvenience with your membership. " +
+      "The technical issue has been fixed, and your membership is now active. " +
+      "You can book your handyman visit anytime at https://www.profixter.com. Thank you for your patience!",
+    tokens: ({ name }) => ({ firstName: firstNameOf(name) }),
+  },
+
   /* --------------------------- The number itself ------------------------ */
   INBOUND_INFO_REPLY: {
     label: "Reply to an unmonitored inbound text",

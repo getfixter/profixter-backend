@@ -22,6 +22,7 @@ const {
 const { startSmsJobs } = require("./jobs/smsJobs");
 const { startOverrideRefresh } = require("./utils/communications/templateOverrides");
 const { startGiftLifecycle } = require("./jobs/giftLifecycle");
+const { startMembershipNotices } = require("./jobs/membershipNotices");
 const { startLoyaltyReminders } = require("./jobs/loyaltyReminders");
 const { startGrowthJobs } = require("./jobs/growthActions");
 const { startVisibilityJobs } = require("./jobs/visibility");
@@ -518,6 +519,7 @@ startOverrideRefresh();
  * gated internally on GIFTS_ENABLED.
  */
 startGiftLifecycle();
+startMembershipNotices();
 
 /*
  * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
