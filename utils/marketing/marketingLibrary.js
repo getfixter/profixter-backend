@@ -366,7 +366,7 @@ const FIRST_CONTACT = [
  * visit" without telling them what they already have.
  *
  * So all four say the same four facts, in different words and from different
- * angles: you have a free visit, it covers one job, labor and the trip are
+ * angles (pre 2026-10-30 wording below; the Free Visit is now a to-do-list visit, no labor): you have a free visit, it covers one job, labor and the trip are
  * included, and you do not have to join anything to use it. Membership is
  * mentioned once, in passing, at the end - selling a subscription to somebody
  * who has never met us is asking for the second decision before the first.
@@ -374,22 +374,27 @@ const FIRST_CONTACT = [
  * The sequence ends. Day 45 says so and the eligibility rules enforce it.
  */
 const NON_MEMBER_LIFECYCLE = [
+  /*
+   * The Free Visit sequence. From 2026-10-30 the Free Visit is a free visit to
+   * go over the customer's to-do list and explain which service fits - no
+   * labor. The ids are unchanged on purpose: each email keeps its place in the
+   * sequence and nobody who already had one receives it again.
+   */
   {
     id: "nonmember_free_visit_v2",
     audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit",
     kind: KIND.HELP, lifecycleDay: 2, priority: PRIORITY.LIFECYCLE,
     requiresFreeVisitEligible: true,
-    subject: "Your first visit is free - pick one job",
-    altSubject: "There is a free visit on your account",
-    preheader: "One job, labor and trip included, no membership needed.",
-    headline: "Your first visit is free",
+    subject: "Your Free Visit: let's look at your to-do list",
+    altSubject: "A free visit to go over your list",
+    preheader: "A free home visit to review what you need. No obligation.",
+    headline: "Let's take a look at your to-do list",
     paragraphs: [
-      ({ name }) => `Hi ${name}, thanks for setting up your account. There is a free first visit on it.`,
-      "It covers one job. A Fixter comes out, does the work, and that is the visit - labor and the trip are included.",
-      "You do not need a membership to use it. It is there so you can see how we work before deciding whether you want us again.",
-      "Most people pick the thing they walk past every day and have stopped noticing.",
+      ({ name }) => `Hi ${name}, thanks for setting up your account. Your Free Visit is ready whenever you are.`,
+      "We come by, walk through your to-do list with you, and help you find the right Profixter service for it.",
+      "Repairs and labor aren't part of this visit - it is a no-pressure way to meet us and get clear answers before you decide anything.",
     ],
-    ctaLabel: "Book your free visit", ctaRoute: "book",
+    ctaLabel: "Book your Free Visit", ctaRoute: "bookFree",
     closing: "Booking takes about a minute.",
   },
   {
@@ -397,13 +402,13 @@ const NON_MEMBER_LIFECYCLE = [
     audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit_ideas",
     kind: KIND.HELP, lifecycleDay: 9, priority: PRIORITY.LIFECYCLE,
     requiresFreeVisitEligible: true,
-    subject: "Not sure what to use the free visit on?",
-    altSubject: "Ideas for your free visit",
-    preheader: "It only has to be one job. Here are the usual ones.",
-    headline: "Not sure what to use it on?",
+    subject: "Not sure where to start? Try a Free Visit",
+    altSubject: "Bring your list to a Free Visit",
+    preheader: "Show us the list. We'll tell you what fits.",
+    headline: "Not sure where to start?",
     paragraphs: [
-      "Your free first visit is still unused. The most common reason people leave it is not knowing whether their job counts.",
-      "It almost certainly does. One job, and these are the ones we get asked for most:",
+      "Most people have a list in their head and no idea which of it a handyman can handle. That is exactly what the Free Visit is for.",
+      "Show us things like these and we'll tell you how we'd handle them:",
     ],
     bullets: [
       "A TV or mirror still waiting to go up",
@@ -413,29 +418,29 @@ const NON_MEMBER_LIFECYCLE = [
       "Shelves that never got hung",
       "Loose handles and hardware",
     ],
-    ctaLabel: "Book your free visit", ctaRoute: "book",
-    closing: "Labor and the trip are included. Pick one and we will handle it.",
+    ctaLabel: "Book your Free Visit", ctaRoute: "bookFree",
+    closing: "The Free Visit is for advice and planning; the work itself is booked separately.",
   },
   {
     id: "nonmember_free_visit_still_yours_v1",
     audience: "non_member", category: CATEGORY.FREE_VISIT, topic: "free_visit_unclaimed",
     kind: KIND.HELP, lifecycleDay: 21, priority: PRIORITY.LIFECYCLE,
     requiresFreeVisitEligible: true,
-    subject: "Still unclaimed: your free first visit",
-    altSubject: "The free visit has not been used",
-    preheader: "Available now. One job, labor and trip included.",
-    headline: "It is still sitting there",
+    subject: "Your Free Visit is still available",
+    altSubject: "We'd still love to see your list",
+    preheader: "A free visit to go over your to-do list. No obligation.",
+    headline: "Your Free Visit is still available",
     paragraphs: [
-      ({ name }) => `Hi ${name}, the free first visit on your account has not been used yet.`,
+      ({ name }) => `Hi ${name}, you haven't used your Free Visit yet.`,
       /*
        * "Available now", not "no deadline". The offer is a current fact about
        * the account, and writing it as a permanent one is a promise nobody
        * decided to make and the product does not enforce.
        */
-      "It is available now. One job, labor and the trip included, and you are under no obligation afterwards.",
-      "We are a Long Island handyman company - in-house Fixters, licensed and insured, working across Nassau and Suffolk. The free visit is the easiest way to find out whether we are any good.",
+      "It is available now: we come by, look at what you need done, and explain which service fits. You are under no obligation afterwards.",
+      "We are a Long Island handyman company - in-house Fixters, licensed and insured, working across Nassau and Suffolk. The Free Visit is the easiest way to meet us.",
     ],
-    ctaLabel: "Book your free visit", ctaRoute: "book",
+    ctaLabel: "Book your Free Visit", ctaRoute: "bookFree",
   },
   {
     id: "nonmember_free_visit_final_v1",
@@ -445,10 +450,10 @@ const NON_MEMBER_LIFECYCLE = [
     /* The one campaign allowed to send after the sequence has closed, because
        it is what closes it. See templateEligible. */
     finalFreeVisitReminder: true,
-    subject: "Last reminder about your free visit",
-    altSubject: "The last free-visit reminder",
+    subject: "Last reminder about your Free Visit",
+    altSubject: "The last Free Visit reminder",
     preheader: "Available now. The last reminder we will send about it.",
-    headline: "Last reminder about the free visit",
+    headline: "Last reminder about the Free Visit",
     paragraphs: [
       /*
        * The promise is narrow and has to stay narrow: this is the last
@@ -456,11 +461,11 @@ const NON_MEMBER_LIFECYCLE = [
        * eligibility rules enforce exactly that and no more, and the copy must
        * not claim a silence the system is not going to keep.
        */
-      "This is the last reminder we will send about your free first visit.",
-      "It is available now. One job, labor and the trip included, no membership required.",
-      "If something around the house has been annoying you for months, that is what it is for. If not, no harm done - we will stop bringing this one up.",
+      "This is the last reminder we will send about your Free Visit.",
+      "It is available now: a free visit to go over your to-do list and help you choose the right service. No membership required.",
+      "If you would rather just get something fixed, you can book a handyman any time. Otherwise, no harm done - we will stop bringing this one up.",
     ],
-    ctaLabel: "Book your free visit", ctaRoute: "book",
+    ctaLabel: "Book your Free Visit", ctaRoute: "bookFree",
     closing: "If you would rather have a Fixter coming regularly, membership starts at $149 a month. Otherwise, we will see you whenever something breaks.",
   },
   {

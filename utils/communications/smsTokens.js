@@ -75,17 +75,26 @@ const DEFINITIONS = {
   FREE_VISIT_CONFIRMED: {
     label: "Free first visit confirmed",
     template:
-      "{{brand}}: your free first visit is confirmed for {{when}}. " +
-      "There is no charge for this visit. We will text you a reminder beforehand.",
-    tokens: ({ booking = {} }) => ({ when: whenPhrase(booking) }),
+      "{{brand}}: your {{visitName}} is confirmed for {{when}}. " +
+      "{{visitNote}} We will text you a reminder beforehand.",
+    tokens: ({ booking = {} }) => ({
+      when: whenPhrase(booking),
+      visitName: booking.freeVisitPurpose === "consultation" ? "Free Visit" : "free first visit",
+      visitNote:
+        booking.freeVisitPurpose === "consultation"
+          ? "We'll go over your to-do list together, at no charge."
+          : "There is no charge for this visit.",
+    }),
   },
 
   FREE_VISIT_REQUEST_RECEIVED: {
     label: "Free visit request received (homepage, no account)",
-    template:
-      "Got it! A Profixter team member will call you shortly to confirm your free visit on {{when}}. " +
-      "{{optOutLine}}",
-    tokens: ({ when = "" }) => ({ when: clean(when) }),
+    template: "{{receivedLine}} {{optOutLine}}",
+    tokens: ({ when = "", consultation = false }) => ({
+      receivedLine: consultation
+        ? `Got it! We've reserved your Free Visit on ${clean(when)}. A Profixter team member will confirm it shortly.`
+        : `Got it! A Profixter team member will call you shortly to confirm your free visit on ${clean(when)}.`,
+    }),
   },
 
   OWNER_LEAD_ALERT: {
@@ -194,8 +203,12 @@ const DEFINITIONS = {
   FREE_VISIT_COMPLETED: {
     label: "Free first visit completed",
     template:
-      "Thanks for trying {{brand}}! Your free first visit is complete. {{completionLinks}}",
-    tokens: () => ({ completionLinks: completionLinks() }),
+      "Thanks for trying {{brand}}! Your {{visitName}} is complete. {{completionLinks}}",
+    tokens: ({ booking = {} } = {}) => ({
+      visitName: booking.freeVisitPurpose === "consultation" ? "Free Visit" : "free first visit",
+      completionLinks:
+        booking.freeVisitPurpose === "consultation" ? "Ready to get your list done? Book anytime: profixter.com/book" : completionLinks(),
+    }),
   },
 
   ONE_TIME_VISIT_COMPLETED: {
@@ -458,16 +471,16 @@ const DEFINITIONS = {
   FREE_VISIT_REMINDER: {
     label: "Free visit reminder (Track A, day 4)",
     template:
-      "{{brand}}: your first visit is still free, labor and trip included. " +
-      "Pick one job and we will handle it: {{site}}/book",
+      "{{brand}}: your Free Visit is still waiting. We'll review your to-do list " +
+      "and help you pick the right service: {{site}}/book/free",
     tokens: () => ({}),
   },
 
   FREE_VISIT_LAST_CALL: {
     label: "Free visit reminder (Track A, day 30)",
     template:
-      "{{brand}}: the free first visit is still on your account. Most people start " +
-      "with the thing they walk past every day: {{site}}/book",
+      "{{brand}}: your Free Visit is still available. Show us your to-do list " +
+      "and we'll help you find the right plan: {{site}}/book/free",
     tokens: () => ({}),
   },
 

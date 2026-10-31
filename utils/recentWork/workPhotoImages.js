@@ -168,7 +168,15 @@ async function processAndStore(buffer, { now = new Date() } = {}) {
 
 /** Every key a photo owns, for deletion. */
 function keysOf(photo) {
-  return [photo?.thumb?.key, photo?.display?.key, photo?.full?.key].filter(Boolean);
+  return [
+    photo?.thumb?.key,
+    photo?.display?.key,
+    photo?.full?.key,
+    // A before/after pair owns its BEFORE images too.
+    photo?.before?.thumb?.key,
+    photo?.before?.display?.key,
+    photo?.before?.full?.key,
+  ].filter(Boolean);
 }
 
 async function purgeStorage(photo) {

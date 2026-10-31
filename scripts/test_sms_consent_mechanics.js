@@ -1030,6 +1030,15 @@ async function main() {
      * visit. All thirty-nine pre-existing types were rendered from the
      * committed file and from this one across five visit kinds (195 renders)
      * and compared character by character - identical.
+     *
+     * Re-pinned 2026-10-30 for Customer Experience 4.0: the Free Visit became a
+     * free visit to review the to-do list, with no labor. A booking marked
+     * freeVisitPurpose "consultation" is called a "Free Visit" in its own
+     * messages; every free visit booked before keeps its old wording exactly.
+     * FREE_VISIT_REMINDER and FREE_VISIT_LAST_CALL were rewritten because they
+     * promised labor. All other types were rendered from the committed file and
+     * from this one across six visit kinds (246 renders) - identical; only those
+     * two changed.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1037,7 +1046,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "e7cc408d425e7e3c97f40882f31742a88b1b92d9f336562781d37215c9e7faba",
+      "9a81be88e9a08b74fbfb4204553568025b85c704e8b29630d9a92c03b0652e6b",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

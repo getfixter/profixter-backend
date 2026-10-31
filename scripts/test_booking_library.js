@@ -295,20 +295,24 @@ async function routes() {
     section("One-Time Visit (checkout faked; nothing charged)");
     const oneTime = await makeUser(4);
     const otAddr = String(oneTime.addresses[0]._id);
-    await test("no photo and no example: refused before any checkout is created", async () => {
+    await test("no photo and no example: reaches checkout (photos are optional since 2026-10-30)", async () => {
+      // Customer Experience 4.0: the owner reviews every One-Time request and can ask for a photo.
       const before = stripeSessions.length;
       const s = slot(13);
       const r = await post("/api/bookings/one-time/checkout", sign(oneTime), { addressId: otAddr, selectedTask: "Replace faucet", note: "Kitchen faucet leaks at the base", date: s.iso, requestedDate: s.ymd, requestedTime: s.time });
-      assert.strictEqual(r.status, 400, JSON.stringify(r.body));
-      assert.strictEqual(r.body.code, "PHOTO_REQUIRED");
-      assert.strictEqual(stripeSessions.length, before);
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.ok(r.body.url);
+      assert.strictEqual(stripeSessions.length, before + 1);
+      const b = await Booking.findById(r.body.bookingId).lean();
+      assert.strictEqual(b.libraryReference || "", "");
+      assert.deepStrictEqual(b.images, []);
     });
     await test("an example and no photo reaches checkout, with the example on the held booking", async () => {
       const s = slot(13);
       const r = await post("/api/bookings/one-time/checkout", sign(oneTime), { addressId: otAddr, selectedTask: "Replace faucet", note: "Kitchen faucet leaks at the base", date: s.iso, requestedDate: s.ymd, requestedTime: s.time, libraryReference: "faucet" });
       assert.ok([200, 201].includes(r.status), `${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
       assert.ok(r.body.url, "checkout url returned");
-      const b = await Booking.findOne({ user: oneTime._id }).lean();
+      const b = await Booking.findById(r.body.bookingId).lean();
       assert.strictEqual(b.bookingType, "one_time_handyman_visit");
       assert.strictEqual(b.paymentState, "pending", "payment still pending: checkout behaviour unchanged");
       assert.strictEqual(b.libraryReference, "faucet");

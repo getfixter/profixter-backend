@@ -41,6 +41,17 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       plan,
       billingCycle,
       addressId,
+      /*
+       * Started from Book a Handyman: the confirmation page still runs (it
+       * fires the Subscribe the ad accounts count) and then hands the
+       * customer back to finish booking the visit they already described.
+       */
+      ...(String(req.body?.returnTo || "") === "handyman"
+        ? {
+            successUrl: `${CLIENT_URL}/confirmationpage?session_id={CHECKOUT_SESSION_ID}&next=handyman`,
+            cancelUrl: `${CLIENT_URL}/book/handyman?canceled=membership`,
+          }
+        : {}),
       tracking: {
         fbp: getCookie(req, "_fbp"),
         fbc: getCookie(req, "_fbc"),

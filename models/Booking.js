@@ -104,6 +104,15 @@ const BookingSchema = new mongoose.Schema({
    */
   freeVisitChannel: { type: String, enum: ["", "online", "callback"], default: "" },
   /*
+   * What a free visit is FOR. "consultation" (from 2026-10-30): a free visit
+   * to review the customer's to-do list and explain Profixter's services - no
+   * labor. Empty on every free visit booked before then, which keeps the
+   * 90-minute labor visit it was booked as; nothing rewrites that promise.
+   */
+  freeVisitPurpose: { type: String, enum: ["", "labor", "consultation"], default: "" },
+  /* The browser's id for one press of "Pay" on a paid visit: a retry reopens the same checkout. */
+  checkoutClientKey: { type: String, default: undefined, index: true, sparse: true },
+  /*
    * The browser's id for one online free-visit submission, so a retried or
    * refreshed submit returns the booking it already made instead of a second
    * one or a refusal. Unique per account; absent everywhere else.

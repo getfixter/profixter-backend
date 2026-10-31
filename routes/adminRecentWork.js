@@ -226,6 +226,52 @@ router.post(
   })
 );
 
+/*
+ * A before/after pair for What We Do: fields "before" and "after", one image
+ * each, plus the same details as a single upload. "illustrative" marks an
+ * example image (generated or staged) rather than a customer's real job.
+ */
+const pairUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024, files: 2 } }).fields([
+  { name: "before", maxCount: 1 },
+  { name: "after", maxCount: 1 },
+]);
+
+router.post("/pair", auth, ...sectionAccess, (req, res) => {
+  pairUpload(req, res, async (uploadError) => {
+    if (uploadError) return res.status(400).json({ message: uploadError.message || "That upload was refused." });
+    try {
+      const before = req.files?.before?.[0];
+      const after = req.files?.after?.[0];
+      if (!before || !after) return res.status(400).json({ message: "Add both a BEFORE and an AFTER photo." });
+      const photo = await service.createPairFromBuffers({
+        beforeBuffer: before.buffer,
+        afterBuffer: after.buffer,
+        uploader: { uploaderType: UPLOADER_TYPE.ADMIN, role: "admin" },
+        actor: actorOf(req),
+        fields: {
+          title: req.body.title,
+          caption: req.body.caption,
+          category: req.body.category,
+          group: req.body.group,
+          internalNote: req.body.internalNote,
+          illustrative: String(req.body.illustrative) === "true",
+          publishNow: String(req.body.publishNow) === "true",
+        },
+      });
+      await createAdminActivityLog(req, {
+        action: photo.status === "published" ? "recent_work.pair_published" : "recent_work.pair_library",
+        entityType: "work_photo",
+        entityId: String(photo._id),
+        entityName: photo.title || "Before & after",
+        details: { kind: "before_after", illustrative: photo.illustrative, group: photo.group },
+      }).catch(() => {});
+      return res.status(201).json({ created: [service.toAdminDTO(photo.toObject())], failed: [] });
+    } catch (error) {
+      return fail(res, error, "Upload failed");
+    }
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /* Moderating                                                          */
 /* ------------------------------------------------------------------ */

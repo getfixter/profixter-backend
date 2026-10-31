@@ -10,6 +10,8 @@ const ABSOLUTE_URLS = {
   fullDay: "https://profixter.com/book?visit=full-day",
   gift: "https://profixter.com/gift",
   signup: "https://profixter.com/signup",
+  freeVisit: "https://profixter.com/book/free",
+  handyman: "https://profixter.com/book/handyman",
 };
 
 const CALLBACK_CONFIRMATION_MARKER = "Reply \"Yes, call me\"";
@@ -153,10 +155,10 @@ function getRoutingRecommendation(value) {
   if (/\bfree\b/.test(text) && /\b(visit|first|handyman|offer)\b/.test(text)) {
     return {
       type: "free_visit",
-      label: "First Visit Free",
-      url: ABSOLUTE_URLS.signup,
+      label: "Free Visit",
+      url: ABSOLUTE_URLS.freeVisit,
       reason:
-        "New customers get their first handyman visit free: up to 90 minutes of labor, one per customer, no card needed, materials not included, subject to availability. Create an account and add your home, then book it on the Book page.",
+        "The Free Visit is a free home visit: we go over your to-do list and help you choose the right service. Repairs and labor are not included. No account or card needed - book it at profixter.com/book/free.",
     };
   }
 

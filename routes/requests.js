@@ -1,6 +1,8 @@
 // 📁 backend/routes/requests.js
 const adminSubjects = require("../utils/adminSubjects");
 const express = require("express");
+const { rateLimit } = require("../utils/rateLimit");
+const { clientIp } = require("../utils/auth/clientIp");
 const router = express.Router();
 const Request = require("../models/Request");
 const {
@@ -200,6 +202,75 @@ router.post("/public", async (req, res) => {
 
 /** How long an identical number is treated as the same enquiry. */
 const MEMBERSHIP_LEAD_DEDUPE_MS = 10 * 60 * 1000;
+
+/*
+ * "Request a Callback" (the Free Visit popup's small secondary action).
+ *
+ * A person with a question, who already typed their details into the Free
+ * Visit form, asks to be rung. It is a lead and nothing more: no booking, no
+ * charge. Public, so the rules are here: a valid phone, one lead per number
+ * per half hour (unique dedupeKey decides races), a per-IP ceiling.
+ */
+const CALLBACK_DEDUPE_MS = 30 * 60 * 1000;
+const callbackIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, keyResolver: (req) => `callback_ip:${clientIp(req)}` });
+
+router.post("/callback", callbackIpLimit, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = clean(body.name).slice(0, 120);
+    const phone = normalizePhoneE164(clean(body.phone));
+    const email = clean(body.email).toLowerCase().slice(0, 200);
+    if (name.length < 2) return res.status(400).json({ success: false, field: "name", message: "Please tell us your name." });
+    if (!phone) return res.status(400).json({ success: false, field: "phone", message: "Please enter a valid US phone number so we can call you." });
+
+    const context = [
+      clean(body.requestedDate) && `Was looking at ${clean(body.requestedDate)}${clean(body.requestedTime) ? ` ${clean(body.requestedTime)}` : ""}`,
+      clean(body.address) && `Address: ${clean(body.address).slice(0, 200)}`,
+      clean(body.note) && `Notes: ${clean(body.note).slice(0, 600)}`,
+    ].filter(Boolean);
+    const dedupeKey = `callback:${phone}:${Math.floor(Date.now() / CALLBACK_DEDUPE_MS)}`;
+    const lead = new Request({
+      name,
+      phone,
+      email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "",
+      message: ["Asked for a callback from the Free Visit form.", ...context].join("\n"),
+      serviceType: "callback_request",
+      sourcePage: clean(body.sourcePage).slice(0, 200) || "/book/free",
+      status: "new",
+      dedupeKey,
+    });
+    try {
+      await lead.save();
+    } catch (saveErr) {
+      if (saveErr?.code === 11000) return res.status(200).json({ success: true, duplicate: true });
+      throw saveErr;
+    }
+
+    try {
+      await sendAdminEventNotification({
+        subject: adminSubjects.lead("CALLBACK REQUESTED", name),
+        heading: "Callback requested",
+        templateKey: "admin_callback_request",
+        customerName: name,
+        source: "freeVisitCallback",
+        fields: [
+          ["Name", name],
+          ["Phone", digitsOnlyPhone(phone).replace(/^1(\d{3})(\d{3})(\d{4})$/, "$1-$2-$3") || phone],
+          ...(lead.email ? [["Email", lead.email]] : []),
+          ...context.map((line) => ["Context", line]),
+          ["Source", "Free Visit form - Request a Callback"],
+          ["Submitted", formatSubmittedAt(lead.createdAt)],
+        ],
+      });
+    } catch (emailErr) {
+      console.error("Callback lead notification failed; lead was saved:", { requestId: lead._id, message: emailErr.message });
+    }
+    return res.status(201).json({ success: true });
+  } catch (err) {
+    console.error("Callback lead save error:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 router.post("/membership", async (req, res) => {
   try {

@@ -1,0 +1,146 @@
+[
+  {
+    "slug": "pressure-wash",
+    "title": "Patio pressure washing",
+    "category": "Outdoor",
+    "caption": "Grimy, mossy patio washed back to clean, bright concrete.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "drywall-patch",
+    "title": "Drywall hole repair",
+    "category": "Walls & Paint",
+    "caption": "Doorknob hole patched, sanded and painted to match.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "tub-caulk",
+    "title": "Tub re-caulking",
+    "category": "Bathroom",
+    "caption": "Moldy, peeling caulk replaced with a crisp, fresh seal.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "light-fixture",
+    "title": "Light fixture upgrade",
+    "category": "Electrical",
+    "caption": "Dated brass dome swapped for a clean, modern fixture.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "bath-faucet",
+    "title": "Bathroom faucet replacement",
+    "category": "Bathroom",
+    "caption": "Corroded old faucet replaced with brushed nickel.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "showerhead",
+    "title": "Showerhead replacement",
+    "category": "Bathroom",
+    "caption": "Crusted, clogged showerhead swapped for a new chrome one.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "shower-curtain",
+    "title": "Shower curtain refresh",
+    "category": "Bathroom",
+    "caption": "Torn, mildewed curtain replaced and rehung neatly.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "kitchen-sink-caulk",
+    "title": "Kitchen sink caulking",
+    "category": "Kitchen",
+    "caption": "Moldy sink and backsplash caulk replaced with a clean line.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "cabinet-hardware",
+    "title": "Cabinet hardware update",
+    "category": "Kitchen",
+    "caption": "Tarnished brass pulls swapped for modern matte black.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "outlet",
+    "title": "Outlet replacement",
+    "category": "Electrical",
+    "caption": "Yellowed outlet swapped for a clean, modern one.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "baseboard",
+    "title": "Baseboard repair",
+    "category": "Doors & Trim",
+    "caption": "Chipped, scuffed baseboard filled, caulked and repainted.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "trim-repair",
+    "title": "Window trim repair",
+    "category": "Doors & Trim",
+    "caption": "Cracked, flaking window trim repaired and repainted.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "wall-touchup",
+    "title": "Wall touch-up",
+    "category": "Walls & Paint",
+    "caption": "Scuffs and nail holes filled and painted over.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "towel-bar",
+    "title": "Towel bar reinstall",
+    "category": "Bathroom",
+    "caption": "Ripped-out towel bar replaced and anchored securely.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "cabinet-door",
+    "title": "Cabinet door alignment",
+    "category": "Kitchen",
+    "caption": "Sagging cabinet door rehung and aligned evenly.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "door-handle",
+    "title": "Door handle replacement",
+    "category": "Doors & Trim",
+    "caption": "Worn brass knob replaced with a modern lever set.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "bath-accessories",
+    "title": "Bathroom accessories",
+    "category": "Bathroom",
+    "caption": "Rusty, mismatched fixtures replaced with a matching set.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "door-paint",
+    "title": "Door repainting",
+    "category": "Doors & Trim",
+    "caption": "Chipped, scuffed door paint refinished smooth and clean.",
+    "width": 1200,
+    "height": 896
+  }
+]

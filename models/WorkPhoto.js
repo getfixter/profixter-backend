@@ -56,6 +56,26 @@ const WorkPhotoSchema = new mongoose.Schema(
     display: { type: VariantSchema, default: () => ({}) },
     full: { type: VariantSchema, default: () => ({}) },
 
+    /*
+     * "What We Do" (Customer Experience 4.0): a before/after pair. The AFTER
+     * is the photo above (thumb/display/full), so every existing reader of a
+     * work photo keeps working; the BEFORE lives here, same three sizes.
+     */
+    kind: { type: String, enum: ["photo", "before_after"], default: "photo", index: true },
+    before: {
+      thumb: { type: VariantSchema, default: () => ({}) },
+      display: { type: VariantSchema, default: () => ({}) },
+      full: { type: VariantSchema, default: () => ({}) },
+    },
+    /* The gallery's own filter chip (Electrical, Bathroom, ...). Display only. */
+    group: { type: String, default: "", trim: true, maxlength: 40 },
+    /*
+     * Generated or staged to show a KIND of job, not a photo of a real
+     * customer's job. The public gallery says so; nothing may present one as
+     * a Profixter customer's home.
+     */
+    illustrative: { type: Boolean, default: false },
+
     /* ------------------------------ state ----------------------------- */
     /* No index:true - status leads three compound indexes below. */
     status: {

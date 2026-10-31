@@ -52,6 +52,8 @@ router.get("/", async (req, res) => {
 
     const requested = String(req.query.category || "").trim();
     if (requested && CATEGORY_SLUGS.includes(requested)) filter.category = requested;
+    /* What We Do asks for before/after pairs only. */
+    if (String(req.query.kind || "") === "before_after") filter.kind = "before_after";
 
     const [rows, total] = await Promise.all([
       WorkPhoto.find(filter)

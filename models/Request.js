@@ -30,9 +30,12 @@ const RequestSchema = new mongoose.Schema({
       // Leads list the admin already works from.
       "membership_interest",
       // The homepage free-visit booker, submitted without an account. It asks
-      // for a day and time, so it is a request to call and confirm, not a
-      // booking: no slot is held until the visit is booked for real.
+      // for a day and time and reserves that slot as a Booking pending the
+      // owner's confirmation (utils/freeVisit/guestVisit).
       "free_visit_request",
+      // "Request a Callback" from the Free Visit popup: somebody with a
+      // question who wants a person to ring them. Nothing is booked.
+      "callback_request",
     ],
   },
   sourcePage: { type: String, trim: true, default: "" },

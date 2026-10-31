@@ -60,7 +60,11 @@ assert.equal(shouldRouteToProductPage("Can I book a full day with a Fixter?", fu
 const freeVisit = getRoutingRecommendation("How do I get my free first visit?");
 assert.equal(freeVisit.type, "free_visit");
 assert.equal(shouldRouteToProductPage("How do I get my free first visit?", freeVisit), true);
-assert.ok(freeVisit.reason.includes("90 minutes"));
+// From 2026-10-30 the Free Visit reviews the to-do list and includes no labor; it must never promise any.
+assert.ok(freeVisit.reason.includes("to-do list"));
+assert.ok(/labor are not included/.test(freeVisit.reason));
+assert.ok(!/90 minutes/.test(freeVisit.reason));
+assert.equal(freeVisit.url, "https://profixter.com/book/free");
 // A question about the offer is answered, not bounced to a page.
 assert.equal(shouldRouteToProductPage("Is the first visit really free?"), false);
 

@@ -168,6 +168,20 @@ function visitVocabulary(booking = {}) {
   const isFreeFirst =
     accessType === "free_first_visit" || booking.isFreeFirstVisit === true;
   if (isFreeFirst) {
+    /*
+     * From 2026-10-30 the Free Visit is a visit to go over the customer's
+     * to-do list (freeVisitPurpose "consultation"), with no labor. Free visits
+     * booked before then keep the name they were booked under.
+     */
+    if (booking.freeVisitPurpose === "consultation") {
+      return {
+        kind: "free_first",
+        noun: "Free Visit",
+        shortNoun: "Free Visit",
+        wholeDay: false,
+        completionNote: "Thanks for showing us your list.",
+      };
+    }
     return {
       kind: "free_first",
       noun: "free first visit",
@@ -288,6 +302,28 @@ const OPT_OUT_LINE = "Reply STOP to opt out.";
  * over and over. The completion message carries the tip link alone until that
  * changes, which is the whole point of the completion message anyway.
  */
+/*
+ * The words a free visit's own messages use. A Free Visit booked from
+ * 2026-10-30 is a to-do-list visit with no labor; one booked before keeps
+ * exactly the wording it was sold with.
+ */
+function freeVisitWords(booking = {}) {
+  if (booking.freeVisitPurpose === "consultation") {
+    return {
+      name: "Free Visit",
+      note: "We'll go over your to-do list together, at no charge.",
+      after: `Ready to get your list done? Book anytime: ${SITE}/book`,
+    };
+  }
+  return { name: "free first visit", note: "There is no charge for this visit.", after: completionLinks() };
+}
+
+function freeVisitReceivedLine({ when = "", consultation = false } = {}) {
+  return consultation
+    ? `Got it! We've reserved your Free Visit on ${clean(when)}. A Profixter team member will confirm it shortly.`
+    : `Got it! A Profixter team member will call you shortly to confirm your free visit on ${clean(when)}.`;
+}
+
 function completionLinks() {
   if (reviewLinkEnabled()) {
     return `Tip your Fixter: ${LINKS.tip} Leave a review: ${LINKS.review}`;
@@ -313,15 +349,15 @@ const TEMPLATES = {
     `We will text you a reminder beforehand. Questions? Call ${SUPPORT_PHONE}`,
 
   FREE_VISIT_CONFIRMED: ({ booking = {} }) =>
-    `${BRAND}: your free first visit is confirmed for ${whenPhrase(booking)}. ` +
-    `There is no charge for this visit. We will text you a reminder beforehand.`,
+    `${BRAND}: your ${freeVisitWords(booking).name} is confirmed for ${whenPhrase(booking)}. ` +
+    `${freeVisitWords(booking).note} We will text you a reminder beforehand.`,
 
   /*
    * The owner's wording, plus the opt-out line: this is usually the first text
    * this number ever gets from us, and it was not given through /signup.
    */
-  FREE_VISIT_REQUEST_RECEIVED: ({ when = "" }) =>
-    `Got it! A Profixter team member will call you shortly to confirm your free visit on ${clean(when)}. ` +
+  FREE_VISIT_REQUEST_RECEIVED: ({ when = "", consultation = false }) =>
+    `${freeVisitReceivedLine({ when, consultation })} ` +
     `${OPT_OUT_LINE}`,
 
   /*
@@ -408,8 +444,8 @@ const TEMPLATES = {
   BOOKING_COMPLETED: ({ booking = {} }) =>
     `Thanks for choosing ${BRAND}! Your visit is complete. ${completionLinks()}`,
 
-  FREE_VISIT_COMPLETED: () =>
-    `Thanks for trying ${BRAND}! Your free first visit is complete. ${completionLinks()}`,
+  FREE_VISIT_COMPLETED: ({ booking = {} } = {}) =>
+    `Thanks for trying ${BRAND}! Your ${freeVisitWords(booking).name} is complete. ${freeVisitWords(booking).after}`,
 
   ONE_TIME_VISIT_COMPLETED: () =>
     `Thanks for choosing ${BRAND}! Your One-Time Visit is complete. ${completionLinks()}`,
@@ -670,12 +706,12 @@ const TEMPLATES = {
    * outside GSM-7 and silently doubles the cost of the whole message.
    */
   FREE_VISIT_REMINDER: () =>
-    `${BRAND}: your first visit is still free, labor and trip included. ` +
-    `Pick one job and we will handle it: ${SITE}/book`,
+    `${BRAND}: your Free Visit is still waiting. We'll review your to-do list ` +
+    `and help you pick the right service: ${SITE}/book/free`,
 
   FREE_VISIT_LAST_CALL: () =>
-    `${BRAND}: the free first visit is still on your account. Most people start ` +
-    `with the thing they walk past every day: ${SITE}/book`,
+    `${BRAND}: your Free Visit is still available. Show us your to-do list ` +
+    `and we'll help you find the right plan: ${SITE}/book/free`,
 
   /*
    * Warm first, membership second - but membership, because that is what

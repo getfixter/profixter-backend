@@ -498,7 +498,7 @@ function bookingTypeLabel(b) {
   const access = String(b?.accessType || "").toLowerCase();
   if (access === "membership") return "Membership visit";
   if (access === "one_time") return "One-Time Visit";
-  if (access === "free_first_visit") return "Free first visit";
+  if (access === "free_first_visit") return b?.freeVisitPurpose === "consultation" ? "Free Visit (to-do list review, no labor)" : "Free first visit";
   if (access === "admin") return "Booked by admin";
   return "";
 }
@@ -891,14 +891,11 @@ router.post(
       if (!library.ok) {
         return res.status(library.status).json({ message: library.message, code: library.code });
       }
-      // A real photo is best; the closest Profixter example is an accepted
-      // stand-in so a customer without a photo to hand can still book.
-      if (!req.files?.length && !library.key) {
-        return res.status(400).json({
-          message: "Add a photo, or choose the closest Profixter example.",
-          code: "PHOTO_REQUIRED",
-        });
-      }
+      /*
+       * Photos help but are optional (Customer Experience 4.0): the owner
+       * reviews every request and can ask for one. Old pages still send a
+       * photo or a Profixter example, which is kept exactly as before.
+       */
 
       // Required field only. The owner, not this code, decides which jobs
       // to take: never refuse or redirect on the task or the note.
@@ -911,6 +908,36 @@ router.post(
       if (!subdoc) {
         return res.status(400).json({ message: "Address not found on your account." });
       }
+
+      /*
+       * One press, one checkout. A double tap, a retry or a refresh carries the
+       * same clientRequestId; while that booking's Stripe page is still open it
+       * is handed back instead of holding a second slot and a second session.
+       */
+      const checkoutClientKey = readClientKey(req.body.clientRequestId);
+      if (checkoutClientKey) {
+        const earlier = await Booking.findOne({
+          user: me._id,
+          checkoutClientKey,
+          paymentState: "pending",
+          status: { $nin: ["Canceled", "Cancelled"] },
+        }).lean();
+        if (earlier?.entitlementId) {
+          const earlierEntitlement = await VisitEntitlement.findById(earlier.entitlementId).lean();
+          const sessionId = earlierEntitlement?.stripeCheckoutSessionId;
+          const openSession = sessionId ? await stripe.checkout.sessions.retrieve(sessionId).catch(() => null) : null;
+          if (openSession?.status === "open" && openSession.url) {
+            return res.json({
+              url: openSession.url,
+              bookingId: String(earlier._id),
+              entitlementId: String(earlier.entitlementId),
+              holdExpiresAt: earlier.paymentHoldExpiresAt,
+              reused: true,
+            });
+          }
+        }
+      }
+      const returnToHandyman = String(req.body.returnTo || "") === "handyman";
 
       const useReservationEngine = reservationEngineEnabled();
       const requestedStart =
@@ -1016,6 +1043,7 @@ router.post(
         images: uploadResult.images,
         libraryReference: library.key,
         status: "Pending",
+        ...(checkoutClientKey ? { checkoutClientKey } : {}),
       };
 
       if (useReservationEngine) {
@@ -1072,7 +1100,14 @@ router.post(
           },
         },
         success_url: `${CLIENT_URL}/book/confirmation?booking_id=${booking._id}&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${CLIENT_URL}/book?canceled=true&booking_id=${booking._id}`,
+        /*
+         * Back to the page they came from, with their draft: the new Book a
+         * Handyman flow, or the One-Time tab (the old URL lost the tab and
+         * landed on the membership view).
+         */
+        cancel_url: returnToHandyman
+          ? `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`
+          : `${CLIENT_URL}/book?visit=additional&canceled=true&booking_id=${booking._id}`,
         expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
       };
 
@@ -1166,6 +1201,32 @@ router.post(
     }
   }
 );
+
+/*
+ * Back from Stripe without paying. The checkout is expired at Stripe, which
+ * sends checkout.session.expired, and the webhook's existing handler cancels
+ * the booking and releases the held slot - the same path as a hold running
+ * out, just now instead of in thirty minutes. Only the customer's own pending
+ * booking, and only while it is unpaid.
+ */
+router.post("/one-time/:id/abandon", auth, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid booking" });
+    const booking = await Booking.findOne({ _id: req.params.id, user: req.user.id }).lean();
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.paymentState !== "pending") return res.json({ released: false, paymentState: booking.paymentState });
+    const entitlement = booking.entitlementId ? await VisitEntitlement.findById(booking.entitlementId).lean() : null;
+    const sessionId = entitlement?.stripeCheckoutSessionId;
+    if (sessionId) {
+      const session = await stripe.checkout.sessions.retrieve(sessionId).catch(() => null);
+      if (session?.status === "open") await stripe.checkout.sessions.expire(sessionId);
+    }
+    return res.json({ released: true });
+  } catch (error) {
+    console.error("one-time abandon failed:", error.message);
+    return res.status(500).json({ message: "Could not release the time." });
+  }
+});
 
 /* ================================================================== */
 /* Full Day Fixter                                                    */

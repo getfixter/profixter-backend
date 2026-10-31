@@ -211,7 +211,8 @@ test("every Track A email leads with the free visit, not with membership", () =>
   for (const tpl of TRACK_A) {
     assert.strictEqual(tpl.category, "free_visit", `${tpl.id} is not a free-visit email`);
     assert.match(tpl.ctaLabel, /free visit/i, `${tpl.id} CTA should book the free visit`);
-    assert.strictEqual(tpl.ctaRoute, "book", `${tpl.id} should point at booking`);
+    // Since 2026-10-30 the Free Visit has its own account-free page.
+    assert.strictEqual(tpl.ctaRoute, "bookFree", `${tpl.id} should point at the Free Visit page`);
   }
 });
 

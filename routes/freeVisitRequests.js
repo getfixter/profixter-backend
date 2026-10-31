@@ -44,6 +44,8 @@ const { sendAdminEventNotification, formatSubmittedAt } = require("../utils/admi
 const { sendTransactionalSms } = require("../utils/sms/smsService");
 const { customerDayAvailability } = require("../utils/customerCalendarService");
 const { reservationEngineEnabled } = require("../utils/slotReservationService");
+const { buildSignupAddress } = require("../utils/addressVerification");
+const { isZipInServiceArea, countyForZip } = require("../utils/serviceArea");
 
 const router = express.Router();
 
@@ -191,12 +193,19 @@ async function notifyOwner(request, { when, existingAccount, booking = null }) {
         ["Mobile", formatPhone(request.phone)],
         ["Email", request.email],
         ["Requested", when],
+        [
+          "Visit",
+          booking?.freeVisitPurpose === "consultation"
+            ? "Free Visit - review their to-do list and recommend a service (no labor)"
+            : "Free first visit (90 minutes of labor, booked under the earlier offer)",
+        ],
+        ...(booking?.address ? [["Address", [booking.address, booking.city, booking.state, booking.zip].filter(Boolean).join(", ")]] : []),
       ],
     },
     {
-      title: "The job",
+      title: booking?.freeVisitPurpose === "consultation" ? "Their notes" : "The job",
       fields: [
-        ["Description", request.message],
+        ["Description", request.message || "None given"],
         ["Photos", photos.length ? photos.join("\n") : "None"],
         ...(request.libraryReference ? [["Example chosen", libraryLabel(request.libraryReference) || request.libraryReference]] : []),
       ],
@@ -267,27 +276,33 @@ async function notifyOwner(request, { when, existingAccount, booking = null }) {
   return results;
 }
 
-async function notifyCustomer(request, { when }) {
+async function notifyCustomer(request, { when, consultation = false }) {
   const firstName = clean(request.name, 60).split(" ")[0];
-  const line = `Got it! A Profixter team member will call you shortly to confirm your free visit on ${when}.`;
+  const line = consultation
+    ? `Got it! We've reserved ${when} for your Free Visit. A Profixter team member will confirm it with you shortly.`
+    : `Got it! A Profixter team member will call you shortly to confirm your free visit on ${when}.`;
+  const offer = consultation
+    ? "On your Free Visit we'll walk through your to-do list together and help you find the right Profixter service. Repairs and labor aren't part of this visit. Questions? Call or text 631-599-1363."
+    : "Your free visit is 90 minutes of real work, at no charge. Questions before we call? Call or text 631-599-1363.";
+  const asked = String(request.message || "").trim();
   const setupUrl = `${SITE}/signup`;
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#ffffff;color:#0B1628;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;">
 <div style="max-width:520px;margin:0 auto;">
 <p style="margin:0 0 16px;">Hi ${mailEscape(firstName)},</p>
 <p style="margin:0 0 16px;font-weight:700;">${mailEscape(line)}</p>
-<p style="margin:0 0 6px;color:#5b6577;">What you asked for:</p>
-<p style="margin:0 0 20px;padding:12px 14px;background:#F6F8FC;border-radius:10px;">${mailEscape(request.message)}</p>
-<p style="margin:0 0 20px;color:#5b6577;">Your free visit is 90 minutes of real work, at no charge. Questions before we call? Call or text 631-599-1363.</p>
+${asked ? `<p style="margin:0 0 6px;color:#5b6577;">${consultation ? "Your notes:" : "What you asked for:"}</p>
+<p style="margin:0 0 20px;padding:12px 14px;background:#F6F8FC;border-radius:10px;">${mailEscape(asked)}</p>` : ""}
+<p style="margin:0 0 20px;color:#5b6577;">${mailEscape(offer)}</p>
 <p style="margin:0 0 8px;color:#5b6577;">Optional, whenever you like: set up your Profixter account to see and manage your visits.</p>
 <p style="margin:0 0 24px;"><a href="${setupUrl}" style="display:inline-block;padding:12px 18px;background:#306EEC;color:#ffffff;border-radius:10px;text-decoration:none;font-weight:700;">Set up your account</a></p>
 <p style="margin:0;color:#94A3B8;font-size:13px;">Profixter · Long Island, NY</p>
 </div></body></html>`;
-  const text = `Hi ${firstName},\n\n${line}\n\nWhat you asked for:\n${request.message}\n\nYour free visit is 90 minutes of real work, at no charge. Questions before we call? Call or text 631-599-1363.\n\nOptional, whenever you like: set up your Profixter account to see and manage your visits: ${setupUrl}\n\nProfixter`;
+  const text = `Hi ${firstName},\n\n${line}\n\n${asked ? `${consultation ? "Your notes" : "What you asked for"}:\n${asked}\n\n` : ""}${offer}\n\nOptional, whenever you like: set up your Profixter account to see and manage your visits: ${setupUrl}\n\nProfixter`;
 
   return Promise.allSettled([
     mail.sendRaw({
       to: request.email,
-      subject: "Got it - we'll call to confirm your free visit",
+      subject: consultation ? "Your Free Visit request is in" : "Got it - we'll call to confirm your free visit",
       html,
       text,
       logContext: {
@@ -303,7 +318,7 @@ async function notifyCustomer(request, { when }) {
       notificationType: "FREE_VISIT_REQUEST_RECEIVED",
       dedupeKey: `free_visit_request_received:${request._id}`,
       phone: request.phone,
-      vars: { when },
+      vars: { when, consultation },
       requestConsent: {
         text: request.contactConsent?.text,
         at: request.contactConsent?.at,
@@ -343,6 +358,26 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     const time = clean(body.requestedTime, 5);
     const eventId = clean(body.eventId, 100);
     const files = req.files || [];
+    /*
+     * The Free Visit, from 2026-10-30 (formVersion "cx4"): a free visit to go
+     * over the customer's to-do list and explain what Profixter does - no
+     * labor. Address is asked for (and must be one we serve), the description
+     * is optional. A request without formVersion comes from a page loaded
+     * before that change and keeps the old rules and the old label, so its
+     * customer gets exactly what that page told them.
+     */
+    const consultation = clean(body.formVersion, 20) === "cx4";
+    let serviceAddress = null;
+    if (consultation) {
+      const built = buildSignupAddress({ line1: body.line1, unit: body.unit, city: body.city, state: body.state || "NY", zip: body.zip, lat: body.lat, lng: body.lng });
+      if (!built.ok) {
+        return res.status(400).json({ code: "INVALID_ADDRESS", field: "address", message: "Please enter your full service address." });
+      }
+      if (!isZipInServiceArea(built.address.zip)) {
+        return res.status(400).json({ code: "OUT_OF_SERVICE_AREA", field: "address", message: "We serve Nassau and Suffolk counties on Long Island. That address is outside our area for now." });
+      }
+      serviceAddress = { ...built.address, county: countyForZip(built.address.zip) || built.address.county || "" };
+    }
 
     /* The form is a convenience; these are the rules. */
     if (name.length < 2 || !/\s/.test(name)) {
@@ -354,7 +389,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     if (!validEmail(email)) {
       return res.status(400).json({ code: "INVALID_EMAIL", field: "email", message: "Please enter a valid email address." });
     }
-    if (note.split(/\s+/).filter(Boolean).length < 3) {
+    if (!consultation && note.split(/\s+/).filter(Boolean).length < 3) {
       return res.status(400).json({ code: "NOTE_REQUIRED", field: "note", message: "Tell us in a few words what needs doing." });
     }
     if (clean(body.consentText, 300) !== CONTACT_CONSENT_TEXT) {
@@ -445,6 +480,17 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
           note,
           images: request.images,
           libraryReference: library.key,
+          ...(consultation
+            ? {
+                service: "Free Visit",
+                freeVisitPurpose: "consultation",
+                address: serviceAddress.line1,
+                city: serviceAddress.city,
+                state: serviceAddress.state,
+                zip: serviceAddress.zip,
+                county: serviceAddress.county,
+              }
+            : {}),
           guestContactConsent: {
             text: request.contactConsent.text,
             at: request.contactConsent.at,
@@ -506,7 +552,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     Promise.resolve()
       .then(async () => {
         logOutcomes(request._id, "owner", await notifyOwner(request, { when, existingAccount, booking }));
-        logOutcomes(request._id, "customer", await notifyCustomer(request, { when }));
+        logOutcomes(request._id, "customer", await notifyCustomer(request, { when, consultation }));
       })
       .catch((error) => console.error("free_visit_request notifications threw", { message: error.message }));
 

@@ -180,6 +180,56 @@ async function createFromBuffer({
   }
 }
 
+const GALLERY_GROUPS = ["Electrical", "Bathroom", "Kitchen", "Doors & Trim", "Walls & Paint", "Outdoor", "Other"];
+
+/**
+ * A before/after pair from Admin: two images, one row. The AFTER is stored as
+ * the photo itself (so every existing reader still works) and the BEFORE
+ * beside it. Both or neither: a failure removes whatever was stored.
+ */
+async function createPairFromBuffers({ beforeBuffer, afterBuffer, uploader, actor, fields = {}, now = new Date() }) {
+  const after = await processAndStore(afterBuffer, { now });
+  let before;
+  try {
+    before = await processAndStore(beforeBuffer, { now });
+  } catch (error) {
+    await purgeStorage(after).catch(() => {});
+    throw error;
+  }
+  const category = isValidCategory(fields.category) ? fields.category : "general-handyman";
+  const publishNow = uploader.uploaderType === UPLOADER_TYPE.ADMIN && fields.publishNow === true;
+  const status = initialStatusFor(uploader.uploaderType, { publishNow });
+  const group = GALLERY_GROUPS.includes(String(fields.group || "")) ? String(fields.group) : "Other";
+  try {
+    return await WorkPhoto.create({
+      title: cleanText(fields.title, 120),
+      caption: cleanText(fields.caption, 400),
+      category,
+      kind: "before_after",
+      group,
+      illustrative: fields.illustrative === true,
+      thumb: after.thumb,
+      display: after.display,
+      full: after.full,
+      before: { thumb: before.thumb, display: before.display, full: before.full },
+      status,
+      uploaderType: uploader.uploaderType,
+      uploadedByUserId: actor?.userId || null,
+      uploadedByName: cleanText(actor?.name, 120),
+      uploadedByRole: uploader.role || "",
+      internalNote: cleanText(fields.internalNote, 500),
+      sortOrder: Number.isFinite(Number(fields.sortOrder)) ? Number(fields.sortOrder) : 0,
+      publishAt: status === STATUS.SCHEDULED ? new Date(now.getTime() + FIXTER_PUBLISH_DELAY_MS) : null,
+      publishedAt: status === STATUS.PUBLISHED ? now : null,
+      firstPublishedAt: status === STATUS.PUBLISHED ? now : null,
+    });
+  } catch (error) {
+    await purgeStorage(after).catch(() => {});
+    await purgeStorage(before).catch(() => {});
+    throw error;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Moving between states                                               */
 /* ------------------------------------------------------------------ */
@@ -447,6 +497,17 @@ function toPublicDTO(photo) {
     fullUrl: photo.full?.url || "",
     width: photo.display?.width || 0,
     height: photo.display?.height || 0,
+    /* What We Do: the pair's BEFORE, and whether it is an illustrative example. */
+    kind: photo.kind || "photo",
+    group: photo.group || "",
+    illustrative: Boolean(photo.illustrative),
+    ...(photo.kind === "before_after"
+      ? {
+          beforeThumbUrl: photo.before?.thumb?.url || "",
+          beforeImageUrl: photo.before?.display?.url || "",
+          beforeFullUrl: photo.before?.full?.url || "",
+        }
+      : {}),
   };
 }
 
@@ -477,6 +538,8 @@ function toAdminDTO(photo) {
 }
 
 module.exports = {
+  GALLERY_GROUPS,
+  createPairFromBuffers,
   PhotoError,
   assertBookingClaim,
   createFromBuffer,

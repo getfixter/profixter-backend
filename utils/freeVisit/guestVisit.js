@@ -190,8 +190,10 @@ async function reserveGuestFreeVisit({ request, bookingData, slotStart, existing
     assignmentSource: "automatic",
     beforeCreate: async (session) => {
       await acquireFreeVisitLock(session);
+      // The new Free Visit form collects the address up front, so it counts in the lifetime check now.
+      const addressKey = data.address ? addressMatchKey({ line1: data.address, city: data.city, state: data.state, zip: data.zip }) : "";
       eligibility = await checkFreeVisitEligibility(
-        { phone: data.phone, email: data.email },
+        { phone: data.phone, email: data.email, ...(addressKey ? { address: addressKey } : {}) },
         { session, excludeRequestId: existingRequest ? request._id : null }
       );
       if (eligibility.decision === "blocked") throw blockedError(eligibility);
@@ -200,7 +202,7 @@ async function reserveGuestFreeVisit({ request, bookingData, slotStart, existing
       data.freeVisitIdentity = {
         phone: eligibility.identity.phone,
         email: eligibility.identity.email,
-        addressKey: "",
+        addressKey: eligibility.identity.addressKey || "",
         userId: null,
         capturedAt: now,
       };
@@ -620,7 +622,8 @@ async function notifyConfirmedOnce(bookingId) {
       phone: claimed.phone || "",
       date: claimed.date,
       service: claimed.service,
-      bookingType: "Free first visit",
+      // The crew must know whether to bring tools: a Free Visit from 2026-10-30 is a to-do-list review.
+      bookingType: claimed.freeVisitPurpose === "consultation" ? "Free Visit (to-do list review, no labor)" : "Free first visit",
       address,
       note: [
         claimed.libraryReference ? `Job type (Profixter example): ${libraryLabel(claimed.libraryReference)}` : "",

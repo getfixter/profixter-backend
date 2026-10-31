@@ -312,6 +312,8 @@ async function run() {
       const allowed = [
         "id", "title", "caption", "category", "location", "featured",
         "thumbUrl", "imageUrl", "fullUrl", "width", "height",
+        // What We Do (2026-10-30): public facts about the image, never about a person.
+        "kind", "group", "illustrative",
       ].sort();
       assert.deepEqual(Object.keys(dto).sort(), allowed, "exact public key set");
 
@@ -782,7 +784,7 @@ async function run() {
       assert.deepEqual(
         Object.keys(dto).sort(),
         ["caption", "category", "featured", "fullUrl", "height", "id", "imageUrl",
-         "location", "thumbUrl", "title", "width"].sort()
+         "location", "thumbUrl", "title", "width", "kind", "group", "illustrative"].sort()
       );
       /* Every URL the public is handed must resolve to a real stored object. */
       for (const url of [dto.thumbUrl, dto.imageUrl, dto.fullUrl]) {

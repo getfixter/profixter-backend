@@ -202,6 +202,15 @@ const NON_REGISTRY_EMAILS = {
     trigger: "A membership callback request is submitted.",
     source: "utils/adminLeadNotification.js",
   },
+  admin_callback_request: {
+    label: "Admin: callback requested",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Internal",
+    channelClass: "internal",
+    trigger: "Somebody presses Request a Callback in the Free Visit popup.",
+    source: "routes/requests.js",
+  },
   admin_one_time_visit_paid: {
     label: "Admin: One-Time Visit paid",
     category: "B",

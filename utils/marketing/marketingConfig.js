@@ -174,6 +174,7 @@ const BUSINESS = {
 const ROUTES = {
   book: "/book",
   bookFree: "/book/free",
+  bookHandyman: "/book/handyman",
   bookMembership: "/book?visit=membership",
   bookOneTime: "/book?visit=additional",
   bookFullDay: "/book?visit=full-day",
