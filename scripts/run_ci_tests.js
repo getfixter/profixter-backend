@@ -114,6 +114,8 @@ const SUITES = [
   "test_gift_digital_experience.js",
   // New-customer welcome offer: 20% off the first monthly invoice, ten minutes, Stripe faked (in-memory Mongo).
   "test_welcome_offer.js",
+  // Halloween 2026 campaign sender: consent per channel, members excluded, once only (in-memory Mongo, SMS simulated).
+  "test_halloween_campaign.js",
 ];
 
 /**

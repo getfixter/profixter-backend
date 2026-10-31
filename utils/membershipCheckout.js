@@ -319,14 +319,15 @@ async function openMembershipCheckout({
     }
 
     /*
-     * THE WELCOME OFFER. A "once" coupon lands on the first invoice; with gift
-     * coverage that is the $0 trial invoice, so the discount would be lost and
-     * the customer shown a price Stripe never charges. It is refused instead,
-     * and the screen re-prices. Monthly only, whatever the caller asked.
+     * THE 20% OFFER. A "once" coupon lands on the first invoice - the first
+     * month, or the first year on annual billing; with gift coverage that is
+     * the $0 trial invoice, so the discount would be lost and the customer
+     * shown a price Stripe never charges. It is refused instead, and the
+     * screen re-prices.
      */
     let welcome = null;
     if (welcomeOffer?.couponId) {
-      if (cycle !== "monthly" || trialEndUnix) {
+      if (!["monthly", "annual"].includes(cycle) || trialEndUnix) {
         // Refused only when the customer was shown the welcome price; otherwise the regular price, as always.
         if (welcomeOffer.required) {
           throw new CheckoutRefusal(409, {

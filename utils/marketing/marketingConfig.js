@@ -187,6 +187,8 @@ const ROUTES = {
   gift: "/gift",
   services: "/services",
   renovations: "/renovations",
+  // The Halloween 2026 promotion's landing page; c= says which channel brought them (nothing personal).
+  halloweenEmail: "/halloween?c=email",
 };
 
 /*

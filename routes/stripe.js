@@ -7,9 +7,12 @@ const { CLIENT_URL, CheckoutRefusal, openMembershipCheckout } = require("../util
 const {
   WELCOME_OFFER_PERCENT,
   WELCOME_CHECKOUT_LIFETIME_S,
+  WELCOME_OFFER_CYCLES,
   welcomeOfferStatus,
-  firstMonthCents,
-  monthlyPlanCents,
+  activateCampaignOffer,
+  campaignInfo,
+  firstPaymentCents,
+  planPriceCents,
   ensureWelcomeCoupon,
 } = require("../utils/welcomeOffer");
 
@@ -53,22 +56,71 @@ function offerAddress(user, { addressId, line1, zip }) {
  * screen counts down from expiresAt against serverNow, so the browser's own
  * clock never decides anything; checkout asks the same question again.
  */
+/*
+ * The answer the screen counts down from: eligibility, the window's end and
+ * the server clock, and every plan's live price with its first-payment price.
+ */
+async function offerBody(user, query) {
+  const status = await welcomeOfferStatus({ user, address: offerAddress(user, query || {}) });
+  const body = { eligible: status.eligible, serverNow: new Date().toISOString(), percentOff: WELCOME_OFFER_PERCENT, reason: status.reason || "" };
+  if (!status.eligible) return body;
+  const prices = await planPriceCents();
+  const plans = {};
+  for (const [plan, cents] of Object.entries(prices)) {
+    plans[plan] = {
+      ...(cents.monthly != null ? { monthlyCents: cents.monthly, firstMonthCents: firstPaymentCents(cents.monthly) } : {}),
+      ...(cents.annual != null ? { annualCents: cents.annual, firstYearCents: firstPaymentCents(cents.annual) } : {}),
+    };
+  }
+  if (!Object.keys(plans).length) return { ...body, eligible: false };
+  const campaign = campaignInfo(status.source);
+  return {
+    ...body,
+    expiresAt: status.expiresAt.toISOString(),
+    source: status.source,
+    label: campaign ? campaign.label : "Welcome Offer",
+    cycles: WELCOME_OFFER_CYCLES,
+    plans,
+  };
+}
+
 router.get("/welcome-offer", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
-    const status = await welcomeOfferStatus({ user, address: offerAddress(user, req.query || {}) });
-    const body = { eligible: status.eligible, serverNow: new Date().toISOString(), percentOff: WELCOME_OFFER_PERCENT };
-    if (!status.eligible) return res.json(body);
-    const monthly = await monthlyPlanCents();
-    const plans = Object.fromEntries(
-      Object.entries(monthly).map(([plan, cents]) => [plan, { monthlyCents: cents, firstMonthCents: firstMonthCents(cents) }])
-    );
-    if (!Object.keys(plans).length) return res.json({ ...body, eligible: false });
-    return res.json({ ...body, expiresAt: status.expiresAt.toISOString(), plans });
+    return res.json(await offerBody(user, req.query));
   } catch (error) {
     logCheckout("warn", "welcome_offer_status_failed", { message: error?.message || String(error) });
     // No offer is the safe answer: the regular price is always honest.
+    return res.json({ eligible: false, serverNow: new Date().toISOString(), percentOff: WELCOME_OFFER_PERCENT });
+  }
+});
+
+/*
+ * A campaign's public facts, for its landing page: is it still running, and
+ * until when. Nothing personal, nothing started.
+ */
+router.get("/welcome-offer/campaign/:id", (req, res) => {
+  const campaign = campaignInfo(req.params.id);
+  if (!campaign) return res.status(404).json({ active: false });
+  return res.json({ id: campaign.id, label: campaign.label, active: campaign.active, endsAt: campaign.endsAt.toISOString(), percentOff: WELCOME_OFFER_PERCENT });
+});
+
+/*
+ * The signed-in customer opened a campaign offer: their ten minutes start now,
+ * once (utils/welcomeOffer.js activateCampaignOffer). Then the same answer as
+ * GET /welcome-offer. A preview or a sent message never reaches here - it
+ * needs the customer's own session.
+ */
+router.post("/welcome-offer/activate", auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const result = await activateCampaignOffer({ user, campaignId: req.body?.campaign, address: offerAddress(user, req.body || {}) });
+    const body = await offerBody(user, req.body);
+    return res.json({ ...body, activation: result.reason || "activated", campaign: result.campaign ? { id: result.campaign.id, active: result.campaign.active, endsAt: result.campaign.endsAt.toISOString() } : null });
+  } catch (error) {
+    logCheckout("warn", "welcome_offer_activate_failed", { message: error?.message || String(error) });
     return res.json({ eligible: false, serverNow: new Date().toISOString(), percentOff: WELCOME_OFFER_PERCENT });
   }
 });
@@ -84,7 +136,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
   const expectsWelcome = req.body?.welcomeOffer === true;
   try {
     let welcomeOffer = null;
-    if (String(billingCycle || "monthly").toLowerCase() === "monthly") {
+    if (WELCOME_OFFER_CYCLES.includes(String(billingCycle || "monthly").toLowerCase())) {
       const user = await User.findById(req.user.id).lean();
       const status = user ? await welcomeOfferStatus({ user, address: offerAddress(user, { addressId }) }) : { eligible: false };
       if (status.eligible) {
@@ -99,10 +151,12 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         return res.status(409).json({
           code: ended ? "WELCOME_OFFER_ENDED" : "WELCOME_OFFER_UNAVAILABLE",
           message: ended
-            ? "The welcome offer has ended. The prices shown now are the regular monthly prices."
-            : status.reason === "home_had_membership"
-              ? "This home has had a Profixter membership before, so the welcome offer doesn't apply. The prices shown now are the regular monthly prices."
-              : "The welcome offer isn't available for this account. The prices shown now are the regular monthly prices.",
+            ? "The 20% offer has ended. The prices shown now are the regular prices."
+            : status.reason === "home_redeemed"
+              ? "This home has already used the 20% offer, so it doesn't apply again. The prices shown now are the regular prices."
+              : status.reason === "redeemed"
+                ? "This account has already used the 20% offer. The prices shown now are the regular prices."
+                : "The 20% offer isn't available for this account. The prices shown now are the regular prices.",
         });
       }
     }
