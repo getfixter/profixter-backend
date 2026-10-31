@@ -56,6 +56,13 @@ const EMAIL_TEMPLATE = {
   ],
   ctaLabel: "CLAIM MY 20% OFF",
   ctaRoute: "halloweenEmail",
+  /*
+   * The Admin-assisted opt-in, completed by the customer: anyone who agreed on
+   * a call (or wants offers by text) confirms it in account settings - the one
+   * place the registered A2P campaign collects marketing consent.
+   */
+  closingLinkRoute: "accountTexts",
+  closingLinkLabel: "Want ProFixter offers by text? Turn them on, or confirm them, in your account settings",
   closing:
     "Your home. Your handyman. One membership. Happy Halloween! - The Profixter Team. " +
     "The offer is 20% off the first payment of a new monthly or annual membership; renewals are at the regular price. " +

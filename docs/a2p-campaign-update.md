@@ -61,3 +61,29 @@ description must be updated when the new screens go live.
 Note: production today already differs from the registered flow (it requires
 the service-texts box, while the campaign registered it as optional). This
 update brings the registration back in line with the live site.
+
+## Admin-assisted opt-in (2026-10-31)
+
+Staff may ask a customer by phone whether they would like offers by text and
+record the answer in Admin (`smsPreferences.marketingConsentSource =
+"admin_phone"`, ConsentEvent `sms_marketing.admin_phone.v1`). That record is
+an invitation, not the customer's written consent, and it does not make the
+number textable for marketing: `scripts/ops/send_halloween_campaign.js` (and
+any marketing sender) texts only consent the customer gave themselves.
+
+The customer completes it in account settings, the registered opt-in location:
+the Text messages card shows "Please confirm text offers" with the button
+"Text me occasional ProFixter offers." Pressing it saves through
+`PUT /api/users/me/sms-preferences`, which records the customer's own consent
+(source `account_settings`, `sms_marketing.settings.v1`, IP and user agent).
+The staff record stays in the consent history.
+
+This keeps the registered message flow true as written (marketing consent is
+collected only in account settings). If you want the flow to mention the phone
+invitation, add this sentence in the Twilio Console (Messaging > Regulatory
+compliance > Campaigns > edit message flow; a VERIFIED campaign cannot be
+edited through the API):
+
+> Staff may invite existing customers by phone or email to opt in; the opt-in
+> itself is completed only by the customer in account settings as described
+> above, and marketing texts start only after it.

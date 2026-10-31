@@ -111,6 +111,7 @@ async function main() {
       assert.match(r.html, /245 42nd Street, Lindenhurst, NY 11757/);
       assert.ok(r.unsubscribeUrl && r.html.includes(r.unsubscribeUrl));
       assert.match(r.text, /renewals are at the regular price/);
+      assert.match(r.html, /https:\/\/www\.profixter\.com\/account\?tab=personal#texts/, "the text opt-in link points at account settings");
       assert.doesNotMatch(r.html + r.text, /every month|all payments|recurring discount/i);
     });
 
@@ -174,6 +175,16 @@ async function main() {
       const tally = await runHalloweenCampaign({ send: true, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: EVENING, pauseMs: 0 });
       assert.strictEqual(tally.sms.accepted, 0, JSON.stringify(tally.sms));
       assert.strictEqual(await SmsMessage.countDocuments({ user: evening._id }), 0);
+    });
+    await check("staff-recorded consent becomes textable only after the customer confirms it in account settings", async () => {
+      const before = await runHalloweenCampaign({ send: false, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
+      assert.ok(before.sms.skipped.consent_recorded_by_staff >= 1);
+      // What PUT /api/users/me/sms-preferences records when the customer presses Confirm in account settings.
+      await User.updateOne({ _id: staffConsent._id }, { $set: { "smsPreferences.marketingConsentSource": "account_settings", "smsPreferences.marketingConsentAt": new Date() } });
+      const after = await runHalloweenCampaign({ send: true, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
+      // Also the person held back by the evening check, now inside the hours.
+      assert.strictEqual(after.sms.accepted, 2, JSON.stringify(after.sms));
+      assert.strictEqual(await SmsMessage.countDocuments({ user: staffConsent._id }), 1);
     });
     await check("a failed email is recorded as failed, not sent, and not retried as a duplicate send", async () => {
       const unlucky = await person({ smsMarketing: false });

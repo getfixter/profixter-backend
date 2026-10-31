@@ -189,6 +189,8 @@ const ROUTES = {
   renovations: "/renovations",
   // The Halloween 2026 promotion's landing page; c= says which channel brought them (nothing personal).
   halloweenEmail: "/halloween?c=email",
+  // Account settings, where marketing texts are switched on or confirmed (the A2P-registered opt-in location).
+  accountTexts: "/account?tab=personal#texts",
 };
 
 /*
