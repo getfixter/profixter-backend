@@ -91,6 +91,12 @@ async function main() {
     const staffConsent = await person({ smsMarketing: false, extra: { smsPreferences: { transactionalEnabled: true, marketingEnabled: true, marketingConsentAt: new Date("2026-10-30"), marketingConsentSource: "admin_phone" } } });
     void staffConsent;
 
+    // A legacy customer imported before the role field existed (most of the real base), and a staff account.
+    const legacy = await person({ smsMarketing: false });
+    await User.collection.updateOne({ _id: legacy._id }, { $unset: { role: "" }, $set: { legacyRegisteredUser: true } });
+    const staff = await person({ smsMarketing: true, extra: { role: "employee", employeePosition: "General Fixter" } });
+    void staff;
+
     await check("the SMS is the owner's copy, a working link, nothing personal, STOP appended", async () => {
       assert.match(SMS_BODY, /^Happy Halloween from Profixter! 🎃 We've got a treat for you: 20% OFF your first payment on ANY Profixter membership plan!/);
       assert.match(SMS_BODY, /https:\/\/www\.profixter\.com\/halloween\?c=sms$/);
@@ -116,12 +122,12 @@ async function main() {
       assert.strictEqual(await SmsMessage.countDocuments(), 0);
     });
     await check("members (active, past due) are never in the audience; former members are", async () => {
-      assert.strictEqual(dry.customers, 8);
-      assert.strictEqual(dry.withoutLiveMembership, 6, JSON.stringify(dry));
+      assert.strictEqual(dry.customers, 9, "role-less legacy customer counted, the employee not");
+      assert.strictEqual(dry.withoutLiveMembership, 7, JSON.stringify(dry));
       assert.strictEqual(dry.audience.former_member, 1);
     });
     await check("email: unsubscribed and excluded people are skipped", async () => {
-      assert.strictEqual(dry.email.eligible, 4, JSON.stringify(dry.email));
+      assert.strictEqual(dry.email.eligible, 5, JSON.stringify(dry.email));
     });
     await check("SMS: only recorded marketing consent, not transactional, not STOP", async () => {
       assert.strictEqual(dry.sms.eligible, 2, JSON.stringify(dry.sms));
@@ -131,10 +137,10 @@ async function main() {
     let run1;
     await check("send: one email and one SMS per eligible person", async () => {
       run1 = await runHalloweenCampaign({ send: true, senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
-      assert.strictEqual(run1.email.accepted, 4, JSON.stringify(run1.email));
+      assert.strictEqual(run1.email.accepted, 5, JSON.stringify(run1.email));
       assert.strictEqual(run1.sms.accepted, 2, JSON.stringify(run1.sms));
       const to = emails.map((e) => e.to).sort();
-      assert.deepStrictEqual(to, [both.email, emailOnly.email, former.email, staffConsent.email].sort());
+      assert.deepStrictEqual(to, [both.email, emailOnly.email, former.email, staffConsent.email, legacy.email].sort());
       for (const e of emails) assert.ok(e.headers["List-Unsubscribe"] && e.headers["List-Unsubscribe-Post"] === "List-Unsubscribe=One-Click");
       const sms = await SmsMessage.find({ campaignId: "halloween-2026" }).lean();
       assert.deepStrictEqual(sms.map((m) => String(m.user)).sort(), [String(both._id), String(former._id)].sort());
@@ -151,7 +157,7 @@ async function main() {
       const run2 = await runHalloweenCampaign({ send: true, senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
       assert.strictEqual(emails.length, before);
       assert.strictEqual(run2.email.accepted, 0);
-      assert.strictEqual(run2.email.duplicate, 4);
+      assert.strictEqual(run2.email.duplicate, 5);
       assert.strictEqual(run2.sms.accepted, 0);
       assert.strictEqual(run2.sms.duplicate, 2);
       assert.strictEqual(await SmsMessage.countDocuments({ campaignId: "halloween-2026" }), 2);
@@ -181,7 +187,7 @@ async function main() {
       const retry = await runHalloweenCampaign({ send: true, channels: ["email"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
       assert.strictEqual(retry.email.accepted, 2, JSON.stringify(retry.email));
       assert.ok(emails.slice(before).map((e) => e.to).includes(unlucky.email));
-      assert.strictEqual(retry.email.duplicate, 4, "everyone already sent stays sent once");
+      assert.strictEqual(retry.email.duplicate, 5, "everyone already sent stays sent once");
       const after = await MarketingSend.findOne({ user: unlucky._id }).lean();
       assert.strictEqual(after.status, "sent");
       assert.strictEqual(after.attempts, 2);

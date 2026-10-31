@@ -68,6 +68,17 @@ function log(level, event, details = {}) {
   else console.log(payload);
 }
 
+/*
+ * A customer, as the rest of the app counts one: a missing role is the schema
+ * default, "customer". Most of the customer base was imported before the field
+ * existed (utils/marketing/marketingEligibility.js says the same), and lean
+ * reads do not apply defaults - so "role === customer" alone would refuse the
+ * offer to almost every long-standing customer.
+ */
+function isCustomer(user) {
+  return Boolean(user) && String(user.role || "customer") === "customer" && !user.employeePosition;
+}
+
 function campaignInfo(id, now = new Date()) {
   const campaign = CAMPAIGNS[String(id || "")];
   if (!campaign) return null;
@@ -76,7 +87,7 @@ function campaignInfo(id, now = new Date()) {
 
 /** The new-account window, or null if this account could never have one. */
 function welcomeOfferWindow(user) {
-  if (!user || user.role !== "customer") return null;
+  if (!isCustomer(user)) return null;
   if (user.signupMethod === "admin" || user.adminCreated?.at) return null;
   const created = user.createdAt ? new Date(user.createdAt) : null;
   if (!created || Number.isNaN(created.getTime())) return null;
@@ -88,7 +99,7 @@ function currentWindow(user, activation, now) {
   const windows = [];
   const fresh = welcomeOfferWindow(user);
   if (fresh) windows.push(fresh);
-  if (activation?.activatedAt && activation?.expiresAt && user?.role === "customer") {
+  if (activation?.activatedAt && activation?.expiresAt && isCustomer(user)) {
     windows.push({ source: String(activation.campaign || "campaign"), startedAt: new Date(activation.activatedAt), expiresAt: new Date(activation.expiresAt) });
   }
   if (!windows.length) return null;
@@ -182,7 +193,7 @@ async function stripeMembershipFacts(user, stripeClient = stripe) {
  * and on every status check.
  */
 async function offerBlocker({ user, address = null, stripeClient = stripe }) {
-  if (!user || user.role !== "customer") return "not_eligible";
+  if (!isCustomer(user)) return "not_eligible";
   if (await Subscription.exists({ user: user._id, status: { $in: LIVE_MEMBERSHIP_STATUSES } })) return "has_membership";
   const raw = await User.collection.findOne({ _id: new mongoose.Types.ObjectId(String(user._id)) }, { projection: { welcomeOffer: 1 } });
   const offer = raw?.welcomeOffer;
@@ -208,7 +219,7 @@ async function offerBlocker({ user, address = null, stripeClient = stripe }) {
  * @returns {{ eligible, reason, expiresAt, source }}
  */
 async function welcomeOfferStatus({ user, address = null, now = new Date(), stripeClient = stripe }) {
-  if (!user || user.role !== "customer") return { eligible: false, reason: "not_eligible", expiresAt: null, source: null };
+  if (!isCustomer(user)) return { eligible: false, reason: "not_eligible", expiresAt: null, source: null };
   const raw = await User.collection.findOne({ _id: new mongoose.Types.ObjectId(String(user._id)) }, { projection: { welcomeOfferActivation: 1 } });
   const window = currentWindow(user, raw?.welcomeOfferActivation || user.welcomeOfferActivation, now);
   if (!window) return { eligible: false, reason: "not_eligible", expiresAt: null, source: null };
@@ -324,6 +335,7 @@ module.exports = {
   CAMPAIGNS,
   LIVE_MEMBERSHIP_STATUSES,
   campaignInfo,
+  isCustomer,
   welcomeOfferWindow,
   welcomeOfferStatus,
   activateCampaignOffer,

@@ -110,7 +110,8 @@ async function runHalloweenCampaign({ send = false, channels = ["email", "sms"],
   const campaign = campaignInfo(CAMPAIGN, now);
   if (!campaign?.active) throw new Error("The Halloween campaign is not running; nothing to send.");
   const blacklist = await loadBlacklist();
-  const customers = await User.find({ role: "customer" }).lean();
+  // Everyone Admin lists as a customer: a missing role is the schema default (most legacy accounts have none).
+  const customers = (await User.find({ role: { $nin: ["employee", "admin"] } }).lean()).filter((u) => !u.employeePosition);
   const tally = {
     mode: SEND ? "SEND" : "DRY RUN",
     customers: customers.length,

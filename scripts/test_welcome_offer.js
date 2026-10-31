@@ -438,6 +438,22 @@ async function main() {
       assert.strictEqual(ended.reason, "campaign_ended");
       assert.strictEqual((await activate(late, { campaign: "made-up" })).body.eligible, false);
     });
+    await check("a legacy account with NO role field (most real customers) can open and use the offer", async () => {
+      const legacy = await makeCustomer({ minutesOld: 60 * 24 * 400, street: "80 Legacy Ln" });
+      await User.collection.updateOne({ _id: legacy._id }, { $unset: { role: "", signupMethod: "" }, $set: { legacyRegisteredUser: true } });
+      const reloaded = await User.findById(legacy._id);
+      const res = await activate(reloaded);
+      assert.strictEqual(res.body.eligible, true, JSON.stringify(res.body));
+      await clearLock(reloaded);
+      const bought = await buy(reloaded, { plan: "basic", welcomeOffer: true });
+      assert.strictEqual(bought.status, 200, JSON.stringify(bought.body));
+      assert.deepStrictEqual(fake.created.at(-1).config.discounts, [{ coupon: welcome.WELCOME_COUPON_ID }]);
+    });
+    await check("employees never get it, with or without a role field", async () => {
+      assert.strictEqual(welcome.isCustomer({ role: "employee" }), false);
+      assert.strictEqual(welcome.isCustomer({ employeePosition: "General Fixter" }), false);
+      assert.strictEqual(welcome.isCustomer({}), true);
+    });
     await check("the campaign's public facts: running, its end date, nothing personal", async () => {
       const res = await fetch(`${baseUrl}/api/stripe/checkout/welcome-offer/campaign/halloween-2026`);
       const body = await res.json();
