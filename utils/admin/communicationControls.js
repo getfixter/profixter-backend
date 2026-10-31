@@ -5,6 +5,7 @@ const { CURRENT } = require("../consent/consentText");
 const { emailStatus, handsetStopped } = require("../consent/status");
 const { optOutFor } = require("../sms/smsEligibility");
 const { toE164 } = require("../sms/smsPhone");
+const { ADMIN_METHODS, MIN_EVIDENCE, marketingSmsBasis } = require("../consent/marketingSmsBasis");
 
 /**
  * Admin's view of, and control over, what one customer is sent.
@@ -18,6 +19,13 @@ const { toE164 } = require("../sms/smsPhone");
  *  - every change appends a ConsentEvent naming source "admin_phone" (on) or
  *    "admin_change" (off) and the staff member, with the wording the customer
  *    agreed to (consentText "*.admin_phone.v1");
+ *  - marketing SMS also records HOW the customer agreed and what shows it: a
+ *    phone call (source "admin_phone"), or written permission the customer
+ *    sent - their own email, text or a signed form - with the evidence
+ *    described (source "admin_written"). Whether a marketing text may then go
+ *    out is decided from that evidence (utils/consent/marketingSmsBasis.js);
+ *    a call alone is completed by the customer's own confirmation
+ *    (utils/consent/smsConfirmLink.js);
  *  - every change writes an AdminActivityLog row (the caller does that);
  *  - nothing is ever sent to the customer about it;
  *  - what the customer did on their own handset or inbox outranks Admin: a
@@ -38,7 +46,7 @@ const SWITCHES = {
   "marketing.email": { purpose: "marketing", channel: "email" },
 };
 
-const SELECT = "name email phone role isActive employeePosition excludeFromMarketing smsPreferences emailPreferences";
+const SELECT = "name firstName email phone role isActive employeePosition excludeFromMarketing smsPreferences emailPreferences";
 
 class CommunicationControlError extends Error {
   constructor(code, message, status = 409) {
@@ -102,6 +110,12 @@ async function communicationState(userOrId) {
         locked: !hasPhone ? "no_phone" : stopped ? "stopped" : user.excludeFromMarketing === true ? "excluded" : null,
         changedAt: prefs.marketingConsentAt || null,
         source: prefs.marketingConsentSource || "",
+        /* Whether texts may actually go out on it, and why (see marketingSmsBasis). */
+        consent: {
+          ...marketingSmsBasis(user),
+          evidence: prefs.marketingConsentEvidence || "",
+          confirmRequestedAt: prefs.marketingConfirmRequestedAt || null,
+        },
       },
     },
   };
@@ -120,10 +134,20 @@ const LOCK_MESSAGES = {
  * Turn one switch on or off for a customer, on Admin's say-so.
  * Returns { changed, before, after } - `changed` false when it already was.
  */
-async function setCommunicationPreference({ userId, key, enabled, admin, req = null, note = "", recordIfUnchanged = false, at = new Date() }) {
+async function setCommunicationPreference({ userId, key, enabled, admin, req = null, note = "", method = "", evidence = "", recordIfUnchanged = false, at = new Date() }) {
   const target = SWITCHES[key];
   if (!target) throw new CommunicationControlError("UNKNOWN_SWITCH", "Unknown setting.", 400);
   if (enabled !== true && enabled !== false) throw new CommunicationControlError("BAD_VALUE", "enabled must be true or false.", 400);
+
+  /* Marketing SMS on: how the customer agreed. A call by default; written permission needs its evidence described. */
+  const smsMarketingOn = key === "marketing.sms" && enabled;
+  const how = smsMarketingOn ? String(method || "phone_call") : "";
+  const proof = smsMarketingOn ? String(evidence || "").trim().slice(0, 1000) : "";
+  if (smsMarketingOn && !ADMIN_METHODS[how]) throw new CommunicationControlError("BAD_METHOD", "Choose how the customer agreed.", 400);
+  const written = smsMarketingOn && ADMIN_METHODS[how].written;
+  if (written && proof.length < MIN_EVIDENCE) {
+    throw new CommunicationControlError("EVIDENCE_REQUIRED", "Describe the customer's written permission: when they sent it, from which email or number, and what it said.", 400);
+  }
 
   const user = await User.findById(userId).select(SELECT);
   if (!user) throw new CommunicationControlError("NOT_FOUND", "Customer not found.", 404);
@@ -138,12 +162,18 @@ async function setCommunicationPreference({ userId, key, enabled, admin, req = n
    * "on" that the opt-out rule already implies (marketing email, service
    * email) is still recorded, so the account carries the call's consent.
    */
-  if (current.enabled === enabled && !(recordIfUnchanged && enabled)) return { changed: false, before, after: before };
+  /*
+   * ...and except written permission arriving for a customer whose texts are
+   * on but not yet backed by qualifying consent (a call on record): that is
+   * new evidence, so it is recorded.
+   */
+  const upgrade = written && current.enabled && current.consent?.status !== "qualifies";
+  if (current.enabled === enabled && !(recordIfUnchanged && enabled) && !upgrade) return { changed: false, before, after: before };
   if (enabled && current.locked) {
     throw new CommunicationControlError(`LOCKED_${current.locked.toUpperCase()}`, LOCK_MESSAGES[current.locked] || "This setting is locked.");
   }
 
-  const source = enabled ? "admin_phone" : "admin_change";
+  const source = !enabled ? "admin_change" : written ? "admin_written" : "admin_phone";
   const detail = adminDetail(admin, note);
   const phone = toE164(user.phone) || "";
   const email = String(user.email || "").trim().toLowerCase();
@@ -155,6 +185,11 @@ async function setCommunicationPreference({ userId, key, enabled, admin, req = n
       set[`${base}ConsentAt`] = at;
       set[`${base}ConsentSource`] = source;
     }
+    if (smsMarketingOn) {
+      set["smsPreferences.marketingConsentMethod"] = how;
+      set["smsPreferences.marketingConsentEvidence"] = proof;
+      set["smsPreferences.marketingConsentRecordedBy"] = admin?._id || null;
+    }
     await User.updateOne({ _id: user._id }, { $set: set });
     await recordConsent({
       user,
@@ -162,10 +197,13 @@ async function setCommunicationPreference({ userId, key, enabled, admin, req = n
       purpose: target.purpose,
       action: enabled ? "granted" : "withdrawn",
       source,
-      version: enabled ? CURRENT.admin_phone[target.purpose] : "",
+      version: !enabled ? "" : written ? CURRENT.admin_written.marketing : CURRENT.admin_phone[target.purpose],
       phone,
       req,
-      detail,
+      detail: smsMarketingOn ? `${ADMIN_METHODS[how].label}; ${detail}`.slice(0, 300) : detail,
+      method: how,
+      evidence: proof,
+      recordedBy: admin?._id || null,
       at,
     });
   } else if (target.purpose === "marketing") {
@@ -196,8 +234,8 @@ async function setCommunicationPreference({ userId, key, enabled, admin, req = n
   }
 
   const after = await communicationState(await User.findById(user._id).select(SELECT).lean());
-  console.log(JSON.stringify({ event: "admin_communication_preference_changed", userId: String(user._id), key, enabled, source, adminId: String(admin?._id || "") }));
-  return { changed: true, before, after };
+  console.log(JSON.stringify({ event: "admin_communication_preference_changed", userId: String(user._id), key, enabled, source, method: how, adminId: String(admin?._id || "") }));
+  return { changed: true, before, after, source, method: how };
 }
 
 module.exports = {

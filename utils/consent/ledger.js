@@ -12,7 +12,7 @@ const { wording } = require("./consentText");
  * `version` is given only for a choice the customer made on a screen; it adds
  * the exact wording they saw.
  */
-async function recordConsent({ user = null, channel, purpose, action, source, version = "", phone = "", email = "", req = null, detail = "", at = new Date() }) {
+async function recordConsent({ user = null, channel, purpose, action, source, version = "", phone = "", email = "", req = null, detail = "", method = "", evidence = "", recordedBy = null, at = new Date() }) {
   try {
     const words = version ? wording(version) : { consentVersion: "", consentText: "" };
     await ConsentEvent.create({
@@ -27,6 +27,9 @@ async function recordConsent({ user = null, channel, purpose, action, source, ve
       ip: req ? String(req.headers?.["x-forwarded-for"] || req.ip || "").split(",")[0].trim().slice(0, 64) : "",
       userAgent: req ? String(req.headers?.["user-agent"] || "").slice(0, 300) : "",
       detail: String(detail || "").slice(0, 300),
+      method: String(method || ""),
+      evidence: String(evidence || "").slice(0, 1000),
+      recordedBy: recordedBy || null,
       at,
     });
   } catch (error) {

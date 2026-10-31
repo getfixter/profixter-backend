@@ -752,10 +752,16 @@ test("marketing requires an explicit opt-in; absence is not consent", () => {
   );
   assert.equal(
     eligibility.accountAllows(
-      { smsPreferences: { marketingEnabled: true } },
+      { smsPreferences: { marketingEnabled: true, marketingConsentSource: "account_settings" } },
       "KITCHEN_BATH_MARKETING"
     ).eligible,
     true
+  );
+  // Switched on with no qualifying evidence behind it (a call alone, or nothing recorded) is not enough.
+  assert.equal(eligibility.accountAllows({ smsPreferences: { marketingEnabled: true } }, "KITCHEN_BATH_MARKETING").eligible, false);
+  assert.equal(
+    eligibility.accountAllows({ smsPreferences: { marketingEnabled: true, marketingConsentSource: "admin_phone" } }, "KITCHEN_BATH_MARKETING").reason,
+    "marketing_consent_needs_confirmation"
   );
 });
 

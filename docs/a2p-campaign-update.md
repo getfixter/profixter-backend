@@ -62,28 +62,63 @@ Note: production today already differs from the registered flow (it requires
 the service-texts box, while the campaign registered it as optional). This
 update brings the registration back in line with the live site.
 
-## Admin-assisted opt-in (2026-10-31)
+## Admin-assisted opt-in (updated 2026-10-31, evening)
 
-Staff may ask a customer by phone whether they would like offers by text and
-record the answer in Admin (`smsPreferences.marketingConsentSource =
-"admin_phone"`, ConsentEvent `sms_marketing.admin_phone.v1`). That record is
-an invitation, not the customer's written consent, and it does not make the
-number textable for marketing: `scripts/ops/send_halloween_campaign.js` (and
-any marketing sender) texts only consent the customer gave themselves.
+**Status checked 2026-10-31 (Twilio API, read-only):** campaign …ba0b is
+VERIFIED, last updated 2026-09-11, and still carries the OLD Registration 1.0
+flow above ("sign-up form ... There is no keyword opt-in, no verbal opt-in, no
+paper opt-in"). The Registration 2.0 update in this file was never submitted.
+So today the only registered places a customer can give marketing consent are
+the sign-up form and account settings.
 
-The customer completes it in account settings, the registered opt-in location:
-the Text messages card shows "Please confirm text offers" with the button
-"Text me occasional ProFixter offers." Pressing it saves through
-`PUT /api/users/me/sms-preferences`, which records the customer's own consent
-(source `account_settings`, `sms_marketing.settings.v1`, IP and user agent).
-The staff record stays in the consent history.
+What the code does (utils/consent/marketingSmsBasis.js decides for every
+marketing text):
 
-This keeps the registered message flow true as written (marketing consent is
-collected only in account settings). If you want the flow to mention the phone
-invitation, add this sentence in the Twilio Console (Messaging > Regulatory
-compliance > Campaigns > edit message flow; a VERIFIED campaign cannot be
-edited through the API):
+| How the customer agreed | Recorded as | Marketing texts |
+|---|---|---|
+| Sign-up form, account settings, website, START | their own source | yes, now |
+| Phone call, recorded by staff in Admin | `admin_phone`, method `phone_call` | no - the customer confirms in account settings (Admin can email them the link) |
+| Their own email / text / signed form, recorded by staff with the evidence | `admin_written` | after Twilio confirms the flow below and `SMS_ADMIN_ASSISTED_OPTIN_REGISTERED=true` is set on EB |
+| One-click "Yes, text me offers" page from the email Admin sends | `sms_confirm_link` | same - after confirmation and the flag |
 
-> Staff may invite existing customers by phone or email to opt in; the opt-in
-> itself is completed only by the customer in account settings as described
-> above, and marketing texts start only after it.
+Until the flag is set, the confirmation email Admin sends links to account
+settings (sign in, tap "Text me occasional ProFixter offers"), which is the
+registered opt-in and qualifies at once.
+
+### Message flow to submit (replaces the whole field; covers Registration 2.0 too)
+
+Submit in the Twilio Console: Messaging > Regulatory compliance > Campaigns >
+campaign …ba0b > edit Message flow (a VERIFIED campaign cannot be edited through
+the API). Ask Twilio support, through the Console, whether the campaign keeps
+sending during re-review. Set `SMS_ADMIN_ASSISTED_OPTIN_REGISTERED=true` only
+after the campaign shows VERIFIED with this flow.
+
+> End users opt in on the ProFixter website; every opt-in is optional,
+> unchecked by default, never required to buy anything, and never combined
+> with another consent. SERVICE TEXTS: (1) at the booking step
+> (https://www.profixter.com/book and /book/free), a checkbox "Text me about
+> my visits"; (2) in account settings at https://www.profixter.com/account,
+> "Text me about my ProFixter visits." MARKETING TEXTS: (1) in account settings
+> at https://www.profixter.com/account, a separate checkbox "Text me occasional
+> ProFixter offers."; (2) existing customers who tell ProFixter staff, by phone
+> or in writing, that they want offers by text are sent an email that links
+> either to that account setting or to a confirmation page
+> (https://www.profixter.com/texts/confirm) showing their phone number's last
+> four digits and a "Yes, text me occasional ProFixter offers" button; texts
+> start only after the customer presses it; (3) a customer's own written
+> request (an email or text message from them, or a signed form) is recorded
+> by staff together with that evidence. A spoken yes on a call is never by
+> itself treated as consent. Every opt-in location and the confirmation email
+> state the brand, that message frequency varies, that message and data rates
+> may apply, and "Reply STOP to opt out or HELP for help", and link to the
+> Privacy Policy (https://www.profixter.com/privacy), Terms of Service
+> (https://www.profixter.com/terms) and SMS Terms
+> (https://www.profixter.com/communication-consent). Each consent is stored
+> with the wording shown, time, method, the staff member where one was
+> involved, and the evidence. Account sign-up collects no SMS consent: a person
+> may verify their own phone number with a one-time code they request, sent by
+> Twilio Verify and not under this campaign. No purchased, rented or shared
+> list. Screenshots: https://www.profixter.com/sms-consent-example.
+
+Before submitting, make sure /sms-consent-example shows the current booking
+checkbox and account settings (reviewers open it).

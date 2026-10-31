@@ -287,6 +287,8 @@ app.use("/api/admin", require("./routes/adminCampaigns"));
 app.use("/api/admin/marketing", require("./routes/adminMarketing"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/email", require("./routes/email"));
+// The customer confirms offers by text from the link Admin emails after a call.
+app.use("/api/consent", require("./routes/smsConfirm"));
 app.use("/api/calendar", require("./routes/calendar"));
 
 app.use("/api/facebook", require("./routes/facebook"));

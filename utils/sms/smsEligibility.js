@@ -4,6 +4,7 @@ const SmsPhoneStatus = require("../../models/SmsPhoneStatus");
 const { QUIET_HOURS, TIMEZONE, smsMarketingEnabled } = require("./smsConfig");
 const { isMarketing, isTimeCritical, isKnownType } = require("./smsTypes");
 const { toE164 } = require("./smsPhone");
+const { marketingSmsBasis } = require("../consent/marketingSmsBasis");
 
 /**
  * Whether a particular message may go to a particular person right now.
@@ -182,6 +183,9 @@ function accountAllows(user, notificationType) {
   if (isMarketing(notificationType)) {
     if (prefs.marketingEnabled !== true) return no("marketing_not_opted_in");
     if (user?.excludeFromMarketing === true) return no("account_excluded_from_marketing");
+    /* Switched on is not enough: the consent behind it must qualify (see marketingSmsBasis). */
+    const basis = marketingSmsBasis(user);
+    if (basis.status !== "qualifies") return no(`marketing_consent_${basis.status}`, basis.basis);
     return yes;
   }
 

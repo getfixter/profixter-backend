@@ -75,7 +75,8 @@ function renderMarketingEmail(template, { name = "there", email, audience, vars 
    */
   const cta = ctaFor(template, audience || audiencesOf(template)[0]);
   const ctaLabel = resolve(cta.label);
-  const ctaUrl = routeUrl(cta.route);
+  /* A per-recipient link (the SMS confirmation email) is passed in vars; everything else uses a fixed route. */
+  const ctaUrl = context.ctaUrl || routeUrl(cta.route);
   const closing = resolve(template.closing);
 
   /*

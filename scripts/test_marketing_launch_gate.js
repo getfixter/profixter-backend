@@ -132,7 +132,7 @@ async function main() {
     state: "NY",
     zip: "11702",
     county: "Suffolk",
-    smsPreferences: { marketingEnabled: true, transactionalEnabled: true },
+    smsPreferences: { marketingEnabled: true, marketingConsentSource: "account_settings", transactionalEnabled: true },
   });
 
   await test("marketing is refused before the launch instant", async () => {

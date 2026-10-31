@@ -116,6 +116,7 @@ const SUITES = [
   "test_welcome_offer.js",
   // Halloween 2026 campaign sender: consent per channel, members excluded, once only (in-memory Mongo, SMS simulated).
   "test_halloween_campaign.js",
+  "test_admin_marketing_consent.js",
 ];
 
 /**

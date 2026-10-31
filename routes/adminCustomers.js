@@ -11,6 +11,7 @@ const {
   communicationState,
   setCommunicationPreference,
 } = require("../utils/admin/communicationControls");
+const { SmsConfirmError, requestSmsConfirmation } = require("../utils/consent/smsConfirmLink");
 
 /**
  * Admin: create a customer by phone, resend their sign-in details, and see or
@@ -156,6 +157,8 @@ router.put("/users/:id/communication", auth, ...customersManage, async (req, res
       admin: actingAdmin(req),
       req,
       note: String(req.body?.note || "").slice(0, 120),
+      method: String(req.body?.method || ""),
+      evidence: String(req.body?.evidence || ""),
     });
     if (result.changed) {
       await createAdminActivityLog(req, {
@@ -163,12 +166,36 @@ router.put("/users/:id/communication", auth, ...customersManage, async (req, res
         entityType: "user",
         entityId: target._id,
         entityName: target.name,
-        details: { setting: key, from: !enabled, to: enabled, source: enabled ? "admin_phone" : "admin_change" },
+        details: { setting: key, from: !enabled, to: enabled, source: result.source, ...(result.method ? { method: result.method } : {}) },
       }).catch((error) => console.error("activity log failed:", error.message));
     }
     return res.json({ changed: result.changed, state: result.after });
   } catch (error) {
     return sendError(res, error, "PUT /admin/users/:id/communication error:");
+  }
+});
+
+/*
+ * Email the customer the one-click link that turns a phone yes into their own
+ * written consent to offers by text. Only on this explicit request; changing a
+ * switch never emails anyone.
+ */
+router.post("/users/:id/communication/sms-confirmation", auth, ...customersManage, async (req, res) => {
+  try {
+    const target = await loadCustomer(req, res);
+    if (!target) return undefined;
+    const result = await requestSmsConfirmation({ userId: target._id, admin: actingAdmin(req) });
+    await createAdminActivityLog(req, {
+      action: "Customer SMS Offers Confirmation Emailed",
+      entityType: "user",
+      entityId: target._id,
+      entityName: target.name,
+      details: { sentTo: result.sentTo },
+    }).catch((error) => console.error("activity log failed:", error.message));
+    return res.json({ sentTo: result.sentTo, requestedAt: result.requestedAt, state: await communicationState(target._id) });
+  } catch (error) {
+    if (error instanceof SmsConfirmError) return res.status(error.status).json({ message: error.message, code: error.code });
+    return sendError(res, error, "POST /admin/users/:id/communication/sms-confirmation error:");
   }
 });
 

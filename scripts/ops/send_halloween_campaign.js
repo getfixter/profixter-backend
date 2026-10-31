@@ -32,6 +32,7 @@ const { renderMarketingEmail } = require("../../utils/marketing/marketingRendere
 const { sendPromo } = require("../../utils/emailService");
 const { sendMarketingSms } = require("../../utils/sms/smsService");
 const { checkEligibility } = require("../../utils/sms/smsEligibility");
+const { marketingSmsBasis } = require("../../utils/consent/marketingSmsBasis");
 const { campaignKey } = require("../../utils/sms/smsDedupe");
 const { LIVE_MEMBERSHIP_STATUSES, campaignInfo } = require("../../utils/welcomeOffer");
 
@@ -71,15 +72,20 @@ const EMAIL_TEMPLATE = {
 };
 
 /*
- * Marketing texts need the customer's OWN prior express written consent
- * (TCPA). Consent a customer gave themselves - the sign-up form, the phone-code
- * sign-up, account settings, the website, texting START - qualifies. Consent
- * recorded on their behalf by staff ("admin_phone" after a call, and the
- * legacy migration of those) is not written consent by the customer, so this
- * campaign does not text those numbers. The owner can decide otherwise.
+ * Marketing texts go out only on consent whose EVIDENCE qualifies - decided
+ * in one place for every marketing text (utils/consent/marketingSmsBasis.js):
+ * the customer's own electronic opt-in (sign-up, account settings, website,
+ * START, the confirmation link Admin emails after a call), or written
+ * permission the customer sent that Admin recorded with its evidence, once the
+ * A2P campaign describes that method. A call alone is on record but waits for
+ * the customer's one-click confirmation.
  */
-const SELF_GIVEN_SMS_CONSENT = new Set(["signup_web_form", "signup_phone_code", "account_settings", "website", "sms_keyword"]);
-const smsConsentSelfGiven = (user) => SELF_GIVEN_SMS_CONSENT.has(String(user?.smsPreferences?.marketingConsentSource || ""));
+const SKIP_REASON = {
+  off: "marketing_not_opted_in",
+  needs_confirmation: "phone_consent_awaiting_customer_confirmation",
+  awaiting_registration: "written_consent_awaiting_a2p_registration",
+};
+const smsConsentQualifies = (user) => marketingSmsBasis(user).status === "qualifies";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -201,8 +207,8 @@ async function runHalloweenCampaign({ send = false, channels = ["email", "sms"],
 
     /* -------------------------------- sms -------------------------------- */
     if (CHANNELS.includes("sms")) {
-      const pre = !smsConsentSelfGiven(listed)
-        ? { eligible: false, reason: listed.smsPreferences?.marketingEnabled ? "consent_recorded_by_staff" : "marketing_not_opted_in" }
+      const pre = !smsConsentQualifies(listed)
+        ? { eligible: false, reason: SKIP_REASON[marketingSmsBasis(listed).status] || "consent_not_qualifying" }
         : await checkEligibility({ notificationType: "SEASONAL_MARKETING", user: listed, phone: listed.phone, now: clock() });
       if (!pre.eligible) bump(tally.sms.skipped, pre.reason || "ineligible");
       else {
@@ -210,7 +216,7 @@ async function runHalloweenCampaign({ send = false, channels = ["email", "sms"],
         if (SEND && sent < LIMIT) {
           const user = await User.findById(listed._id);
           if (!user || (await hasLiveMembership(user._id))) bump(tally.sms.skipped, "at_send_became_member");
-          else if (!smsConsentSelfGiven(user)) bump(tally.sms.skipped, "at_send_consent_changed");
+          else if (!smsConsentQualifies(user)) bump(tally.sms.skipped, "at_send_consent_changed");
           else {
             // sendMarketingSms claims the dedupeKey first, then re-checks consent, STOP and quiet hours itself.
             const attempt = (cycle) =>

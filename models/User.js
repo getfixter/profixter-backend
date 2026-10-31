@@ -378,6 +378,16 @@ const UserSchema = new mongoose.Schema(
       /** When and how they consented to marketing. Evidence, not decoration. */
       marketingConsentAt: { type: Date, default: null },
       marketingConsentSource: { type: String, default: "" },
+      /*
+       * When Admin records it: how the customer agreed (phone_call,
+       * customer_email, customer_text, signed_form), what shows it, and who
+       * recorded it. utils/consent/marketingSmsBasis.js reads these.
+       */
+      marketingConsentMethod: { type: String, default: "" },
+      marketingConsentEvidence: { type: String, default: "" },
+      marketingConsentRecordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      /* Last time Admin emailed the one-click confirmation link. */
+      marketingConfirmRequestedAt: { type: Date, default: null },
       optedOutAt: { type: Date, default: null },
       optOutSource: { type: String, default: "" },
     },

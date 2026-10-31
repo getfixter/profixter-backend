@@ -38,6 +38,10 @@ const ConsentEventSchema = new mongoose.Schema(
     ip: { type: String, default: "" },
     userAgent: { type: String, default: "" },
     detail: { type: String, default: "" },
+    /* Recorded by Admin: how the customer agreed, what shows it, and who recorded it. */
+    method: { type: String, default: "" },
+    evidence: { type: String, default: "" },
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     at: { type: Date, required: true, default: Date.now },
   },
   { timestamps: { createdAt: true, updatedAt: false } }

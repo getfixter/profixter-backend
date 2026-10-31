@@ -1184,7 +1184,7 @@ async function main() {
     assert.ok(adminSrc.includes('router.get("/users/:id/sms-consent"'), "the read-only consent view is missing");
 
     const writer = readSource(path.join(__dirname, "..", "utils", "admin", "communicationControls.js"));
-    assert.ok(/source = enabled \? "admin_phone" : "admin_change"/.test(writer), "admin changes must be labelled as admin");
+    assert.ok(/source = !enabled \? "admin_change" : written \? "admin_written" : "admin_phone"/.test(writer), "admin changes must be labelled as admin");
     assert.ok((writer.match(/recordConsent\(/g) || []).length >= 4, "every switch must write a ledger entry");
     assert.ok(/handsetStopped\(optOut\)/.test(writer), "a STOP from the handset must lock the SMS switches");
     assert.ok(/LOCKED_/.test(writer), "a locked switch must be refused, not overridden");

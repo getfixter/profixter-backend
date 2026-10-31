@@ -69,6 +69,25 @@ const VERSIONS = {
     purpose: "marketing",
     text: "Agreed by phone with ProFixter staff, who recorded it in Admin: occasional ProFixter offers and promotions by text. Optional and not required to buy anything. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.",
   },
+  /*
+   * Written permission the customer sent themselves (their own email, their
+   * own text message, a signed form), recorded by staff with a description of
+   * that evidence. The evidence itself is on the ConsentEvent row.
+   */
+  "sms_marketing.admin_written.v1": {
+    channel: "sms",
+    purpose: "marketing",
+    text: "The customer gave ProFixter written permission (their own email, text message or signed form, described in the evidence field) to receive occasional ProFixter offers and promotions by text; ProFixter staff recorded it in Admin. Optional and not required to buy anything. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help.",
+  },
+  /*
+   * The one-click confirmation page (app/texts/confirm/page.tsx), reached from
+   * the email Admin sends after a call. The customer presses the button.
+   */
+  "sms_marketing.confirm_link.v1": {
+    channel: "sms",
+    purpose: "marketing",
+    text: 'Page profixter.com/texts/confirm, opened from a ProFixter email, showing the customer\'s phone number ending and the button "Yes, text me occasional ProFixter offers", with: "Optional, and not required to buy anything. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help." linking to profixter.com/communication-consent#marketing.',
+  },
   "email_marketing.admin_phone.v1": {
     channel: "email",
     purpose: "marketing",
@@ -88,6 +107,8 @@ const CURRENT = {
     marketing: "sms_marketing.admin_phone.v1",
     emailMarketing: "email_marketing.admin_phone.v1",
   },
+  admin_written: { marketing: "sms_marketing.admin_written.v1" },
+  confirm_link: { marketing: "sms_marketing.confirm_link.v1" },
 };
 
 function wording(version) {

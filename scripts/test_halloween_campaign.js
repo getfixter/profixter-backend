@@ -132,7 +132,7 @@ async function main() {
     });
     await check("SMS: only recorded marketing consent, not transactional, not STOP", async () => {
       assert.strictEqual(dry.sms.eligible, 2, JSON.stringify(dry.sms));
-      assert.strictEqual(dry.sms.skipped.consent_recorded_by_staff, 1, "staff-recorded consent is not texted");
+      assert.strictEqual(dry.sms.skipped.phone_consent_awaiting_customer_confirmation, 1, "staff-recorded consent is not texted");
     });
 
     let run1;
@@ -178,7 +178,7 @@ async function main() {
     });
     await check("staff-recorded consent becomes textable only after the customer confirms it in account settings", async () => {
       const before = await runHalloweenCampaign({ send: false, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
-      assert.ok(before.sms.skipped.consent_recorded_by_staff >= 1);
+      assert.ok(before.sms.skipped.phone_consent_awaiting_customer_confirmation >= 1);
       // What PUT /api/users/me/sms-preferences records when the customer presses Confirm in account settings.
       await User.updateOne({ _id: staffConsent._id }, { $set: { "smsPreferences.marketingConsentSource": "account_settings", "smsPreferences.marketingConsentAt": new Date() } });
       const after = await runHalloweenCampaign({ send: true, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
