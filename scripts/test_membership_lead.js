@@ -124,13 +124,15 @@ async function main() {
 
     console.log("\nThe notification");
 
-    await test("the subject is exactly Subscription Lead!", async () => {
-      const notice = sent.find((s) => s.subject === "Subscription Lead!");
+    // Subject from utils/adminSubjects since 0c5fc30 (was "Subscription Lead!").
+    const LEAD_SUBJECT = "NEW MEMBERSHIP LEAD - Dana Whitfield";
+    await test("the subject names the lead: NEW MEMBERSHIP LEAD - <name>", async () => {
+      const notice = sent.find((s) => s.subject === LEAD_SUBJECT);
       assert.ok(notice, `subject drifted: ${sent.map((s) => s.subject).join(", ")}`);
     });
 
     await test("it carries the four things worth knowing and nothing else", async () => {
-      const notice = sent.find((s) => s.subject === "Subscription Lead!");
+      const notice = sent.find((s) => s.subject === LEAD_SUBJECT);
       const labels = notice.fields.map(([label]) => label);
       assert.deepStrictEqual(labels, ["Name", "Phone", "Source", "Submitted"]);
       const byLabel = Object.fromEntries(notice.fields);

@@ -11,6 +11,7 @@ const {
 const {
   reservationBlocksAvailability,
   reservationEngineEnabled,
+  slotSeatsInUse,
 } = require("./slotReservationService");
 
 const TIMEZONE = "America/New_York";
@@ -109,7 +110,10 @@ function customerDayFromShadow({
         !technician.booked &&
         !occupiedTechnicians.has(String(technician.id))
     ).length;
-    const used = Math.max(Number(slot.usedCapacity || 0), overlapping.length);
+    // Seats in use, counted exactly as the booking engine counts them.
+    const used = Array.isArray(slot.occupantBookingIds)
+      ? slotSeatsInUse({ occupantBookingIds: slot.occupantBookingIds, reservations: overlapping })
+      : Math.max(Number(slot.usedCapacity || 0), overlapping.length);
     const companyRemaining = Math.max(
       0,
       Number(slot.configuredCapacity || 0) - used

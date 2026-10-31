@@ -66,6 +66,8 @@ const TZ = "America/New_York";
 const PERIOD_START = new Date("2026-08-12T04:00:00.000Z");
 const PERIOD_END = new Date("2026-09-12T04:00:00.000Z");
 const NEXT_PERIOD_START = PERIOD_END;
+// "Now" inside the fixture period: the suite is written against August 2026, so it passes its own clock.
+const IN_PERIOD = new Date("2026-08-20T15:00:00Z");
 const NEXT_PERIOD_END = new Date("2026-10-12T04:00:00.000Z");
 
 async function makeEliteMember({ email = "elite@test.local" } = {}) {
@@ -182,7 +184,7 @@ async function run() {
     await test("an Elite member starts the period with one included Full Day", async () => {
       await reset();
       const { user, addressId } = await makeEliteMember();
-      const state = await includedFullDayState({ user, addressId });
+      const state = await includedFullDayState({ user, addressId, now: IN_PERIOD });
       assert.equal(state.entitled, true);
       assert.equal(state.used, false);
       assert.equal(state.remaining, 1);
@@ -194,7 +196,7 @@ async function run() {
       await reset();
       const { user, addressId } = await makeEliteMember();
       await Subscription.updateMany({ user: user._id }, { $set: { subscriptionType: "premium" } });
-      const state = await includedFullDayState({ user, addressId });
+      const state = await includedFullDayState({ user, addressId, now: IN_PERIOD });
       assert.equal(state.entitled, false);
       assert.equal(state.reason, "not_elite");
     });
@@ -206,7 +208,7 @@ async function run() {
         { user: user._id },
         { $set: { currentPeriodStart: null, currentPeriodEnd: null } }
       );
-      const state = await includedFullDayState({ user, addressId });
+      const state = await includedFullDayState({ user, addressId, now: IN_PERIOD });
       assert.equal(state.entitled, false);
       assert.equal(state.reason, "no_billing_period");
     });
@@ -276,7 +278,7 @@ async function run() {
         assert.equal(entitlement.periodStart, null);
       }
       // And the member's benefit is still available: purchases are not it.
-      const state = await includedFullDayState({ user, addressId });
+      const state = await includedFullDayState({ user, addressId, now: IN_PERIOD });
       assert.equal(state.used, false);
     });
 
@@ -307,7 +309,7 @@ async function run() {
       assert.equal(stored.status, "canceled");
       assert.equal(stored.consumedAt, null);
 
-      const state = await includedFullDayState({ user, addressId });
+      const state = await includedFullDayState({ user, addressId, now: IN_PERIOD });
       assert.equal(state.used, false, "the member can book another this period");
 
       // And they really can, which is the point of the partial filter.
@@ -338,7 +340,7 @@ async function run() {
       assert.equal(result.restored, false);
       assert.equal(result.reason, "day_already_started");
       assert.equal((await VisitEntitlement.findById(entitlement._id)).status, "consumed");
-      assert.equal((await includedFullDayState({ user, addressId })).used, true);
+      assert.equal((await includedFullDayState({ user, addressId, now: IN_PERIOD })).used, true);
     });
 
     await test("cancelling in a later period does not", async () => {

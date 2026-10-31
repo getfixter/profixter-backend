@@ -41,19 +41,22 @@ stub("../utils/emailService", {
     return { messageId: `msg-${sent.length}` };
   },
 });
-// The CRM is not under test and must never decide whether an email counts.
-const tags = [];
-let failTags = 0;
-stub("../utils/ghlContact", {
-  createOrUpdateContact: async () => "contact-1",
-  updateContactFields: async () => true,
-  addTag: async (contactId, tag) => {
-    if (failTags > 0) { failTags -= 1; return false; }
-    tags.push(tag);
-    return true;
-  },
-  formatBookingDateTime: () => "pretty",
-});
+// The reminder text goes from our own Twilio number (utils/sms/smsNotifications)
+// since the GoHighLevel tag was removed (69fbff8). Recorded here, never sent.
+const texts = [];
+let failTexts = 0;
+// Like the real one, a repeat for the same booking, kind and appointment time is a
+// duplicate (its SmsMessage dedupe key embeds the appointment instant).
+const textKeys = new Set();
+const smsNotifications = require("../utils/sms/smsNotifications");
+smsNotifications.notifyBookingReminder = async (booking, user, kind) => {
+  if (failTexts > 0) { failTexts -= 1; return { ok: false, status: "failed" }; }
+  const key = `${booking._id}:${kind}:${new Date(booking.date).toISOString()}`;
+  if (textKeys.has(key)) return { ok: false, status: "duplicate" };
+  textKeys.add(key);
+  texts.push(`reminder_${kind}`);
+  return { ok: true };
+};
 
 const Booking = require("../models/Booking");
 const { runBookingReminderCycle, logReminderHeartbeat } = require("../jobs/bookingReminders");
@@ -65,9 +68,10 @@ const failures = [];
 
 async function test(name, fn) {
   sent.length = 0;
-  tags.length = 0;
+  texts.length = 0;
+  textKeys.clear();
   failNext = 0;
-  failTags = 0;
+  failTexts = 0;
   await Booking.deleteMany({});
   try {
     await fn();
@@ -325,61 +329,48 @@ async function run() {
       assert.equal(after.pending60m, 0);
     });
 
-    console.log("\nThe SMS tag is its own channel");
+    console.log("\nThe reminder text is its own channel");
 
-    await test("a sent reminder also applies the CRM tag that triggers the SMS", async () => {
-      const b = await makeBooking(20);
+    await test("a sent reminder also sends the reminder text", async () => {
+      await makeBooking(20);
       await runBookingReminderCycle();
       assert.equal(sent.length, 1);
-      assert.deepEqual(tags, ["reminder_24h"]);
-      const after = await reload(b);
-      assert.ok(after.reminder24hTagAt, "the tag is recorded in its own field");
+      assert.deepEqual(texts, ["reminder_24h"]);
     });
 
-    await test("a failed tag does NOT resend the email, and retries on its own", async () => {
+    await test("a failed text does NOT resend the email", async () => {
       const b = await makeBooking(20);
-      // Enough failures to outlast the in-cycle retry, so the cycle ends with
-      // the email delivered and the tag still owed.
-      failTags = 99;
+      failTexts = 99;
       await runBookingReminderCycle();
       let after = await reload(b);
       assert.equal(sent.length, 1, "the email went out");
       assert.ok(after.reminder24hSentAt, "and is recorded as sent");
-      assert.equal(after.reminder24hTagAt, null, "but the tag is not");
-      assert.ok(after.reminder24hTagAttempts >= 1);
-      assert.match(after.reminder24hTagError, /Failed adding GHL tag/);
-      failTags = 0;
-
-      // The next cycle retries the tag alone. This is the guarantee that
-      // matters: no second email lands in the customer inbox to chase a text.
+      failTexts = 0;
       await runBookingReminderCycle();
       after = await reload(b);
       assert.equal(sent.length, 1, "STILL one email");
-      assert.ok(after.reminder24hTagAt, "the tag was applied on retry");
-      assert.deepEqual(tags, ["reminder_24h"]);
     });
 
-    await test("a failed email means no tag, so no SMS without an email", async () => {
+    await test("a failed email means no text", async () => {
       await makeBooking(20);
       failNext = 1;
       await runBookingReminderCycle();
       assert.equal(sent.length, 0);
-      assert.deepEqual(tags, [], "the SMS must not fire when the email did not");
+      assert.deepEqual(texts, [], "the SMS must not fire when the email did not");
     });
 
-    await test("the two tags are independent", async () => {
+    await test("the two reminders are independent", async () => {
       const b = await makeBooking(20);
       await runBookingReminderCycle();
-      await Booking.updateOne({ _id: b._id }, { $set: { date: new Date(Date.now() + 0.5 * HOUR) } });
-      await runBookingReminderCycle();
-      const after = await reload(b);
-      assert.ok(after.reminder24hTagAt && after.reminder60mTagAt);
-      assert.deepEqual(tags, ["reminder_24h", "reminder_60m"]);
+      // Time passes to 30 minutes before the same appointment (a moved booking
+      // would have its reminder state reset by every reschedule path instead).
+      await runBookingReminderCycle(new Date(new Date(b.date).getTime() - 0.5 * HOUR));
+      assert.deepEqual(texts, ["reminder_24h", "reminder_60m"]);
     });
 
     console.log("\nTwo workers racing the same booking");
 
-    await test("concurrent sweeps send exactly one email and apply one tag", async () => {
+    await test("concurrent sweeps send exactly one email and one text", async () => {
       await makeBooking(20);
       // Four sweeps started together, as four EB instances would. The claim is
       // a conditional atomic update, so only one can win.
@@ -390,14 +381,14 @@ async function run() {
         runBookingReminderCycle(),
       ]);
       assert.equal(sent.length, 1, `expected one email, got ${sent.length}`);
-      assert.equal(tags.filter((t) => t === "reminder_24h").length, 1, `expected one tag, got ${tags.length}`);
+      assert.equal(texts.filter((t) => t === "reminder_24h").length, 1, `expected one text, got ${texts.length}`);
     });
 
     await test("concurrent sweeps on many bookings never duplicate", async () => {
       await Promise.all([makeBooking(20), makeBooking(19), makeBooking(18), makeBooking(0.5)]);
       await Promise.all([runBookingReminderCycle(), runBookingReminderCycle(), runBookingReminderCycle()]);
       assert.equal(sent.length, 4, `expected 4 emails, got ${sent.length}`);
-      assert.equal(tags.length, 4, `expected 4 tags, got ${tags.length}`);
+      assert.equal(texts.length, 4, `expected 4 texts, got ${texts.length}`);
     });
 
     await test("a crashed worker's claim is recovered, not stuck forever", async () => {

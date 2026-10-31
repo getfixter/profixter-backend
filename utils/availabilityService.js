@@ -620,6 +620,14 @@ function calculateDayFromContext({
                   .map((booking) => String(booking._id)),
               };
             }),
+            /*
+             * Every booking using this slot's company capacity (Full Days
+             * included), so seat counting can tell a booking that holds a
+             * reservation here from one that does not (slotSeatsInUse).
+             */
+            occupantBookingIds: slotOccupants.map((booking) =>
+              String(booking._id)
+            ),
             bookings: slotBookings.map((booking) => ({
               id: String(booking._id),
               bookingNumber: booking.bookingNumber,

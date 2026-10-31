@@ -377,11 +377,17 @@ async function main() {
       assert.strictEqual(day.body.taken["13:00"], 1, JSON.stringify(day.body.taken));
       assert.strictEqual(day.body.remaining["13:00"], day.body.remaining["08:00"] - 1, JSON.stringify(day.body.remaining));
     });
-    await check("the hold blocks the time for everyone else (one booking per start time here)", async () => {
+    await check("the hold takes one of the two seats: a second Fixter still takes another customer", async () => {
       const a = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherA), as: otherA });
-      assert.strictEqual(a.status, 409, JSON.stringify(a.body));
-      assert.strictEqual(a.body.code, "SLOT_UNAVAILABLE");
-      assert.strictEqual(await Booking.countDocuments({ user: otherA._id, status: { $nin: ["Canceled", "Cancelled"] } }), 0, "nothing left behind");
+      assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+      const day = await call("GET", `/api/calendar/slots?date=${holdDay}`);
+      assert.ok(!day.body.slots.includes("13:00"), "hold + booking fill 13:00: the calendar stops offering it");
+    });
+    await check("with both seats used (hold + booking) the next customer is refused, nothing left behind", async () => {
+      const b = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB), as: otherB });
+      assert.strictEqual(b.status, 409, JSON.stringify(b.body));
+      assert.strictEqual(b.body.code, "SLOT_UNAVAILABLE");
+      assert.strictEqual(await Booking.countDocuments({ user: otherB._id, status: { $nin: ["Canceled", "Cancelled"] } }), 0, "nothing left behind");
     });
     await check("the holder's own checkout takes the held time; the hold is gone, nothing double-booked", async () => {
       const own = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(holder, { holdToken }), as: holder });
@@ -390,10 +396,11 @@ async function main() {
       assert.strictEqual(hold.status, "released");
       assert.strictEqual(await ReservationTimeBucketModel.countDocuments({ reservationId: hold._id }), 0);
       const active = await BookingSlotReservation.find({ slotStart: hold.slotStart, status: { $in: ["held", "reserved"] }, $or: [{ holdExpiresAt: null }, { holdExpiresAt: { $gt: new Date() } }] }).lean();
-      assert.strictEqual(active.length, 1, "only the holder's booking holds the time");
-      assert.ok(!active[0].signInHold);
+      assert.strictEqual(active.length, 2, "two bookings, one per Fixter");
+      assert.ok(active.every((r) => !r.signInHold));
+      assert.strictEqual(new Set(active.map((r) => String(r.technicianId))).size, 2, "different Fixters");
       const after = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB), as: otherB });
-      assert.strictEqual(after.status, 409, "still exactly one booking at that time");
+      assert.strictEqual(after.status, 409, "both seats taken");
     });
     let moving;
     await check("the same token extends; a new time moves the hold and frees the old one", async () => {
@@ -414,8 +421,10 @@ async function main() {
     });
     await check("abandoned: an expired hold stops blocking at once and is cleaned up by the next reservation", async () => {
       const id = moving.split(".")[0];
+      const second = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherA, { requestedTime: "10:00" }), as: otherA });
+      assert.strictEqual(second.status, 200, "the other seat: " + JSON.stringify(second.body));
       const blocked = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB, { requestedTime: "10:00" }), as: otherB });
-      assert.strictEqual(blocked.status, 409, "held: refused");
+      assert.strictEqual(blocked.status, 409, "held + booked: refused");
       await BookingSlotReservation.updateOne({ _id: id }, { $set: { holdExpiresAt: new Date(Date.now() - 1000) } });
       const freed = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB, { requestedTime: "10:00" }), as: otherB });
       assert.strictEqual(freed.status, 200, "expired: the time is free again " + JSON.stringify(freed.body));
@@ -429,6 +438,46 @@ async function main() {
       assert.strictEqual(r.body.released, true);
       const bad = await call("POST", "/api/bookings/hold", { body: { requestedDate: "2020-01-01", requestedTime: "08:00" } });
       assert.strictEqual(bad.status, 400);
+    });
+
+    /* ============ Calendar and booking agree (company seats, 2026-10-30) ============ */
+    console.log("\nCalendar and booking agree");
+    const seatDay = openDay(9);
+    const seatUsers = [];
+    for (let n = 0; n < 8; n += 1) {
+      seatUsers.push(await User.create({ userId: `7100000${n}`, name: `Seat ${n}`, email: `seat${n}@mailbox.org`, phone: `+1516555017${n}`, role: "customer", addresses: [{ line1: `${10 + n} Elm St`, city: "Farmingdale", state: "NY", zip: "11735" }] }));
+    }
+    await check("every time the calendar offers can be booked, and every time it stops offering is refused", async () => {
+      const log = [];
+      let u = 0;
+      for (const time of ["08:00", "10:00", "13:00"]) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const day = await call("GET", `/api/calendar/slots?date=${seatDay}`);
+          const offered = (day.body.slots || []).includes(time);
+          const user = seatUsers[u++ % seatUsers.length];
+          const res = await call("POST", "/api/bookings/one-time/checkout", { form: freeVisitForm({ addressId: String(user.addresses[0]._id), selectedTask: "Fix door", note: "Fix a sticking door", requestedDate: seatDay, requestedTime: time }), as: user });
+          log.push(`${time}#${attempt + 1} offered=${offered} -> ${res.status}`);
+          assert.strictEqual(res.status === 200, offered, log.join(" | ") + " " + JSON.stringify(res.body));
+        }
+      }
+      // Two Fixters, two seats: two bookings per start, never more.
+      for (const time of ["08:00", "10:00", "13:00"]) {
+        assert.ok(log.filter((line) => line.startsWith(time) && line.endsWith("200")).length === 2, log.join(" | "));
+      }
+    });
+    await check("a Fixter off for the day leaves one seat, on the calendar and at booking alike", async () => {
+      const TechnicianTimeOff = require("../models/TechnicianTimeOff");
+      const offDay = openDay(10);
+      const dayStart = moment.tz(offDay, "YYYY-MM-DD", TZ).startOf("day");
+      await TechnicianTimeOff.create({ technicianId: fixters[1]._id, type: "vacation", startAt: dayStart.toDate(), endAt: dayStart.clone().endOf("day").toDate(), status: "approved" });
+      const before = await call("GET", `/api/calendar/slots?date=${offDay}`);
+      assert.ok(before.body.slots.includes("08:00"));
+      const one = await call("POST", "/api/bookings/one-time/checkout", { form: freeVisitForm({ addressId: String(seatUsers[0].addresses[0]._id), selectedTask: "Fix door", note: "Fix a sticking door", requestedDate: offDay, requestedTime: "08:00" }), as: seatUsers[0] });
+      assert.strictEqual(one.status, 200, JSON.stringify(one.body));
+      const after = await call("GET", `/api/calendar/slots?date=${offDay}`);
+      assert.ok(!after.body.slots.includes("08:00"), "one Fixter working: 08:00 is full after one booking");
+      const two = await call("POST", "/api/bookings/one-time/checkout", { form: freeVisitForm({ addressId: String(seatUsers[1].addresses[0]._id), selectedTask: "Fix door", note: "Fix a sticking door", requestedDate: offDay, requestedTime: "08:00" }), as: seatUsers[1] });
+      assert.strictEqual(two.status, 409);
     });
   } finally {
     server.close();

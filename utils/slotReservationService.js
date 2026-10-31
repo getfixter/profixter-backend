@@ -224,10 +224,128 @@ function capacityBucketDocuments({
   }));
 }
 
+/*
+ * COMPANY SEATS (2026-10-30)
+ *
+ * A slot has `capacity` company seats: the company's configured capacity for
+ * that start. A seat is in use by every active reservation overlapping the
+ * slot (its capacity buckets) and by every occupying booking that has no
+ * reservation there - a booking from before the engine, or a Full Day whose
+ * reservation covers only its first visit. The customer calendar counts the
+ * same way (customerCalendarService), so a time it offers has a seat here.
+ * Whether a Fixter is free is a separate question, answered by technician
+ * selection and the technician time buckets.
+ *
+ * Until this date the seat count came from a technician-scope day, whose
+ * capacity is always 1: the company could take one booking per start time
+ * however many Fixters were free, while the calendar offered more.
+ */
+function slotSeatsInUse({ occupantBookingIds = [], reservations = [] }) {
+  const holders = new Set(
+    reservations.map((entry) => String(entry.reservationId || entry._id))
+  );
+  const reservedBookings = new Set(
+    reservations.map((entry) => String(entry.bookingId))
+  );
+  const unreserved = new Set(
+    occupantBookingIds
+      .map(String)
+      .filter((id) => !reservedBookings.has(id))
+  );
+  return holders.size + unreserved.size;
+}
+
+function chooseCapacityUnit({
+  starts,
+  occupied,
+  capacity,
+  usedCapacity = 0,
+  occupantBookingIds,
+}) {
+  const unitTaken = (unit) =>
+    starts.some((start) =>
+      occupied.some(
+        (entry) =>
+          entry.capacityUnit === unit &&
+          new Date(entry.bucketStart).getTime() === start.getTime()
+      )
+    );
+  if (Array.isArray(occupantBookingIds)) {
+    if (slotSeatsInUse({ occupantBookingIds, reservations: occupied }) >= capacity) {
+      return null;
+    }
+    // Fewer holders than seats, so some unit is free at every start.
+    for (let unit = 1; unit <= capacity; unit += 1) {
+      if (!unitTaken(unit)) return unit;
+    }
+    return null;
+  }
+  for (let unit = 1; unit <= capacity; unit += 1) {
+    const blocked =
+      unit <= Math.max(0, Math.floor(Number(usedCapacity || 0))) ||
+      unitTaken(unit);
+    if (!blocked) return unit;
+  }
+  return null;
+}
+
+/*
+ * The company side of a slot, for the seat count: its configured capacity and
+ * the bookings occupying it (minus the one being reserved or moved). Null when
+ * it cannot be read; the caller then keeps the technician-scope numbers,
+ * which can only refuse more, never less.
+ */
+async function companySlotCapacity({ slotStart, excludeBookingId = null }) {
+  try {
+    const window = reservationWindow(slotStart);
+    const day = await calculateDayAvailability({
+      date: window.date,
+      scope: "company",
+    });
+    const slot = (day.slots || []).find(
+      (candidate) => candidate.time === window.time
+    );
+    if (!slot || !Array.isArray(slot.occupantBookingIds)) return null;
+    return {
+      capacity: Math.max(0, Math.floor(Number(slot.configuredCapacity || 0))),
+      occupantBookingIds: slot.occupantBookingIds.filter(
+        (id) => !excludeBookingId || String(id) !== String(excludeBookingId)
+      ),
+    };
+  } catch (error) {
+    console.error("company slot capacity unavailable:", error.message);
+    return null;
+  }
+}
+
+/** createCapacityBuckets / applyCapacityBucketMove arguments for a slot. */
+function capacityArguments(availability, company, excludeBookingId = null) {
+  if (company) {
+    return {
+      capacity: company.capacity,
+      occupantBookingIds: company.occupantBookingIds,
+    };
+  }
+  return {
+    capacity: availability.slot?.totalCapacity,
+    usedCapacity: Math.max(
+      0,
+      Number(availability.slot?.usedCapacity || 0) -
+        Number(
+          !!excludeBookingId &&
+            (availability.slot?.bookings || []).some(
+              (entry) => String(entry.id) === String(excludeBookingId)
+            )
+        )
+    ),
+  };
+}
+
 async function createCapacityBuckets({
   reservation,
   capacity,
   usedCapacity = 0,
+  occupantBookingIds,
   session,
   CapacityBucketModel = ReservationCapacityBucket,
 }) {
@@ -244,22 +362,13 @@ async function createCapacityBuckets({
   })
     .session(session)
     .lean();
-  let capacityUnit = null;
-  for (let unit = 1; unit <= safeCapacity; unit += 1) {
-    const blocked =
-      unit <= Math.max(0, Math.floor(Number(usedCapacity || 0))) ||
-      starts.some((start) =>
-        occupied.some(
-          (entry) =>
-            entry.capacityUnit === unit &&
-            new Date(entry.bucketStart).getTime() === start.getTime()
-        )
-      );
-    if (!blocked) {
-      capacityUnit = unit;
-      break;
-    }
-  }
+  const capacityUnit = chooseCapacityUnit({
+    starts,
+    occupied,
+    capacity: safeCapacity,
+    usedCapacity,
+    occupantBookingIds,
+  });
   if (!capacityUnit) {
     throw serviceError("SLOT_UNAVAILABLE", "This time is fully booked");
   }
@@ -358,6 +467,7 @@ async function applyCapacityBucketMove({
   oldBuckets,
   capacity,
   usedCapacity = 0,
+  occupantBookingIds,
   session,
   CapacityBucketModel = ReservationCapacityBucket,
 }) {
@@ -375,22 +485,13 @@ async function applyCapacityBucketMove({
   })
     .session(session)
     .lean();
-  let capacityUnit = null;
-  for (let unit = 1; unit <= safeCapacity; unit += 1) {
-    const blocked =
-      unit <= Math.max(0, Math.floor(Number(usedCapacity || 0))) ||
-      starts.some((start) =>
-        occupied.some(
-          (entry) =>
-            entry.capacityUnit === unit &&
-            new Date(entry.bucketStart).getTime() === start.getTime()
-        )
-      );
-    if (!blocked) {
-      capacityUnit = unit;
-      break;
-    }
-  }
+  const capacityUnit = chooseCapacityUnit({
+    starts,
+    occupied,
+    capacity: safeCapacity,
+    usedCapacity,
+    occupantBookingIds,
+  });
   if (!capacityUnit) {
     throw serviceError("SLOT_UNAVAILABLE", "This time is fully booked");
   }
@@ -621,6 +722,10 @@ async function ensureReservationLocks(
     dependencies.availabilityForTechnician || availabilityForTechnician;
   const transactionRunner =
     dependencies.runReservationTransaction || runReservationTransaction;
+  // Injected availability (tests) comes without a company calendar behind it.
+  const getCompanyCapacity =
+    dependencies.companySlotCapacity ||
+    (dependencies.availabilityForTechnician ? async () => null : companySlotCapacity);
   return transactionRunner(async (session) => {
     const reservation = await ReservationModel.findById(reservationId).session(
       session
@@ -660,20 +765,14 @@ async function ensureReservationLocks(
       session,
       BucketModel,
     });
+    const company = await getCompanyCapacity({
+      slotStart: reservation.slotStart,
+      excludeBookingId: reservation.bookingId,
+    });
     const capacityMove = await applyCapacityBucketMove({
       reservation,
       oldBuckets: oldCapacityBuckets,
-      capacity: availability.slot.totalCapacity,
-      usedCapacity: Math.max(
-        0,
-        Number(availability.slot.usedCapacity || 0) -
-          Number(
-            (availability.slot.bookings || []).some(
-              (entry) =>
-                String(entry.id) === String(reservation.bookingId)
-            )
-          )
-      ),
+      ...capacityArguments(availability, company, reservation.bookingId),
       session,
       CapacityBucketModel,
     });
@@ -1062,6 +1161,10 @@ async function reserveSlotForBooking({
     });
     throw serviceError("TECHNICIAN_UNAVAILABLE", availability.reason);
   }
+  const company = await companySlotCapacity({
+    slotStart: window.slotStart,
+    excludeBookingId: booking._id,
+  });
   try {
     return await runReservationTransaction(async (session) => {
       await releaseExpiredHolds(session);
@@ -1107,17 +1210,7 @@ async function reserveSlotForBooking({
       await createReservationBuckets({ reservation, session });
       await createCapacityBuckets({
         reservation,
-        capacity: availability.slot?.totalCapacity,
-        usedCapacity: Math.max(
-          0,
-          Number(availability.slot?.usedCapacity || 0) -
-            Number(
-              (availability.slot?.bookings || []).some(
-                (entry) =>
-                  String(entry.id) === String(transactionalBooking._id)
-              )
-            )
-        ),
+        ...capacityArguments(availability, company, transactionalBooking._id),
         session,
       });
 
@@ -1219,6 +1312,9 @@ async function createBookingWithReservation({
     dependencies.logBookingCreated || logBookingCreated;
   const writeReservationAction =
     dependencies.logReservationAction || logReservationAction;
+  const getCompanyCapacity =
+    dependencies.companySlotCapacity ||
+    (dependencies.availabilityForTechnician ? async () => null : companySlotCapacity);
   const window = reservationWindow(slotStart);
   let selectedId = technicianId;
   if (!selectedId) {
@@ -1255,6 +1351,8 @@ async function createBookingWithReservation({
       availability.reason || "This time is unavailable"
     );
   }
+  const company = await getCompanyCapacity({ slotStart: window.slotStart });
+  const seatArguments = capacityArguments(availability, company);
 
   try {
     return await runReservationTransactionWithRetry(async (session) => {
@@ -1285,8 +1383,7 @@ async function createBookingWithReservation({
       });
       await createCapacityBuckets({
         reservation,
-        capacity: availability.slot.totalCapacity,
-        usedCapacity: availability.slot.usedCapacity || 0,
+        ...seatArguments,
         session,
         CapacityBucketModel,
       });
@@ -1324,7 +1421,7 @@ async function createBookingWithReservation({
       }
       return { booking, reservation, technician };
     },
-    Math.max(2, Number(availability.slot.totalCapacity || 1) + 1),
+    Math.max(2, Number(seatArguments.capacity || 1) + 1),
     transactionRunner);
   } catch (error) {
     if (
@@ -1437,6 +1534,8 @@ async function createSignInHold({ slotStart, token = null, minutes = SIGN_IN_HOL
     throw serviceError("SLOT_UNAVAILABLE", availability.reason || "This time is unavailable");
   }
 
+  const company = await companySlotCapacity({ slotStart: window.slotStart });
+  const seatArguments = capacityArguments(availability, company);
   const secret = crypto.randomBytes(24).toString("base64url");
   try {
     const reservation = await runReservationTransactionWithRetry(async (session) => {
@@ -1459,12 +1558,11 @@ async function createSignInHold({ slotStart, token = null, minutes = SIGN_IN_HOL
       await createReservationBuckets({ reservation: created, session });
       await createCapacityBuckets({
         reservation: created,
-        capacity: availability.slot.totalCapacity,
-        usedCapacity: availability.slot.usedCapacity || 0,
+        ...seatArguments,
         session,
       });
       return created;
-    }, Math.max(2, Number(availability.slot.totalCapacity || 1) + 1));
+    }, Math.max(2, Number(seatArguments.capacity || 1) + 1));
     return { token: `${reservation._id}.${secret}`, holdExpiresAt, slotStart: window.slotStart, extended: false };
   } catch (error) {
     if (error?.code === 11000 || ["SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(error?.code)) {
@@ -1753,6 +1851,10 @@ async function moveReservationForBooking({
   if (!availability.available) {
     throw serviceError("TECHNICIAN_UNAVAILABLE", availability.reason);
   }
+  const moveCompany = await companySlotCapacity({
+    slotStart: window.slotStart,
+    excludeBookingId: bookingId,
+  });
 
   const previous = await activeReservationForBooking(booking._id);
   if (!previous) {
@@ -1812,17 +1914,7 @@ async function moveReservationForBooking({
       await applyCapacityBucketMove({
         reservation,
         oldBuckets: oldCapacityBuckets,
-        capacity: availability.slot?.totalCapacity,
-        usedCapacity: Math.max(
-          0,
-          Number(availability.slot?.usedCapacity || 0) -
-            Number(
-              (availability.slot?.bookings || []).some(
-                (entry) =>
-                  String(entry.id) === String(transactionalBooking._id)
-              )
-            )
-        ),
+        ...capacityArguments(availability, moveCompany, transactionalBooking._id),
         session,
       });
       await reservation.save({ session });
@@ -2505,6 +2597,8 @@ module.exports = {
   createBookingWithReservation,
   createSignInHold,
   releaseSignInHold,
+  slotSeatsInUse,
+  companySlotCapacity,
   consumeSignInHold,
   SIGN_IN_HOLD_MINUTES,
   createCapacityBuckets,

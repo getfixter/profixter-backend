@@ -17,6 +17,10 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 process.env.STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "sk_test_fake";
 delete process.env.SMS_ENABLED;
 delete process.env.SMS_MARKETING_ENABLED;
+// Marketing opened on 2026-09-14 (utils/marketing/smsMarketingLaunch, tested in
+// test_marketing_launch_gate.js). This suite checks the rules behind that gate with
+// clocks from March 2026, so it runs as if the launch had already happened.
+process.env.SMS_MARKETING_LAUNCH_AT = "2020-01-01T00:00:00Z";
 
 const assert = require("assert");
 const mongoose = require("mongoose");
