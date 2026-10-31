@@ -23,6 +23,16 @@ function readingSecrets() {
   const keys = [];
   if (process.env.EMAIL_UNSUBSCRIBE_SECRET) keys.push(keyFrom(process.env.EMAIL_UNSUBSCRIBE_SECRET));
   if (process.env.JWT_SECRET) keys.push(keyFrom(process.env.JWT_SECRET));
+  /*
+   * The Halloween 2026 campaign email (2026-10-31) was sent from an operator's
+   * machine whose copy of the environment carried a trailing carriage return
+   * on every value, so its unsubscribe links were sealed with the secret plus a
+   * carriage return. They must keep working for as long as the email can be in
+   * an inbox. Same secret, so only whoever holds it could have made such a
+   * token; it is still authenticated (AES-GCM) and still expires.
+   */
+  if (process.env.EMAIL_UNSUBSCRIBE_SECRET) keys.push(keyFrom(process.env.EMAIL_UNSUBSCRIBE_SECRET + "\r"));
+  if (process.env.JWT_SECRET) keys.push(keyFrom(process.env.JWT_SECRET + "\r"));
   if (!keys.length) throw new Error("EMAIL_UNSUBSCRIBE_SECRET or JWT_SECRET is required");
   return keys;
 }
