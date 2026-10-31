@@ -62,6 +62,17 @@ const EMAIL_TEMPLATE = {
     "Once per customer and home. Available through November 2, 2026.",
 };
 
+/*
+ * Marketing texts need the customer's OWN prior express written consent
+ * (TCPA). Consent a customer gave themselves - the sign-up form, the phone-code
+ * sign-up, account settings, the website, texting START - qualifies. Consent
+ * recorded on their behalf by staff ("admin_phone" after a call, and the
+ * legacy migration of those) is not written consent by the customer, so this
+ * campaign does not text those numbers. The owner can decide otherwise.
+ */
+const SELF_GIVEN_SMS_CONSENT = new Set(["signup_web_form", "signup_phone_code", "account_settings", "website", "sms_keyword"]);
+const smsConsentSelfGiven = (user) => SELF_GIVEN_SMS_CONSENT.has(String(user?.smsPreferences?.marketingConsentSource || ""));
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function hasLiveMembership(userId) {
@@ -181,13 +192,16 @@ async function runHalloweenCampaign({ send = false, channels = ["email", "sms"],
 
     /* -------------------------------- sms -------------------------------- */
     if (CHANNELS.includes("sms")) {
-      const pre = await checkEligibility({ notificationType: "SEASONAL_MARKETING", user: listed, phone: listed.phone, now: clock() });
+      const pre = !smsConsentSelfGiven(listed)
+        ? { eligible: false, reason: listed.smsPreferences?.marketingEnabled ? "consent_recorded_by_staff" : "marketing_not_opted_in" }
+        : await checkEligibility({ notificationType: "SEASONAL_MARKETING", user: listed, phone: listed.phone, now: clock() });
       if (!pre.eligible) bump(tally.sms.skipped, pre.reason || "ineligible");
       else {
         tally.sms.eligible++;
         if (SEND && sent < LIMIT) {
           const user = await User.findById(listed._id);
           if (!user || (await hasLiveMembership(user._id))) bump(tally.sms.skipped, "at_send_became_member");
+          else if (!smsConsentSelfGiven(user)) bump(tally.sms.skipped, "at_send_consent_changed");
           else {
             // sendMarketingSms claims the dedupeKey first, then re-checks consent, STOP and quiet hours itself.
             const result = await sendSms({

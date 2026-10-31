@@ -87,7 +87,8 @@ async function main() {
     await EmailSuppression.create({ email: unsubscribed.email, reason: "unsubscribe", suppressedAt: new Date() });
     await SmsOptOut.create({ phone: unsubscribed.phone, scope: "all", optedOutAt: new Date(), source: "carrier_keyword" });
     const excluded = await person({ smsMarketing: true, extra: { excludeFromMarketing: true } });
-    const staffConsent = await person({ smsMarketing: false, extra: { smsPreferences: { transactionalEnabled: true, marketingEnabled: false } } });
+    // Marketing SMS switched on by staff after a phone call: not the customer's own written consent.
+    const staffConsent = await person({ smsMarketing: false, extra: { smsPreferences: { transactionalEnabled: true, marketingEnabled: true, marketingConsentAt: new Date("2026-10-30"), marketingConsentSource: "admin_phone" } } });
     void staffConsent;
 
     await check("the SMS is the owner's copy, a working link, nothing personal, STOP appended", async () => {
@@ -124,6 +125,7 @@ async function main() {
     });
     await check("SMS: only recorded marketing consent, not transactional, not STOP", async () => {
       assert.strictEqual(dry.sms.eligible, 2, JSON.stringify(dry.sms));
+      assert.strictEqual(dry.sms.skipped.consent_recorded_by_staff, 1, "staff-recorded consent is not texted");
     });
 
     let run1;
