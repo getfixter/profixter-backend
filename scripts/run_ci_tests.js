@@ -112,6 +112,8 @@ const SUITES = [
   "test_gift_membership.js",
   "test_gift_membership_tax.js",
   "test_gift_digital_experience.js",
+  // New-customer welcome offer: 20% off the first monthly invoice, ten minutes, Stripe faked (in-memory Mongo).
+  "test_welcome_offer.js",
 ];
 
 /**

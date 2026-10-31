@@ -151,7 +151,10 @@ async function membershipSaleBlocker({ user, addressId }) {
  * @param {string} [args.cancelUrl]   defaults to the plans page
  * @param {object} [args.metadata]    extra session metadata (e.g. adminInitiated)
  * @param {number} [args.expiresAt]   unix seconds; Stripe allows 30 min - 24 h
- * @returns {{ session, eventId, trialEndUnix }}
+ * @param {object} [args.welcomeOffer] { couponId, lifetimeSeconds, required } - the new-customer
+ *   first-month discount, already found eligible by utils/welcomeOffer.js. Monthly only;
+ *   never over gift coverage (that first invoice is the trial's).
+ * @returns {{ session, eventId, trialEndUnix, welcomeOfferApplied }}
  */
 async function openMembershipCheckout({
   userId,
@@ -163,6 +166,7 @@ async function openMembershipCheckout({
   cancelUrl = null,
   metadata: extraMetadata = {},
   expiresAt = null,
+  welcomeOffer = null,
   requestId = `checkout_${Date.now()}_${Math.random().toString(16).slice(2)}`,
 }) {
   const cycle = normalizeBillingCycle(billingCycle, "monthly");
@@ -314,13 +318,45 @@ async function openMembershipCheckout({
       trialEndUnix = Math.max(Math.floor(giftCoverageEndsAt.getTime() / 1000), earliest);
     }
 
+    /*
+     * THE WELCOME OFFER. A "once" coupon lands on the first invoice; with gift
+     * coverage that is the $0 trial invoice, so the discount would be lost and
+     * the customer shown a price Stripe never charges. It is refused instead,
+     * and the screen re-prices. Monthly only, whatever the caller asked.
+     */
+    let welcome = null;
+    if (welcomeOffer?.couponId) {
+      if (cycle !== "monthly" || trialEndUnix) {
+        // Refused only when the customer was shown the welcome price; otherwise the regular price, as always.
+        if (welcomeOffer.required) {
+          throw new CheckoutRefusal(409, {
+            message: "The welcome offer doesn't apply to this membership. Prices shown are the regular prices.",
+            code: "WELCOME_OFFER_UNAVAILABLE",
+          });
+        }
+      } else {
+        welcome = welcomeOffer;
+      }
+      // One welcome-priced checkout at a time, whichever home it was for.
+      const previous = (await User.collection.findOne({ _id: user._id }, { projection: { welcomeOffer: 1 } }))?.welcomeOffer;
+      if (previous?.sessionId) {
+        try {
+          const old = await stripe.checkout.sessions.retrieve(String(previous.sessionId));
+          if (old?.status === "open") await stripe.checkout.sessions.expire(old.id);
+        } catch (error) {
+          logCheckout("warn", "welcome_offer_previous_session_expire_failed", { requestId, message: error?.message || String(error) });
+        }
+      }
+    }
+
     const extra = Object.fromEntries(Object.entries(extraMetadata || {}).map(([k, v]) => [k, String(v ?? "")]));
     const sessionConfig = {
       mode: "subscription",
       payment_method_types: ["card"],
       client_reference_id: String(addressId),
       line_items: [{ price: priceId, quantity: 1 }],
-      allow_promotion_codes: true,
+      // Stripe takes one or the other: a welcome-priced checkout has no code field, so nothing stacks on it.
+      ...(welcome ? { discounts: [{ coupon: welcome.couponId }] } : { allow_promotion_codes: true }),
       metadata: {
         plan,
         billingCycle: cycle,
@@ -331,6 +367,7 @@ async function openMembershipCheckout({
         fbc: fbc || "",
         source_url: sourceUrl || "",
         eventId: eventId || "",
+        ...(welcome ? { welcomeOffer: "first_month_20" } : {}),
         ...extra,
       },
       subscription_data: {
@@ -341,6 +378,7 @@ async function openMembershipCheckout({
           userId: String(user.userId || user._id),
           addressId: String(addressId),
           ...(trialEndUnix ? { giftCoverageUntil: String(trialEndUnix) } : {}),
+          ...(welcome ? { welcomeOffer: "first_month_20" } : {}),
           ...extra,
         },
         ...(trialEndUnix ? { trial_end: trialEndUnix } : {}),
@@ -357,7 +395,11 @@ async function openMembershipCheckout({
        * these params and says plainly that nothing was charged.
        */
       cancel_url: cancelUrl || `${CLIENT_URL}/membership/plans?canceled=true&plan=${plan}&billingCycle=${cycle}`,
-      ...(expiresAt ? { expires_at: expiresAt } : {}),
+      ...(welcome
+        ? { expires_at: Math.floor(Date.now() / 1000) + Number(welcome.lifetimeSeconds || 31 * 60) }
+        : expiresAt
+          ? { expires_at: expiresAt }
+          : {}),
     };
 
     if (stripeCustomerId) {
@@ -380,6 +422,12 @@ async function openMembershipCheckout({
       { _id: user._id },
       { $set: { pendingMembershipCheckout: { sessionId: session.id, addressId: String(addressId), createdAt: new Date() } } }
     );
+    if (welcome) {
+      await User.collection.updateOne(
+        { _id: user._id },
+        { $set: { welcomeOffer: { sessionId: session.id, addressId: String(addressId), plan, openedAt: new Date(), couponId: welcome.couponId } } }
+      );
+    }
 
     logCheckout("info", "subscription_checkout_session_created", {
       requestId,
@@ -390,9 +438,10 @@ async function openMembershipCheckout({
       billingCycle: cycle,
       billingStartsAt: trialEndUnix ? new Date(trialEndUnix * 1000).toISOString() : null,
       deferredForGiftCoverage: !!trialEndUnix,
+      welcomeOffer: !!welcome,
       adminInitiated: !!extraMetadata.adminInitiated,
     });
-    return { session, eventId, trialEndUnix };
+    return { session, eventId, trialEndUnix, welcomeOfferApplied: !!welcome };
   } catch (error) {
     if (error instanceof CheckoutRefusal) throw error;
     logCheckout("error", "subscription_checkout_session_failed", {
