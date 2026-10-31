@@ -26,6 +26,7 @@ const User = require("../../models/User");
 const Subscription = require("../../models/Subscription");
 const MarketingSend = require("../../models/MarketingSend");
 const Blacklist = require("../../models/Blacklist");
+const SmsMessage = require("../../models/SmsMessage");
 const { isMarketableAccount, isUnsubscribed, resolveAudience } = require("../../utils/marketing/marketingEligibility");
 const { renderMarketingEmail } = require("../../utils/marketing/marketingRenderer");
 const { sendPromo } = require("../../utils/emailService");
@@ -212,16 +213,28 @@ async function runHalloweenCampaign({ send = false, channels = ["email", "sms"],
           else if (!smsConsentSelfGiven(user)) bump(tally.sms.skipped, "at_send_consent_changed");
           else {
             // sendMarketingSms claims the dedupeKey first, then re-checks consent, STOP and quiet hours itself.
-            const result = await sendSms({
-              notificationType: "SEASONAL_MARKETING",
-              dedupeKey: campaignKey(CAMPAIGN, user, 0),
-              user,
-              vars: { body: SMS_BODY },
-              campaignId: CAMPAIGN,
-              campaignCycle: 0,
-              source: "oneoff_campaign",
-              now: clock(),
-            });
+            const attempt = (cycle) =>
+              sendSms({
+                notificationType: "SEASONAL_MARKETING",
+                dedupeKey: campaignKey(CAMPAIGN, user, cycle),
+                user,
+                vars: { body: SMS_BODY },
+                campaignId: CAMPAIGN,
+                campaignCycle: cycle,
+                source: "oneoff_campaign",
+                now: clock(),
+              });
+            let result = await attempt(0);
+            /*
+             * One retry, only for a first attempt the provider REFUSED outright
+             * (failed, no message SID - nothing reached the handset). It gets its
+             * own dedupe key, so it too can happen once; anything that reached
+             * Twilio is never sent again.
+             */
+            if (String(result?.status || "") === "duplicate") {
+              const first = await SmsMessage.findOne({ dedupeKey: campaignKey(CAMPAIGN, user, 0) }).lean();
+              if (first && first.status === "failed" && !first.providerMessageSid) result = await attempt(1);
+            }
             const status = String(result?.status || "");
             if (status === "duplicate") tally.sms.duplicate++;
             else if (["sent", "queued", "accepted", "delivered", "simulated"].includes(status) || result?.ok) { tally.sms.accepted++; sent++; }

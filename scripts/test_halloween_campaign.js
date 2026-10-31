@@ -186,17 +186,29 @@ async function main() {
       assert.strictEqual(after.sms.accepted, 2, JSON.stringify(after.sms));
       assert.strictEqual(await SmsMessage.countDocuments({ user: staffConsent._id }), 1);
     });
+    await check("an SMS the provider refused outright (no SID) is retried exactly once; never twice", async () => {
+      const refused = await person({ smsMarketing: true });
+      const { campaignKey } = require("../utils/sms/smsDedupe");
+      await SmsMessage.collection.insertOne({ dedupeKey: campaignKey("halloween-2026", refused, 0), user: refused._id, campaignId: "halloween-2026", notificationType: "SEASONAL_MARKETING", status: "failed", providerMessageSid: "", providerErrorCode: "20001", attempts: 1, createdAt: new Date() });
+      const first = await runHalloweenCampaign({ send: true, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
+      assert.strictEqual(first.sms.accepted, 1, JSON.stringify(first.sms));
+      assert.strictEqual(await SmsMessage.countDocuments({ user: refused._id }), 2, "the refused attempt kept, one retry added");
+      const again = await runHalloweenCampaign({ send: true, channels: ["sms"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
+      assert.strictEqual(again.sms.accepted, 0, JSON.stringify(again.sms));
+      assert.strictEqual(await SmsMessage.countDocuments({ user: refused._id }), 2);
+    });
     await check("a failed email is recorded as failed, not sent, and not retried as a duplicate send", async () => {
       const unlucky = await person({ smsMarketing: false });
       const tally = await runHalloweenCampaign({ send: true, channels: ["email"], senders: { sendPromo: async () => { throw new Error("SES throttled"); } }, clock: AFTERNOON, pauseMs: 0 });
       // The unlucky one, and the person added for the evening SMS check (never emailed yet).
-      assert.strictEqual(tally.email.failed, 2, JSON.stringify(tally.email));
+      // Also the people added for the evening-SMS and refused-SMS checks (never emailed yet).
+      assert.strictEqual(tally.email.failed, 3, JSON.stringify(tally.email));
       const row = await MarketingSend.findOne({ user: unlucky._id }).lean();
       assert.strictEqual(row.status, "failed");
       // The retry: the failed one is sent, nobody else gets a second email.
       const before = emails.length;
       const retry = await runHalloweenCampaign({ send: true, channels: ["email"], senders: { sendPromo: fakeEmail }, clock: AFTERNOON, pauseMs: 0 });
-      assert.strictEqual(retry.email.accepted, 2, JSON.stringify(retry.email));
+      assert.strictEqual(retry.email.accepted, 3, JSON.stringify(retry.email));
       assert.ok(emails.slice(before).map((e) => e.to).includes(unlucky.email));
       assert.strictEqual(retry.email.duplicate, 5, "everyone already sent stays sent once");
       const after = await MarketingSend.findOne({ user: unlucky._id }).lean();
