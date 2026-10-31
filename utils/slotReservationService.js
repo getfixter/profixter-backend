@@ -1340,6 +1340,154 @@ async function createBookingWithReservation({
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Sign-in holds                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Book a Handyman holds the chosen time while the customer signs in or
+ * registers (Customer Experience 4.0). The hold is an ordinary "held"
+ * reservation - same technician choice, availability check, buckets and
+ * expiry as any other - so it blocks the slot for everyone else, cannot be
+ * double-booked, and stops blocking the moment holdExpiresAt passes
+ * (blockingReservationFilter), with releaseExpiredHolds clearing it on the
+ * next reservation transaction. It belongs to nobody's booking yet: its
+ * bookingId is a fresh id, and the customer holds a token
+ * "<reservationId>.<secret>" whose hash is stored.
+ *
+ * When the real booking is made, the route releases the hold and reserves
+ * the time for the booking straight after (consumeSignInHold), so the
+ * customer's own hold never stands in their way.
+ */
+const SIGN_IN_HOLD_MINUTES = 20;
+const crypto = require("crypto");
+
+function hashHoldSecret(secret) {
+  return crypto.createHash("sha256").update(String(secret || "")).digest("hex");
+}
+
+function parseHoldToken(token) {
+  const [id, secret] = String(token || "").split(".");
+  if (!mongoose.isValidObjectId(id) || !/^[A-Za-z0-9_-]{20,64}$/.test(String(secret || ""))) return null;
+  return { id, secret };
+}
+
+async function findOwnedHold(token, session = null) {
+  const parsed = parseHoldToken(token);
+  if (!parsed) return null;
+  const query = BookingSlotReservation.findOne({ _id: parsed.id, signInHold: true });
+  if (session) query.session(session);
+  const hold = await query;
+  if (!hold || hold.holdSecretHash !== hashHoldSecret(parsed.secret)) return null;
+  return hold;
+}
+
+async function releaseHoldDocument(hold, session, reason) {
+  await ReservationTimeBucket.deleteMany({ reservationId: hold._id }).session(session);
+  await ReservationCapacityBucket.deleteMany({ reservationId: hold._id }).session(session);
+  await BookingSlotReservation.updateOne(
+    { _id: hold._id, status: "held" },
+    { $set: { status: "released", releasedAt: new Date(), releaseReason: reason } },
+    { session }
+  );
+}
+
+/** Release a sign-in hold the caller owns. Safe to call twice, and for an expired or unknown token. */
+async function releaseSignInHold(token, reason = "Sign-in hold released") {
+  const hold = await findOwnedHold(token);
+  if (!hold || hold.status !== "held") return { released: false };
+  await runReservationTransaction(async (session) => {
+    const fresh = await findOwnedHold(token, session);
+    if (fresh && fresh.status === "held") await releaseHoldDocument(fresh, session, reason);
+  });
+  return { released: true };
+}
+
+/**
+ * Hold a 90-minute visit slot for a customer who is about to sign in.
+ * With the token of their current hold: the same slot is extended, a
+ * different slot replaces it (the old one is released first).
+ * Returns { token, holdExpiresAt, slotStart } or throws SLOT_UNAVAILABLE.
+ */
+async function createSignInHold({ slotStart, token = null, minutes = SIGN_IN_HOLD_MINUTES, now = new Date() }) {
+  const window = reservationWindow(slotStart);
+  const holdExpiresAt = new Date(now.getTime() + minutes * 60 * 1000);
+
+  const current = token ? await findOwnedHold(token) : null;
+  if (current && current.status === "held" && reservationBlocksAvailability(current, now)) {
+    if (new Date(current.slotStart).getTime() === window.slotStart.getTime()) {
+      await BookingSlotReservation.updateOne({ _id: current._id, status: "held" }, { $set: { holdExpiresAt } });
+      return { token, holdExpiresAt, slotStart: window.slotStart, extended: true };
+    }
+    await releaseSignInHold(token, "Customer chose another time");
+  }
+
+  const options = await findEligibleTechnicians({ slotStart: window.slotStart });
+  const selectedId = options.recommended?.id;
+  if (!selectedId) throw serviceError("SLOT_UNAVAILABLE", "This time is no longer available");
+  const technician = await User.findOne({
+    _id: selectedId,
+    role: "employee",
+    isActive: { $ne: false },
+    employeePosition: { $in: ["Fixter", "General Fixter"] },
+  }).lean();
+  if (!technician) throw serviceError("SLOT_UNAVAILABLE", "No eligible technician is available");
+  const availability = await availabilityForTechnician({ technicianId: technician._id, slotStart: window.slotStart });
+  if (!availability.available || availability.slot?.totalCapacity <= 0) {
+    throw serviceError("SLOT_UNAVAILABLE", availability.reason || "This time is unavailable");
+  }
+
+  const secret = crypto.randomBytes(24).toString("base64url");
+  try {
+    const reservation = await runReservationTransactionWithRetry(async (session) => {
+      await releaseExpiredHolds(session);
+      const [created] = await BookingSlotReservation.create(
+        [{
+          bookingId: new mongoose.Types.ObjectId(),
+          technicianId: technician._id,
+          slotStart: window.slotStart,
+          slotEnd: window.slotEnd,
+          timezone: TIMEZONE,
+          status: "held",
+          holdExpiresAt,
+          createdByType: "customer",
+          signInHold: true,
+          holdSecretHash: hashHoldSecret(secret),
+        }],
+        { session }
+      );
+      await createReservationBuckets({ reservation: created, session });
+      await createCapacityBuckets({
+        reservation: created,
+        capacity: availability.slot.totalCapacity,
+        usedCapacity: availability.slot.usedCapacity || 0,
+        session,
+      });
+      return created;
+    }, Math.max(2, Number(availability.slot.totalCapacity || 1) + 1));
+    return { token: `${reservation._id}.${secret}`, holdExpiresAt, slotStart: window.slotStart, extended: false };
+  } catch (error) {
+    if (error?.code === 11000 || ["SLOT_CONFLICT", "TECHNICIAN_UNAVAILABLE"].includes(error?.code)) {
+      throw serviceError("SLOT_UNAVAILABLE", "This time is no longer available");
+    }
+    throw error;
+  }
+}
+
+/**
+ * The booking is about to be made: free the customer's own hold so the
+ * booking can take the time. Only a hold for that exact slot is released; a
+ * stale token, or a hold for another time, is left to expire on its own.
+ */
+async function consumeSignInHold(token, slotStart) {
+  if (!token) return { released: false };
+  const hold = await findOwnedHold(token);
+  if (!hold || hold.status !== "held") return { released: false };
+  const window = reservationWindow(slotStart);
+  if (new Date(hold.slotStart).getTime() !== window.slotStart.getTime()) return { released: false };
+  return releaseSignInHold(token, "Used for the customer's booking");
+}
+
 async function promoteHeldReservationForBooking({
   bookingId,
   actorUser = null,
@@ -1937,7 +2085,8 @@ function analyzeReservationAudit({ bookings, reservations, now = new Date() }) {
     )
     .map((booking) => String(booking._id));
   const reservationsWithoutBookings = activeReservations
-    .filter((reservation) => !bookingById.has(String(reservation.bookingId)))
+    // A sign-in hold has no booking yet by design; it expires on its own.
+    .filter((reservation) => !reservation.signInHold && !bookingById.has(String(reservation.bookingId)))
     .map((reservation) => String(reservation._id));
   const duplicateActiveReservations = [...activeByBooking.entries()]
     .filter(([, entries]) => entries.length > 1)
@@ -2354,6 +2503,10 @@ module.exports = {
   capacityBucketDocuments,
   cancelBookingWithReservation,
   createBookingWithReservation,
+  createSignInHold,
+  releaseSignInHold,
+  consumeSignInHold,
+  SIGN_IN_HOLD_MINUTES,
   createCapacityBuckets,
   createReservationBuckets,
   deleteReservationBuckets,

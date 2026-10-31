@@ -95,10 +95,16 @@ const {
 } = require("../utils/bookingLeadTime");
 const {
   cancelBookingWithReservation,
+  consumeSignInHold,
   createBookingWithReservation,
+  createSignInHold,
   isTerminalBookingStatus,
+  releaseSignInHold,
   reservationEngineEnabled,
+  SIGN_IN_HOLD_MINUTES,
 } = require("../utils/slotReservationService");
+const { rateLimit: holdRateLimit } = require("../utils/rateLimit");
+const { clientIp: holdClientIp } = require("../utils/auth/clientIp");
 const {
   suggestNextAvailableSlots,
 } = require("../utils/customerCalendarService");
@@ -1047,6 +1053,8 @@ router.post(
       };
 
       if (useReservationEngine) {
+        // Their own sign-in hold on this time (Book a Handyman) gives way to the booking.
+        await consumeSignInHold(req.body.holdToken, bookingDate).catch(() => null);
         const result = await createBookingWithReservation({
           bookingData,
           slotStart: bookingDate,
@@ -1201,6 +1209,49 @@ router.post(
     }
   }
 );
+
+/*
+ * Book a Handyman: hold the chosen time while the customer signs in or
+ * registers (utils/slotReservationService createSignInHold). Public - the
+ * customer has no account yet - so it is rate limited, takes only a day and a
+ * time, and can only ever hold one 90-minute visit slot per token, for
+ * SIGN_IN_HOLD_MINUTES. Sending the current token again extends it (same
+ * time) or moves it (new time). Without the reservation engine it holds
+ * nothing and says so; the booking still re-checks the time when it is made.
+ */
+const signInHoldLimit = holdRateLimit({ windowMs: 15 * 60 * 1000, limit: 40, keyResolver: (req) => `signin_hold:${holdClientIp(req)}` });
+
+router.post("/hold", signInHoldLimit, async (req, res) => {
+  try {
+    const date = String(req.body?.requestedDate || "");
+    const time = String(req.body?.requestedTime || "");
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}$/.test(time)
+      ? moment.tz(`${date} ${time}`, "YYYY-MM-DD HH:mm", true, "America/New_York")
+      : null;
+    if (!start?.isValid() || start.isBefore(moment())) {
+      return res.status(400).json({ message: "Pick a day and time.", code: "DATE_UNAVAILABLE" });
+    }
+    if (!reservationEngineEnabled()) return res.json({ held: false, token: null });
+    const hold = await createSignInHold({ slotStart: start.toDate(), token: req.body?.token || null });
+    return res.json({ held: true, token: hold.token, holdExpiresAt: hold.holdExpiresAt, minutes: SIGN_IN_HOLD_MINUTES });
+  } catch (error) {
+    if (error?.code === "SLOT_UNAVAILABLE") {
+      return res.status(409).json({ message: "That time was just taken. Pick another - everything else is saved.", code: "SLOT_UNAVAILABLE" });
+    }
+    console.error("sign-in hold failed:", error.message);
+    return res.status(500).json({ message: "Could not hold that time." });
+  }
+});
+
+router.post("/hold/release", signInHoldLimit, async (req, res) => {
+  try {
+    const result = await releaseSignInHold(req.body?.token || "");
+    return res.json(result);
+  } catch (error) {
+    console.error("sign-in hold release failed:", error.message);
+    return res.status(500).json({ message: "Could not release that time." });
+  }
+});
 
 /*
  * Back from Stripe without paying. The checkout is expired at Stripe, which
@@ -2279,6 +2330,8 @@ router.post(
       if (usingFreeFirstVisit && lifetimeCheck) applyLifetime(lifetimeCheck);
       let booking;
       if (useReservationEngine) {
+        // Their own sign-in hold on this time (Book a Handyman) gives way to the booking.
+        await consumeSignInHold(req.body.holdToken, bookingDate).catch(() => null);
         const result = await createBookingWithReservation({
           bookingData,
           slotStart: bookingDate,

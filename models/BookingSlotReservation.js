@@ -65,6 +65,15 @@ const BookingSlotReservationSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    /*
+     * A sign-in hold (Book a Handyman, 2026-10-30): the customer's chosen time,
+     * held while they sign in or register, before any booking exists. Its
+     * bookingId is a fresh id no booking uses, so every schema and unique
+     * bucket index applies exactly as for a real reservation. Only the hash of
+     * the customer's hold token is kept; the token itself proves ownership.
+     */
+    signInHold: { type: Boolean, default: false, index: true },
+    holdSecretHash: { type: String, default: "" },
     releasedAt: { type: Date, default: null },
     releaseReason: { type: String, trim: true, maxlength: 500, default: "" },
   },

@@ -128,6 +128,7 @@ async function main() {
   app.use("/api/free-visit-requests", require("../routes/freeVisitRequests"));
   app.use("/api/requests", require("../routes/requests"));
   app.use("/api/bookings", require("../routes/bookings"));
+  app.use("/api/calendar", require("../routes/calendar"));
   app.use("/api/recent-work", require("../routes/recentWork"));
   app.use("/api/admin/recent-work", require("../routes/adminRecentWork"));
   const server = await new Promise((resolve) => {
@@ -348,6 +349,86 @@ async function main() {
       const other = await User.create({ userId: "70000002", name: "Eve", email: "eve@mailbox.org", phone: "+15165550151", role: "customer" });
       const res = await call("POST", `/api/bookings/one-time/${first.body.bookingId}/abandon`, { as: other });
       assert.strictEqual(res.status, 404);
+    });
+
+    /* ======================= Sign-in hold (Book a Handyman) ======================= */
+    console.log("\nSign-in hold");
+    const ReservationTimeBucketModel = require("../models/ReservationTimeBucket");
+    const holdDay = openDay(7);
+    let holdToken;
+    await check("a time is held for a customer who is signing in (no account, no booking)", async () => {
+      const res = await call("POST", "/api/bookings/hold", { body: { requestedDate: holdDay, requestedTime: "13:00" } });
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.ok(res.body.held && /^[a-f0-9]{24}\.[A-Za-z0-9_-]{20,}$/.test(res.body.token));
+      holdToken = res.body.token;
+      const hold = await BookingSlotReservation.findById(holdToken.split(".")[0]).lean();
+      assert.ok(hold.signInHold && hold.status === "held" && hold.holdExpiresAt > new Date());
+      assert.ok(!(await Booking.exists({ _id: hold.bookingId })), "no booking exists for it");
+      const minutes = (new Date(hold.holdExpiresAt) - Date.now()) / 60000;
+      assert.ok(minutes > 19 && minutes <= 20, `${minutes}`);
+    });
+    const otherA = await User.create({ userId: "70000011", name: "Ana Other", email: "ana@mailbox.org", phone: "+15165550161", role: "customer", addresses: [{ line1: "1 Oak St", city: "Farmingdale", state: "NY", zip: "11735" }] });
+    const otherB = await User.create({ userId: "70000012", name: "Ben Other", email: "ben@mailbox.org", phone: "+15165550162", role: "customer", addresses: [{ line1: "2 Oak St", city: "Farmingdale", state: "NY", zip: "11735" }] });
+    const holder = await User.create({ userId: "70000013", name: "Hal Holder", email: "hal@mailbox.org", phone: "+15165550163", role: "customer", addresses: [{ line1: "3 Oak St", city: "Farmingdale", state: "NY", zip: "11735" }] });
+    const checkoutFor = (u, extra = {}) => freeVisitForm({ addressId: String(u.addresses[0]._id), selectedTask: "Fix door", note: "Fix a sticking door", requestedDate: holdDay, requestedTime: "13:00", ...extra });
+    await check("the calendar counts the hold as a taken seat, exactly like a booking", async () => {
+      const day = await call("GET", `/api/calendar/slots?date=${holdDay}`);
+      assert.strictEqual(day.status, 200, JSON.stringify(day.body).slice(0, 200));
+      assert.strictEqual(day.body.taken["13:00"], 1, JSON.stringify(day.body.taken));
+      assert.strictEqual(day.body.remaining["13:00"], day.body.remaining["08:00"] - 1, JSON.stringify(day.body.remaining));
+    });
+    await check("the hold blocks the time for everyone else (one booking per start time here)", async () => {
+      const a = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherA), as: otherA });
+      assert.strictEqual(a.status, 409, JSON.stringify(a.body));
+      assert.strictEqual(a.body.code, "SLOT_UNAVAILABLE");
+      assert.strictEqual(await Booking.countDocuments({ user: otherA._id, status: { $nin: ["Canceled", "Cancelled"] } }), 0, "nothing left behind");
+    });
+    await check("the holder's own checkout takes the held time; the hold is gone, nothing double-booked", async () => {
+      const own = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(holder, { holdToken }), as: holder });
+      assert.strictEqual(own.status, 200, JSON.stringify(own.body));
+      const hold = await BookingSlotReservation.findById(holdToken.split(".")[0]).lean();
+      assert.strictEqual(hold.status, "released");
+      assert.strictEqual(await ReservationTimeBucketModel.countDocuments({ reservationId: hold._id }), 0);
+      const active = await BookingSlotReservation.find({ slotStart: hold.slotStart, status: { $in: ["held", "reserved"] }, $or: [{ holdExpiresAt: null }, { holdExpiresAt: { $gt: new Date() } }] }).lean();
+      assert.strictEqual(active.length, 1, "only the holder's booking holds the time");
+      assert.ok(!active[0].signInHold);
+      const after = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB), as: otherB });
+      assert.strictEqual(after.status, 409, "still exactly one booking at that time");
+    });
+    let moving;
+    await check("the same token extends; a new time moves the hold and frees the old one", async () => {
+      const first = await call("POST", "/api/bookings/hold", { body: { requestedDate: holdDay, requestedTime: "08:00" } });
+      moving = first.body.token;
+      const again = await call("POST", "/api/bookings/hold", { body: { requestedDate: holdDay, requestedTime: "08:00", token: moving } });
+      assert.strictEqual(again.body.token, moving, "same slot, same hold");
+      const moved = await call("POST", "/api/bookings/hold", { body: { requestedDate: holdDay, requestedTime: "10:00", token: moving } });
+      assert.notStrictEqual(moved.body.token, moving);
+      assert.strictEqual((await BookingSlotReservation.findById(moving.split(".")[0]).lean()).status, "released");
+      moving = moved.body.token;
+    });
+    await check("a forged token cannot release someone's hold", async () => {
+      const id = moving.split(".")[0];
+      const res = await call("POST", "/api/bookings/hold/release", { body: { token: `${id}.AAAAAAAAAAAAAAAAAAAAAAAAAAAA` } });
+      assert.strictEqual(res.body.released, false);
+      assert.strictEqual((await BookingSlotReservation.findById(id).lean()).status, "held");
+    });
+    await check("abandoned: an expired hold stops blocking at once and is cleaned up by the next reservation", async () => {
+      const id = moving.split(".")[0];
+      const blocked = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB, { requestedTime: "10:00" }), as: otherB });
+      assert.strictEqual(blocked.status, 409, "held: refused");
+      await BookingSlotReservation.updateOne({ _id: id }, { $set: { holdExpiresAt: new Date(Date.now() - 1000) } });
+      const freed = await call("POST", "/api/bookings/one-time/checkout", { form: checkoutFor(otherB, { requestedTime: "10:00" }), as: otherB });
+      assert.strictEqual(freed.status, 200, "expired: the time is free again " + JSON.stringify(freed.body));
+      const expired = await BookingSlotReservation.findById(id).lean();
+      assert.strictEqual(expired.status, "released");
+      assert.strictEqual(await ReservationTimeBucketModel.countDocuments({ reservationId: expired._id }), 0);
+    });
+    await check("release endpoint frees a live hold; a past or bad time is refused", async () => {
+      const h = await call("POST", "/api/bookings/hold", { body: { requestedDate: openDay(8), requestedTime: "08:00" } });
+      const r = await call("POST", "/api/bookings/hold/release", { body: { token: h.body.token } });
+      assert.strictEqual(r.body.released, true);
+      const bad = await call("POST", "/api/bookings/hold", { body: { requestedDate: "2020-01-01", requestedTime: "08:00" } });
+      assert.strictEqual(bad.status, 400);
     });
   } finally {
     server.close();
