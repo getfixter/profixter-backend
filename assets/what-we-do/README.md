@@ -12,3 +12,15 @@ Seed or re-seed production (dry run unless --confirm; idempotent):
 Restore the photos the seed unpublished:
 
     MONGO_URI=... node scripts/ops/seed_what_we_do.js --restore backup.json --confirm
+
+## CX 4.1 corrections (2026-10-31)
+
+The owner reviewed the pairs on a phone. Nine were corrected; every new image
+was made from its partner image, so the scene, camera and geometry match:
+bath-faucet, showerhead, door-handle, cabinet-door, bath-accessories (hook
+removed), towel-bar (new scene), door-paint (new full-door scene),
+cabinet-hardware (third pull restored), trim-repair (same trim profile).
+The replaced files are kept in `retired-cx4/`. Power washing is now last.
+
+    MONGO_URI=... S3_BUCKET=... node scripts/ops/seed_what_we_do.js assets/what-we-do --refresh <slugs> --backup refresh.json --confirm
+    MONGO_URI=... node scripts/ops/seed_what_we_do.js --undo-refresh refresh.json --confirm

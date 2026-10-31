@@ -1,13 +1,5 @@
 [
   {
-    "slug": "pressure-wash",
-    "title": "Patio pressure washing",
-    "category": "Outdoor",
-    "caption": "Grimy, mossy patio washed back to clean, bright concrete.",
-    "width": 1200,
-    "height": 896
-  },
-  {
     "slug": "drywall-patch",
     "title": "Drywall hole repair",
     "category": "Walls & Paint",
@@ -35,7 +27,7 @@
     "slug": "bath-faucet",
     "title": "Bathroom faucet replacement",
     "category": "Bathroom",
-    "caption": "Corroded old faucet replaced with brushed nickel.",
+    "caption": "Corroded two-handle faucet replaced with a matte black single-lever on a cover plate.",
     "width": 1200,
     "height": 896
   },
@@ -43,7 +35,7 @@
     "slug": "showerhead",
     "title": "Showerhead replacement",
     "category": "Bathroom",
-    "caption": "Crusted, clogged showerhead swapped for a new chrome one.",
+    "caption": "Mineral-crusted showerhead and arm replaced with a matte black square rain head.",
     "width": 1200,
     "height": 896
   },
@@ -67,7 +59,7 @@
     "slug": "cabinet-hardware",
     "title": "Cabinet hardware update",
     "category": "Kitchen",
-    "caption": "Tarnished brass pulls swapped for modern matte black.",
+    "caption": "Tarnished brass pulls swapped for matte black bar pulls.",
     "width": 1200,
     "height": 896
   },
@@ -91,7 +83,7 @@
     "slug": "trim-repair",
     "title": "Window trim repair",
     "category": "Doors & Trim",
-    "caption": "Cracked, flaking window trim repaired and repainted.",
+    "caption": "Peeling window trim scraped, joint closed, filled and repainted.",
     "width": 1200,
     "height": 896
   },
@@ -105,9 +97,9 @@
   },
   {
     "slug": "towel-bar",
-    "title": "Towel bar reinstall",
+    "title": "Towel bar replacement",
     "category": "Bathroom",
-    "caption": "Ripped-out towel bar replaced and anchored securely.",
+    "caption": "Pulled-out towel bar replaced, wall patched and the new bar anchored.",
     "width": 1200,
     "height": 896
   },
@@ -115,7 +107,7 @@
     "slug": "cabinet-door",
     "title": "Cabinet door alignment",
     "category": "Kitchen",
-    "caption": "Sagging cabinet door rehung and aligned evenly.",
+    "caption": "Sagging cabinet door rehung and aligned with its neighbor.",
     "width": 1200,
     "height": 896
   },
@@ -123,15 +115,15 @@
     "slug": "door-handle",
     "title": "Door handle replacement",
     "category": "Doors & Trim",
-    "caption": "Worn brass knob replaced with a modern lever set.",
+    "caption": "Worn brass knob replaced with a matte black lever set in the same door bore.",
     "width": 1200,
     "height": 896
   },
   {
     "slug": "bath-accessories",
-    "title": "Bathroom accessories",
+    "title": "Toilet paper holder update",
     "category": "Bathroom",
-    "caption": "Rusty, mismatched fixtures replaced with a matching set.",
+    "caption": "Rusty chrome holder swapped for a matte black one on the same spot.",
     "width": 1200,
     "height": 896
   },
@@ -139,7 +131,15 @@
     "slug": "door-paint",
     "title": "Door repainting",
     "category": "Doors & Trim",
-    "caption": "Chipped, scuffed door paint refinished smooth and clean.",
+    "caption": "Scuffed, scribbled-on door cleaned, prepped and repainted bright white.",
+    "width": 1200,
+    "height": 896
+  },
+  {
+    "slug": "pressure-wash",
+    "title": "Patio pressure washing",
+    "category": "Outdoor",
+    "caption": "Grimy, mossy patio washed back to clean, bright concrete.",
     "width": 1200,
     "height": 896
   }

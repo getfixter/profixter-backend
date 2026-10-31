@@ -1097,7 +1097,8 @@ async function run() {
       assert.equal(res.body.photos[0].location, "Babylon, NY", "the town is allowed");
 
       for (const secret of [
-        "412", "Maple", "Apt 3B", "11702", "27777777",
+        // "412 Maple", not "412": a bare 3-digit number turns up in random ids and signed URLs.
+        "412 Maple", "Maple", "Apt 3B", "11702", "27777777",
         "member@example.com", "Member Person", "+16315550003",
       ]) {
         assert.ok(!body.includes(secret), `public feed leaked "${secret}"`);
