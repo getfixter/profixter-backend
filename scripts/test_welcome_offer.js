@@ -374,6 +374,15 @@ async function main() {
     });
 
     console.log("\nThe Halloween campaign (existing customers)");
+    /*
+     * These checks are about the campaign WHILE it runs. It ended on 2026-11-03
+     * (real clock), so they run against a copy that is still open; the real end
+     * date is restored for the "after it ends" and public-facts checks below.
+     */
+    const realEnd = welcome.CAMPAIGNS["halloween-2026"].endsAt;
+    const keepOpen = () => { welcome.CAMPAIGNS["halloween-2026"].endsAt = new Date(Math.max(realEnd.getTime(), Date.now() + 864e5)); };
+    const realClose = () => { welcome.CAMPAIGNS["halloween-2026"].endsAt = realEnd; };
+    keepOpen();
     const activate = (user, body = {}) => api(user, "POST", "/api/stripe/checkout/welcome-offer/activate", { campaign: "halloween-2026", ...body });
     const longtime = await makeCustomer({ minutesOld: 60 * 24 * 90, street: "70 Harbor Rd" });
     await check("an old account has no offer until it opens the campaign", async () => {
@@ -432,6 +441,7 @@ async function main() {
       assert.strictEqual(res.body.eligible, false, "same home, other account");
     });
     await check("nothing can be started after the campaign ends, or for an unknown campaign", async () => {
+      realClose();
       const late = await makeCustomer({ minutesOld: 60 * 24 * 5, street: "73 Harbor Rd" });
       const ended = await welcome.activateCampaignOffer({ user: late.toObject(), campaignId: "halloween-2026", now: new Date("2026-11-03T05:00:00Z") });
       assert.strictEqual(ended.activated, false);
@@ -439,6 +449,7 @@ async function main() {
       assert.strictEqual((await activate(late, { campaign: "made-up" })).body.eligible, false);
     });
     await check("a legacy account with NO role field (most real customers) can open and use the offer", async () => {
+      keepOpen();
       const legacy = await makeCustomer({ minutesOld: 60 * 24 * 400, street: "80 Legacy Ln" });
       await User.collection.updateOne({ _id: legacy._id }, { $unset: { role: "", signupMethod: "" }, $set: { legacyRegisteredUser: true } });
       const reloaded = await User.findById(legacy._id);
@@ -455,6 +466,7 @@ async function main() {
       assert.strictEqual(welcome.isCustomer({}), true);
     });
     await check("the campaign's public facts: running, its end date, nothing personal", async () => {
+      realClose();
       const res = await fetch(`${baseUrl}/api/stripe/checkout/welcome-offer/campaign/halloween-2026`);
       const body = await res.json();
       assert.strictEqual(res.status, 200);

@@ -78,4 +78,37 @@ async function linkGuestFreeVisitsQuietly(user) {
   }
 }
 
-module.exports = { linkGuestFreeVisits, linkGuestFreeVisitsQuietly };
+/**
+ * The same join, from the visit's side, when the owner marks it Completed.
+ *
+ * The after-visit follow-ups (Track B) start only from a visit on an account.
+ * A guest visit nobody linked - the person proved this phone or email on an
+ * account after the owner confirmed it, but has not signed in since - would
+ * otherwise never reach them. Only accounts that PROVED the contact are
+ * candidates, exactly one must remain, and linkGuestFreeVisits then applies
+ * every check above (a different account owning the email, a shared handset).
+ * No match, or more than one: nothing happens; the owner can still link it.
+ */
+async function linkCompletedGuestVisit(booking) {
+  if (!booking?.guestRequestId || booking.user) return 0;
+  const or = [];
+  const phone = normalizePhoneE164(booking.phone) || "";
+  const email = String(booking.email || "").trim().toLowerCase();
+  if (phone) or.push({ phone, phoneVerifiedAt: { $ne: null } });
+  if (email) or.push({ email, emailVerifiedAt: { $ne: null } });
+  if (!or.length) return 0;
+  const users = await User.find({ role: "customer", $or: or }).limit(3);
+  if (users.length !== 1) return 0;
+  return linkGuestFreeVisits(users[0]);
+}
+
+async function linkCompletedGuestVisitQuietly(booking) {
+  try {
+    return await linkCompletedGuestVisit(booking);
+  } catch (error) {
+    console.error("free visit completion link failed", { bookingId: String(booking?._id || ""), message: error?.message });
+    return 0;
+  }
+}
+
+module.exports = { linkCompletedGuestVisit, linkCompletedGuestVisitQuietly, linkGuestFreeVisits, linkGuestFreeVisitsQuietly };

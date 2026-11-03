@@ -3,6 +3,7 @@ const Subscription = require("../../models/Subscription");
 const User = require("../../models/User");
 const { resolveAudience } = require("../marketing/marketingEligibility");
 const { hasMembership } = require("./acquisitionScope");
+const { unlinkedGuestRequestFor } = require("../marketing/freeVisitLifecycle");
 
 /**
  * The only audiences an email playbook can target, each a fixed, reviewable
@@ -55,13 +56,15 @@ const SEGMENT_DEFS = {
         role: { $nin: ["employee", "admin"] },
         createdAt: { $gte: new Date(now - 60 * DAY), $lte: new Date(now - 2 * DAY) },
       })
-        .select("_id")
+        .select("_id email phone")
         .limit(limit * 3)
         .lean();
       const out = [];
       for (const u of users) {
         if (out.length >= limit) break;
         if (await Booking.exists({ user: u._id })) continue;
+        // booked the one-step way, not yet linked to this account
+        if (await unlinkedGuestRequestFor(u)) continue;
         out.push(String(u._id));
       }
       return out;
@@ -70,6 +73,7 @@ const SEGMENT_DEFS = {
       const age = (now - new Date(user.createdAt)) / DAY;
       if (age < 2 || age > 60) return false;
       if (await Booking.exists({ user: user._id })) return false;
+      if (await unlinkedGuestRequestFor(user)) return false;
       if (await hasMembership(user._id)) return false;
       const { audience } = await resolveAudience(user, now);
       return audience === "non_member";

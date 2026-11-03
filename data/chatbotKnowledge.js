@@ -45,9 +45,9 @@ module.exports = {
     ],
 
     firstVisitFree: [
-      "New customers get their first handyman visit free: up to 90 minutes of standard handyman labor.",
+      "New customers get a free Free Visit: we come to the home, walk through their to-do list together and help them choose the right Profixter service. Repairs and labor are not included in the Free Visit.",
       "One free visit per customer. No membership required and no credit card needed to book it.",
-      "Materials are not included in the free visit. Scheduling is subject to availability.",
+      "Scheduling is subject to availability.",
       "It is for homes in Nassau and Suffolk Counties.",
       "To use it, create an account (signupUrl), add the home, and book the visit on the Book page (bookUrl).",
       "Members do not get this offer; it is for new customers.",
@@ -143,7 +143,7 @@ module.exports = {
 
     faqs: [
       "Q: What is Profixter?\nA: A Long Island handyman membership for your home, serving Nassau and Suffolk Counties. Members book visits as often as they need; there are also $99 One-Time Visits, Full Day Fixter days, gift memberships, and renovation estimates for larger work.",
-      "Q: Is the first visit free?\nA: For new customers, yes: up to 90 minutes of standard handyman labor, one per customer, no card needed, materials not included, subject to availability, for homes in Nassau and Suffolk.",
+      "Q: Is the first visit free?\nA: For new customers, yes: a Free Visit where we walk through your to-do list and help you choose the right service (repairs and labor are not included), one per customer, no card needed, subject to availability, for homes in Nassau and Suffolk.",
       "Q: How many visits do I get each month?\nA: Membership isn't a set number of visits per month. Book as often as you need - Basic lets you have one visit booked at a time, while Plus, Premium and Elite let you have up to two. Scheduling is subject to availability.",
       "Q: How much is a handyman visit?\nA: A One-Time Visit is $99 for up to 90 minutes for one predefined small handyman task, pending review after payment.",
       "Q: Are materials included?\nA: Basic includes labor only. Plus and above include basic materials for small tasks. Larger materials, special-order items, fixtures, appliances and project materials are quoted or approved separately.",

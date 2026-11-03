@@ -40,7 +40,7 @@ const PROTECTED = [
   },
   {
     re: /\bunlimited\b|\b\d+\s+visits?\s+(a|per)\s+month\b|\bstate[- ]licensed\b|\blicensed in nassau\b|\binspections?\b|\bestimates?\b/i,
-    why: "That wording breaks a fixed copy rule (membership is a pace, the license is Suffolk-only, the free visit is real work - not an inspection or estimate).",
+    why: "That wording breaks a fixed copy rule (membership is a pace, the license is Suffolk-only, the Free Visit reviews the to-do list - never called an inspection or estimate).",
   },
   {
     re: /\b(change|edit|modify|cancel|pause|refund)\b[^.\n]{0,30}\b(memberships?|subscriptions?|plans?|booking rules?|service area)\b/i,

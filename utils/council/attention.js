@@ -101,7 +101,13 @@ async function syncAttention({ now = new Date() } = {}) {
  */
 async function attentionSummary() {
   const placed = await placeOf(await pendingItems());
-  const inboxDecisions = await CouncilDecision.countDocuments({ status: "open", category: { $in: ["decision", "uncertain"] }, inbox: { $nin: ["waiting", "review"] } });
+  // the same rule as the board: a record Arthur only asks to acknowledge is a note, not a decision
+  const { isNote } = require("./board");
+  const inboxDecisions = (
+    await CouncilDecision.find({ status: "open", category: { $in: ["decision", "uncertain"] }, inbox: { $nin: ["waiting", "review"] } })
+      .select("category recommendation payload.type")
+      .lean()
+  ).filter((d) => !isNote(d)).length;
   const byRobot = {};
   for (const it of placed) {
     if (!it.robot) continue;

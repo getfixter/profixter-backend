@@ -105,6 +105,7 @@ async function consentAudit({ now = new Date() } = {}) {
     },
     smsMarketing: {
       verifiedOptIn: n(out.smsMarketing, "opted_in"),
+      onButNeedsConfirmation: n(out.smsMarketing, "needs_confirmation"),
       optedOut: n(out.smsMarketing, "opted_out"),
       stopped: n(out.smsMarketing, "stopped"),
       unknownNeverAsked: n(out.smsMarketing, "unknown"),

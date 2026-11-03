@@ -10,8 +10,9 @@ const { BUSINESS_RE } = require("./refocus");
  * WHAT HE MAY ARCHIVE (checked here, in code):
  *   task    a council task that is not being worked on right now (received,
  *           assigned, blocked, completed-but-unchecked). A task the OWNER asked
- *           for is never archived by Arthur: he files an archive request and
- *           the owner confirms it (resolveDecision).
+ *           for is archived by Arthur only as a duplicate of another open task;
+ *           otherwise he files an archive request and the owner confirms it
+ *           (resolveDecision).
  *   note    an open specialist note (opportunity, risk, anomaly, experiment,
  *           insight). Drafts and approval items are the owner's decisions and
  *           cannot be archived.
@@ -108,8 +109,14 @@ async function archiveItem({ kind, id, reason, category, duplicateOf = null, by 
     const bad = await checkReason(kind, doc, { category, duplicateOf });
     if (bad) throw fail(bad);
     if ((await archivedToday()) >= MAX_PER_DAY) throw fail(`Already ${MAX_PER_DAY} archives in the last day - the rest can wait.`, 429);
-    // The owner's own requests are the owner's: Arthur asks.
-    if (kind === "task" && doc.origin === "owner") {
+    /*
+     * The owner's own requests are the owner's: Arthur asks - except a
+     * DUPLICATE (owner, 2026-11-03: routine housekeeping must not wait for
+     * them). checkReason has already proved the task it repeats is open, so
+     * the owner's request lives on there; this one is kept, marked and
+     * restorable.
+     */
+    if (kind === "task" && doc.origin === "owner" && category !== "duplicate") {
       const dedupeKey = `archive-request:task:${doc._id}`;
       const existing = await CouncilDecision.findOne({ dedupeKey, status: "open" }).lean();
       if (existing) return { requested: true, decisionId: String(existing._id), duplicate: true };

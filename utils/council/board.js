@@ -80,10 +80,20 @@ function byThenId(key, dir = 1) {
   return (a, b) => (key(a) - key(b)) * dir || String(a._id).localeCompare(String(b._id));
 }
 
+/*
+ * A record King Arthur recommends only to "acknowledge" has no yes or no in
+ * it - it is a note (often a step only the owner can take outside the
+ * system). It sits with the notes and does not count as a decision.
+ */
+function isNote(d) {
+  return d.category === "info" || (d.recommendation?.choice === "acknowledge" && !d.payload?.type);
+}
+
 function typeLabel(d) {
   if (d.payload?.type === "guidance") return "Guidance change (King Arthur's proposal)";
   if (d.payload?.type === "archive_request") return "Archive request (a task you asked for)";
   if (d.category === "info") return "Good to know";
+  if (isNote(d)) return "Good to know - a step only you can take, no decision";
   if (d.category === "uncertain") return "Unclear - King Arthur needs facts or your view";
   return "Needs your decision";
 }
@@ -98,7 +108,7 @@ function statusLabel(d, section) {
     if (d.waiting?.kind === "owner") return "Being worked on - you asked to be reminded when it is ready";
     return `Being worked on - ${d.waiting?.reason || "a knight is revising it"}`;
   }
-  return d.category === "info" ? "Needs you - just acknowledge" : "Needs your decision now";
+  return isNote(d) ? "Needs you - just acknowledge" : "Needs your decision now";
 }
 
 /** The board: sections in order, every item numbered 1..N from top to bottom. */
@@ -112,8 +122,8 @@ async function decisionBoard({ now = new Date() } = {}) {
     CouncilDecision.find({ status: { $ne: "open" }, updatedAt: { $gte: since }, category: { $ne: "routine" } }).lean(),
   ]);
   const parked = (d) => PARKED.includes(d.inbox);
-  const needsDecisions = open.filter((d) => !parked(d) && d.category !== "info").sort(byThenId(enteredAt));
-  const needsInfo = open.filter((d) => !parked(d) && d.category === "info").sort(byThenId(enteredAt));
+  const needsDecisions = open.filter((d) => !parked(d) && !isNote(d)).sort(byThenId(enteredAt));
+  const needsInfo = open.filter((d) => !parked(d) && isNote(d)).sort(byThenId(enteredAt));
   const working = open.filter(parked).sort(byThenId(enteredAt));
   const history = closed.sort(byThenId(closedAt, -1)).slice(0, HISTORY_LIMIT);
 
@@ -223,4 +233,4 @@ function itemBrief(it, enrich = new Map()) {
   return L.join("\n");
 }
 
-module.exports = { SECTION_TITLES, decisionBoard, itemBrief };
+module.exports = { SECTION_TITLES, decisionBoard, isNote, itemBrief };

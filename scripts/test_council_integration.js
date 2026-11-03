@@ -111,7 +111,7 @@ async function main() {
     const names = arthur.ARTHUR_TOOL_NAMES;
     assert.deepStrictEqual(names.slice().sort(), [
       "archive_item", "assign_task", "cancel_task", "check_fix", "file_for_owner", "get_acquisition", "get_council_state",
-      "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_memory", "recommend", "set_team_focus", "start_shift", "verify_task", "wait_on", "write_memory",
+      "get_item", "get_specialist", "merge_duplicate_notes", "propose_guidance", "read_followup_emails", "read_memory", "recommend", "set_team_focus", "start_shift", "verify_task", "wait_on", "write_memory",
     ]);
     // His only business data is the marketing view the specialists use; no revenue, membership or scheduling tool exists.
     const { TOOL_DEFS } = require("../utils/agents/tools");

@@ -5,7 +5,7 @@ const MarketingSend = require("../../models/MarketingSend");
 const Subscription = require("../../models/Subscription");
 const VisitEntitlement = require("../../models/VisitEntitlement");
 const { subscriptionGrantsAccess } = require("../subscriptionManagement");
-const { STATE: FREE_VISIT_STATE, freeVisitStateFor } = require("./freeVisitLifecycle");
+const { STATE: FREE_VISIT_STATE, freeVisitStateForUser } = require("./freeVisitLifecycle");
 const {
   CATEGORY_COOLDOWN_DAYS,
   COOLDOWN_DAYS,
@@ -191,7 +191,8 @@ async function buildProfile(user, now = new Date(), options = {}) {
      * used one, which silently and permanently disqualified the customer from
      * the offer the product still says is theirs.
      */
-    freeVisitStateFor(user._id),
+    // also a one-step request on their own email or phone not yet linked to the account
+    freeVisitStateForUser(user),
     Booking.countDocuments({ user: user._id }),
     /*
      * Project leads are keyed by email, not user id, because the estimate form

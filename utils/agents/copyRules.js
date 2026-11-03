@@ -4,8 +4,8 @@
  * Checked in code, not just asked for in a prompt: a draft that breaks one is
  * refused with the reasons, so the agent rewrites it. The rules come from
  * decisions the owner has already made (memory notes: membership is a pace,
- * Suffolk-only license, free visit is real labor, no discounts without
- * approval).
+ * Suffolk-only license, the Free Visit is a to-do-list visit with no labor
+ * (since 2026-10-30), no discounts without approval).
  */
 
 const RULES = [
@@ -14,7 +14,17 @@ const RULES = [
   { re: /\bvisit credits?\b|\bactive (booking|appointment)s?\b/i, why: '"visit credits" / "active booking" are internal words, never customer copy.' },
   { re: /\bno monthly visit limit\b/i, why: '"no monthly visit limit" reads as unlimited and contradicts the Terms.' },
   { re: /\b(ny|new york) state licen[cs]ed\b|\blicen[cs]ed in nassau\b/i, why: "The license (HI-71484) is Suffolk County only." },
-  { re: /\bfree (first )?(visit|inspection)\b[^.]{0,40}\b(inspection|estimate|assessment|quote)\b|\bfree (inspection|estimate|assessment)\b/i, why: "The free first visit is real labor, never an inspection or estimate." },
+  { re: /\bfree (first )?(visit|inspection)\b[^.]{0,40}\b(inspection|estimate|assessment|quote)\b|\bfree (inspection|estimate|assessment)\b/i, why: "Never call the Free Visit an inspection, estimate, assessment or quote." },
+  /*
+   * Since 2026-10-30 the Free Visit goes over the to-do list and recommends a
+   * service; the booking page says repairs and labor are not included. Copy
+   * that promises work on it (the old offer) is refused - drafts AND the
+   * send-time re-check of approved emails and Google posts.
+   */
+  {
+    re: /\b(real |paid )?(working|labou?r) visit\b|\breal (handyman )?work\b|\b90[- ]?minutes?\b|\bget(s)? (started|to work) on your list\b|\bdoes the work on your list\b|\b(spend|spends|spent) up to\b/i,
+    why: "The Free Visit includes no labor (since 2026-10-30): we walk through the to-do list and help choose the right service. Never promise work, repairs, a working visit or 90 minutes on it.",
+  },
   { re: /\b(first|only)\b[^.]{0,30}\bhandyman membership\b/i, why: 'Never claim to be the first or only handyman membership on Long Island.' },
   { re: /\bhouseholds?\b/i, why: 'Say "customers", not "households".' },
   { re: /\b(one|once|1)\s+(free\s+(first\s+)?visit\s+)?(per|for each|each)\s+(home|house|address|property|household)\b/i, why: 'The free first visit is ONE PER CUSTOMER (new customers only), never "one per home" or "per address".' },

@@ -106,6 +106,8 @@ async function marketingResults({ now = new Date() } = {}) {
           last30AwaitingCall: n(a.oneStepRequests.last30AwaitingCall),
           last30Confirmed: n(a.oneStepRequests.last30Confirmed),
           last30ByPage: a.oneStepRequests.last30ByPage || null,
+          // "source / utm_campaign" -> requests: credits a tagged post, Google listing post or follow-up email
+          last30ByCampaign: a.oneStepRequests.last30ByCampaign || null,
           howCounted:
             "Free-visit requests from the homepage or /book/free (time + name, mobile, email; no account). The time is held at once and the owner calls to confirm. Counted when sent, complete days through yesterday, only while not linked to an account (a confirmed one linked to an account moves into firstFreeVisitBookings), so the two never overlap. Awaiting the owner's call is normal, not a drop-off.",
         }
@@ -187,6 +189,7 @@ async function reengagementAudiences({ now = new Date(), sample = 150 } = {}) {
     let emailable = 0;
     let textOptIn = 0;
     let optedOut = 0;
+    let textNeedsConfirmation = 0;
     for (const u of users) {
       if (!(await def.includes(u, { now }).catch(() => false))) continue;
       inAudience += 1;
@@ -195,8 +198,10 @@ async function reengagementAudiences({ now = new Date(), sample = 150 } = {}) {
       if (st.email === "unsubscribed" || st.email === "blocked" || u.excludeFromMarketing === true) optedOut += 1;
       else if (st.email === "opted_in" || st.email === "existing_customer") emailable += 1;
       if (st.smsMarketing === "opted_in") textOptIn += 1;
+      // switched on by staff after a call: recorded, but no marketing text goes out until the customer confirms
+      if (st.smsMarketing === "needs_confirmation") textNeedsConfirmation += 1;
     }
-    out[key] = { audience: a.label, people: inAudience, mayEmail: emailable, optedInToMarketingTexts: textOptIn, optedOut, sampledUpTo: sample };
+    out[key] = { audience: a.label, people: inAudience, mayEmail: emailable, optedInToMarketingTexts: textOptIn, marketingTextsAwaitingCustomerConfirmation: textNeedsConfirmation, optedOut, sampledUpTo: sample };
   }
   // the free-visit -> member step, as a count for follow-up planning (no amounts)
   const completed90 = await Booking.countDocuments({ isFreeFirstVisit: true, completedAt: { $gte: new Date(now - 90 * DAY) } });

@@ -39,7 +39,7 @@ async function test(name, fn) {
 
 const GOOD = {
   summary:
-    "Fall on Long Island means gutters full of leaves and drafty doors. Your first Profixter visit is free: a real 90-minute working visit where your Fixter fixes things on your list, not an inspection. Book it online in a minute.",
+    "Fall on Long Island means gutters full of leaves and drafty doors. Your first Profixter visit is free: we walk through your to-do list with you and help you choose the right service. Book it online in a minute.",
   title: "Get your home ready for fall",
   url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic&utm_campaign=gbp_fall_prep",
   reason: "Seasonal searches for gutter cleaning are rising in Suffolk.",
@@ -148,7 +148,7 @@ async function main() {
     bad({ url: "https://www.profixter.com/book/free" }, /tagged utm_source=google/);
     bad({ url: "https://evil.example/book/free?utm_source=google&utm_medium=organic" }, /button link/);
     bad({ summary: `${GOOD.summary} 20% off this week!` }, /discounts/);
-    bad({ summary: `${GOOD.summary} Ask about our free inspection and estimate.` }, /inspection or estimate/);
+    bad({ summary: `${GOOD.summary} Ask about our free inspection and estimate.` }, /inspection, estimate/);
     bad({ summary: `${GOOD.summary} Unlimited visits for members.` }, /unlimited/);
     bad({ summary: `${GOOD.summary} This post is sponsored by our partners.` }, /100% organic/);
     bad({ summary: `${GOOD.summary} Call 631-555-0199 today.` }, /phone numbers/);

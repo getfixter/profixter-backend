@@ -118,6 +118,21 @@ function templateOf(pb) {
   };
 }
 
+/*
+ * The button's full address. Tagged, so a free visit or a membership that
+ * starts from this email is credited to it: /book/free keeps utm_* on the
+ * one-step request, and the site's first-touch record keeps them for an
+ * account booking or a purchase. Nothing personal is in the link.
+ */
+function ctaUrlOf(pb) {
+  const { routeUrl } = require("../../marketing/marketingConfig");
+  const url = new URL(routeUrl(ctaRouteOf(pb)));
+  url.searchParams.set("utm_source", "email");
+  url.searchParams.set("utm_medium", "followup");
+  url.searchParams.set("utm_campaign", pb.key);
+  return url.toString();
+}
+
 function playbookText(pb) {
   return [pb.subject, pb.preheader, pb.headline, ...(pb.paragraphs || []), pb.ctaLabel, pb.closing].join("\n");
 }
@@ -167,7 +182,7 @@ async function execute(payload, { action, now }) {
   if (!ACQUISITION_SEGMENTS.includes(pb.segment)) return { outcome: "skip", reason: "outside_acquisition_scope" };
 
   const user = await User.findById(payload.userId).select(
-    "_id userId email name firstName role isActive employeePosition excludeFromMarketing createdAt"
+    "_id userId email phone name firstName role isActive employeePosition excludeFromMarketing createdAt"
   );
   if (!user) return { outcome: "skip", reason: "user_not_found" };
   if (!isMarketableAccount(user)) return { outcome: "skip", reason: "not_marketable" };
@@ -188,6 +203,7 @@ async function execute(payload, { action, now }) {
   const rendered = renderMarketingEmail(templateOf(pb), {
     name: String(user.firstName || user.name || "there").split(" ")[0],
     email: user.email,
+    ctaUrl: ctaUrlOf(pb),
   });
   const info = await sendRaw({
     to: user.email,
@@ -282,7 +298,7 @@ async function proposePlaybookEmails({ propose, now = new Date() } = {}) {
 
 /** The cheap per-person checks, before anything is queued. */
 async function readyNow(userId, now) {
-  const user = await User.findById(userId).select("_id userId email name firstName role isActive employeePosition excludeFromMarketing createdAt");
+  const user = await User.findById(userId).select("_id userId email phone name firstName role isActive employeePosition excludeFromMarketing createdAt");
   if (!user || !isMarketableAccount(user)) return false;
   if (await isUnsubscribed(user.email)) return false;
   if (await hasMembership(user._id)) return false;
@@ -291,4 +307,4 @@ async function readyNow(userId, now) {
   return true;
 }
 
-module.exports = { PER_DAY, PER_RUN, ROUTES_BY_SEGMENT, SEND_HOURS, TYPE, ctaRouteOf, inSendHours, nextSendHour, ctaRouteProblem, execute, lifecycleSequenceActive, playbookText, proposePlaybookEmails, templateOf, validate };
+module.exports = { PER_DAY, PER_RUN, ROUTES_BY_SEGMENT, SEND_HOURS, TYPE, ctaRouteOf, ctaUrlOf, inSendHours, nextSendHour, ctaRouteProblem, execute, lifecycleSequenceActive, playbookText, proposePlaybookEmails, templateOf, validate };

@@ -66,7 +66,7 @@ I own Profixter (${SITE}), a handyman membership company serving homeowners in N
 
 Fixed business rules the agents must follow (they cannot change these):
 - AI never books visits. Homeowners book themselves on profixter.com.
-- The free first visit is up to 90 minutes of real handyman work, one per customer (new customers only) - not an inspection or an estimate.
+- The Free Visit (since 2026-10-30) is a free visit to go over the homeowner's to-do list and help them choose the right Profixter service. No labor is included. One per customer (new customers only); never called an inspection or an estimate.
 - AI never offers discounts, deals or price changes, and never changes services, plans, memberships, booking rules or the service area.
 - Meta (Facebook/Instagram) ads are run by an outside agency; the AI can only read ad data.
 - No postcards or mail by AI. No texting or emailing purchased or imported contact lists.

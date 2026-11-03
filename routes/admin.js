@@ -2521,6 +2521,10 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
           },
         }
       );
+      // a one-step visit still without an account joins the one account that proved its phone/email
+      if (booking.guestRequestId && !booking.user) {
+        await require("../utils/freeVisit/guestLink").linkCompletedGuestVisitQuietly(booking);
+      }
       booking = await Booking.findById(booking._id);
     } else if (normalizedNextStatus !== "completed") {
       await Booking.updateOne(

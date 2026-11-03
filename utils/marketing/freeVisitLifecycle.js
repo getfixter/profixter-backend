@@ -129,10 +129,59 @@ async function freeVisitStateFor(userId, { BookingModel = Booking } = {}) {
   return resolveFreeVisitState(bookings);
 }
 
+/*
+ * A homepage / /book/free request made WITHOUT signing in is a Booking with no
+ * user (guestRequestId set) until the owner links it on Confirm or the person
+ * proves the same phone or email at sign-in (utils/freeVisit/guestLink). Until
+ * then the account-keyed reads above cannot see it, and the never-booked
+ * follow-ups would ask somebody to book the visit already in their calendar.
+ *
+ * So a person whose own email or phone is on such a request is read as OPEN:
+ * the offer is spoken for. Matched on contact details alone, which is why it
+ * only ever HOLDS BACK a "please book" message. It never makes anyone
+ * "completed" (Track B starts only from a visit actually linked to the
+ * account) and it never links or merges anything.
+ *
+ * A request the owner declined holds them back too: it was declined for a
+ * reason (out of area, a repeat), and that is not ours to re-ask. One the
+ * customer cancelled does not - the offer is theirs again, as above.
+ */
+function phoneVariants(phone) {
+  const { normalizePhoneE164 } = require("../identity");
+  const e164 = normalizePhoneE164(phone);
+  if (!e164) return [];
+  const d = e164.replace(/\D/g, "").slice(-10);
+  return [e164, d, `1${d}`, `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`, `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`];
+}
+
+async function unlinkedGuestRequestFor(user, { BookingModel = Booking, RequestModel = require("../../models/Request") } = {}) {
+  const email = String(user?.email || "").trim().toLowerCase();
+  const phones = phoneVariants(user?.phone);
+  const or = [];
+  if (email) or.push({ email });
+  if (phones.length) or.push({ phone: { $in: phones } });
+  if (!or.length) return false;
+  const [booking, declined] = await Promise.all([
+    BookingModel.exists({ guestRequestId: { $ne: null }, user: null, status: { $nin: [...CANCELLED_STATUSES, "Canceled", "Cancelled"] }, $or: or }),
+    RequestModel.exists({ serviceType: "free_visit_request", status: { $in: ["declined", "pending_confirmation", "new"] }, $or: or }),
+  ]);
+  return Boolean(booking || declined);
+}
+
+/** freeVisitStateFor, plus the person's own unlinked one-step requests (see above). */
+async function freeVisitStateForUser(user, deps = {}) {
+  const state = await freeVisitStateFor(user._id, deps);
+  if (state.state !== STATE.AVAILABLE) return state;
+  if (!(await unlinkedGuestRequestFor(user, deps))) return state;
+  return { ...state, state: STATE.OPEN, openCount: state.openCount + 1, unlinkedGuestRequest: true };
+}
+
 module.exports = {
   CANCELLED_STATUSES,
   COMPLETED_STATUSES,
   STATE,
   freeVisitStateFor,
+  freeVisitStateForUser,
   resolveFreeVisitState,
+  unlinkedGuestRequestFor,
 };

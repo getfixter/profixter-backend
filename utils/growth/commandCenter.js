@@ -284,9 +284,9 @@ async function oneStepRequests({ today }) {
   const rows = await Booking.find({ guestRequestId: { $ne: null }, user: null, createdAt: { $gte: nyMidnight(shiftDay(today, -60)) } })
     .select("createdAt status guestRequestId")
     .lean();
-  const pages = new Map(
-    (await Request.find({ _id: { $in: rows.map((b) => b.guestRequestId) } }).select("sourcePage").lean()).map((r) => [String(r._id), r.sourcePage || "/"])
-  );
+  const reqs = await Request.find({ _id: { $in: rows.map((b) => b.guestRequestId) } }).select("sourcePage attribution").lean();
+  const pages = new Map(reqs.map((r) => [String(r._id), r.sourcePage || "/"]));
+  const tags = new Map(reqs.map((r) => [String(r._id), r.attribution || {}]));
   const between = (from, toExclusive) => rows.filter((b) => b.createdAt >= nyMidnight(from) && b.createdAt < nyMidnight(toExclusive));
   // awaiting the owner's call, or confirmed; what happens to a visit after that is the owner's
   const status = (b) => String(b.status || "").toLowerCase();
@@ -295,9 +295,18 @@ async function oneStepRequests({ today }) {
   const awaiting = (list) => list.filter((b) => status(b) === "pending confirmation").length;
   const confirmed = (list) => list.filter((b) => ["confirmed", "completed"].includes(status(b))).length;
   const byPage = {};
+  // which tagged link brought each request: the link's own utm_* first, else the stored first touch
+  const byCampaign = {};
   for (const b of last30) {
     const page = String(pages.get(String(b.guestRequestId)) || "/").split("?")[0] === "/book/free" ? "/book/free" : "homepage";
     byPage[page] = (byPage[page] || 0) + 1;
+    const t = tags.get(String(b.guestRequestId)) || {};
+    const u = t.url || {};
+    const f = t.firstTouch || {};
+    const src = u.utm_source || f.utmSource || f.utm_source || "";
+    const camp = u.utm_campaign || f.utmCampaign || f.utm_campaign || "";
+    const label = src || camp ? `${src || "?"} / ${camp || "(no campaign)"}` : u.fbclid || f.fbclid ? "meta click (fbclid) / (no campaign)" : "untagged";
+    byCampaign[label] = (byCampaign[label] || 0) + 1;
   }
   return {
     last7: last7.length,
@@ -312,6 +321,7 @@ async function oneStepRequests({ today }) {
     last30AwaitingCall: awaiting(last30),
     last30Confirmed: confirmed(last30),
     last30ByPage: byPage,
+    last30ByCampaign: byCampaign,
     since: (from) => between(from, shiftDay(today, 1)).length,
   };
 }

@@ -16,11 +16,11 @@ const EmailPlaybook = require("../../models/EmailPlaybook");
  */
 const NEVER_BOOKED_V2 = {
   subject: "Your free first visit with Profixter is ready to book",
-  preheader: "A real working visit of up to 90 minutes at your home. Booking takes about a minute.",
+  preheader: "We come by, go over your to-do list and help you choose the right service. Booking takes about a minute.",
   headline: "Pick a time for your free first visit",
   paragraphs: [
     "You created a Profixter account a little while ago but haven't picked a time for your first visit yet. No pressure at all. I just wanted to make sure you know how it works.",
-    "Your first visit is a real working visit, not a sales call: one of our handymen comes to your home and spends up to 90 minutes working on the jobs on your list. It's free for new customers, one per customer.",
+    "Your Free Visit is simple: we come to your home, walk through your to-do list with you and help you choose the right Profixter service. It's free for new customers, one per customer.",
     "Booking takes about a minute: choose a day and time on our website, add your name, mobile and email, and send. We'll confirm your visit with you.",
     "If you like how it goes, membership keeps a handyman coming back at a steady pace, so small jobs get done before they pile up. You can decide after the visit.",
   ],

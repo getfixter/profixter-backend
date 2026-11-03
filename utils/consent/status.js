@@ -19,6 +19,7 @@ const { toE164 } = require("../sms/smsPhone");
  *   not_marketable     staff, excluded or test account, or no deliverable address
  * SMS (marketing and service, separately):
  *   opted_in           ticked the box (with the date and screen it was ticked on)
+ *   needs_confirmation marketing on, but recorded by staff or awaiting the carrier (not textable yet)
  *   opted_out          switched it off, or it was reset when the number changed to an unasked one
  *   stopped            the handset texted STOP and has not texted START
  *   unknown            never asked - NOT consent
@@ -43,6 +44,15 @@ function smsStatus(user, purpose, optOut) {
   const prefs = user.smsPreferences || {};
   const flag = purpose === "marketing" ? prefs.marketingEnabled : prefs.transactionalEnabled;
   if (purpose === "marketing" && user.excludeFromMarketing === true) return "excluded";
+  /*
+   * Marketing "on" is not enough: the send path texts only on consent evidence
+   * that qualifies (marketingSmsBasis). A staff-recorded phone call, or written
+   * consent still waiting for the carrier registration, is "needs_confirmation"
+   * here too - otherwise the counts promise texts the sender will never send.
+   */
+  if (purpose === "marketing" && flag === true) {
+    return require("./marketingSmsBasis").marketingSmsBasis(user).status === "qualifies" ? "opted_in" : "needs_confirmation";
+  }
   if (flag === true) return "opted_in";
   if (flag === false) return "opted_out";
   return "unknown";

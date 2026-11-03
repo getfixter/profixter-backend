@@ -362,7 +362,7 @@ ${input.body_markdown}`);
 Object.assign(TOOL_DEFS, {
   list_email_playbooks: {
     description:
-      "The email playbooks that exist (draft, approved, retired), with their segment, status, and how their sends went (proposed / sent / skipped and why / joined afterwards). Check this before drafting so you improve or replace instead of duplicating.",
+      "The email playbooks that exist (draft, approved, retired), with their segment, status, the exact button link an email sent now would carry (buttonLink, tagged utm_campaign=<key>), how their sends went (proposed / sent / skipped and why), and the results per person after their email: booked a free visit, sent a one-step request, joined (results; plus requests that came through the tagged link). Check this before drafting so you improve or replace instead of duplicating.",
     input_schema: obj({}),
     run: async () => {
       const EmailPlaybook = require("../../models/EmailPlaybook");
@@ -372,19 +372,34 @@ Object.assign(TOOL_DEFS, {
         { $match: { type: "playbook_email" } },
         { $group: { _id: { key: "$payload.playbookKey", status: "$status", reason: "$result.reason" }, n: { $sum: 1 } } },
       ]);
-      return rows.map((p) => ({
-        key: p.key,
-        name: p.name,
-        segment: p.segment,
-        status: p.status,
-        version: p.version,
-        approvedVersion: p.approvedVersion,
-        statusNote: p.statusNote,
-        subject: p.subject,
-        purpose: p.purpose,
-        measure: p.measure,
-        sends: stats.filter((s) => s._id.key === p.key).map((s) => ({ status: s._id.status, reason: s._id.reason || null, count: s.n })),
-      }));
+      const { ctaRouteOf, ctaUrlOf } = require("../growth/actions/playbookEmail");
+      const out = [];
+      for (const p of rows) {
+        let buttonLink = null;
+        try {
+          buttonLink = ctaUrlOf(p);
+        } catch {
+          buttonLink = "no valid route";
+        }
+        out.push({
+          key: p.key,
+          name: p.name,
+          segment: p.segment,
+          status: p.status,
+          version: p.version,
+          approvedVersion: p.approvedVersion,
+          statusNote: p.statusNote,
+          subject: p.subject,
+          purpose: p.purpose,
+          measure: p.measure,
+          // exactly what the button opens in an email sent now (the same function the sender uses)
+          buttonRoute: ctaRouteOf(p),
+          buttonLink,
+          sends: stats.filter((s) => s._id.key === p.key).map((s) => ({ status: s._id.status, reason: s._id.reason || null, count: s.n })),
+          results: await playbookResults(p.key),
+        });
+      }
+      return out;
     },
   },
   save_email_playbook: {
@@ -448,6 +463,38 @@ Object.assign(TOOL_DEFS, {
 
 function ymdDaysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * What happened after a playbook's emails, counted per person from the moment
+ * their email was accepted: a free visit booked on the account, a one-step
+ * request with the same email or phone, a membership. Counts only. "After"
+ * is not "because of" - the tagged link (utm_campaign = the key) is what
+ * credits a request to the email; both are given.
+ */
+async function playbookResults(key) {
+  const GrowthAction = require("../../models/GrowthAction");
+  const Booking = require("../../models/Booking");
+  const Request = require("../../models/Request");
+  const User = require("../../models/User");
+  const { hasMembership } = require("../growth/acquisitionScope");
+  const sent = await GrowthAction.find({ type: "playbook_email", "payload.playbookKey": key, status: "succeeded" }).select("payload.userId executedAt").lean();
+  const r = { emailsAccepted: sent.length, bookedAfter: 0, oneStepRequestAfter: 0, joinedAfter: 0, accountsSinceDeleted: 0 };
+  for (const a of sent) {
+    const user = await User.findById(a.payload.userId).select("_id email phone").lean();
+    if (!user) {
+      r.accountsSinceDeleted += 1;
+      continue;
+    }
+    const after = { $gte: new Date(a.executedAt) };
+    if (await Booking.exists({ user: user._id, createdAt: after })) r.bookedAfter += 1;
+    const or = [{ email: String(user.email || "").toLowerCase() }];
+    if (user.phone) or.push({ phone: require("../identity").normalizePhoneE164(user.phone) || user.phone });
+    if (await Request.exists({ serviceType: "free_visit_request", createdAt: after, $or: or })) r.oneStepRequestAfter += 1;
+    if (await hasMembership(user._id)) r.joinedAfter += 1;
+  }
+  r.oneStepRequestsWithThisEmailsLink = await Request.countDocuments({ serviceType: "free_visit_request", "attribution.url.utm_campaign": key });
+  return r;
 }
 
 Object.assign(TOOL_DEFS, {

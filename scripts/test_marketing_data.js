@@ -95,7 +95,7 @@ async function main() {
   const ids = Object.fromEntries(["A", "B", "C", "D", "E"].map((k) => [k, new mongoose.Types.ObjectId()]));
   const u = (k, extra) => ({ _id: ids[k], userId: `PF-${k}`, name: `${k}lice Secretname`, email: `${k.toLowerCase()}@homeowner-mail.net`, phone: "516-555-0100", role: "customer", isActive: true, createdAt: new Date(now - 10 * DAY), ...extra });
   await User.collection.insertMany([
-    u("A", { createdAt: new Date(now - 40 * DAY), smsPreferences: { marketingEnabled: true } }), // free visit, did not join, may email
+    u("A", { createdAt: new Date(now - 40 * DAY), smsPreferences: { marketingEnabled: true, marketingConsentSource: "account_settings" } }), // free visit, did not join, may email, opted in to texts herself
     u("B", { createdAt: new Date(now - 40 * DAY) }), // free visit, did not join, unsubscribed
     u("C"), // registered, never booked
     u("D", { createdAt: new Date(now - 300 * DAY) }), // past member
