@@ -1,42 +1,21 @@
 // controllers/facebookCapi.js
-const metaCapi = require("../utils/metaCapi");
 
 /**
- * The original Conversions API relay, kept alive but repointed.
+ * The original Conversions API relay - retired 2026-11-03.
  *
- * Nothing in the ProFixter frontend calls this - it was already dead code when
- * the tracking was rebuilt - but it is a mounted, publicly reachable endpoint,
- * and it used to read `process.env.FB_PIXEL_ID`. That is precisely how events
- * kept arriving in the old dataset after the pixel was replaced. Deleting it
- * outright would break any caller we cannot see from here, such as a custom
- * tag inside GTM, so it now forwards to the one sender instead.
- *
- * It is deliberately NOT a general relay. utils/metaCapi enforces the pixel and
- * the allow-listed conversions; this only translates the old request shape.
- *
- * Always 204, because every caller of the old endpoint expected that.
+ * Nothing in the ProFixter frontend or in GTM calls it, and it forwarded the
+ * event name, value, email and phone from the request body, so anybody could
+ * inject Purchases and Subscribes into the Meta dataset. It still answers 204,
+ * as every caller of the old endpoint expected, but forwards nothing. The first
+ * call per hour is logged so an unseen caller can be found.
  */
-module.exports = async function facebookCapi(req, res) {
-  try {
-    const { name, params = {}, eventID, sourceUrl } = req.body || {};
-    const ALLOWED = new Set(["Lead", "Subscribe", "Purchase"]);
+let loggedAt = 0;
 
-    if (name && ALLOWED.has(String(name))) {
-      await metaCapi.send({
-        eventName: String(name),
-        eventId: eventID || undefined,
-        eventSourceUrl: sourceUrl || req.headers.referer,
-        customData: params,
-        user: { email: params.email, phone: params.phone },
-        externalId: params.externalId,
-        fbp: params.fbp,
-        fbc: params.fbc,
-        req,
-      });
-    }
-  } catch (error) {
-    console.warn("Legacy CAPI relay failed:", error.message);
+module.exports = function facebookCapi(_req, res) {
+  const now = Date.now();
+  if (now - loggedAt >= 60 * 60 * 1000) {
+    loggedAt = now;
+    console.log(JSON.stringify({ event: "meta_relay_retired_called", path: "/api/facebook/capi" }));
   }
-
   return res.status(204).end();
 };

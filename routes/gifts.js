@@ -29,6 +29,7 @@ const {
   validateGiftPurchase,
 } = require("../utils/gifts/giftService");
 const { PLAN_NAMES, formatTermDate, quoteGift, stripeLineItem } = require("../utils/gifts/giftPricing");
+const { checkoutMetadataFrom } = require("../utils/metaBrowserIds");
 const {
   giftProductId,
   giftProductStatus,
@@ -366,6 +367,8 @@ router.post("/checkout-session", auth, async (req, res) => {
        * still binds on recipientEmail.
        */
       ...(adminTarget ? { adminGiftRecipientId: adminTarget.customerId } : {}),
+      // Meta browser ids for the server Purchase (utils/metaBrowserIds.js).
+      ...(adminTarget ? {} : checkoutMetadataFrom(req.body)),
     };
 
     const sessionConfig = {

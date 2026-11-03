@@ -367,12 +367,25 @@ test("each conversion has exactly one browser call site", () => {
   assert.equal(counts.trackStartSignup, 1, `StartSignup fires from ${counts.trackStartSignup} places`);
 });
 
-test("the relay refuses event names outside the three conversions", () => {
+test("the relay forwards only Lead and Schedule, never a value, and the legacy relays forward nothing", () => {
   const track = read(__dirname, "..", "routes", "track.js");
   assert.ok(
-    track.includes('new Set(["Lead", "Subscribe", "Purchase"])'),
-    "the relay allow-list is missing - it would be an open door to the dataset"
+    track.includes('const ALLOWED = new Set(["Lead", "Schedule"]);'),
+    "the relay allow-list is missing or wider - paid events come from the Stripe webhook only"
   );
+  assert.ok(/RELAY_CUSTOM_KEYS = \[[^\]]*\]/.test(track) && !/RELAY_CUSTOM_KEYS = \[[^\]]*"(value|currency)"/.test(track), "relayed custom data must not carry value or currency");
+  assert.ok(/consume\(\{ key: `meta-relay:\$\{ip\}`/.test(track), "the relay is rate limited per IP");
+  const fbcap = track.slice(track.indexOf('router.post("/fbcap"'), track.indexOf('router.get("/last-purchase"'));
+  assert.ok(!fbcap.includes("metaCapi.send"), "/api/track/fbcap forwards nothing");
+  const legacy = read(__dirname, "..", "controllers", "facebookCapi.js");
+  assert.ok(!legacy.includes("metaCapi"), "/api/facebook/capi forwards nothing");
+});
+
+test("a full state name is sent as its two-letter code", () => {
+  assert.equal(metaCapi.normalizeState("New York"), "ny");
+  assert.equal(metaCapi.normalizeState("NY"), "ny");
+  assert.equal(metaCapi.normalizeState(" new  jersey "), "nj");
+  assert.equal(metaCapi.normalizeState("Narnia"), "");
 });
 
 console.log("\n--- failures cost nothing ---");

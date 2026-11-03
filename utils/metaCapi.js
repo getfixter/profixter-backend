@@ -68,11 +68,64 @@ function normalizePhone(phone) {
   return digits;
 }
 
-/** US state as a two-letter lowercase code, which is the only form Meta matches. */
+const US_STATES = {
+  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca", colorado: "co",
+  connecticut: "ct", delaware: "de", "district of columbia": "dc", florida: "fl", georgia: "ga",
+  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia", kansas: "ks", kentucky: "ky",
+  louisiana: "la", maine: "me", maryland: "md", massachusetts: "ma", michigan: "mi", minnesota: "mn",
+  mississippi: "ms", missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv", "new hampshire": "nh",
+  "new jersey": "nj", "new mexico": "nm", "new york": "ny", "north carolina": "nc", "north dakota": "nd",
+  ohio: "oh", oklahoma: "ok", oregon: "or", pennsylvania: "pa", "rhode island": "ri",
+  "south carolina": "sc", "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
+  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi", wyoming: "wy",
+};
+
+/**
+ * US state as a two-letter lowercase code, which is the only form Meta matches.
+ * "New York" used to go out as "new york" (both branches lowercased) and match nothing.
+ */
 function normalizeState(state) {
-  const trimmed = String(state || "").trim();
+  const trimmed = String(state || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\.$/, "");
   if (!trimmed) return "";
-  return trimmed.length === 2 ? trimmed.toLowerCase() : trimmed.toLowerCase();
+  if (/^[a-z]{2}$/.test(trimmed)) return trimmed;
+  return US_STATES[trimmed] || "";
+}
+
+/*
+ * Delivery is visible (2026-11-03). Failures were a console.warn at best, and a
+ * missing token or an event with no identifiers returned silently - every
+ * server conversion could stop and nothing would say so. Now each failure is a
+ * JSON line ("meta_capi_failed"), a missing token is logged once an hour, and
+ * an hourly "meta_capi_summary" counts what was sent and what was not (only
+ * when something happened).
+ */
+const counts = {};
+let notConfiguredLoggedAt = 0;
+function count(eventName, outcome) {
+  const key = `${eventName}:${outcome}`;
+  counts[key] = (counts[key] || 0) + 1;
+}
+function logFailure(eventName, eventId, reason, extra = {}) {
+  count(eventName, reason);
+  console.error(JSON.stringify({ event: "meta_capi_failed", eventName, eventId: eventId || null, reason, ...extra }));
+}
+setInterval(() => {
+  if (!Object.keys(counts).length) return;
+  console.log(JSON.stringify({ event: "meta_capi_summary", lastHour: { ...counts } }));
+  for (const k of Object.keys(counts)) delete counts[k];
+}, 60 * 60 * 1000).unref?.();
+
+/* One retry, same event id (Meta deduplicates on it), for a 5xx or a network error. */
+const RETRY_DELAY_MS = 2000;
+async function postWithRetry(url, init) {
+  try {
+    const first = await fetch(url, init);
+    if (first.status < 500) return first;
+  } catch {
+    /* fall through to the retry */
+  }
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  return fetch(url, init);
 }
 
 /** ZIP without the +4, which Meta ignores and which lowers the match rate. */
@@ -211,6 +264,11 @@ async function send({
   try {
     const token = getToken();
     if (!token || !eventName) {
+      count(eventName || "unknown", "not_configured");
+      if (!token && Date.now() - notConfiguredLoggedAt > 60 * 60 * 1000) {
+        notConfiguredLoggedAt = Date.now();
+        console.error(JSON.stringify({ event: "meta_capi_not_configured", eventName: eventName || null }));
+      }
       return { sent: false, reason: "not_configured" };
     }
     if (typeof fetch !== "function") {
@@ -233,6 +291,7 @@ async function send({
     });
 
     if (!hasUsableIdentity(userData)) {
+      count(eventName, "no_identifiers");
       return { sent: false, reason: "no_identifiers" };
     }
 
@@ -256,7 +315,7 @@ async function send({
         process.env.META_TEST_EVENT_CODE || process.env.FB_TEST_CODE;
     }
 
-    const response = await fetch(
+    const response = await postWithRetry(
       `https://graph.facebook.com/${GRAPH_VERSION}/${META_PIXEL_ID}/events`,
       {
         method: "POST",
@@ -275,13 +334,14 @@ async function send({
       } catch {
         detail = await response.text().catch(() => "");
       }
-      console.warn(`Meta CAPI ${eventName} failed: ${response.status} ${detail.slice(0, 400)}`);
+      logFailure(eventName, eventId, "http_error", { status: response.status, detail: detail.slice(0, 400) });
       return { sent: false, reason: "http_error", status: response.status };
     }
 
+    count(eventName, "sent");
     return { sent: true, eventId: eventId || null };
   } catch (error) {
-    console.warn(`Meta CAPI ${eventName} threw: ${error.message}`);
+    logFailure(eventName, eventId, "exception", { message: String(error?.message || error).slice(0, 200) });
     return { sent: false, reason: "exception" };
   }
 }

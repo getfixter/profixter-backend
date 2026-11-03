@@ -6,7 +6,7 @@ const User = require("../models/User");
 const metaCapi = require("../utils/metaCapi");
 const SiteVisitor = require("../models/SiteVisitor");
 const { classifySource, ACQUISITION_REF_SOURCES } = require("../utils/analytics/attribution");
-const { rateLimit } = require("../utils/rateLimit");
+const { rateLimit, consume } = require("../utils/rateLimit");
 
 /**
  * Who is calling, if anybody - and never a refusal.
@@ -47,36 +47,22 @@ async function optionalAuth(req, _res, next) {
  * cannot see from this repo - a custom GTM tag, the agency's own tooling -
  * may still be posting to it. Use POST /api/track/meta for anything new.
  */
-router.post("/fbcap", optionalAuth, async (req, res) => {
-  try {
-    const {
-      event_name = "Purchase",
-      event_id,
-      value = 0,
-      currency = "USD",
-      plan,
-      source_url,
-      user_data = {},
-    } = req.body || {};
-
-    const ALLOWED = new Set(["Lead", "Subscribe", "Purchase"]);
-    if (ALLOWED.has(String(event_name))) {
-      await metaCapi.send({
-        eventName: String(event_name),
-        eventId: event_id || undefined,
-        eventSourceUrl: source_url || req.headers.referer,
-        customData: { value: Number(value) || 0, currency, plan, content_name: plan },
-        user: { email: user_data.em, phone: user_data.ph },
-        externalId: user_data.external_id,
-        fbp: user_data.fbp,
-        fbc: user_data.fbc,
-        req,
-      });
-    }
-  } catch (error) {
-    console.warn("Legacy /fbcap relay failed:", error.message);
-  }
-
+let retiredRelayLoggedAt = {};
+function noteRetiredRelay(path) {
+  const now = Date.now();
+  if (now - (retiredRelayLoggedAt[path] || 0) < 60 * 60 * 1000) return;
+  retiredRelayLoggedAt[path] = now;
+  console.log(JSON.stringify({ event: "meta_relay_retired_called", path }));
+}
+router.post("/fbcap", (req, res) => {
+  /*
+   * Retired 2026-11-03. It forwarded whatever the body said - the event, the
+   * value, even the email and phone - to Meta, so anybody could inject fake
+   * Purchases into the dataset. Nothing on the site or in GTM posts here. It
+   * still answers 200 so an unseen caller does not start retrying, and the
+   * first call per hour is logged so such a caller can be found.
+   */
+  noteRetiredRelay("/api/track/fbcap");
   return res.status(200).json({ ok: true });
 });
 
@@ -153,8 +139,16 @@ router.get("/last-purchase-by-session", async (req, res) => {
  * conversion path. There is no failure it could usefully act on, and an error
  * status would only produce noise in a console the customer might have open.
  */
+// Per browser IP; over the limit the event is simply not forwarded (still 204).
+const RELAY_LIMIT = { limit: 30, windowMs: 10 * 60 * 1000 };
+// The only descriptive fields a relayed event may carry. Never value or currency:
+// a page must not be able to say how much something was worth.
+const RELAY_CUSTOM_KEYS = ["content_name", "content_category", "content_type", "lead_type", "visit_type", "source"];
+
 router.post("/meta", optionalAuth, async (req, res) => {
   try {
+    const ip = clientIp(req);
+    if (ip && !consume({ key: `meta-relay:${ip}`, ...RELAY_LIMIT }).allowed) return res.status(204).end();
     const {
       eventName,
       eventId,
@@ -175,8 +169,12 @@ router.post("/meta", optionalAuth, async (req, res) => {
      * Schedule is the free first visit being booked. It used to be sent as a
      * second Lead, so a cold visitor who signed up and booked counted as two
      * leads; account creation is now the only Lead.
+     *
+     * 2026-11-03: Subscribe and Purchase are no longer relayed. The Stripe
+     * webhook reports every paid one itself, with the amount Stripe charged,
+     * so a relayed copy could only ever be a duplicate - or a forgery.
      */
-    const ALLOWED = new Set(["Lead", "Schedule", "Subscribe", "Purchase"]);
+    const ALLOWED = new Set(["Lead", "Schedule"]);
     if (!eventName || !ALLOWED.has(String(eventName))) {
       return res.status(204).end();
     }
@@ -206,7 +204,9 @@ router.post("/meta", optionalAuth, async (req, res) => {
       eventName: String(eventName),
       eventId: eventId ? String(eventId) : undefined,
       eventSourceUrl: eventSourceUrl || req.headers.referer,
-      customData,
+      customData: Object.fromEntries(
+        RELAY_CUSTOM_KEYS.filter((k) => typeof customData?.[k] === "string").map((k) => [k, customData[k].slice(0, 100)])
+      ),
       user: user
         ? {
             email: user.email,

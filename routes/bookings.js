@@ -159,6 +159,7 @@ const {
   restoreIncludedFullDay,
 } = require("../utils/fullDayEntitlements");
 const { effectivePlanForSubscription } = require("../utils/loyalty/effectivePlan");
+const { checkoutMetadataFrom } = require("../utils/metaBrowserIds");
 const {
   uploadAppointmentPhotos,
   storeAppointmentImages,
@@ -1109,6 +1110,8 @@ router.post(
           userMongoId: String(me._id),
           userId: String(me.userId || me._id),
           addressId: String(subdoc._id),
+          // Meta browser ids for the server Purchase (utils/metaBrowserIds.js).
+          ...checkoutMetadataFrom(req.body),
         },
         payment_intent_data: {
           metadata: {
@@ -1958,6 +1961,8 @@ router.post(
         userMongoId: String(me._id),
         userId: String(me.userId || me._id),
         addressId: String(subdoc._id),
+        // Meta browser ids for the server Purchase (utils/metaBrowserIds.js).
+        ...checkoutMetadataFrom(req.body),
       };
       const sessionConfig = {
         mode: "payment",

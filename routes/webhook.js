@@ -932,6 +932,33 @@ async function preserveHeldReservationAfterPromotionFailure({ booking, error, se
   return { holdExpiresAt, reservationId: String(reservation._id) };
 }
 
+/*
+ * A sale made by staff - Admin pay-by-phone, an Admin payment link, an Admin
+ * visit checkout or an Admin gift (2026-11-03). Not a website conversion: Meta
+ * would match the customer by email or phone and credit some earlier ad, and
+ * the membership path used to reuse the customer's previous checkout event id,
+ * which Meta could drop as a duplicate. Reported to nobody.
+ */
+function soldByStaff(session) {
+  const m = session?.metadata || {};
+  return Boolean(m.adminInitiated || m.adminGiftRecipientId);
+}
+function logStaffSaleSkipped(session, eventName) {
+  logWebhook("info", "meta_staff_sale_not_reported", { stripeSessionId: session.id, eventName });
+}
+
+/*
+ * What the customer was actually charged for the product, before tax: Stripe's
+ * subtotal less discounts (a welcome offer, a promotion code). A gift-covered
+ * trial charges nothing now, and says so. Falls back to `fallback` only for a
+ * session object that carries no amounts.
+ */
+function chargedBeforeTax(session, fallback) {
+  if (!Number.isFinite(Number(session?.amount_subtotal)) || session.amount_subtotal === null) return fallback;
+  const discount = Number(session.total_details?.amount_discount || 0);
+  return Math.max(0, Number(session.amount_subtotal) - discount) / 100;
+}
+
 /**
  * Server half of Purchase for a single paid visit (One-Time or Full Day).
  *
@@ -942,6 +969,7 @@ async function preserveHeldReservationAfterPromotionFailure({ booking, error, se
  * booking unconfirmed.
  */
 function reportPaidVisitPurchase({ session, user, booking, contentName }) {
+  if (soldByStaff(session)) return logStaffSaleSkipped(session, "Purchase");
   const primaryAddress =
     (user.addresses || []).find((a) => String(a._id) === String(booking.addressId)) ||
     (user.addresses || [])[0] ||
@@ -974,6 +1002,46 @@ function reportPaidVisitPurchase({ session, user, booking, contentName }) {
     fbc: session.metadata?.fbc,
     fbclid: user.attribution?.fbclid,
   });
+}
+
+/*
+ * A paid gift membership was never reported to Meta (2026-11-03). Purchase,
+ * from the purchaser, once per gift (only a newly created gift reaches here),
+ * id sess_<session id> like the visit purchases, value before tax. Detached and
+ * never thrown: tracking must not fail the gift.
+ */
+async function reportGiftPurchase(session, gift) {
+  try {
+    if (soldByStaff(session)) return logStaffSaleSkipped(session, "Purchase");
+    const purchaser = await User.findById(gift.purchaser).lean();
+    if (!purchaser) return;
+    metaCapi.sendDetached({
+      eventName: "Purchase",
+      eventId: `sess_${session.id}`,
+      eventSourceUrl: session.metadata?.source_url || `${process.env.CLIENT_URL || "https://www.profixter.com"}/gift`,
+      customData: {
+        currency: String(session.currency || "usd").toUpperCase(),
+        value: chargedBeforeTax(session, Number(session.amount_total || 0) / 100),
+        content_name: "gift_membership",
+        content_type: "product",
+        plan: String(gift.plan || session.metadata?.plan || ""),
+      },
+      user: {
+        email: purchaser.email,
+        phone: purchaser.phone,
+        firstName: purchaser.firstName,
+        lastName: purchaser.lastName,
+        name: purchaser.name,
+      },
+      address: { city: purchaser.city, state: purchaser.state, zip: purchaser.zip },
+      externalId: purchaser.userId || String(purchaser._id),
+      fbp: session.metadata?.fbp,
+      fbc: session.metadata?.fbc,
+      fbclid: purchaser.attribution?.fbclid,
+    });
+  } catch (error) {
+    logWebhook("warn", "meta_gift_purchase_failed", { stripeSessionId: session.id, message: String(error?.message || error).slice(0, 200) });
+  }
 }
 
 async function handleOneTimeCheckoutCompleted(session) {
@@ -1683,6 +1751,7 @@ async function handleCheckoutCompleted(session, eventId) {
        * Stamped once per gift, so a replayed webhook cannot email twice.
        */
       await sendGiftPurchasedAdminNotice(result.gift);
+      await reportGiftPurchase(session, result.gift);
     }
     return result;
   }
@@ -1789,6 +1858,11 @@ async function handleCheckoutCompleted(session, eventId) {
 
   const prevLP = user.lastPurchase || {};
   const confirmationToken = crypto.randomUUID();
+  // Meta gets what was charged (the 20% welcome offer, promotion codes and
+  // gift-covered trials included), not the catalogue price `value` above.
+  const chargedValue = chargedBeforeTax(session, value);
+  // This checkout's own event id (stamped at creation), never the previous one.
+  const metaEventId = session.metadata?.eventId || `sess_${session.id}`;
 
   await User.updateOne(
     { _id: user._id },
@@ -1799,8 +1873,9 @@ async function handleCheckoutCompleted(session, eventId) {
           ...prevLP,
           token: confirmationToken,
           stripeSessionId: session.id,
+          eventId: metaEventId,
           plan,
-          value,
+          value: chargedValue,
           currency,
           createdAt: now,
           addressId: subscription.addressId || null,
@@ -1828,18 +1903,23 @@ async function handleCheckoutCompleted(session, eventId) {
    * the confirmation page can read it back and fire the browser half of this
    * conversion under the same id. The session fallback stays for checkouts that
    * were already in flight when this deployed.
+   *
+   * 2026-11-03: the id, fbp and fbc come from this session's metadata first.
+   * lastPurchase can belong to an earlier checkout (a sale Admin made later
+   * reused it), and a staff sale is not reported at all.
    */
-  await metaCapi.send({
+  if (soldByStaff(session)) logStaffSaleSkipped(session, "Subscribe");
+  else await metaCapi.send({
     eventName: "Subscribe",
-    eventId: prevLP.eventId || `sess_${session.id}`,
+    eventId: metaEventId,
     eventSourceUrl:
-      prevLP.sourceUrl ||
       session.metadata?.source_url ||
+      prevLP.sourceUrl ||
       process.env.CLIENT_URL ||
       "https://www.profixter.com",
     customData: {
       currency,
-      value,
+      value: chargedValue,
       content_name: plan,
       plan,
       billingCycle,
@@ -1858,8 +1938,8 @@ async function handleCheckoutCompleted(session, eventId) {
       zip: subscription.addressSnapshot?.zip || user.zip,
     },
     externalId: user.userId || String(user._id),
-    fbp: prevLP.fbp || session.metadata?.fbp,
-    fbc: prevLP.fbc || session.metadata?.fbc,
+    fbp: session.metadata?.fbp || prevLP.fbp,
+    fbc: session.metadata?.fbc || prevLP.fbc,
     fbclid: user.attribution?.fbclid,
     clientIp: prevLP.clientIp,
     userAgent: prevLP.userAgent,
@@ -2755,4 +2835,9 @@ module.exports.__testables = {
   promotionDetails,
   promotionDisplayName,
   promotionDurationNote,
+  // Meta conversions (2026-11-03): what was charged, staff sales, gifts.
+  chargedBeforeTax,
+  soldByStaff,
+  reportPaidVisitPurchase,
+  reportGiftPurchase,
 };

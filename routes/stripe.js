@@ -32,6 +32,8 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || "";
 }
 
+const { browserIdsFrom } = require("../utils/metaBrowserIds");
+
 function getCookie(req, name) {
   const cookie = req.headers.cookie || "";
   const parts = cookie.split(";").map((part) => part.trim());
@@ -243,9 +245,11 @@ router.post("/create-checkout-session", auth, async (req, res) => {
           }
         : {}),
       tracking: {
-        fbp: getCookie(req, "_fbp"),
-        fbc: getCookie(req, "_fbc"),
-        sourceUrl: req.headers.referer || `${CLIENT_URL}/`,
+        // The browser sends its Meta cookies in the body: the site and the API
+        // are different origins, so the cookies themselves never arrive here.
+        fbp: browserIdsFrom(req.body).fbp || getCookie(req, "_fbp"),
+        fbc: browserIdsFrom(req.body).fbc || getCookie(req, "_fbc"),
+        sourceUrl: browserIdsFrom(req.body).sourceUrl || req.headers.referer || `${CLIENT_URL}/`,
         clientIp: getClientIp(req),
         userAgent: req.headers["user-agent"] || "",
       },

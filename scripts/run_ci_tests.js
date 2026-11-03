@@ -42,6 +42,8 @@ const SUITES = [
   "test_visit_entitlement_indexes.js",
   "test_full_day_visit.js",
   "test_meta_tracking.js",
+  // Webhook conversions: charged value, staff sales unreported, gift Purchase, browser ids.
+  "test_meta_conversions.js",
   // The homepage one-step free-visit request (in-memory Mongo): consent, Lead dedup, notifications.
   "test_free_visit_request.js",
   // Guest requests reserve slots, Admin confirms, one lifetime free visit (in-memory replica set).
