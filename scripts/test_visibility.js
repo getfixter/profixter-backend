@@ -166,7 +166,7 @@ test("AI run: cap, location, cost, stored scores; summary and trend", async () =
     const names = body.input.includes("Babylon") ? "Profixter in Lindenhurst offers a membership." : "Call Mr. Handyman.";
     return sampleResponse(names, body.input.includes("Babylon") ? ["https://profixter.com/"] : ["https://mrhandyman.com/"]);
   });
-  const env = { AI_VISIBILITY_ENABLED: "true", OPENAI_API_KEY: "sk-testkey-0000000000000000", AI_VISIBILITY_MAX_PROMPTS_PER_RUN: "3" };
+  const env = { AI_VISIBILITY_ENABLED: "true", AI_VISIBILITY_PROVIDER: "openai", OPENAI_API_KEY: "sk-testkey-0000000000000000", AI_VISIBILITY_MAX_PROMPTS_PER_RUN: "3" };
   const result = await ai.runAiVisibility({ env, store, fetchImpl, now: new Date("2026-10-12T11:00:00Z"), log: quiet });
   assert.strictEqual(fetchImpl.calls.length, 3, "hard cap on prompts per run");
   assert.strictEqual(result.answered, 3);
@@ -192,6 +192,131 @@ test("AI run: cap, location, cost, stored scores; summary and trend", async () =
   assert.strictEqual(summary.runDate, "2026-10-19");
   assert.strictEqual(summary.previousRunDate, "2026-10-12");
   assert.strictEqual(summary.trend.profixterNamedShare, -0.333);
+});
+
+/* Claude (2026-11-03): a fake Messages client; nothing leaves the process. */
+function fakeClaude(answerFor) {
+  const calls = [];
+  return {
+    calls,
+    messages: {
+      async create(params) {
+        calls.push(JSON.parse(JSON.stringify(params)));
+        return answerFor(params, calls.length);
+      },
+    },
+  };
+}
+function claudeAnswer(text, urls = [], { searches = 1, stop = "end_turn" } = {}) {
+  return {
+    model: "claude-haiku-5-5",
+    stop_reason: stop,
+    usage: { input_tokens: 10000, output_tokens: 1000, server_tool_use: { web_search_requests: searches } },
+    content: [
+      { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "q" } },
+      { type: "web_search_tool_result", tool_use_id: "s1", content: urls.map((url) => ({ type: "web_search_result", url, title: "t" })) },
+      { type: "text", text, citations: urls.map((url) => ({ type: "web_search_result_location", url, title: "t", cited_text: "x" })) },
+    ],
+  };
+}
+const claudeEnv = (extra = {}) => ({ AI_VISIBILITY_ENABLED: "true", ANTHROPIC_API_KEY: "sk-ant-test-0000000000000000", AI_VISIBILITY_MAX_PROMPTS_PER_RUN: "3", ...extra });
+
+test("AI engine: Claude by default, OpenAI only when asked; each needs its own key", () => {
+  assert.strictEqual(ai.aiVisibilityProvider({}), "anthropic");
+  assert.strictEqual(ai.aiVisibilityProvider({ AI_VISIBILITY_PROVIDER: "openai" }), "openai");
+  assert.deepStrictEqual(ai.aiVisibilityConfig({ OPENAI_API_KEY: "sk-x" }), { configured: false, reason: "missing ANTHROPIC_API_KEY" });
+  const c = ai.aiVisibilityConfig({ ANTHROPIC_API_KEY: "sk-ant-x" });
+  assert.strictEqual(c.model, "claude-haiku-5-5");
+  assert.deepStrictEqual(c.secrets, ["sk-ant-x"], "the key is named for the runner to redact");
+});
+
+test("AI run on Claude: web search from Lindenhurst, capped searches, cost, engine-tagged rows", async () => {
+  const store = memoryStore();
+  const client = fakeClaude((params) =>
+    /Babylon/.test(params.messages[0].content)
+      ? claudeAnswer("Profixter in Lindenhurst offers a membership.", ["https://www.profixter.com/"])
+      : claudeAnswer("Call Mr. Handyman.", ["https://mrhandyman.com/"])
+  );
+  const result = await ai.runAiVisibility({ env: claudeEnv(), store, anthropic: client, now: new Date("2026-11-09T11:00:00Z"), log: quiet });
+  assert.strictEqual(client.calls.length, 3, "hard cap on prompts per run");
+  const tool = client.calls[0].tools[0];
+  assert.strictEqual(tool.type, "web_search_20250305");
+  assert.strictEqual(tool.max_uses, 3, "searches are capped per prompt");
+  assert.deepStrictEqual(tool.user_location, { type: "approximate", city: "Lindenhurst", region: "New York", country: "US", timezone: "America/New_York" });
+  assert.strictEqual(client.calls[0].model, "claude-haiku-5-5");
+  assert.ok(!client.calls[0].system, "asked as a homeowner would: no system prompt");
+  assert.ok(!("temperature" in client.calls[0]), "Haiku 5.5 rejects sampling parameters");
+  assert.strictEqual(result.provider, "anthropic");
+  assert.strictEqual(result.answered, 3);
+  assert.strictEqual(result.webSearchCalls, 3);
+  // 3 x (1 search x $0.01 + (10k x 0.10 + 1k x 0.50)/1e6) = 3 x 0.0115
+  assert.strictEqual(result.costUsd, 0.0345);
+  const rows = await store.findSnapshots({ source: ai.SOURCE, date: "2026-11-09" });
+  assert.ok(rows.every((r) => r.metrics.engine === "anthropic:claude-haiku-5-5" && r.key.endsWith("|anthropic:claude-haiku-5-5")));
+  const named = rows.find((r) => r.metrics.scores.profixterNamed);
+  assert.ok(named && named.metrics.scores.profixterCited && named.metrics.citations[0].url === "https://www.profixter.com/");
+});
+
+test("AI run on Claude: a paused search loop is resumed, never left half-answered", async () => {
+  const store = memoryStore();
+  const client = fakeClaude((params, n) =>
+    params.messages.length === 1
+      ? { ...claudeAnswer("", [], { stop: "pause_turn" }), content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: { query: "q" } }] }
+      : claudeAnswer("Profixter has a membership.", ["https://profixter.com/"])
+  );
+  const result = await ai.runAiVisibility({ env: claudeEnv({ AI_VISIBILITY_MAX_PROMPTS_PER_RUN: "1" }), store, anthropic: client, log: quiet });
+  assert.strictEqual(client.calls.length, 2);
+  assert.strictEqual(client.calls[1].messages[1].role, "assistant", "the paused turn is sent back unchanged");
+  assert.strictEqual(result.answered, 1);
+  assert.strictEqual(result.webSearchCalls, 2, "searches from both legs are counted");
+});
+
+test("AI run on Claude: the run budget stops further prompts", async () => {
+  const store = memoryStore();
+  const client = fakeClaude(() => claudeAnswer("Call Mr. Handyman.", [], { searches: 3 }));
+  // Each prompt: 3 x $0.01 + tokens = $0.0315; a $0.05 budget allows two prompts to start.
+  const result = await ai.runAiVisibility({ env: claudeEnv({ AI_VISIBILITY_MAX_PROMPTS_PER_RUN: "5", AI_VISIBILITY_MAX_RUN_USD: "0.05" }), store, anthropic: client, log: quiet });
+  assert.strictEqual(client.calls.length, 2);
+  assert.strictEqual(result.stoppedByBudget, 3);
+  assert.strictEqual(ai.maxRunUsd({}), 2, "default budget");
+});
+
+test("AI run on Claude: failures are recorded, a refusal is a failure, the key never appears", async () => {
+  const store = memoryStore();
+  const { Anthropic } = require("@anthropic-ai/sdk");
+  const client = fakeClaude((params, n) => {
+    if (n === 1) throw Anthropic.APIError.generate(401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key sk-ant-test-0000000000000000" } }, "invalid x-api-key sk-ant-test-0000000000000000", new Headers());
+    if (n === 2) return claudeAnswer("x", [], { stop: "refusal" });
+    return claudeAnswer("Call Mr. Handyman.", []);
+  });
+  const result = await ai.runAiVisibility({ env: claudeEnv(), store, anthropic: client, log: quiet });
+  assert.strictEqual(result.answered, 1);
+  assert.strictEqual(result.failed, 2);
+  // Every prompt failing surfaces through the runner, which redacts the configured key.
+  const all = fakeClaude(() => {
+    throw Anthropic.APIError.generate(401, { type: "error", error: { type: "authentication_error", message: "bad key sk-ant-live-abcdefghijklmnop1234" } }, "bad key sk-ant-live-abcdefghijklmnop1234", new Headers());
+  });
+  const out = await runCollector("ai_visibility", {
+    env: claudeEnv({ ANTHROPIC_API_KEY: "sk-ant-live-abcdefghijklmnop1234" }),
+    store,
+    anthropic: all,
+    log: quiet,
+    prompts: [{ id: "A1", group: "A", text: "q" }],
+  });
+  assert.ok(out.error && !out.error.includes("abcdefghijklmnop"), out.error);
+  assert.ok(!JSON.stringify(await store.readState("visibility:status:ai_visibility")).includes("abcdefghijklmnop"));
+});
+
+test("AI summary: an engine change starts a new series, never a fake trend", () => {
+  const row = (engine, named, date) => ({ date, metrics: { engine, group: "A", scores: { profixterNamed: named, ordinary: true } } });
+  const openai = [row("openai:gpt-5-mini", true, "2026-10-26"), row("openai:gpt-5-mini", true, "2026-10-26")];
+  const claude = [row("anthropic:claude-haiku-5-5", false, "2026-11-09"), row("anthropic:claude-haiku-5-5", false, "2026-11-09")];
+  const s = ai.computeAiSummary(claude, openai);
+  assert.strictEqual(s.trend, null);
+  assert.strictEqual(s.previousRunDate, null);
+  assert.ok(/Claude API/.test(s.caveat));
+  const later = [row("anthropic:claude-haiku-5-5", true, "2026-11-16"), row("anthropic:claude-haiku-5-5", true, "2026-11-16")];
+  assert.strictEqual(ai.computeAiSummary(later, claude).trend.profixterNamedShare, 1);
 });
 
 test("AI cost estimate: ~$0.01 search plus tokens per prompt", () => {
@@ -515,7 +640,7 @@ test("runner: off by default, records why, and honours the lease", async () => {
 
 test("runner: errors are stored sanitised", async () => {
   const store = memoryStore();
-  const env = { AI_VISIBILITY_ENABLED: "true", OPENAI_API_KEY: "sk-live-abcdefghijklmnop1234" };
+  const env = { AI_VISIBILITY_ENABLED: "true", AI_VISIBILITY_PROVIDER: "openai", OPENAI_API_KEY: "sk-live-abcdefghijklmnop1234" };
   const leaky = fakeFetch(() => ({ __status: 401, body: { error: { message: "Incorrect API key provided: sk-live-abcdefghijklmnop1234" } } }));
   const out = await runCollector("ai_visibility", { env, store, fetchImpl: leaky, log: quiet, prompts: [{ id: "A1", group: "A", text: "q" }] });
   assert.ok(out.error && !out.error.includes("abcdefghijklmnop"), out.error);

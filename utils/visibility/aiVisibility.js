@@ -35,6 +35,21 @@
  * OWNER SETUP: none beyond the OPENAI_API_KEY the chatbot already uses; set
  * AI_VISIBILITY_ENABLED=true. Optionally AI_VISIBILITY_MODEL (must support
  * the web_search tool).
+ *
+ * ENGINE (2026-11-03). The OpenAI account ran out of credit and every run
+ * since 2026-11-02 failed (HTTP 429). The default engine is now Claude
+ * (claude-haiku-5-5 with Anthropic's web search tool), on the ANTHROPIC_API_KEY
+ * the support chat already uses; AI_VISIBILITY_PROVIDER=openai switches back.
+ * Claude's answers are not ChatGPT's, so every row carries its engine and a
+ * run's trend is only ever computed against the previous run of the SAME
+ * engine - an engine change starts a new series rather than a fake jump.
+ * (The last OpenAI runs also show webSearchCalls 0 on every prompt: gpt-5-mini
+ * was answering from training data, not searching.)
+ *
+ * Claude cost, list price (platform.claude.com, checked 2026-11-03): web
+ * search $10 per 1,000 searches plus tokens (search results count as input);
+ * Haiku 5.5 $0.10 / $0.50 per MTok. Searches are capped at 3 per prompt and a
+ * run stops asking once it has spent AI_VISIBILITY_MAX_RUN_USD (default $2).
  */
 const PROMPT_FILE = require("../../data/ai-visibility-prompts.json");
 const { nyDate, round, fetchJson, domainOf, defaultFetch } = require("./common");
@@ -43,6 +58,13 @@ const { getDefaultStore } = require("./store");
 const SOURCE = "ai_visibility";
 const RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-5-mini";
+const ANTHROPIC_DEFAULT_MODEL = "claude-haiku-5-5";
+const DEFAULT_PROVIDER = "anthropic";
+const MAX_SEARCHES_PER_PROMPT = 3;
+const DEFAULT_MAX_RUN_USD = 2;
+const CLAUDE_TIMEOUT_MS = 150000;
+// A paused server-side search loop is resumed at most this many times per prompt.
+const MAX_CONTINUATIONS = 2;
 const DEFAULT_MAX_PROMPTS = 25;
 const HARD_MAX_PROMPTS = 60;
 const TEXT_LIMIT = 4000;
@@ -60,6 +82,8 @@ const TOKEN_PRICES = {
   "gpt-5": { input: 1.25, output: 10.0 },
   "gpt-4.1-mini": { input: 0.4, output: 1.6 },
   "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  // Prompts here stay far under 100K tokens, where Haiku 5.5's lower rate applies.
+  "claude-haiku-5-5": { input: 0.1, output: 0.5 },
 };
 // For the pre-run estimate only: assumed tokens per prompt with search results.
 const ASSUMED = { searches: 1.5, inputTokens: 15000, outputTokens: 2000 };
@@ -132,10 +156,26 @@ function aiVisibilityEnabled(env = process.env) {
   return String(env.AI_VISIBILITY_ENABLED || "").toLowerCase() === "true";
 }
 
+function aiVisibilityProvider(env = process.env) {
+  const p = String(env.AI_VISIBILITY_PROVIDER || DEFAULT_PROVIDER).trim().toLowerCase();
+  return p === "openai" ? "openai" : "anthropic";
+}
+
 function aiVisibilityConfig(env = process.env) {
+  const provider = aiVisibilityProvider(env);
+  if (provider === "anthropic") {
+    const key = env.ANTHROPIC_API_KEY || "";
+    if (!key) return { configured: false, reason: "missing ANTHROPIC_API_KEY" };
+    return { configured: true, provider, key, model: env.AI_VISIBILITY_MODEL || ANTHROPIC_DEFAULT_MODEL, secrets: [key] };
+  }
   const key = env.OPENAI_API_KEY || "";
   if (!key) return { configured: false, reason: "missing OPENAI_API_KEY" };
-  return { configured: true, key, model: env.AI_VISIBILITY_MODEL || DEFAULT_MODEL, secrets: [key] };
+  return { configured: true, provider, key, model: env.AI_VISIBILITY_MODEL || DEFAULT_MODEL, secrets: [key] };
+}
+
+function maxRunUsd(env = process.env) {
+  const n = Number(env.AI_VISIBILITY_MAX_RUN_USD);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_RUN_USD;
 }
 
 function maxPrompts(env = process.env) {
@@ -220,28 +260,118 @@ async function askOne({ prompt, config, fetchImpl }) {
   return { data, ...parseResponse(data) };
 }
 
+/**
+ * Pure: answer text, cited links, consulted sources and search count from the
+ * content blocks of one or more Messages API responses (a paused search loop
+ * is continued, so one answer can span several).
+ */
+function parseClaudeResponse(messages) {
+  const texts = [];
+  const citations = [];
+  const sources = [];
+  let webSearchCalls = 0;
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  for (const data of messages) {
+    webSearchCalls += Number(data?.usage?.server_tool_use?.web_search_requests || 0);
+    usage.input_tokens += Number(data?.usage?.input_tokens || 0);
+    usage.output_tokens += Number(data?.usage?.output_tokens || 0);
+    for (const block of data?.content || []) {
+      if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
+        for (const r of block.content) if (r?.url) sources.push(String(r.url));
+      }
+      if (block?.type === "text" && block.text) {
+        texts.push(block.text);
+        for (const c of block.citations || []) {
+          if (c?.url) citations.push({ url: String(c.url), title: String(c.title || "").slice(0, 160) });
+        }
+      }
+    }
+  }
+  const unique = [];
+  const seen = new Set();
+  for (const c of citations) {
+    if (!seen.has(c.url)) {
+      seen.add(c.url);
+      unique.push(c);
+    }
+  }
+  return { text: texts.join("").trim(), citations: unique, sources: [...new Set(sources)], webSearchCalls, usage };
+}
+
+function anthropicClient(config) {
+  const { Anthropic } = require("@anthropic-ai/sdk");
+  return new Anthropic({ apiKey: config.key, timeout: CLAUDE_TIMEOUT_MS, maxRetries: 1 });
+}
+
+/*
+ * One question to Claude, as a homeowner would ask it: no system prompt (the
+ * OpenAI path has none either), web search from the same approximate
+ * Lindenhurst location. The basic web_search_20250305 tool: Haiku 5.5 is not
+ * one of the models with dynamic filtering.
+ */
+async function askOneClaude({ prompt, config, client }) {
+  const api = client || anthropicClient(config);
+  const tools = [
+    {
+      type: "web_search_20250305",
+      name: "web_search",
+      max_uses: MAX_SEARCHES_PER_PROMPT,
+      user_location: {
+        type: "approximate",
+        city: USER_LOCATION.city,
+        region: USER_LOCATION.region,
+        country: USER_LOCATION.country,
+        timezone: USER_LOCATION.timezone,
+      },
+    },
+  ];
+  const messages = [{ role: "user", content: prompt.text }];
+  const responses = [];
+  for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
+    const data = await api.messages.create({ model: config.model, max_tokens: 4000, output_config: { effort: "low" }, tools, messages });
+    responses.push(data);
+    if (data?.stop_reason === "refusal") throw new Error("model declined to answer");
+    if (data?.stop_reason !== "pause_turn") break;
+    // Resume the server-side search loop: send the paused turn back unchanged.
+    messages.push({ role: "assistant", content: data.content });
+  }
+  const parsed = parseClaudeResponse(responses);
+  if (!parsed.text) throw new Error("empty answer");
+  return { data: { model: responses[responses.length - 1]?.model, usage: parsed.usage }, ...parsed };
+}
+
 /** Ask every prompt (capped), score, store. */
-async function runAiVisibility({ env = process.env, now = new Date(), store = getDefaultStore(), fetchImpl, log = console, prompts } = {}) {
+async function runAiVisibility({ env = process.env, now = new Date(), store = getDefaultStore(), fetchImpl, anthropic, log = console, prompts } = {}) {
   const config = aiVisibilityConfig(env);
   if (!config.configured) throw new Error(config.reason);
+  const budgetUsd = maxRunUsd(env);
   const doFetch = fetchImpl || defaultFetch();
   const all = prompts || PROMPT_FILE.prompts;
   const cap = maxPrompts(env);
   const selected = all.slice(0, cap);
   const estimatedCostUsd = estimateRunCostUsd(selected.length, config.model);
   log.log?.(
-    JSON.stringify({ event: "ai_visibility_run_planned", model: config.model, prompts: selected.length, skippedByCap: all.length - selected.length, estimatedCostUsd })
+    JSON.stringify({ event: "ai_visibility_run_planned", provider: config.provider, model: config.model, prompts: selected.length, skippedByCap: all.length - selected.length, estimatedCostUsd, budgetUsd })
   );
 
   const date = nyDate(now);
-  const engine = `openai:${config.model}`;
+  const engine = `${config.provider}:${config.model}`;
   const rows = [];
   const failures = [];
   let webSearchCalls = 0;
   let costUsd = 0;
+  let stoppedByBudget = 0;
   for (const prompt of selected) {
+    // Cost protection: never start a prompt once the run has spent its budget.
+    if (costUsd >= budgetUsd) {
+      stoppedByBudget += 1;
+      continue;
+    }
     try {
-      const answer = await askOne({ prompt, config, fetchImpl: doFetch });
+      const answer =
+        config.provider === "anthropic"
+          ? await askOneClaude({ prompt, config, client: anthropic })
+          : await askOne({ prompt, config, fetchImpl: doFetch });
       const links = answer.citations.map((c) => c.url);
       const scores = scoreAnswer({ text: answer.text, links, sources: answer.sources.join("\n"), group: prompt.group });
       const cost = costFromUsage({ usage: answer.data?.usage, webSearchCalls: answer.webSearchCalls, model: config.model });
@@ -270,18 +400,22 @@ async function runAiVisibility({ env = process.env, now = new Date(), store = ge
         fetchedAt: now,
       });
     } catch (error) {
-      failures.push({ promptId: prompt.id, error: String(error?.message || error).slice(0, 200) });
+      const message = error?.status ? `HTTP ${error.status}: ${error.message}` : error?.message || error;
+      failures.push({ promptId: prompt.id, error: String(message).slice(0, 200) });
     }
   }
 
   if (rows.length) await store.upsertSnapshots(rows);
   const run = {
     runDate: date,
+    provider: config.provider,
     model: config.model,
     prompts: selected.length,
     answered: rows.length,
     failed: failures.length,
     skippedByCap: all.length - selected.length,
+    stoppedByBudget,
+    budgetUsd,
     webSearchCalls,
     estimatedCostUsd,
     costUsd: round(costUsd, 4),
@@ -321,6 +455,10 @@ function shares(rows) {
 /** Pure: the AI visibility summary for one run against the previous one. */
 function computeAiSummary(current, previous = []) {
   if (!current.length) return { available: false, reason: "no_data" };
+  const engine = current[0].metrics.engine;
+  // A run from another engine is a different series: no trend across it.
+  const previousEngine = previous[0]?.metrics?.engine || null;
+  if (previous.length && previousEngine !== engine) previous = [];
   const now = shares(current);
   const before = previous.length ? shares(previous) : null;
   const delta = (field) => (before && now[field] !== null && before[field] !== null ? round(now[field] - before[field], 3) : null);
@@ -355,16 +493,27 @@ function computeAiSummary(current, previous = []) {
       return { name, kind, prompts };
     }),
     topCitedDomains: top(domainCounts, 10).map(([domain, prompts]) => ({ domain, prompts })),
-    caveat: "OpenAI API with web search from an approximate Lindenhurst location; not the same answers as the ChatGPT app. Watch the trend, read the answers.",
+    caveat: String(engine || "").startsWith("anthropic:")
+      ? "Claude API with web search from an approximate Lindenhurst location; not ChatGPT and not the Claude app. Trends compare Claude runs only. Watch the trend, read the answers."
+      : "OpenAI API with web search from an approximate Lindenhurst location; not the same answers as the ChatGPT app. Watch the trend, read the answers.",
   };
 }
 
 /** Share of prompts naming Profixter / citing profixter.com / raising membership unprompted, vs the previous run. */
 async function aiVisibilitySummary({ store = getDefaultStore() } = {}) {
-  const [latest, prior] = await store.latestDates(SOURCE, 2);
+  // Several dates back, so the previous run of the same engine is found across an engine change.
+  const [latest, ...older] = await store.latestDates(SOURCE, 6);
   if (!latest) return { available: false, reason: "no_data" };
   const current = await store.findSnapshots({ source: SOURCE, date: latest });
-  const previous = prior ? await store.findSnapshots({ source: SOURCE, date: prior }) : [];
+  const engine = current[0]?.metrics?.engine;
+  let previous = [];
+  for (const date of older) {
+    const rows = await store.findSnapshots({ source: SOURCE, date });
+    if (rows[0]?.metrics?.engine === engine) {
+      previous = rows;
+      break;
+    }
+  }
   const summary = computeAiSummary(current, previous);
   const lastRun = await store.readState(LAST_RUN_KEY);
   if (summary.available && lastRun) summary.lastRun = lastRun;
@@ -380,6 +529,9 @@ module.exports = {
   COMPETITORS,
   scoreAnswer,
   parseResponse,
+  parseClaudeResponse,
+  aiVisibilityProvider,
+  maxRunUsd,
   aiVisibilityEnabled,
   aiVisibilityConfig,
   maxPrompts,
