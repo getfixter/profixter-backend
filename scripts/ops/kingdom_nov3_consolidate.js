@@ -101,7 +101,7 @@ async function main() {
     }
     log(`roll back Google post "${a.payload.title}"`, g.why.slice(0, 80));
     if (APPLY) {
-      const done = await require("../../utils/growth/actionEngine").rollback(g.id, BY);
+      const done = await require("../../utils/growth/actionEngine").rollback(g.id, { kind: "owner", name: BY });
       await GrowthAction.updateOne({ _id: g.id }, { $set: { "rollback.reason": g.why } });
       console.log("   ", JSON.stringify(done.rollback?.result || {}));
     }
