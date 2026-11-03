@@ -180,11 +180,11 @@ async function main() {
     const result = await cycle();
     assert.strictEqual(result.sent, 1, `sent ${result.sent}`);
     assert.strictEqual(sentEmails.length, 1);
-    assert.strictEqual(sentEmails[0].subject, "Your first ProFixter visit is free");
+    assert.strictEqual(sentEmails[0].subject, "Your Free Visit: let's look at your to-do list");
 
     const record = await MarketingSend.findOne({});
     assert.strictEqual(record.status, "sent");
-    assert.strictEqual(record.campaignId, "nonmember_free_visit_v1");
+    assert.strictEqual(record.campaignId, "nonmember_free_visit_v2");
     assert.ok(record.sentAt, "sentAt not recorded");
     assert.ok(record.providerMessageId, "provider message id not recorded");
   });
@@ -378,7 +378,7 @@ async function main() {
     });
     const result = await cycle();
     assert.strictEqual(result.sent, 1, "a cancelled claim permanently blocked the campaign");
-    assert.strictEqual(sentEmails[0].subject, "Your first ProFixter visit is free");
+    assert.strictEqual(sentEmails[0].subject, "Your Free Visit: let's look at your to-do list");
   });
 
   /* --- Concurrency ------------------------------------------------- */

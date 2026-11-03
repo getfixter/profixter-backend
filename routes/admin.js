@@ -2586,6 +2586,7 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
             selectedTask: booking.selectedTask,
             bookingType: booking.bookingType,
             accessType: booking.accessType,
+            freeVisitPurpose: booking.freeVisitPurpose || "",
             address,
             // Only the completion email uses this. It carries the token that
             // makes a tip attributable to the Fixter who did this visit; every

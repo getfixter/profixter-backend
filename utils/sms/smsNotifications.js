@@ -78,6 +78,10 @@ function typeForBooking(map, booking) {
  * The notification type varies by visit kind but the dedupe key does not: it is
  * scoped to the booking, so a customer is told once that this booking exists no
  * matter how many times the record is saved or the status is re-applied.
+ *
+ * Awaiting approval (status Pending...) is a different message with its own key
+ * (2026-11-03): "we received your request" when it is made, then "confirmed"
+ * once the owner approves it - which the shared key used to swallow.
  */
 async function notifyBookingConfirmed(booking, user = null, source = "booking") {
   return attempt("booking_confirmed", async () => {
@@ -87,7 +91,7 @@ async function notifyBookingConfirmed(booking, user = null, source = "booking") 
       notificationType,
       // Keyed on the shared name, not the per-type name, so a booking that
       // somehow changes kind cannot produce two confirmations.
-      dedupeKey: dedupe.bookingKey("BOOKING_CONFIRMED", booking),
+      dedupeKey: dedupe.bookingKey(/pending/i.test(String(booking?.status || "")) ? "BOOKING_REQUESTED" : "BOOKING_CONFIRMED", booking),
       user,
       phone,
       booking,

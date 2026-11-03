@@ -250,6 +250,9 @@ function createCustomerEmailTemplates({
       const { name = "there", bookingNumber, date, service, selectedTask, address } = vars;
       const oneTime = isOneTimeVisit(vars);
       const fullDay = isFullDayVisit(vars);
+      // A Free Visit (since 2026-10-30) walks through the to-do list with no
+      // labor, so it gets no work-area or materials instructions.
+      const freeVisit = vars.freeVisitPurpose === "consultation";
       const rows = [
         { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
         { label: "Service", value: service || "" },
@@ -303,12 +306,21 @@ function createCustomerEmailTemplates({
           ${detailCard(rows)}
           <p style="margin:0 0 10px;font-weight:700;">Before we arrive</p>
           <ul style="margin:0;padding-left:20px;">
-            <li style="margin-bottom:7px;">${fullDay ? "Have your list ready so the day starts moving straight away." : "Clear the immediate work area when possible."}</li>
-            <li style="margin-bottom:7px;">Have fixtures or materials on site if the task requires them.</li>
+            ${
+              freeVisit
+                ? `<li style="margin-bottom:7px;">Have your to-do list handy. We will walk through it together and help you choose the right Profixter service.</li>
+            <li style="margin-bottom:7px;">Repairs and labor are not included in the Free Visit.</li>`
+                : `<li style="margin-bottom:7px;">${fullDay ? "Have your list ready so the day starts moving straight away." : "Clear the immediate work area when possible."}</li>
+            <li style="margin-bottom:7px;">Have fixtures or materials on site if the task requires them.</li>`
+            }
             <li>${changeLine}</li>
           </ul>
           ${scopeNote}`,
-        text: `${greeting(name)}\n\n${opening}\n\n${textDetails(rows)}\n\nPlease have the work area and any required materials ready.\n\n${changeLine}${scopeText}\n\n${SUPPORT_EMAIL}`,
+        text: `${greeting(name)}\n\n${opening}\n\n${textDetails(rows)}\n\n${
+          freeVisit
+            ? "Have your to-do list handy. We will walk through it together and help you choose the right Profixter service. Repairs and labor are not included in the Free Visit."
+            : "Please have the work area and any required materials ready."
+        }\n\n${changeLine}${scopeText}\n\n${SUPPORT_EMAIL}`,
       });
     },
 

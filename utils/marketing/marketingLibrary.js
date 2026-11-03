@@ -669,6 +669,11 @@ const NON_MEMBER_ROTATION = [
  * Every day here counts from the visit, never from the account. Somebody who
  * registered in March and had their visit yesterday is on day one.
  *
+ * Since 2026-10-30 a Free Visit is a walk through the to-do list with no labor,
+ * so nothing here may say work was done ("the job got done", "the faucet gets
+ * fixed"). The wording fits both kinds of free visit: the new no-labor ones and
+ * the few older ones that included work.
+ *
  * What these four deliberately do NOT do is repeat the completion email, the
  * tip link or the review request. Those already go out within an hour of the
  * Fixter leaving. The first of these is two days later for that reason.
@@ -683,8 +688,8 @@ const POST_FREE_VISIT = [
     preheader: "Thanks for trying us. Here is what membership does next.",
     headline: "How did it go?",
     paragraphs: [
-      ({ name }) => `Hi ${name}, thanks for having a Fixter out. We hope the job got done properly and the house is one item shorter.`,
-      "You have tried ProFixter now. If having a Fixter handle that job made life easier, membership is how you keep that help available for the things that come up around the house.",
+      ({ name }) => `Hi ${name}, thanks for having us out. We hope the visit helped you sort out what needs doing around the house.`,
+      "You have met ProFixter now. When you are ready to get those jobs done, membership is how you keep a Fixter available for the things that come up around the house.",
       "No rush. Have a look and decide whenever it suits you.",
     ],
     ctaLabel: "See membership", ctaRoute: "membership",
@@ -697,10 +702,10 @@ const POST_FREE_VISIT = [
     kind: KIND.SELL, trackBDay: 6, priority: PRIORITY.POST_FREE_VISIT,
     subject: "What's next on your list?",
     altSubject: "The rest of the list",
-    preheader: "One job got done. Most houses have a few more.",
+    preheader: "Your list, and the help to work through it.",
     headline: "What's next on your list?",
     paragraphs: [
-      "Most houses have more than one thing waiting. The faucet gets fixed and the door still sticks.",
+      "Most houses have more than one thing waiting: the faucet that drips, the door that sticks, the shelf still in its box.",
       /*
        * The value is the ongoing help, not the saved booking form. An earlier
        * draft closed on "membership just means not booking each one from

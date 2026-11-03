@@ -1039,6 +1039,13 @@ async function main() {
      * promised labor. All other types were rendered from the committed file and
      * from this one across six visit kinds (246 renders) - identical; only those
      * two changed.
+     *
+     * Re-pinned 2026-11-03: a booking still waiting for Admin approval was told
+     * its visit was "confirmed". BOOKING_CONFIRMED, ONE_TIME_VISIT_CONFIRMED and
+     * FULL_DAY_CONFIRMED now say "we received your request" while the status is
+     * pending. All types were rendered from the committed file and from this one
+     * across six visit kinds and five statuses (1,230 renders); only those three
+     * differ, and only for a pending status.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1046,7 +1053,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "9a81be88e9a08b74fbfb4204553568025b85c704e8b29630d9a92c03b0652e6b",
+      "b570ff9e64e5240705df57659149ba3de1f4dc795f852bf956a309d98d8e129b",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

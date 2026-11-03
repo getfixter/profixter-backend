@@ -342,11 +342,21 @@ function completionLinks() {
  * the whole catalogue be rendered and asserted in a test with no database, no
  * network and no provider, which is the only way wording stays correct.
  */
+/*
+ * A booking waiting for the owner's approval is a request, not an appointment
+ * (2026-11-03): the confirmation texts say "received" until the owner confirms
+ * it, then the confirmed wording goes out (smsNotifications keys the two apart).
+ */
+const awaitingApproval = (booking) => /pending/i.test(String(booking?.status || ""));
+
 const TEMPLATES = {
   /* ------------------------------ Bookings ----------------------------- */
   BOOKING_CONFIRMED: ({ booking = {} }) =>
-    `${BRAND}: your ${visitVocabulary(booking).noun} is confirmed for ${whenPhrase(booking)}. ` +
-    `We will text you a reminder beforehand. Questions? Call ${SUPPORT_PHONE}`,
+    awaitingApproval(booking)
+      ? `${BRAND}: we received your ${visitVocabulary(booking).noun} request for ${whenPhrase(booking)}. ` +
+        `We'll text you once it's confirmed. Questions? Call ${SUPPORT_PHONE}`
+      : `${BRAND}: your ${visitVocabulary(booking).noun} is confirmed for ${whenPhrase(booking)}. ` +
+        `We will text you a reminder beforehand. Questions? Call ${SUPPORT_PHONE}`,
 
   FREE_VISIT_CONFIRMED: ({ booking = {} }) =>
     `${BRAND}: your ${freeVisitWords(booking).name} is confirmed for ${whenPhrase(booking)}. ` +
@@ -372,12 +382,18 @@ const TEMPLATES = {
     `${source ? `Source: ${clean(source)}. ` : ""}Call them, then see Admin > Leads.`,
 
   ONE_TIME_VISIT_CONFIRMED: ({ booking = {} }) =>
-    `${BRAND}: your One-Time Visit is confirmed for ${whenPhrase(booking)}. ` +
-    `Your Fixter is booked for 90 minutes. Need to make a change? Call ${SUPPORT_PHONE}`,
+    awaitingApproval(booking)
+      ? `${BRAND}: payment received. Your One-Time Visit request for ${whenPhrase(booking)} is with our team, ` +
+        `and we'll text you once it's confirmed. Questions? Call ${SUPPORT_PHONE}`
+      : `${BRAND}: your One-Time Visit is confirmed for ${whenPhrase(booking)}. ` +
+        `Your Fixter is booked for 90 minutes. Need to make a change? Call ${SUPPORT_PHONE}`,
 
   FULL_DAY_CONFIRMED: ({ booking = {} }) =>
-    `${BRAND}: your Full Day Service is confirmed for ${formatDateOnly(booking.date)}. ` +
-    `Your Fixter is booked for the full workday. We'll send you a reminder beforehand.`,
+    awaitingApproval(booking)
+      ? `${BRAND}: we received your Full Day Service request for ${formatDateOnly(booking.date)}. ` +
+        `We'll text you once it's confirmed. Questions? Call ${SUPPORT_PHONE}`
+      : `${BRAND}: your Full Day Service is confirmed for ${formatDateOnly(booking.date)}. ` +
+        `Your Fixter is booked for the full workday. We'll send you a reminder beforehand.`,
 
   /*
    * Both reminders name the date and time outright rather than saying

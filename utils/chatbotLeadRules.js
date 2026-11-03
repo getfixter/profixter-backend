@@ -261,12 +261,13 @@ function shouldRouteToProductPage(value, recommendation = getRoutingRecommendati
     "become a member",
     "estimate",
     "quote",
-    "price",
-    "pricing",
-    "cost",
-    "how much",
-    "plans",
   ];
+  /*
+   * Questions about price or what a plan includes are answered (2026-11-03):
+   * the assistant has every price and plan in its knowledge and links the page
+   * anyway. Only an intent to act (book, join, schedule...) is sent straight
+   * to the page without an answer.
+   */
   if (includesAny(text, directRoutingIntent)) {
     return true;
   }
@@ -280,7 +281,7 @@ function shouldRouteToProductPage(value, recommendation = getRoutingRecommendati
   }
 
   if (recommendation.type === "membership") {
-    return includesAny(text, ["membership", "member", "monthly", "recurring", "ongoing"]);
+    return includesAny(text, ["show me", "see the plans", "see your plans", "compare plans", "get a membership", "start a membership", "buy a membership", "sign me up"]);
   }
 
   if (recommendation.type === "projects") {
@@ -298,9 +299,8 @@ function shouldRouteToProductPage(value, recommendation = getRoutingRecommendati
     ]);
   }
 
-  if (recommendation.type === "book") {
-    return includesAny(text, ["handyman", "one time", "one-time", "visit"]);
-  }
+  // Booking intent ("book", "need a handyman", "schedule") is caught above; a question about the visit is answered.
+  if (recommendation.type === "book") return false;
 
   return false;
 }

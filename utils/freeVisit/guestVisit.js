@@ -591,6 +591,7 @@ async function notifyConfirmedOnce(bookingId) {
         selectedTask: claimed.selectedTask,
         bookingType: claimed.bookingType,
         accessType: claimed.accessType,
+        freeVisitPurpose: claimed.freeVisitPurpose || "",
         address,
       },
       {

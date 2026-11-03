@@ -103,6 +103,8 @@ const SUITES = [
   "test_consent_system.js",
   "test_marcus_followups.js",
   "test_sms_consent_mechanics.js",
+  // Pending is never "confirmed"; the Free Visit email and follow-ups promise no labor.
+  "test_notification_accuracy.js",
   "test_legacy_consent_migration.js",
   "test_sms_inbound_safety.js",
   "test_marketing_launch_gate.js",
