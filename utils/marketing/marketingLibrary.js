@@ -693,7 +693,7 @@ const POST_FREE_VISIT = [
       "No rush. Have a look and decide whenever it suits you.",
     ],
     ctaLabel: "See membership", ctaRoute: "membership",
-    closing: "Not ready for that? You can always book another single visit.",
+    closing: "Not ready for that? You can always book a single visit instead.",
     closingLinkLabel: "Book another visit", closingLinkRoute: "book",
   },
   {
@@ -775,7 +775,7 @@ const POST_FREE_VISIT = [
       "This is the last of these membership notes, so here is the honest version.",
       "If you have one job a year, book single visits. That is cheaper and we would rather you did it that way.",
       "Membership is worth it when things keep coming up and you are tired of finding someone every time. That is the whole argument.",
-      "Either way you have used us once and you know how we work, which is the part that usually takes longest.",
+      "Either way you have met us now, which is the part that usually takes longest.",
     ],
     ctaLabel: "See membership", ctaRoute: "membership",
     closing: "And if you just need one thing done, book a visit whenever you like.",

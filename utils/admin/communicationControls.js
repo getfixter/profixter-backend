@@ -6,6 +6,9 @@ const { emailStatus, handsetStopped } = require("../consent/status");
 const { optOutFor } = require("../sms/smsEligibility");
 const { toE164 } = require("../sms/smsPhone");
 const { ADMIN_METHODS, MIN_EVIDENCE, marketingSmsBasis } = require("../consent/marketingSmsBasis");
+const SmsPhoneStatus = require("../../models/SmsPhoneStatus");
+const { smsEnabled, smsMarketingEnabled } = require("../sms/smsConfig");
+const { marketingEnabled } = require("../marketing/marketingConfig");
 
 /**
  * Admin's view of, and control over, what one customer is sent.
@@ -63,11 +66,33 @@ function adminDetail(admin, note = "") {
 
 async function readRows(user) {
   const email = String(user.email || "").trim().toLowerCase();
-  const [suppression, optOut] = await Promise.all([
+  const e164 = toE164(user.phone);
+  const [suppression, optOut, phoneStatus] = await Promise.all([
     email ? EmailSuppression.findOne({ email }).lean() : null,
     optOutFor(user.phone),
+    e164 ? SmsPhoneStatus.findOne({ phone: e164 }, { status: 1 }).lean() : null,
   ]);
-  return { suppression, optOut };
+  return { suppression, optOut, phoneStatus };
+}
+
+/*
+ * Whether a marketing switch that is On will actually reach the customer, and
+ * if not, the first reason it will not (2026-11-03). Admin showed a green "On"
+ * for people nothing would ever be sent to - marketing texts switched off for
+ * everyone, an undeliverable number, a consent that still needs confirming,
+ * lifecycle email paused. `reason` is null when it will send.
+ */
+function deliveryNote({ channel, enabled, consentStatus = "qualifies", phoneStatus = null }) {
+  if (!enabled) return { sending: false, reason: null };
+  if (channel === "email") {
+    if (!marketingEnabled()) return { sending: false, reason: "marketing_email_paused" };
+    return { sending: true, reason: null };
+  }
+  if (!smsEnabled()) return { sending: false, reason: "texts_off" };
+  if (!smsMarketingEnabled()) return { sending: false, reason: "marketing_texts_off" };
+  if (phoneStatus?.status === "undeliverable") return { sending: false, reason: "phone_undeliverable" };
+  if (consentStatus !== "qualifies") return { sending: false, reason: consentStatus };
+  return { sending: true, reason: null };
 }
 
 /** What Admin sees: four on/off switches, plus why a switch is locked. */
@@ -76,7 +101,7 @@ async function communicationState(userOrId) {
     ? userOrId
     : await User.findById(userOrId).select(SELECT).lean();
   if (!user) return null;
-  const { suppression, optOut } = await readRows(user);
+  const { suppression, optOut, phoneStatus } = await readRows(user);
   const prefs = user.smsPreferences || {};
   const hasPhone = Boolean(toE164(user.phone));
   const stopped = hasPhone && handsetStopped(optOut);
@@ -101,12 +126,19 @@ async function communicationState(userOrId) {
     marketing: {
       email: {
         enabled: mailStatus === "opted_in" || mailStatus === "existing_customer",
+        delivery: deliveryNote({ channel: "email", enabled: mailStatus === "opted_in" || mailStatus === "existing_customer" }),
         locked: mailStatus === "blocked" ? "blocked" : mailStatus === "not_marketable" ? "not_marketable" : null,
         changedAt: user.emailPreferences?.marketingConsentAt || suppression?.suppressedAt || null,
         source: user.emailPreferences?.marketingConsentSource || suppression?.source || "",
       },
       sms: {
         enabled: hasPhone && !stopped && user.excludeFromMarketing !== true && prefs.marketingEnabled === true,
+        delivery: deliveryNote({
+          channel: "sms",
+          enabled: hasPhone && !stopped && user.excludeFromMarketing !== true && prefs.marketingEnabled === true,
+          consentStatus: marketingSmsBasis(user).status,
+          phoneStatus,
+        }),
         locked: !hasPhone ? "no_phone" : stopped ? "stopped" : user.excludeFromMarketing === true ? "excluded" : null,
         changedAt: prefs.marketingConsentAt || null,
         source: prefs.marketingConsentSource || "",
@@ -243,5 +275,6 @@ module.exports = {
   LOCK_MESSAGES,
   SWITCHES,
   communicationState,
+  deliveryNote,
   setCommunicationPreference,
 };

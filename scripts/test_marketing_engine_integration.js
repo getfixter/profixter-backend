@@ -328,7 +328,8 @@ async function main() {
 
     const result = await cycle();
     assert.strictEqual(result.sent, 0, "marketing went to an unsubscribed address");
-    assert.strictEqual(result.skipReasons.unsubscribed, 1);
+    // Left out of the candidates altogether since 2026-11-03 (personEligible still checks).
+    assert.strictEqual(result.considered, 0);
   });
 
   await test("an unsubscribe is judged on the address, whatever its case", async () => {

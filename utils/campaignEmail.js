@@ -2,7 +2,14 @@ const { createUnsubscribeToken } = require("./unsubscribeToken");
 const { personalize, personalizeUrl } = require("./campaignMergeTags");
 const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
 
-const API_URL = String(process.env.PUBLIC_API_URL || process.env.API_URL || "").replace(/\/+$/, "");
+/*
+ * The same base and postal address the lifecycle emails use (2026-11-03). With
+ * PUBLIC_API_URL/API_URL unset a broadcast went out with no unsubscribe link at
+ * all, and its footer had no postal address - both required in commercial email
+ * (CAN-SPAM). The API has a known public address, so it is the fallback.
+ */
+const { API_BASE_URL, BUSINESS } = require("./marketing/marketingConfig");
+const API_URL = String(process.env.PUBLIC_API_URL || API_BASE_URL || "").replace(/\/+$/, "");
 const REPLY_TO = process.env.MAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL;
 /*
  * The Profixter logo badge (2026-11-03), a 340px PNG served by the website so
@@ -84,7 +91,7 @@ ${bodyHtml(body, recipient)}
 ${safeCtaUrl ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0 8px;"><tr><td bgcolor="#111827" style="border-radius:10px;"><a href="${escapeHtml(safeCtaUrl)}" style="display:inline-block;padding:13px 22px;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">${safeCtaText}</a></td></tr></table>` : ""}
 </td></tr>
 <tr><td align="center" style="padding:20px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;font:12px/1.55 Arial,sans-serif;color:#64748b;">
-<div>Profixter · Long Island, New York</div>
+<div>Profixter · ${escapeHtml(BUSINESS.addressLine)}</div>
 <div style="margin-top:5px;">Questions? <a href="mailto:${escapeHtml(REPLY_TO)}" style="color:#334155;">${escapeHtml(REPLY_TO)}</a></div>
 ${unsubscribe ? `<div style="margin-top:10px;">You received this because you created a Profixter account. <a href="${escapeHtml(unsubscribe)}" style="color:#64748b;">Unsubscribe</a></div>` : ""}
 <div style="margin-top:8px;">© ${new Date().getFullYear()} Profixter</div>
@@ -102,7 +109,7 @@ ${unsubscribe ? `<div style="margin-top:10px;">You received this because you cre
     recipient
   )}${safeCtaUrl ? `\n\n${personalizedCtaText || "Learn more"}: ${safeCtaUrl}` : ""}${
     unsubscribe ? `\n\nUnsubscribe: ${unsubscribe}` : ""
-  }\n\nProfixter · Long Island, New York\n${REPLY_TO}`;
+  }\n\nProfixter · ${BUSINESS.addressLine}\n${REPLY_TO}`;
 
   return {
     subject: personalizedSubject,

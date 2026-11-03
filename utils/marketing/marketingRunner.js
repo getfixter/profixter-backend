@@ -1,5 +1,6 @@
 const User = require("../../models/User");
 const MarketingSend = require("../../models/MarketingSend");
+const EmailSuppression = require("../../models/EmailSuppression");
 const { sendRaw } = require("../emailService");
 const { BATCH, BUSINESS, TIMEZONE, marketingEnabled } = require("./marketingConfig");
 const { BY_ID } = require("./marketingLibrary");
@@ -59,26 +60,38 @@ const STALE_CLAIM_MS = 15 * 60 * 1000;
  * rather than the loop, because the frequency cap disqualifies most of the
  * database most of the time and there is no point building profiles for them.
  * personEligible checks the cap again anyway; this is only an optimisation.
+ *
+ * 2026-11-03: the window was the 40 oldest accounts (limit * 4). People who can
+ * never be mailed (unsubscribed, excluded) or are not due yet sat at the head of
+ * it every run, so a run could consider nobody it could send to while newer
+ * accounts waited. Those who can never be mailed are now left out in the query,
+ * and the window is wide enough to reach the whole marketable base (a few
+ * hundred today). Who is eligible is unchanged - personEligible decides that.
  */
+const CANDIDATE_WINDOW = 500;
 async function findCandidates(now, limit) {
   const recentlyMailed = await MarketingSend.distinct("user", {
     status: { $in: ["sent", "claimed"] },
     createdAt: { $gte: new Date(now.getTime() - 7 * DAY_MS) },
   });
+  const suppressedRows = await EmailSuppression.find({}, { email: 1, suppressedAt: 1, resubscribedAt: 1, providerSuppressed: 1 }).lean();
+  const suppressed = suppressedRows.filter((row) => EmailSuppression.isActive(row)).map((row) => row.email);
 
   return User.find({
     _id: { $nin: recentlyMailed },
     // $in with null matches records where the field is absent too, which is how
-    // the legacy accounts that predate the role field get included.
-    role: { $in: ["customer", null] },
+    // the legacy accounts that predate the role field get included. An empty
+    // role is a customer too, as isMarketableAccount reads it.
+    role: { $in: ["customer", null, ""] },
     isActive: { $ne: false },
     employeePosition: { $in: [null, ""] },
-    email: { $regex: /.+@.+\..+/ },
+    excludeFromMarketing: { $ne: true },
+    email: { $regex: /.+@.+\..+/, $nin: suppressed },
     // Nobody hears from marketing on the day they sign up.
     createdAt: { $lte: new Date(now.getTime() - 2 * DAY_MS) },
   })
     .sort({ createdAt: 1 })
-    .limit(limit * 4)
+    .limit(Math.max(limit * 4, CANDIDATE_WINDOW))
     .lean();
 }
 
