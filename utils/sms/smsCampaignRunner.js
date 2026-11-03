@@ -7,8 +7,14 @@ const User = require("../../models/User");
 const { BATCH, smsMarketingEnabled } = require("./smsConfig");
 const { marketingSmsLaunchState } = require("../marketing/smsMarketingLaunch");
 const dedupe = require("./smsDedupe");
+const { toE164 } = require("./smsPhone");
 const { newYorkParts } = require("./smsEligibility");
 const { sendMarketingSms } = require("./smsService");
+const {
+  SELF_GIVEN_SOURCES,
+  adminAssistedOptInRegistered,
+  marketingSmsBasis,
+} = require("../consent/marketingSmsBasis");
 
 /**
  * Native marketing SMS to existing ProFixter customers.
@@ -111,6 +117,11 @@ async function personEligibleForCampaign(
   if (user?.smsPreferences?.marketingEnabled !== true) {
     return { eligible: false, reason: "marketing_not_opted_in" };
   }
+  // The switch alone is not consent: a staff-recorded phone call, or a method the
+  // registered A2P campaign does not describe yet, never qualifies (marketingSmsBasis).
+  if (marketingSmsBasis(user).status !== "qualifies") {
+    return { eligible: false, reason: "marketing_consent_not_qualifying" };
+  }
   if (user?.excludeFromMarketing === true) {
     return { eligible: false, reason: "account_excluded_from_marketing" };
   }
@@ -145,13 +156,22 @@ async function personEligibleForCampaign(
   const frequency = campaign.frequency || {};
 
   /*
+   * Both caps count the PHONE as well as the account (2026-11-03). Phone
+   * numbers are not unique across accounts (a household, a re-registration),
+   * and counting per account let one handset receive the same campaign once
+   * per account on it.
+   */
+  const phone = toE164(user.phone);
+  const recipient = phone ? { $or: [{ user: user._id }, { toPhone: phone }] } : { user: user._id };
+
+  /*
    * The global marketing frequency cap: how recently this person heard from
    * marketing at ALL, across every campaign. Without this, three campaigns each
    * obeying their own cooldown still add up to three texts in a week.
    */
   const minGap = Number(frequency.minDaysBetweenAnyMarketing || 30);
   const lastAnyMarketing = await MessageModel.findOne({
-    user: user._id,
+    ...recipient,
     channelClass: "marketing",
     status: { $in: ["sent", "delivered", "simulated"] },
   })
@@ -164,7 +184,7 @@ async function personEligibleForCampaign(
 
   // This campaign specifically: how many times, and how recently.
   const priorSends = await MessageModel.find({
-    user: user._id,
+    ...recipient,
     campaignId: campaign.campaignId,
     status: { $in: ["sent", "delivered", "simulated", "pending", "sending", "retry_scheduled"] },
   })
@@ -211,6 +231,7 @@ async function runCampaign(
     considered: 0,
     skipped: 0,
     claimed: 0,
+    suppressed: 0,
     sent: 0,
     simulated: 0,
     failed: 0,
@@ -246,14 +267,27 @@ async function runCampaign(
    * keeps the candidate set small and the sweep cheap, and it means the query
    * itself encodes the consent rule rather than relying on a later filter.
    */
+  /*
+   * 2026-11-03: and only consent that can actually be sent on. The switch alone
+   * selected every staff-recorded phone consent too (156 of 159 opted-in
+   * accounts in production that day); each was re-evaluated and given a new
+   * suppressed audit row on every run, and with no sort they could fill the
+   * whole window ahead of the customers who did qualify. The sort is by _id so
+   * a run is deterministic; who has already had the campaign is skipped by the
+   * cooldown, not by the window.
+   */
+  const qualifyingSources = [...SELF_GIVEN_SOURCES];
+  if (adminAssistedOptInRegistered()) qualifyingSources.push("sms_confirm_link", "admin_written");
   const candidates = await UserModel.find({
     role: "customer",
     isActive: true,
     excludeFromMarketing: { $ne: true },
     phone: { $nin: [null, ""] },
     "smsPreferences.marketingEnabled": true,
+    "smsPreferences.marketingConsentSource": { $in: qualifyingSources },
   })
     .select("_id userId name phone createdAt smsPreferences excludeFromMarketing")
+    .sort({ _id: 1 })
     .limit(perRun * 10)
     .lean();
 
@@ -291,6 +325,15 @@ async function runCampaign(
       MessageModel,
     });
 
+    /*
+     * Only a message that is actually on its way counts against the run. A
+     * suppressed attempt (STOP, undeliverable number, quiet hours) or a
+     * dedupe hit used to count as "claimed" and use up the run's limit.
+     */
+    if (result.status === "suppressed" || result.status === "duplicate") {
+      stats.suppressed += 1;
+      continue;
+    }
     stats.claimed += 1;
     if (result.status === "sent") stats.sent += 1;
     else if (result.status === "simulated") stats.simulated += 1;

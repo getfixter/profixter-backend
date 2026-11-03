@@ -602,6 +602,14 @@ async function run() {
   // A Monday at 12:00 New York, inside the window.
   const MARKETING_NOW = new Date("2026-03-02T17:00:00.000Z");
   const OLD_ACCOUNT = new Date("2025-01-01T00:00:00.000Z");
+  /*
+   * A customer who opted in to offer texts themselves, in account settings -
+   * the only kind of consent a campaign may send on (marketingSmsBasis). These
+   * tests are about the delivery machinery, so they start from qualifying
+   * consent; the two tests after "a campaign does not send twice" are about
+   * consent that does not qualify.
+   */
+  const OPTED_IN = { marketingEnabled: true, marketingConsentSource: "account_settings", marketingConsentAt: OLD_ACCOUNT };
 
   await test("marketing reaches nobody without an explicit opt-in", async () => {
     process.env.SMS_MARKETING_ENABLED = "true";
@@ -628,7 +636,7 @@ async function run() {
     try {
       await makeUser({
         createdAt: OLD_ACCOUNT,
-        smsPreferences: { marketingEnabled: true, marketingConsentAt: OLD_ACCOUNT },
+        smsPreferences: OPTED_IN,
       });
       const stats = await runCampaign(campaign, { now: MARKETING_NOW });
       assert.equal(stats.claimed, 1);
@@ -646,7 +654,7 @@ async function run() {
     try {
       const user = await makeUser({
         createdAt: OLD_ACCOUNT,
-        smsPreferences: { marketingEnabled: true },
+        smsPreferences: OPTED_IN,
       });
       await Subscription.create({
         user: user._id,
@@ -670,7 +678,7 @@ async function run() {
   await test("an opted-out phone is refused even with an opted-in account", async () => {
     process.env.SMS_MARKETING_ENABLED = "true";
     try {
-      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true } });
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
       await SmsOptOut.create({
         phone: "+16315991363",
         scope: "all",
@@ -693,7 +701,7 @@ async function run() {
       await makeUser({
         createdAt: OLD_ACCOUNT,
         excludeFromMarketing: true,
-        smsPreferences: { marketingEnabled: true },
+        smsPreferences: OPTED_IN,
       });
       const stats = await runCampaign(campaign, { now: MARKETING_NOW });
       assert.equal(stats.claimed, 0);
@@ -705,7 +713,7 @@ async function run() {
   await test("a campaign does not send twice inside its cooldown", async () => {
     process.env.SMS_MARKETING_ENABLED = "true";
     try {
-      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true } });
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
       const first = await runCampaign(campaign, { now: MARKETING_NOW });
       assert.equal(first.claimed, 1);
 
@@ -719,8 +727,72 @@ async function run() {
     }
   });
 
+  await test("a staff-recorded phone consent is never considered and leaves no audit rows", async () => {
+    process.env.SMS_MARKETING_ENABLED = "true";
+    try {
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true, marketingConsentSource: "admin_phone", marketingConsentAt: OLD_ACCOUNT } });
+      for (const now of [MARKETING_NOW, new Date(MARKETING_NOW.getTime() + 7 * 24 * 3600 * 1000)]) {
+        const stats = await runCampaign(campaign, { now });
+        assert.equal(stats.considered, 0, "not a candidate at all");
+        assert.equal(stats.claimed, 0);
+      }
+      assert.equal(await SmsMessage.countDocuments({}), 0, "no suppressed row on every run");
+      assert.equal(twilioCalls.length, 0);
+    } finally {
+      delete process.env.SMS_MARKETING_ENABLED;
+    }
+  });
+
+  await test("non-qualifying consent cannot crowd qualifying customers out of the run", async () => {
+    process.env.SMS_MARKETING_ENABLED = "true";
+    try {
+      // Created first, so an unsorted or unfiltered window would meet them first.
+      for (let i = 0; i < 12; i++) {
+        await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true, marketingConsentSource: "admin_phone" } });
+      }
+      const qualifying = await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
+      const stats = await runCampaign({ ...campaign, limits: { maxPerRun: 1, maxPerDay: 100 } }, { now: MARKETING_NOW });
+      assert.equal(stats.claimed, 1, "the one qualifying customer is reached");
+      const rows = await SmsMessage.find({}).lean();
+      assert.equal(rows.length, 1);
+      assert.equal(String(rows[0].user), String(qualifying._id), "the text went to the customer who qualifies");
+      assert.notEqual(rows[0].status, "suppressed");
+    } finally {
+      delete process.env.SMS_MARKETING_ENABLED;
+    }
+  });
+
+  await test("a suppressed attempt does not use up the run limit", async () => {
+    process.env.SMS_MARKETING_ENABLED = "true";
+    try {
+      // The first candidate (by _id) has a dead number; the second can be texted.
+      await makeUser({ createdAt: OLD_ACCOUNT, phone: "6315550101", smsPreferences: OPTED_IN });
+      await makeUser({ createdAt: OLD_ACCOUNT, phone: "6315550102", smsPreferences: OPTED_IN });
+      await SmsPhoneStatus.create({ phone: "+16315550101", status: "undeliverable", undeliverableAt: new Date(), undeliverableCode: "30006" });
+      const stats = await runCampaign({ ...campaign, limits: { maxPerRun: 1, maxPerDay: 100 } }, { now: MARKETING_NOW });
+      assert.equal(stats.suppressed, 1);
+      assert.equal(stats.claimed, 1, "the deliverable customer still gets the one slot");
+    } finally {
+      delete process.env.SMS_MARKETING_ENABLED;
+    }
+  });
+
+  await test("two accounts on one phone get the campaign once", async () => {
+    process.env.SMS_MARKETING_ENABLED = "true";
+    try {
+      // makeUser gives every account the same number.
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
+      const stats = await runCampaign(campaign, { now: MARKETING_NOW });
+      assert.equal(stats.claimed, 1);
+      assert.equal(await SmsMessage.countDocuments({ status: { $ne: "suppressed" } }), 1, "one text to the handset");
+    } finally {
+      delete process.env.SMS_MARKETING_ENABLED;
+    }
+  });
+
   await test("nothing is sent while the marketing channel is off", async () => {
-    await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true } });
+    await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
     const { runSmsCampaignSweep } = require("../utils/sms/smsCampaignRunner");
     const result = await runSmsCampaignSweep({ now: MARKETING_NOW });
     assert.equal(result.ran, false);
@@ -731,7 +803,7 @@ async function run() {
   await test("a campaign outside its send window does not run", async () => {
     process.env.SMS_MARKETING_ENABLED = "true";
     try {
-      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true } });
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
       // 03:00 New York.
       const night = new Date("2026-03-02T08:00:00.000Z");
       const stats = await runCampaign(campaign, { now: night });
@@ -745,7 +817,7 @@ async function run() {
   await test("a disabled campaign never runs", async () => {
     process.env.SMS_MARKETING_ENABLED = "true";
     try {
-      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: { marketingEnabled: true } });
+      await makeUser({ createdAt: OLD_ACCOUNT, smsPreferences: OPTED_IN });
       const stats = await runCampaign({ ...campaign, enabled: false }, { now: MARKETING_NOW });
       assert.equal(stats.reason, "campaign_disabled");
     } finally {
@@ -1205,7 +1277,7 @@ async function run() {
     try {
       await makeUser({
         createdAt: OLD_ACCOUNT,
-        smsPreferences: { marketingEnabled: true },
+        smsPreferences: OPTED_IN,
       });
       await SmsPhoneStatus.create({
         phone: "+16315991363",
