@@ -15,6 +15,7 @@ const CLEANUP_INTERVAL_MS = Math.max(
   60_000,
   Number(process.env.ONE_TIME_VISIT_HOLD_CLEANUP_MS || 5 * 60_000)
 );
+const HEARTBEAT_INTERVAL_MS = 60 * 60_000;
 
 const ymdInTZ = (d, tz) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
@@ -107,32 +108,54 @@ function startOneTimeVisitHoldCleanup() {
     return null;
   }
 
+  // Totals since the last heartbeat. The job is silent while there is nothing
+  // to do, so the hourly line is what proves it is still running.
+  let totals = emptyTotals();
   const run = async () => {
+    totals.cycles += 1;
     try {
       const expired = await expireOneTimeVisitHolds();
+      totals.holdsExpired += expired || 0;
       if (expired) console.log(`Expired ${expired} one-time visit payment hold(s)`);
     } catch (error) {
+      totals.failures += 1;
       console.error("One-time visit hold cleanup cycle failed:", error.message);
     }
     // Paid membership first visits the webhook could not finish (utils/membershipFirstVisitFulfillment).
     try {
       const finished = await require("../utils/membershipFirstVisitFulfillment").sweepFirstVisitDrafts();
+      totals.firstVisitsFinished += finished || 0;
       if (finished) console.log(`Finished ${finished} membership first visit(s)`);
     } catch (error) {
+      totals.failures += 1;
       console.error("Membership first visit sweep failed:", error.message);
     }
     // Then drafts nobody paid for, and their photos (retention: utils/membershipFirstVisitCleanup.js).
     try {
-      await require("../utils/membershipFirstVisitCleanup").cleanupFirstVisitDrafts();
+      const tally = await require("../utils/membershipFirstVisitCleanup").cleanupFirstVisitDrafts();
+      totals.draftsAbandoned += tally?.abandoned || 0;
+      totals.draftsDeleted += tally?.recordsDeleted || 0;
+      totals.failures += tally?.errors || 0;
     } catch (error) {
+      totals.failures += 1;
       console.error("Membership first visit draft cleanup failed:", error.message);
     }
+  };
+  const heartbeat = () => {
+    console.log(JSON.stringify({ event: "cleanup_heartbeat", at: new Date().toISOString(), ...totals }));
+    totals = emptyTotals();
   };
 
   const interval = setInterval(run, CLEANUP_INTERVAL_MS);
   interval.unref?.();
   setTimeout(run, 15_000).unref?.();
+  setInterval(heartbeat, HEARTBEAT_INTERVAL_MS).unref?.();
+  console.log(JSON.stringify({ event: "cleanup_started", everyMs: CLEANUP_INTERVAL_MS, heartbeatMs: HEARTBEAT_INTERVAL_MS }));
   return interval;
+}
+
+function emptyTotals() {
+  return { cycles: 0, failures: 0, holdsExpired: 0, firstVisitsFinished: 0, draftsAbandoned: 0, draftsDeleted: 0 };
 }
 
 module.exports = {
