@@ -292,7 +292,8 @@ const TOOL_DEFS = {
         ctx.actionIds.push(action._id);
         if (input.plain) await require("../../models/GrowthAction").updateOne({ _id: action._id }, { $set: { plain: clip(input.plain, 900) } });
       }
-      return { created, mode, status: action?.status || "off", id: action?._id ? String(action._id) : null };
+      // heldReason says why a proposal did not go ahead: "daily_limit" (it may be proposed again once the limit window passes), "engine_disabled" (that type is switched off)
+      return { created, mode, status: action?.status || "off", heldReason: action?.heldReason || null, id: action?._id ? String(action._id) : null };
     },
   },
 };

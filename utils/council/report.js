@@ -65,6 +65,7 @@ async function statusSection() {
     block([
       field("AI agents", s.switches.agentsEnabled ? "on" : "off"),
       field("Automatic website changes engine", s.switches.changesEngineOn ? "on (still asks me where required)" : "off (watch-only)"),
+      field("Running on their own anyway", (s.switches.typesActingOnTheirOwn || []).length ? s.switches.typesActingOnTheirOwn.map((t) => ({ gbp_post: "Google listing posts", playbook_email: "approved follow-up emails" })[t] || t).join(", ") : null),
       field("Live replies to homeowners", s.switches.liveRepliesOn ? "on" : "off"),
       field("First free visits booked", ffv.last7 != null ? `${ffv.last7} in the last 7 full days (7 days before: ${ffv.prev7}); ${ffv.last30} in the last 30 full days (30 days before: ${ffv.prev30}); counted through ${ffv.through}${ffv.todaySoFar ? `; today so far: ${ffv.todaySoFar}` : ""}` : "not available"),
       field("Weekly first free visits (oldest first)", (ffv.weekly || []).length ? ffv.weekly.map((w) => `${w.from}..${w.through}: ${w.firstFreeVisits}`).join(", ") : null),

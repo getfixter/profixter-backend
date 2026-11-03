@@ -248,6 +248,9 @@ async function councilState({ now = new Date() } = {}) {
     switches: {
       agentsEnabled: built?.agentsEnabled ?? null,
       changesEngineOn: built?.engineEnabled ?? null,
+      // with the general switch off, these types still act on their own (GROWTH_ACTIONS_ENABLED_TYPES)
+      // read from the setting itself: the council never loads the action engine
+      typesActingOnTheirOwn: String(process.env.GROWTH_ACTIONS_ENABLED_TYPES || "").split(",").map((t) => t.trim()).filter(Boolean),
       liveRepliesOn: built?.conversationsEnabled ?? null,
     },
     results: built
