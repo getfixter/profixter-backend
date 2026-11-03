@@ -121,6 +121,12 @@ function startOneTimeVisitHoldCleanup() {
     } catch (error) {
       console.error("Membership first visit sweep failed:", error.message);
     }
+    // Then drafts nobody paid for, and their photos (retention: utils/membershipFirstVisitCleanup.js).
+    try {
+      await require("../utils/membershipFirstVisitCleanup").cleanupFirstVisitDrafts();
+    } catch (error) {
+      console.error("Membership first visit draft cleanup failed:", error.message);
+    }
   };
 
   const interval = setInterval(run, CLEANUP_INTERVAL_MS);

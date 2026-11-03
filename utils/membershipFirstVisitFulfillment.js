@@ -107,7 +107,8 @@ async function markFirstVisitPaid(session, subscription) {
   if (!draftId) return null;
   const now = new Date();
   await Draft.updateOne(
-    { _id: draftId, checkoutSessionId: session.id, status: { $in: ["draft", "checkout_open"] } },
+    // "abandoned"/"expired" too: a payment that arrives late is booked from the record (the photos may be gone).
+    { _id: draftId, checkoutSessionId: session.id, status: { $in: ["draft", "checkout_open", "abandoned", "expired"] } },
     { $set: { status: "paid", paidAt: now, ...(subscription?._id ? { subscriptionId: subscription._id } : {}) } }
   );
   if (subscription?._id) await Draft.updateOne({ _id: draftId, subscriptionId: null }, { $set: { subscriptionId: subscription._id } });
@@ -123,13 +124,8 @@ async function markFirstVisitExpired(session) {
     { $set: { status: "expired" } },
     { new: true }
   );
-  if (draft?.s3Keys?.length && process.env.S3_BUCKET) {
-    // Loaded here: utils/s3 refuses to load without S3_BUCKET, and most callers never delete photos.
-    const { deletePublicObjects } = require("./s3");
-    await deletePublicObjects({ Bucket: process.env.S3_BUCKET, Keys: draft.s3Keys }).catch((error) =>
-      log("error", "first_visit_draft_photo_cleanup_failed", { draftId, error: String(error?.message || error).slice(0, 160) })
-    );
-  }
+  // Its photos: deleted by the same safe routine the cleanup job uses (never ones a booking uses; retried if it fails).
+  if (draft) await require("./membershipFirstVisitCleanup").deleteDraftPhotos(draft._id);
 }
 
 /* ------------------------------------------------------------ booking */

@@ -12,6 +12,11 @@ const mongoose = require("mongoose");
  *                               after retries: Admin is told and the customer
  *                               can pick another time; the exemption is kept)
  *   needs_admin -> rebooked    (the customer booked another time themselves)
+ *   draft / checkout_open -> abandoned (never paid; utils/membershipFirstVisitCleanup.js)
+ *
+ * Abandoned and expired drafts lose their photos (never ones a booking uses);
+ * their records are deleted after the retention period. A payment that still
+ * arrives for one is booked from the record (markFirstVisitPaid).
  *
  * Nothing here is a booking until `booked`; the Booking it made carries
  * firstVisitDraftId back to this record.
@@ -32,7 +37,7 @@ const MembershipFirstVisitDraftSchema = new mongoose.Schema(
     checkoutSessionId: { type: String, default: null, index: true },
     status: {
       type: String,
-      enum: ["draft", "checkout_open", "paid", "fulfilling", "booked", "needs_admin", "rebooked", "expired"],
+      enum: ["draft", "checkout_open", "paid", "fulfilling", "booked", "needs_admin", "rebooked", "expired", "abandoned"],
       default: "draft",
       index: true,
     },
@@ -44,6 +49,12 @@ const MembershipFirstVisitDraftSchema = new mongoose.Schema(
     attempts: { type: Number, default: 0 },
     failureReason: { type: String, default: "" },
     adminNotifiedAt: { type: Date, default: null },
+    /* Cleanup (utils/membershipFirstVisitCleanup.js): when it was abandoned, when its photos were deleted, the last failure. */
+    abandonedAt: { type: Date, default: null },
+    photosDeletedAt: { type: Date, default: null },
+    cleanupClaimedAt: { type: Date, default: null },
+    cleanupAttempts: { type: Number, default: 0 },
+    cleanupError: { type: String, default: "" },
   },
   { timestamps: true }
 );

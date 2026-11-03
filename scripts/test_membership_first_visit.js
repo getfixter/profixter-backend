@@ -26,6 +26,12 @@
  *    seven days goes to Admin; the success page reads (and, once Stripe says
  *    paid, finishes) the draft; the sweep finishes what the webhook could not;
  *    an expired page drops the draft.
+ *  - Cleanup (utils/membershipFirstVisitCleanup): unsent drafts are abandoned
+ *    after 24 h and their photos deleted; open checkouts are checked with
+ *    Stripe after 2 h (paid -> booked, expired -> abandoned, open -> kept);
+ *    photos a booking uses are never deleted; a payment that arrives after
+ *    abandonment is still booked, once; failed deletions retry; concurrent
+ *    passes and payments lose nothing; records go after 30 days.
  *
  * Stripe, S3 and email are faked; SMS is rendered and recorded, never sent.
  *
@@ -80,7 +86,16 @@ async function main() {
 
   const s3 = require("../utils/s3");
   s3.putPublicObject = async ({ Key }) => `https://test-bucket.s3.amazonaws.com/${Key}`;
-  s3.deletePublicObjects = async () => ({ deleted: 0 });
+  const deletedKeys = [];
+  let failDeletes = 0;
+  s3.deletePublicObjects = async ({ Keys }) => {
+    if (failDeletes > 0) {
+      failDeletes -= 1;
+      throw new Error("S3 is down");
+    }
+    deletedKeys.push(...Keys);
+    return { deleted: Keys.length };
+  };
   const mail = require("../utils/emailService");
   const sent = [];
   mail.sendRaw = async (m) => (sent.push({ kind: "raw", to: m.to, subject: m.subject, text: m.text }), { ok: true });
@@ -654,6 +669,184 @@ async function main() {
       const c = await call("POST", "/api/stripe/checkout/create-checkout-session", { as: b, body: { plan: "basic", billingCycle: "monthly", addressId: String(b.addresses[0]._id), firstVisit: { draftId: d.body.draftId, requestedDate: day, requestedTime: "13:00" } } });
       assert.strictEqual(c.status, 409);
       assert.strictEqual(c.body.code, "FIRST_VISIT_DRAFT_INVALID");
+    });
+
+    console.log("\nCleaning up drafts nobody paid for");
+    const { cleanupFirstVisitDrafts, deleteDraftPhotos } = require("../utils/membershipFirstVisitCleanup");
+    const HOUR = 3600 * 1000;
+    const age = (id, ms, extra = {}) => Draft.updateOne({ _id: id }, { $set: { updatedAt: new Date(Date.now() - ms), ...extra } }, { timestamps: false });
+    /* A draft saved but never sent to Stripe (the checkout was refused, the tab closed). */
+    const unsent = async (who, day, time) => {
+      const form = new FormData();
+      for (const [k, v] of Object.entries({ addressId: String(who.addresses[0]._id), note: "Patch a hole in the hall wall.", requestedDate: day, requestedTime: time })) form.append(k, v);
+      form.append("images", new Blob([photo], { type: "image/jpeg" }), "wall.jpg");
+      const d = await call("POST", "/api/bookings/first-visit-draft", { form, as: who });
+      assert.strictEqual(d.status, 201, JSON.stringify(d.body));
+      return d.body.draftId;
+    };
+    const stripeSays = (map) => async (id) => {
+      if (map[id] instanceof Error) throw map[id];
+      return { id, status: map[id] || "open", payment_status: map[id] === "complete" ? "paid" : "unpaid" };
+    };
+
+    await check("an unsent draft older than 24 hours is abandoned and its photo deleted; a newer one is kept", async () => {
+      const ola = await customer();
+      const oldId = await unsent(ola, openDay(19), "08:00");
+      const newId = await unsent(ola, openDay(19), "13:00");
+      await age(oldId, 25 * HOUR);
+      await age(newId, 23 * HOUR);
+      const oldKeys = (await Draft.findById(oldId)).s3Keys;
+      const tally = await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) });
+      const o = await Draft.findById(oldId);
+      assert.strictEqual(o.status, "abandoned");
+      assert.ok(o.photosDeletedAt, "photos deleted");
+      assert.ok(oldKeys.length === 1 && oldKeys.every((k) => deletedKeys.includes(k)), "the stored photo went");
+      assert.ok(o.requestedDate && o.service, "the record (job, time) is kept for now");
+      const n = await Draft.findById(newId);
+      assert.strictEqual(n.status, "draft");
+      assert.ok(!n.photosDeletedAt);
+      assert.ok(tally.abandoned >= 1, JSON.stringify(tally));
+    });
+
+    await check("an open checkout is asked about at Stripe: still open -> kept, Stripe unreachable -> kept", async () => {
+      const ben = await customer();
+      const prep = await prepare(ben, openDay(20), "08:00");
+      await age(prep.draftId, 3 * HOUR);
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({ [prep.page.id]: "open" }) });
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "checkout_open");
+      await age(prep.draftId, 3 * HOUR, { cleanupClaimedAt: null });
+      const tally = await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({ [prep.page.id]: new Error("Stripe timeout") }) });
+      const d = await Draft.findById(prep.draftId);
+      assert.strictEqual(d.status, "checkout_open", "not knowing is never a reason to delete");
+      assert.ok(!d.photosDeletedAt && /Stripe timeout/.test(d.cleanupError), d.cleanupError);
+      assert.ok(tally.errors >= 1);
+    });
+
+    await check("an open checkout Stripe says was paid (the webhook never came) is booked, photos kept", async () => {
+      const cal = await customer();
+      const prep = await prepare(cal, openDay(21), "13:00");
+      const session = completed(cal, prep.page);
+      assert.strictEqual(await deliver("customer.subscription.created", fake.subs.get(session.subscription)), 200);
+      await age(prep.draftId, 3 * HOUR);
+      const before = deletedKeys.length;
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({ [prep.page.id]: "complete" }) });
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "paid");
+      const { sweepFirstVisitDrafts } = require("../utils/membershipFirstVisitFulfillment");
+      await age(prep.draftId, 5 * 60000);
+      await sweepFirstVisitDrafts();
+      const d = await Draft.findById(prep.draftId);
+      assert.strictEqual(d.status, "booked");
+      const b = await Booking.findOne({ firstVisitDraftId: d._id }).lean();
+      assert.ok(b && b.images.length === 1 && b.images[0] === d.images[0], "booked with its photo");
+      assert.strictEqual(deletedKeys.length, before, "no photo deleted");
+    });
+
+    let eve;
+    let evePrep;
+    await check("an open checkout Stripe says expired is abandoned and its photo deleted", async () => {
+      eve = await customer();
+      evePrep = await prepare(eve, openDay(22), "08:00");
+      await age(evePrep.draftId, 3 * HOUR);
+      const keys = (await Draft.findById(evePrep.draftId)).s3Keys;
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({ [evePrep.page.id]: "expired" }) });
+      const d = await Draft.findById(evePrep.draftId);
+      assert.strictEqual(d.status, "abandoned");
+      assert.ok(d.photosDeletedAt && keys.every((k) => deletedKeys.includes(k)));
+    });
+    await check("a payment that still arrives for an abandoned draft is booked from the record, once", async () => {
+      const session = completed(eve, evePrep.page);
+      assert.strictEqual(await deliverWithId("evt_late_eve", "checkout.session.completed", session), 200);
+      assert.strictEqual(await deliverWithId("evt_late_eve_dup", "checkout.session.completed", session), 200);
+      assert.strictEqual(await deliverWithId("evt_late_eve", "checkout.session.completed", session), 200);
+      const bookings = await Booking.find({ user: eve._id }).lean();
+      assert.strictEqual(bookings.length, 1, `bookings ${bookings.length}`);
+      assert.strictEqual((await Draft.findById(evePrep.draftId)).status, "booked");
+      assert.strictEqual(moment(bookings[0].date).tz(TZ).format("YYYY-MM-DD HH:mm"), `${openDay(22)} 08:00`, "the job and time survived");
+    });
+
+    await check("paid, booked and Admin-flagged drafts are never touched, whatever their age", async () => {
+      const kept = await Draft.find({ status: { $in: ["paid", "fulfilling", "booked", "needs_admin", "rebooked"] } }).select("_id status photosDeletedAt images").lean();
+      assert.ok(kept.length >= 3, `have ${kept.length}`);
+      for (const d of kept) await age(d._id, 90 * 24 * HOUR);
+      const before = deletedKeys.length;
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) });
+      for (const d of kept) {
+        const after = await Draft.findById(d._id).lean();
+        assert.ok(after, "record kept");
+        assert.strictEqual(after.status, d.status === "paid" || d.status === "fulfilling" ? after.status : d.status);
+        // Unchanged by the pass (a draft abandoned before its late payment lost its photos then, not now).
+        assert.strictEqual(String(after.photosDeletedAt), String(d.photosDeletedAt), `${d.status} photos untouched`);
+        assert.deepStrictEqual(after.images, d.images, `${d.status} images untouched`);
+      }
+      assert.strictEqual(deletedKeys.length, before, "no photo deleted");
+    });
+
+    await check("a photo a booking uses is never deleted, even from an expired draft", async () => {
+      const booked = await Draft.findOne({ status: "booked", "images.0": { $exists: true } }).lean();
+      // Pretend a second, expired draft points at the same stored photo.
+      const twin = await Draft.create({ ...booked, _id: undefined, status: "expired", bookingId: null, photosDeletedAt: null, createdAt: undefined, updatedAt: undefined });
+      const before = deletedKeys.length;
+      assert.strictEqual(await deleteDraftPhotos(twin._id), true);
+      assert.strictEqual(deletedKeys.length, before, "kept: a booking uses it");
+      const b = await Booking.findById(booked.bookingId).lean();
+      assert.strictEqual(b.images[0], booked.images[0]);
+    });
+
+    await check("a failed photo deletion is recorded and retried on the next pass", async () => {
+      const una = await customer();
+      const id = await unsent(una, openDay(23), "08:00");
+      await age(id, 25 * HOUR);
+      // Both tries in this pass fail (the abandonment's and the pass's own retry).
+      failDeletes = 2;
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) });
+      let d = await Draft.findById(id);
+      assert.strictEqual(d.status, "abandoned");
+      assert.ok(!d.photosDeletedAt && /S3 is down/.test(d.cleanupError), "failure recorded");
+      await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) });
+      d = await Draft.findById(id);
+      assert.ok(d.photosDeletedAt && !d.cleanupError, "retried and done");
+    });
+
+    await check("two cleanup passes at once delete each photo once", async () => {
+      const ids = [];
+      const vic = await customer();
+      for (const t of ["08:00", "13:00"]) ids.push(await unsent(vic, openDay(24), t));
+      for (const id of ids) await age(id, 25 * HOUR);
+      const before = deletedKeys.length;
+      await Promise.all([cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) }), cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) })]);
+      const keys = (await Draft.find({ _id: { $in: ids } }).lean()).flatMap((d) => d.s3Keys);
+      const deletedNow = deletedKeys.slice(before);
+      for (const k of keys) assert.strictEqual(deletedNow.filter((x) => x === k).length, 1, `deleted once: ${k}`);
+    });
+
+    await check("cleanup and a payment confirmation at once: the payment wins, nothing lost", async () => {
+      const wes = await customer();
+      const prep = await prepare(wes, openDay(25), "08:00");
+      const session = completed(wes, prep.page);
+      await age(prep.draftId, 3 * HOUR);
+      const before = deletedKeys.length;
+      // Stripe reports it paid while the webhook arrives at the same moment.
+      await Promise.all([
+        cleanupFirstVisitDrafts({ retrieveSession: stripeSays({ [prep.page.id]: "complete" }) }),
+        deliverWithId("evt_race_wes", "checkout.session.completed", session),
+      ]);
+      const { sweepFirstVisitDrafts } = require("../utils/membershipFirstVisitFulfillment");
+      await age(prep.draftId, 5 * 60000);
+      await sweepFirstVisitDrafts();
+      assert.strictEqual(await Booking.countDocuments({ user: wes._id }), 1);
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "booked");
+      assert.strictEqual(deletedKeys.length, before, "no photo deleted");
+    });
+
+    await check("records past 30 days (photos already gone) are deleted; newer ones stay", async () => {
+      const gone = await Draft.findOne({ status: "abandoned", photosDeletedAt: { $ne: null } });
+      const stays = await Draft.findOne({ status: "abandoned", photosDeletedAt: { $ne: null }, _id: { $ne: gone._id } });
+      await Draft.updateOne({ _id: gone._id }, { $set: { photosDeletedAt: new Date(Date.now() - 31 * 24 * HOUR) } });
+      await Draft.updateOne({ _id: stays._id }, { $set: { photosDeletedAt: new Date(Date.now() - 29 * 24 * HOUR) } });
+      const tally = await cleanupFirstVisitDrafts({ retrieveSession: stripeSays({}) });
+      assert.strictEqual(await Draft.exists({ _id: gone._id }), null);
+      assert.ok(await Draft.exists({ _id: stays._id }));
+      assert.ok(tally.recordsDeleted >= 1);
     });
   } finally {
     server.close();
