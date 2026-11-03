@@ -209,6 +209,17 @@ async function main() {
     );
   });
 
+  await test("daily limit: rolling back yesterday's post today does not use up today's post", async () => {
+    const { usedToday } = require("../utils/growth/actionEngine");
+    await GrowthAction.collection.insertMany([
+      { _id: id(), type: "gbp_post", idempotencyKey: "old-1", status: "rolled_back", createdAt: ago(1.2), executedAt: ago(1.1), updatedAt: now },
+      { _id: id(), type: "gbp_post", idempotencyKey: "old-2", status: "rolled_back", createdAt: ago(7), executedAt: ago(7), updatedAt: now },
+    ]);
+    assert.strictEqual(await usedToday("gbp_post", now), 0);
+    await GrowthAction.collection.insertOne({ _id: id(), type: "gbp_post", idempotencyKey: "today", status: "approved", createdAt: ago(0.1), executedAt: null, updatedAt: ago(0.1) });
+    assert.strictEqual(await usedToday("gbp_post", now), 1, "a post approved today, not yet run, counts");
+  });
+
   await mongoose.disconnect();
   await mongo.stop();
   console.log(`\n${passed} passed`);

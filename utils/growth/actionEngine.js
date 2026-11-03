@@ -93,10 +93,16 @@ async function resolveMode(def) {
 
 async function usedToday(type, now) {
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  /*
+   * By when the action RAN (or, not run yet, when it was proposed) - never by
+   * updatedAt: rolling back an old post, or adding a note to its record, is
+   * not today's post (2026-11-03: two rollbacks parked the corrected Google
+   * post as over the limit).
+   */
   return GrowthAction.countDocuments({
     type,
     status: { $in: COUNTED_TOWARD_LIMIT },
-    updatedAt: { $gte: since },
+    $or: [{ executedAt: { $gte: since } }, { executedAt: null, createdAt: { $gte: since } }],
   });
 }
 
