@@ -25,6 +25,9 @@ module.exports = {
     plansUrl: "https://profixter.com/membership/plans",
     membershipUrl: "https://profixter.com/membership",
     bookUrl: "https://profixter.com/book",
+    // The two ways to start (2026-10-30): the Free Visit needs no account; Book a Handyman is where work is booked.
+    freeVisitUrl: "https://profixter.com/book/free",
+    bookHandymanUrl: "https://profixter.com/book/handyman",
     fullDayUrl: "https://profixter.com/book?visit=full-day",
     signupUrl: "https://profixter.com/signup",
     giftUrl: "https://profixter.com/gift",
@@ -38,7 +41,7 @@ module.exports = {
       "Profixter is a Long Island handyman and home-maintenance company based in Lindenhurst, serving Nassau and Suffolk Counties.",
       "Its main product is the handyman Membership: a monthly plan for your home, so the same team handles the small jobs and upkeep as they come up.",
       "New customers can have their first visit free (see FIRST VISIT FREE).",
-      "Book Handyman is the $99 One-Time Visit for one predefined small handyman task, up to 90 minutes.",
+      "Book a Handyman (bookHandymanUrl) is where work is booked: describe the job, pick an open time, then choose a $99 One-Time Visit (one small handyman task, up to 90 minutes) or a membership.",
       "Full Day Fixter is one Fixter for one day, about 8 hours, to work through a longer list.",
       "Gift memberships let someone give a Profixter membership to another homeowner.",
       "Larger work (roofing, siding, kitchens, bathrooms, renovations) goes through a separate Renovation Estimate.",
@@ -49,7 +52,7 @@ module.exports = {
       "One free visit per customer. No membership required and no credit card needed to book it.",
       "Scheduling is subject to availability.",
       "It is for homes in Nassau and Suffolk Counties.",
-      "To use it, create an account (signupUrl), add the home, and book the visit on the Book page (bookUrl).",
+      "To book it, use the Free Visit page (freeVisitUrl): name, phone, email, address, a day and a time. No account is needed. The team confirms the visit after reviewing the request.",
       "Members do not get this offer; it is for new customers.",
     ],
 
@@ -132,9 +135,9 @@ module.exports = {
     ],
 
     recommendationRules: [
-      "New customer, not sure where to start: the free first visit (create an account, then book).",
+      "New customer, not sure where to start: the Free Visit (freeVisitUrl, no account needed).",
       "Recurring small jobs, upkeep, a growing to-do list, or wanting the same team: Membership (compare plans).",
-      "One small predefined task: Book Handyman ($99 One-Time Visit).",
+      "One small task: Book a Handyman (bookHandymanUrl), then the $99 One-Time Visit.",
       "A long list that needs a whole day: Full Day Fixter.",
       "Buying for someone else: gift membership.",
       "Roofing, siding, kitchens, bathrooms, renovations, structural or multi-day work: Renovation Estimate.",
@@ -161,7 +164,7 @@ module.exports = {
     const m = this.meta;
     return [
       `BRAND: ${m.brand} | Phone: ${m.phone} | ${m.licensePhrase} | Based in: ${m.localBase} | Hours: ${m.hours}`,
-      `LINKS (use only these): Plans ${m.plansUrl} | Membership ${m.membershipUrl} | Book a visit ${m.bookUrl} | Full Day ${m.fullDayUrl} | Create an account ${m.signupUrl} | Gift a membership ${m.giftUrl} | Renovation Estimate ${m.projectsUrl} | Services ${m.servicesUrl} | About ${m.aboutUrl}`,
+      `LINKS (use only these): Plans ${m.plansUrl} | Membership ${m.membershipUrl} | Book a visit ${m.bookUrl} | Free Visit ${m.freeVisitUrl} | Book a Handyman ${m.bookHandymanUrl} | Full Day ${m.fullDayUrl} | Create an account ${m.signupUrl} | Gift a membership ${m.giftUrl} | Renovation Estimate ${m.projectsUrl} | Services ${m.servicesUrl} | About ${m.aboutUrl}`,
       `SERVICE AREA:\n- ${s.serviceArea.join("\n- ")}`,
       `PRODUCTS:\n- ${s.products.join("\n- ")}`,
       `MEMBERSHIP:\n- ${s.membership.join("\n- ")}`,

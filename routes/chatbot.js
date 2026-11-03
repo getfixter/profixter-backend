@@ -25,8 +25,8 @@ const { consume } = require("../utils/rateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
 
 // --- CONFIG ---
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
-const USE_STUB = !OPENAI_KEY;
+const { claudeAnswer, MODEL: CHAT_MODEL } = require("../utils/chatbot/claudeAnswer");
+const { fallbackAnswer } = require("../utils/chatbot/fallbackAnswer");
 
 const SYSTEM_PROMPT = `
 You are the Profixter Assistant, the chat on profixter.com. Profixter is a Long Island handyman company serving Nassau and Suffolk County, NY. Its main product is a handyman Membership for your home: a monthly plan, and Members book visits as often as they need.
@@ -128,49 +128,34 @@ async function saveAssistantBranch(convo, input, reply, meta = {}) {
 }
 
 // ========== AI CALL (Streaming Support) ==========
-async function callOpenAI(history, onChunk) {
-  if (USE_STUB) {
-    return `Got it! Profixter serves Nassau and Suffolk County, NY. You can compare Membership plans at https://profixter.com/membership/plans or book a visit at https://profixter.com/book.`;
-  }
+/*
+ * Claude answers (utils/chatbot/claudeAnswer.js). If it cannot - no key, a
+ * provider error, a timeout, a refusal - the failure is logged with its code
+ * (never a key) and the visitor still gets a correct answer from the knowledge
+ * base (utils/chatbot/fallbackAnswer.js) instead of an error.
+ */
+async function answerQuestion(history, onChunk, question) {
+  let streamed = "";
+  try {
+    return await claudeAnswer({
+      system: SYSTEM_PROMPT,
+      knowledge: KNOWLEDGE_BLOCK,
+      history,
+      onToken: (t) => {
+        streamed += t;
+        if (onChunk) onChunk(t);
+      },
+    });
+  } catch (error) {
+    const fallback = fallbackAnswer(question);
+    console.error(JSON.stringify({ event: "chatbot_provider_failed", model: CHAT_MODEL, code: error.code || "error", status: error.status ?? null, partial: streamed.length > 0, fallback: fallback.key }));
+    // Part of an answer already reached the visitor: finish politely rather than start over.
+    const tail = streamed ? `
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "system", content: KNOWLEDGE_BLOCK },
-        ...history,
-      ],
-      temperature: 0.7,
-      max_tokens: 200,
-      stream: true,
-    }),
-  });
-
-  let fullText = "";
-  for await (const chunk of resp.body) {
-    const decoded = new TextDecoder().decode(chunk);
-    const lines = decoded.split("\n").filter(Boolean);
-    for (const line of lines) {
-      if (line.includes("[DONE]")) continue;
-      try {
-        const json = JSON.parse(line.replace(/^data:\s*/, ""));
-        const token = json?.choices?.[0]?.delta?.content;
-        if (token) {
-          fullText += token;
-          if (onChunk) onChunk(token);
-        }
-      } catch {
-        // skip malformed
-      }
-    }
+Sorry, I was cut off. ${fallback.text}` : fallback.text;
+    if (onChunk) onChunk(tail);
+    return (streamed + tail).trim();
   }
-  return fullText.trim() || "Sorry, I had trouble replying.";
 }
 
 /*
@@ -383,7 +368,7 @@ router.post("/message", chatbotRateLimit, async (req, res) => {
     /*
      * Stored system messages are left out: every conversation saved the prompt
      * of its day as its first message, and an old one would contradict the
-     * current SYSTEM_PROMPT that callOpenAI always sends first. The last 20
+     * current SYSTEM_PROMPT that answerQuestion always sends first. The last 20
      * turns are plenty for a support chat and keep the request small.
      */
     const history = convo.messages
@@ -391,7 +376,7 @@ router.post("/message", chatbotRateLimit, async (req, res) => {
       .slice(-20)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    replyText = await callOpenAI(history, (chunk) => send({ token: chunk }));
+    replyText = await answerQuestion(history, (chunk) => send({ token: chunk }), trimmedInput);
 
     convo.messages.push({ role: "assistant", content: replyText });
     await convo.save();
@@ -409,5 +394,6 @@ module.exports = router;
 // Read by scripts/test_chatbot_lead_rules.js, which checks it never names a retired page.
 module.exports.SYSTEM_PROMPT = SYSTEM_PROMPT;
 module.exports.chatbotRateLimit = chatbotRateLimit;
+module.exports.answerQuestion = answerQuestion;
 module.exports.CHAT_LIMIT = CHAT_LIMIT;
 module.exports.MAX_INPUT_CHARS = MAX_INPUT_CHARS;
