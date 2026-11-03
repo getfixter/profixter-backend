@@ -5,6 +5,7 @@
  *   node scripts/ops/kingdom_nov3_consolidate.js            dry run: prints what it would do
  *   node scripts/ops/kingdom_nov3_consolidate.js --apply    does it
  *   ... --apply --license-live                              also closes the license problem
+ *   ... --apply --rollback-google-posts                     also deletes the two Google posts that promise labor
  *                                                           (only after the live site is checked)
  *
  * Nothing is deleted from the database. Every change goes through the path
@@ -20,6 +21,7 @@ const mongoose = require("mongoose");
 
 const APPLY = process.argv.includes("--apply");
 const LICENSE_LIVE = process.argv.includes("--license-live");
+const GBP = process.argv.includes("--rollback-google-posts"); // deletes the two posts on the live Google listing
 const BY = "Owner (brief 2026-11-03, applied by Claude)";
 
 const FREE_VISIT_NOW =
@@ -88,8 +90,10 @@ async function main() {
   const { CouncilDecision, CouncilTask } = require("../../models/Council");
   const log = (what, detail) => console.log(`${APPLY ? "DID " : "WOULD"} ${what}${detail ? ` - ${detail}` : ""}`);
   const at = new Date();
+  require("../../utils/growth/actions"); // registers the action types (rollback needs their definitions)
+  await require("../../utils/secrets").loadParameterSecrets(); // the Google posting token, as the server loads it
 
-  for (const g of PLAN.rollbackGbp) {
+  for (const g of GBP ? PLAN.rollbackGbp : []) {
     const a = await GrowthAction.findById(g.id).lean();
     if (!a || a.status !== "succeeded") {
       log(`skip GBP ${g.id}`, `status ${a?.status}`);
