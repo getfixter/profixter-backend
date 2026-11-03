@@ -672,8 +672,8 @@ async function run() {
     assert.equal(user.smsPreferences.transactionalConsentSource, "booking_step");
     const ConsentEvent = require("../models/ConsentEvent");
     const event = await ConsentEvent.findOne({ source: "booking_step" }).lean();
-    assert.ok(event && event.purpose === "service" && event.consentVersion === "sms_service.booking.v1", "consent ledger names the booking wording");
-    assert.match(event.consentText, /Text me about my visits/, "and keeps the exact words shown");
+    assert.ok(event && event.purpose === "service" && event.consentVersion === "sms_service.booking.v2", "consent ledger names the booking wording");
+    assert.match(event.consentText, /Text me about my ProFixter visits/, "and keeps the exact words shown");
     const me = await call("GET", "/api/auth/me", null, t);
     assert.equal(me.body.smsServiceTexts, true);
   });

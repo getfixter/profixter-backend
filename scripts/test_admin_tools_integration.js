@@ -261,6 +261,8 @@ async function main() {
       phone: "(516) 555-0142",
       email: "Rosa.Diaz@Mailbox.org",
       addresses: [{ line1: "12 Elm St", city: "Farmingdale", state: "NY", zip: "11735" }],
+      // What the Admin screen sends: every choice explicit (staff answered Yes to texts on the call).
+      communication: { "service.email": true, "service.sms": true, "marketing.email": true, "marketing.sms": true },
     };
     let created;
     await check("1. Admin creates a full customer account", async () => {
@@ -304,6 +306,15 @@ async function main() {
       assert.ok(events.every((e) => /recorded by Owner/.test(e.detail)));
       assert.ok(events.filter((e) => e.channel === "sms").every((e) => /admin_phone\.v1$/.test(e.consentVersion)));
       assert.ok(await AdminActivityLog.exists({ action: "Customer Account Created", entityId: String(created._id) }));
+    });
+    await check("with no choices sent, texts stay off (never assumed); emails on", async () => {
+      const res = await asOwner("POST", "/api/admin/customers", { body: { firstName: "Nora", lastName: "Quinn", phone: "631-555-0166", email: "nora.quinn@example.test" } });
+      assert.strictEqual(res.status, 201, JSON.stringify(res.body));
+      const state = (await asOwner("GET", `/api/admin/users/${res.body.customer._id}/communication`)).body;
+      assert.strictEqual(state.service.sms.enabled, false);
+      assert.strictEqual(state.marketing.sms.enabled, false);
+      assert.strictEqual(state.service.email.enabled, true);
+      assert.ok(!(await ConsentEvent.exists({ user: res.body.customer._id, channel: "sms", action: "granted" })), "no text consent recorded that nobody gave");
     });
     await check("an email already registered is refused, never merged", async () => {
       const res = await asOwner("POST", "/api/admin/customers", { body: { ...newCustomer, phone: "5165550199" } });

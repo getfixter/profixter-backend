@@ -60,8 +60,18 @@ const MAX_DAYS_AHEAD = 150;
  * back the text it displayed, and the request is refused unless it matches, so
  * the stored evidence is always the sentence the person actually saw.
  */
+/*
+ * The line next to the request button, word for word (FrontEnd FreeVisitForm).
+ * v2 (2026-11-03) adds the brand, frequency and STOP/HELP. v1 is still accepted
+ * from a page loaded before the change, and each request stores exactly the
+ * wording that person saw.
+ */
 const CONTACT_CONSENT_TEXT =
-  "By booking, you agree to be contacted by call or text about your visit. Msg & data rates may apply.";
+  "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help.";
+const CONTACT_CONSENT_TEXTS = new Set([
+  CONTACT_CONSENT_TEXT,
+  "By booking, you agree to be contacted by call or text about your visit. Msg & data rates may apply.",
+]);
 
 /* The URL parameters worth keeping: UTMs, click ids, and Meta's ad ids. */
 const URL_PARAM_KEYS = [
@@ -392,7 +402,8 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     if (!consultation && note.split(/\s+/).filter(Boolean).length < 3) {
       return res.status(400).json({ code: "NOTE_REQUIRED", field: "note", message: "Tell us in a few words what needs doing." });
     }
-    if (clean(body.consentText, 300) !== CONTACT_CONSENT_TEXT) {
+    const shownConsent = clean(body.consentText, 300);
+    if (!CONTACT_CONSENT_TEXTS.has(shownConsent)) {
       return res.status(400).json({ code: "CONSENT_MISMATCH", message: "Please reload the page and try again." });
     }
     const library = readLibraryReference(body);
@@ -438,7 +449,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
       libraryReference: library.key,
       attribution: { url: urlParams, firstTouch },
       contactConsent: {
-        text: CONTACT_CONSENT_TEXT,
+        text: shownConsent,
         at: new Date(),
         ip: clientIp(req),
         userAgent: clean(req.headers["user-agent"], 300),

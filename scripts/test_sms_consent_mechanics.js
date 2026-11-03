@@ -304,6 +304,7 @@ async function main() {
       ["app", "components", "sections", "BookingSection.tsx"],
       ["app", "book", "page.tsx"],
       ["app", "components", "booking", "FullDayVisitPanel.tsx"],
+      ["app", "components", "booking4", "HandymanBooker.tsx"],
     ]) {
       const src = fe(...file);
       assert.ok(src.includes("applyServiceTextsOptIn"), `${file.join("/")} must offer the booking box`);
@@ -321,7 +322,8 @@ async function main() {
       "it sends service texts from the booking step, and only that"
     );
     assert.ok(!/marketingEnabled/.test(code), "it can never switch on marketing");
-    assert.ok(/const LABEL = "Text me about my visits";/.test(code), "the registered label");
+    /* v2 (2026-11-03): the brand in the label; the server records sms_service.booking.v2. */
+    assert.ok(/const LABEL = "Text me about my ProFixter visits";/.test(code), "the registered label");
   });
 
   await frontendTest("the required CTIA disclosures are at the box and one tap from it", () => {
@@ -344,8 +346,92 @@ async function main() {
     for (const phrase of ["Message frequency varies", "Message and data rates may apply", "Reply STOP to opt out or HELP for help"]) {
       assert.ok(optIn.includes(phrase), `the booking box is missing: ${phrase}`);
     }
-    assert.ok(optIn.includes('href="/communication-consent#service-texts"'), "Details must reach the disclosures");
+    assert.ok(optIn.includes('href="/communication-consent#service-texts"'), "the SMS Terms link must reach the disclosures");
     assert.ok(consent.includes('id="service-texts"'), "and the anchor must exist");
+    for (const href of ['href="/privacy"', 'href="/terms"']) {
+      assert.ok(optIn.includes(href), `the booking box must link ${href} at the box (2026-11-03)`);
+    }
+  });
+
+  await frontendTest("the guest Free Visit line carries the CTIA disclosures and its documents, with no box", () => {
+    /*
+     * No account and no checkbox (the owner's design): the consent is the
+     * press of "Request my Free Visit" under this line, so the line itself has
+     * to carry the brand, frequency, rates, STOP and HELP, and link the SMS
+     * Terms and the Privacy Policy.
+     */
+    const form = stripComments(fe("app", "components", "booking4", "FreeVisitForm.tsx"));
+    const line = (form.match(/const CONTACT_CONSENT_TEXT = "([^"]+)";/) || [])[1] || "";
+    for (const phrase of ["ProFixter", "about this visit", "Message frequency varies", "Msg & data rates may apply", "Reply STOP to opt out or HELP for help."]) {
+      assert.ok(line.includes(phrase), `the guest line is missing: ${phrase}`);
+    }
+    assert.ok(!/type="checkbox"/.test(form), "the guest request has no checkbox");
+    assert.ok(form.includes('<a href="/communication-consent#service-texts" target="_blank"'), "the SMS Terms are linked at the line");
+    assert.ok(form.includes('<a href="/privacy" target="_blank"'), "the Privacy Policy is linked at the line");
+  });
+
+  await frontendTest("Admin asks about texts on a call, and pre-selects no answer", () => {
+    /*
+     * 2026-11-03: Create Customer and Create Visit used to start "texts on"
+     * (a pre-ticked box, and four switches all on). Staff now have to ask:
+     * the answer starts as null - neither Yes nor No - and the sheet will not
+     * submit until one is chosen. Marketing texts start off, because a spoken
+     * yes is never enough for them (utils/consent/marketingSmsBasis.js).
+     */
+    const sheet = stripComments(fe("app", "components", "admin", "tools", "AdminSheet.tsx"));
+    const choice = sheet.slice(sheet.indexOf("export function SmsAgreedChoice"));
+    assert.ok(choice.length > 0 && /value: boolean \| null;/.test(choice), "the answer can be unset");
+    assert.ok(/aria-pressed=\{value === answer\}/.test(choice), "a button shows pressed only when it IS the answer");
+    assert.ok(/option\(true, 'Yes, asked and agreed'\)/.test(choice) && /option\(false, 'No'\)/.test(choice), "Yes and No, worded as asked");
+    assert.ok(!/defaultChecked|checked=\{true\}|type="checkbox"/.test(choice), "no box to pre-tick");
+
+    const customer = stripComments(fe("app", "components", "admin", "tools", "CreateCustomerSheet.tsx"));
+    assert.ok(/const \[serviceSms, setServiceSms\] = useState<boolean \| null>\(null\);/.test(customer), "Create Customer: not asked yet = null");
+    assert.ok(/'service\.sms': false,/.test(customer) && /'marketing\.sms': false,/.test(customer), "Create Customer: both text switches start off");
+    assert.ok(!/key: 'service\.sms'/.test(customer), "service texts are a question, not a switch that can start on");
+    assert.ok(/if \(phone\.trim\(\) && serviceSms === null\) \{/.test(customer), "Create Customer refuses to submit an unanswered question");
+    assert.ok(/'service\.sms': serviceSms === true/.test(customer), "only an explicit Yes is sent as consent");
+    assert.ok(/<SmsAgreedChoice value=\{serviceSms\}/.test(customer), "the question is on the sheet");
+
+    const visit = stripComments(fe("app", "components", "admin", "tools", "CreateVisitSheet.tsx"));
+    assert.ok(/const \[guestSms, setGuestSms\] = useState<boolean \| null>\(null\);/.test(visit), "Create Visit: not asked yet = null");
+    assert.ok(/guestSms !== null/.test(visit.slice(visit.indexOf("const whoReady"), visit.indexOf("const whenReady"))), "Create Visit waits for an answer");
+    assert.ok(/smsConsent: guestSms === true/.test(visit), "only an explicit Yes is sent as consent");
+    assert.ok(/<SmsAgreedChoice value=\{guestSms\}[^>]*question="Did they agree to texts about this visit\?"/.test(visit), "the question is on the sheet");
+    assert.ok(!/checked=\{guestSms\}|OK to text about this visit/.test(visit), "the old pre-ticked box is gone");
+  });
+
+  await test("a guest visit Admin books records the staff member, and only an explicit yes", () => {
+    /*
+     * The guest visit's own consent record (smsEligibility ADMIN_GUEST_VISIT_TYPES
+     * reads it): written only when staff said yes, naming who took it.
+     */
+    const src = readSource(path.join(__dirname, "..", "utils", "admin", "adminVisits.js"));
+    assert.ok(/smsConsent: readBool\(body\.guestSmsConsent\)/.test(src), "the answer is read as a strict boolean");
+    assert.ok(
+      /who\.smsConsent\s*\?\s*\{\s*guestContactConsent: \{\s*text: `Agreed by phone to be contacted by call or text about this visit; recorded in Admin by \$\{/.test(src),
+      "a yes is stored on the visit with the staff member's name"
+    );
+    assert.ok(/who\.smsConsent\s*\?[\s\S]{0,400}?\}\s*:\s*\{\}/.test(src), "a no stores nothing");
+  });
+
+  await test("a phone-call yes never qualifies a marketing text, registered or not", () => {
+    const { marketingSmsBasis } = require("../utils/consent/marketingSmsBasis");
+    const before = process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED;
+    try {
+      for (const flag of ["false", "true"]) {
+        process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED = flag;
+        const basis = marketingSmsBasis({ smsPreferences: { marketingEnabled: true, marketingConsentSource: "admin_phone" } });
+        assert.strictEqual(basis.status, "needs_confirmation", `flag ${flag}: a call alone must wait for the customer`);
+      }
+      process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED = "false";
+      for (const source of ["sms_confirm_link"]) {
+        assert.strictEqual(marketingSmsBasis({ smsPreferences: { marketingEnabled: true, marketingConsentSource: source } }).status, "awaiting_registration", `${source} is held until registered`);
+      }
+    } finally {
+      if (before === undefined) delete process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED;
+      else process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED = before;
+    }
   });
 
   await frontendTest("the old forced-consent sentences are gone", () => {

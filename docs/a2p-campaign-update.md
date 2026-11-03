@@ -22,6 +22,9 @@ description must be updated when the new screens go live.
 
 ## New message flow (paste into the campaign's "Message flow" field)
 
+**SUPERSEDED 2026-11-03** by "Message flow to submit (2026-11-03)" at the end of
+this file. Kept for history; do not submit it.
+
 > End users opt in to ProFixter service text messages on the ProFixter website
 > in two places, both optional and unchecked by default. (1) At the booking
 > step (https://www.profixter.com/book and /book/free), a single checkbox
@@ -86,6 +89,9 @@ settings (sign in, tap "Text me occasional ProFixter offers"), which is the
 registered opt-in and qualifies at once.
 
 ### Message flow to submit (replaces the whole field; covers Registration 2.0 too)
+
+**SUPERSEDED 2026-11-03** by "Message flow to submit (2026-11-03)" at the end of
+this file. Kept for history; do not submit it.
 
 Submit in the Twilio Console: Messaging > Regulatory compliance > Campaigns >
 campaign …ba0b > edit Message flow (a VERIFIED campaign cannot be edited through
@@ -165,3 +171,151 @@ Before automatic enrollment could even be considered:
 6. **Only then** switch it on in code, behind a code default (EB environment
    variables are at AWS's 4096-character limit, so a new env flag cannot be
    added without removing others).
+
+## Message flow to submit (2026-11-03)
+
+**This supersedes both earlier drafts in this file** (the Registration 2.0
+"New message flow" and the 2026-10-31 "Message flow to submit"). Neither was
+ever submitted; campaign …ba0b still carries the 2026-09-11 Registration 1.0
+flow. Both drafts are now wrong: the first says the only places are the
+booking step and settings and "There is no keyword, verbal or paper opt-in";
+the second still names the old booking label and leaves out the guest Free
+Visit request and the staff-recorded yes for service texts. Submit the text
+below instead.
+
+### What changed since the registered 2026-09-11 flow
+
+- Sign-up no longer collects any SMS consent (it had service and marketing
+  boxes). Sign-in codes are sent by Twilio Verify, outside this campaign.
+- Service texts: an optional, unchecked box at the booking step, "Text me
+  about my ProFixter visits", with the SMS Terms, Privacy and Terms linked at
+  the box (consent version `sms_service.booking.v2`).
+- New: the guest Free Visit request (no account, no checkbox). Pressing
+  "Request my Free Visit" under the full disclosure line is consent to texts
+  about that one visit only.
+- New: staff record a caller's Yes or No for texts about their visits, with
+  nothing pre-selected; the record names the staff member and the time. It is
+  never used for marketing.
+- New (marketing, held until this flow is VERIFIED): the one-click page
+  /texts/confirm, and a customer's own written permission recorded by staff
+  with its evidence.
+- Unchanged: account settings (two separate unchecked boxes; the only place
+  customers switch on marketing today); STOP stops everything; START only
+  lifts a STOP and grants no consent; no purchased or shared lists.
+- Account settings now also show the sending number and link the SMS Terms,
+  Privacy Policy and Terms of Service under the two boxes.
+
+### Message flow (paste into the "Message flow" field; 1,919 characters, plain ASCII)
+
+Twilio does not state a limit on this field in this file; it is kept under
+2,000 characters.
+
+> ProFixter (Premium Island Homes Inc.) collects SMS consent in five places. Texts are never required to book or buy. (1) Booking step (signed-in customers, e.g. https://www.profixter.com/book/handyman): an optional, unchecked box "Text me about my ProFixter visits" above the final button, for booking confirmations, reminders and arrival updates. (2) Free Visit request at https://www.profixter.com/book/free (no account): no checkbox; the line directly under the "Request my Free Visit" button reads "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help." Pressing the button consents to texts about that one visit only, never marketing. (3) Account settings at https://www.profixter.com/account: two separate unchecked boxes, "Text me about my ProFixter visits." and "Text me occasional ProFixter offers." (marketing). (4) Phone call: staff must ask whether the caller agrees to texts about their visits and record Yes or No (nothing pre-selected); the record names the staff member and time. A spoken yes is never used for marketing. (5) Marketing, staff-assisted: a customer who asks staff for offers by text may be emailed a link to https://www.profixter.com/texts/confirm and texts start only after they press "Yes, text me occasional ProFixter offers"; a customer's own written request (their email, text or signed form) is recorded by staff with that evidence. Every web opt-in states the brand, message frequency, rates and STOP/HELP and links the SMS Terms (https://www.profixter.com/communication-consent) and Privacy Policy (https://www.profixter.com/privacy). Sign-up collects no SMS consent: one-time codes are sent by Twilio Verify, outside this campaign. START only lifts a STOP. No purchased, rented or shared lists. Screenshots: https://www.profixter.com/sms-consent-example
+
+### Campaign description (only if the console asks for it again)
+
+Leave the registered description alone unless the edit form requires it. If
+it does:
+
+> ProFixter (Premium Island Homes Inc.), a Long Island home-services company, texts customers who opted in about their visits: request received, booking confirmations, appointment reminders, reschedules and cancellations, who is coming, and membership and billing notices. Customers who separately opted in to marketing also receive occasional offers about memberships and home services. Every marketing text ends "Reply STOP to opt out."
+
+### Message samples (rendered from utils/sms/smsTemplates.js, 2026-11-03)
+
+1. Free Visit request received (`FREE_VISIT_REQUEST_RECEIVED`, the current /book/free form):
+   `Got it! We've reserved your Free Visit on Thursday, November 12 at 10:00 AM. A Profixter team member will confirm it shortly. Reply STOP to opt out.`
+2. Booking request received, awaiting confirmation (`BOOKING_CONFIRMED`, status Pending):
+   `ProFixter: we received your One-Time Visit request for Thu, Nov 12 at 10:00 AM. We'll text you once it's confirmed. Questions? Call 631-599-1363`
+3. Confirmation (`FREE_VISIT_CONFIRMED`, a /book/free visit):
+   `ProFixter: your Free Visit is confirmed for Thu, Nov 12 at 10:00 AM. We'll go over your to-do list together, at no charge. We will text you a reminder beforehand.`
+4. Reminder (`BOOKING_REMINDER_24H`):
+   `ProFixter reminder: your One-Time Visit is scheduled for Thu, Nov 12 at 10:00 AM. Need to make a change? Call 631-599-1363`
+5. Marketing (`MEMBERSHIP_MARKETING`; the renderer appends the opt-out line):
+   `ProFixter: Handyman labor and trip costs are included with membership. Get small home repairs done easily: profixter.com/membership Reply STOP to opt out.`
+
+### Keywords and their replies (as configured in the Twilio console; utils/sms/twilioOptOutCopy.js)
+
+- Opt-out keywords: STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT. Reply:
+  `ProFixter: You are unsubscribed and will get no more texts from us. Your service and offer text settings are now off. Reply START to unblock this number, then switch texts back on at profixter.com/account. Help: 631-599-1363`
+- Help keywords: HELP, INFO. Reply:
+  `ProFixter by Premium Island Homes Inc - Long Island home services. Msg frequency varies. Msg&data rates may apply. Help: 631-599-1363 or getfixter@gmail.com. Reply STOP to opt out. profixter.com/communication-consent`
+- Opt-in keywords: START, YES, UNSTOP (Twilio's reserved set). They only lift
+  a STOP; they grant no service or marketing consent. Reply:
+  `ProFixter: This number can receive texts from us again. To choose which ProFixter texts you want, turn on service or offer texts in your account at profixter.com/account. Msg&data rates may apply. Reply STOP to opt out, HELP for help.`
+- Anything else texted to 631-888-6340 gets at most one automated reply per
+  number per day (`INBOUND_INFO_REPLY`): `ProFixter: This number is used only
+  for automated notifications and is not monitored for replies. For
+  assistance, call 631-599-1363. Reply STOP to opt out.`
+
+### Order of operations (do not reverse)
+
+1. Deploy the backend (consent version `sms_service.booking.v2`, the v2 guest
+   line accepted by routes/freeVisitRequests.js), then the frontend (the
+   booking box, the Free Visit line, the settings documents line, the Admin
+   Yes/No question, /communication-consent, /sms-consent-example and the four
+   `public/compliance/a2p-v3-*.png` screenshots).
+2. Check the live site as a reviewer would: /sms-consent-example shows the
+   four v3 screenshots and lists five places; /communication-consent shows
+   "Last Updated: November 3, 2026"; /book/free shows the new line under the
+   button. Client-rendered pages need a browser, not curl.
+3. Only then submit in the Twilio Console (a VERIFIED campaign cannot be
+   edited through the API): Messaging > Regulatory Compliance > Campaigns >
+   open campaign …ba0b (Messaging Service …70d0) > Edit > replace the whole
+   "Message flow" field with the text above > (description only if required)
+   > Save / Submit for review. If the console shows the path differently,
+   the campaign is the one under the "Profixter users" Messaging Service.
+4. Ask Twilio support, from the Console, whether the campaign keeps sending
+   during re-review, and track it until it shows VERIFIED with this flow.
+5. Only after VERIFIED: switch on the held marketing methods
+   (`SMS_ADMIN_ASSISTED_OPTIN_REGISTERED=true`). The EB environment is at its
+   4096-character limit, so this needs room made or a code default.
+
+### Reviewer notes (not for submission)
+
+Every sentence above, against the code:
+
+- Five places and their wording: FrontEnd
+  app/components/booking/ServiceTextsOptIn.tsx (box, label, line, three
+  links; shown only to a signed-in customer with a phone, saved only after
+  the booking succeeds), rendered above the button in
+  app/components/booking4/HandymanBooker.tsx, app/book/page.tsx,
+  app/components/booking/FullDayVisitPanel.tsx and
+  app/components/sections/BookingSection.tsx; BackEnd
+  utils/consent/consentText.js (`sms_service.booking.v2`, CURRENT.booking).
+- Guest line: FrontEnd app/components/booking4/FreeVisitForm.tsx
+  (CONTACT_CONSENT_TEXT, no checkbox, links); BackEnd
+  routes/freeVisitRequests.js (accepts the v2 line or the old v1 line and
+  stores the one shown, with time, IP and browser); utils/sms/smsEligibility.js
+  (FREE_VISIT_REQUEST_RECEIVED within an hour of the press, then
+  GUEST_VISIT_TYPES for that booking only, never marketing, STOP still wins).
+- Settings: FrontEnd app/components/account/SmsPreferences.tsx;
+  `sms_service.settings.v1`, `sms_marketing.settings.v1`.
+- Phone call: FrontEnd app/components/admin/tools/AdminSheet.tsx
+  (SmsAgreedChoice, nothing pre-selected), CreateCustomerSheet.tsx (cannot
+  submit with a phone until answered; marketing texts start off),
+  CreateVisitSheet.tsx (guest visit cannot be submitted until answered);
+  BackEnd utils/admin/communicationControls.js (source `admin_phone`,
+  `sms_service.admin_phone.v1`, "recorded by <staff>", time) and
+  utils/admin/adminVisits.js (guest visit record naming the staff member).
+  For an existing customer, staff switch service texts on in the customer's
+  Messages panel (app/components/admin/tools/CommunicationPanel.tsx); that
+  panel is a switch, not a Yes/No question.
+- Marketing never on a spoken yes: utils/consent/marketingSmsBasis.js
+  (`admin_phone` is always `needs_confirmation`; `sms_confirm_link` and
+  `admin_written` are `awaiting_registration` until the flag);
+  utils/consent/smsConfirmLink.js (the email links to account settings until
+  the flag is set; the page records consent only on the button press).
+- START: routes/smsWebhook.js applyOptIn sets no consent flag.
+- Inbound reply: routes/smsWebhook.js replyThatNobodyIsReading (one per number
+  per New York day).
+- Sign-up: app/(auth)/signup/page.tsx, `terms.continue.v1`, Twilio Verify.
+- Samples are the code templates. Admin can override a template's wording in
+  production (utils/communications/templateOverrides.js); check Admin >
+  Communications before submitting that no override changes these five.
+- Server default to know about: utils/admin/customerAccess.js
+  DEFAULT_COMMUNICATION still defaults `service.sms` (and `marketing.sms`) to
+  true when a create-customer request omits `communication`. The Admin screen
+  always sends all four values, so this never applies from the UI, but a
+  direct API call without them would record a phone yes nobody asked for.
+- Pinned by scripts/test_a2p_public_evidence.js,
+  scripts/test_sms_consent_mechanics.js, scripts/test_consent_system.js and
+  scripts/test_free_visit_request.js.

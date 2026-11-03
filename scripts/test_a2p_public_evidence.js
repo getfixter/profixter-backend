@@ -31,6 +31,16 @@
  * unticked and service-only and saved only after a booking succeeds, the
  * settings boxes separate and unticked, and public pages that say so.
  *
+ * 2026-11-03. The public pages said consent was collected in exactly two
+ * places and that there was no verbal opt-in. By then neither was true: a guest
+ * requesting a Free Visit agrees by pressing the button under a disclosure line
+ * (no account, no checkbox, that one visit only), and staff record a caller's
+ * yes or no for texts about their visits. The booking box became
+ * "sms_service.booking.v2" with its documents linked. The cases that pinned the
+ * two-place claim now pin the five places, each quoted exactly, and forbid the
+ * old claims coming back; the guest line, the booking box's links and the
+ * settings documents line are pinned to the screens that show them.
+ *
  * These cases need the sibling FrontEnd checkout and skip loudly without it,
  * the same arrangement test_sms_consent_mechanics.js uses and for the same
  * reason: a compliance assertion that silently stopped running would be worse
@@ -68,7 +78,18 @@ const P = {
   oneTime: path.join(FRONTEND, "app", "book", "page.tsx"),
   fullDay: path.join(FRONTEND, "app", "components", "booking", "FullDayVisitPanel.tsx"),
   smsPrefs: path.join(FRONTEND, "app", "components", "account", "SmsPreferences.tsx"),
+  handyman: path.join(FRONTEND, "app", "components", "booking4", "HandymanBooker.tsx"),
+  guestForm: path.join(FRONTEND, "app", "components", "booking4", "FreeVisitForm.tsx"),
+  guestRoute: path.join(__dirname, "..", "routes", "freeVisitRequests.js"),
 };
+
+/** The guest Free Visit line the server accepts as current, read from the route that stores it. */
+function serverGuestLine() {
+  const src = readSource(P.guestRoute);
+  const m = src.match(/const CONTACT_CONSENT_TEXT =\s*"([^"]+)";/);
+  if (!m) throw new Error("routes/freeVisitRequests.js no longer declares CONTACT_CONSENT_TEXT as one string");
+  return m[1];
+}
 
 /** The registered consent wordings, from the backend that records them. */
 function VERSIONS() {
@@ -200,11 +221,25 @@ function renderedText(markup) {
     .replace(/\{" "\}/g, "\u0000 \u0000")
     .replace(/<[^>]*>/g, "\u0000")
     .split("\u0000")
-    .map((chunk) =>
-      chunk.includes("\n")
-        ? chunk.split("\n").map((l) => l.trim()).filter(Boolean).join(" ")
-        : chunk
-    );
+    .map((chunk) => {
+      if (!chunk.includes("\n")) return chunk;
+      /*
+       * JSX's own rule (Babel cleanJSXElementLiteralChild): every line but the
+       * first loses its leading whitespace, every line but the last its
+       * trailing whitespace, and empty lines vanish. So "</span> (signed in),"
+       * keeps its space and "</span>\n  text" does not - as on screen.
+       */
+      const lines = chunk.split("\n");
+      const kept = lines
+        .map((l, i) => {
+          let s = l.replace(/\t/g, " ");
+          if (i > 0) s = s.replace(/^ +/, "");
+          if (i < lines.length - 1) s = s.replace(/ +$/, "");
+          return s;
+        })
+        .filter(Boolean);
+      return kept.join(" ");
+    });
   return chunks
     .join("")
     .replace(/&amp;/g, "&")
@@ -468,19 +503,28 @@ async function main() {
   });
 
   await frontendTest("its wording is the registered wording, word for word", () => {
+    /*
+     * v2 (2026-11-03): the brand in the label and "Optional." leading the line.
+     * The booking step records CURRENT.booking.service, so that is the version
+     * the screen must match - not merely some version that once existed.
+     */
     const src = readSource(P.optIn);
-    const registered = VERSIONS()["sms_service.booking.v1"].text;
-    assert.ok(registered.includes('"Text me about my visits"'), "the registered label");
-    assert.ok(/const LABEL = "Text me about my visits";/.test(src), "the label on screen");
+    const { CURRENT } = require(path.join(__dirname, "..", "utils", "consent", "consentText.js"));
+    assert.strictEqual(CURRENT.booking.service, "sms_service.booking.v2", "the booking step records v2");
+    const registered = VERSIONS()[CURRENT.booking.service].text;
+    assert.ok(registered.includes('"Text me about my ProFixter visits" (optional, unticked)'), "the registered label");
+    assert.ok(/const LABEL = "Text me about my ProFixter visits";/.test(src), "the label on screen");
     const details = (src.match(/const DETAILS =\s*"([^"]+)"/) || [])[1];
     assert.ok(details, "the line under the label must be a single constant");
     assert.ok(
-      registered.toLowerCase().includes(details.toLowerCase()),
-      "the line under the label must be the registered sentence: frequency, rates, STOP, HELP"
+      registered.includes(`"${details}"`),
+      "the line under the label must be the registered sentence, word for word"
     );
-    for (const phrase of ["Message frequency varies", "Message and data rates may apply", "STOP", "HELP"]) {
+    for (const phrase of ["Optional.", "Message frequency varies", "Message and data rates may apply", "Reply STOP to opt out or HELP for help."]) {
       assert.ok(details.includes(phrase), `the booking box must state: ${phrase}`);
     }
+    /* v1 stays, unchanged, for the rows recorded under it. */
+    assert.ok(VERSIONS()["sms_service.booking.v1"].text.includes('"Text me about my visits"'), "v1 must not be edited or removed");
   });
 
   await frontendTest("it is service-only and can never switch on marketing", () => {
@@ -499,8 +543,28 @@ async function main() {
     const labelClose = src.indexOf("</label>");
     const anchor = src.indexOf('href="/communication-consent#service-texts"');
     assert.ok(labelClose > -1 && anchor > -1, "the box needs both a label and a Details link to #service-texts");
-    assert.ok(anchor > labelClose, "the Details link must sit OUTSIDE the label, or following it ticks the box");
-    assert.ok(/target="_blank"/.test(src) && /rel="noopener noreferrer"/.test(src), "Details opens in a new tab");
+    assert.ok(anchor > labelClose, "the SMS Terms link must sit OUTSIDE the label, or following it ticks the box");
+  });
+
+  await frontendTest("the box links the SMS Terms, Privacy Policy and Terms of Service, each in a new tab", () => {
+    /*
+     * The disclosures a carrier reviewer looks for at every opt-in, at the box
+     * itself (2026-11-03). All three sit after the label, so none of them can
+     * tick it, and each opens in a new tab so the booking is not lost.
+     */
+    const src = readMarkup(P.optIn);
+    const labelClose = src.indexOf("</label>");
+    const start = src.indexOf("<p", labelClose);
+    const para = src.slice(start, src.indexOf("</p>", start) + 4);
+    let last = para.indexOf("{DETAILS}");
+    assert.ok(last > -1, "the disclosure line must open the paragraph under the label");
+    for (const [href, text] of [["/communication-consent#service-texts", "SMS Terms"], ["/privacy", "Privacy"], ["/terms", "Terms"]]) {
+      const link = new RegExp(`<a href="${href}" target="_blank" rel="noopener noreferrer"[^>]*>\\s*${text}\\s*</a>`);
+      assert.ok(link.test(para), `the booking box must link ${text} (${href}) in a new tab, in the line under the label`);
+      const at = para.indexOf(`href="${href}"`);
+      assert.ok(at > last, `${text} must follow the disclosure, in order: SMS Terms, Privacy, Terms`);
+      last = at;
+    }
   });
 
   await frontendTest("every booking flow shows it above the button and saves it only after the booking succeeds", () => {
@@ -514,6 +578,8 @@ async function main() {
       [P.memberBooking, ["await createBooking("], "onClick={handleBookNow}"],
       [P.oneTime, ["await createOneTimeVisitCheckout("], "onClick={submit}"],
       [P.fullDay, ["await bookIncludedFullDay(", "await createFullDayCheckout("], "onClick={submit}"],
+      /* Book a Handyman (CX4): member visit, one-time checkout, membership checkout. */
+      [P.handyman, ["await createBooking(", "await createOneTimeVisitCheckout(", 'await API.post("/api/stripe/checkout/create-checkout-session"'], 'data-action="book-handyman"'],
     ]) {
       /*
        * Raw source, not readMarkup: FreeVisitBooker has accept="image/*", and
@@ -557,6 +623,64 @@ async function main() {
   });
 
   /* ==================================================================== */
+  section("The guest Free Visit request: no account, no checkbox, that one visit only");
+
+  await frontendTest("the line on screen is the line the server stores, word for word", () => {
+    /*
+     * routes/freeVisitRequests.js refuses a request whose consentText is not a
+     * line it knows, and stores the one that was shown. The form must send -
+     * and show - the current one exactly.
+     */
+    const expected = serverGuestLine();
+    assert.strictEqual(
+      expected,
+      "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help.",
+      "the guest consent line itself changed; re-approve it (and the public pages) before updating this test"
+    );
+    const src = readSource(P.guestForm);
+    const shown = (src.match(/const CONTACT_CONSENT_TEXT =\s*"([^"]+)";/) || [])[1];
+    assert.strictEqual(shown, expected, "FreeVisitForm shows different words from the line the server stores");
+  });
+
+  await frontendTest("it names the brand, the frequency, the rates, STOP and HELP, and this visit only", () => {
+    const line = serverGuestLine();
+    for (const phrase of ["ProFixter", "call or text you about this visit", "Message frequency varies", "Msg & data rates may apply", "Reply STOP to opt out or HELP for help."]) {
+      assert.ok(line.includes(phrase), `the guest line must state: ${phrase}`);
+    }
+    assert.ok(!/\boffers?\b|promotion|marketing|discount/i.test(line), "the guest line covers this visit, never marketing");
+  });
+
+  await frontendTest("it sits directly under the request button, with the SMS Terms and Privacy linked in a new tab", () => {
+    const markup = readMarkup(P.guestForm);
+    const button = markup.indexOf('data-action="review-free-visit"');
+    const start = markup.indexOf("<p", button);
+    assert.ok(button > -1 && start > button, "the request button and the line after it");
+    const para = markup.slice(start, markup.indexOf("</p>", start) + 4);
+    assert.ok(para.includes("data-contact-consent"), "the paragraph right after the button must be the consent line");
+    assert.ok(para.includes("{CONTACT_CONSENT_TEXT}"), "and it must print the line the form sends");
+    for (const [href, text] of [["/communication-consent#service-texts", "SMS Terms"], ["/privacy", "Privacy"]]) {
+      assert.ok(
+        new RegExp(`<a href="${href}" target="_blank" rel="noopener noreferrer">\\s*${text}\\s*</a>`).test(para),
+        `the guest line must link ${text} (${href}) in a new tab`
+      );
+    }
+    assert.ok(markup.slice(button, start).indexOf("</button>") > -1, "nothing but the button's close sits between them");
+    assert.strictEqual(markup.slice(markup.indexOf("</button>", button), start).replace(/\s+/g, ""), "</button>", "the line is the very next element");
+  });
+
+  await frontendTest("the form has no checkbox and sends exactly the line it showed", () => {
+    /*
+     * The owner's design: no account and no box. The press is the act, so the
+     * evidence is the line beside it - and that only holds if the form sends
+     * the very constant it prints.
+     */
+    const markup = readMarkup(P.guestForm);
+    assert.ok(!/type="checkbox"/.test(markup), "the guest request has no checkbox; a box would be a different, unregistered flow");
+    assert.strictEqual((markup.match(/consentText: CONTACT_CONSENT_TEXT,/g) || []).length, 1, "the request must carry the line it showed");
+    assert.ok(!/consentText: (?!CONTACT_CONSENT_TEXT,)/.test(markup), "and never any other wording");
+  });
+
+  /* ==================================================================== */
   section("Account settings keep both choices, separate and unticked");
 
   await frontendTest("two separate boxes with the registered wording, neither pre-ticked", () => {
@@ -572,6 +696,21 @@ async function main() {
     }
     assert.ok(/Text me occasional ProFixter offers\./.test(src), "the marketing choice is here and only here");
     assert.ok(!/defaultChecked|checked=\{true\}/.test(src), "neither box may be pre-ticked");
+  });
+
+  await frontendTest("under the boxes: the sending number and all three documents, in a new tab", () => {
+    /* 2026-11-03: the documents behind both switches, at the switches. */
+    const markup = readMarkup(P.smsPrefs);
+    const start = markup.indexOf("<p", markup.indexOf("CHANNELS.map"));
+    const para = markup.slice(start, markup.indexOf("</p>", start) + 4);
+    assert.ok(para.includes("data-sms-documents"), "the line right after the two boxes must be the documents line");
+    assert.ok(renderedText(para).startsWith("Texts come from ProFixter at (631) 888-6340."), `the sending number: ${renderedText(para)}`);
+    for (const [href, text] of [["/communication-consent", "SMS Terms"], ["/privacy", "Privacy Policy"], ["/terms", "Terms of Service"]]) {
+      assert.ok(
+        new RegExp(`<a href="${href}" target="_blank" rel="noopener noreferrer"[^>]*>\\s*${text}\\s*</a>`).test(para),
+        `account settings must link ${text} (${href}) in a new tab`
+      );
+    }
   });
 
   await frontendTest("the sending number and the support number are distinguished", () => {
@@ -624,22 +763,41 @@ async function main() {
     }
   });
 
-  await frontendTest("the consent page names the booking step and settings as the only places", () => {
+  await frontendTest("the consent page names all five places consent is collected, and only those", () => {
+    /*
+     * It used to say "the booking step and your account settings are the only
+     * places" and "we do not accept verbal or paper opt-ins". From 2026-11-03
+     * both were false: the guest Free Visit line and a yes staff record on a
+     * call are consent too. The page must name every place, exclude the rest,
+     * and never bring the false claims back.
+     */
     const src = readText(P.consent);
-    assert.ok(
-      /The booking step and your account settings are the only places we collect SMS consent/i.test(src),
-      "the page must name the two places consent is collected and exclude everything else"
-    );
+    const shown = renderedText(readMarkup(P.consent));
+    assert.ok(/We collect SMS consent in these five places and nowhere else/i.test(src), "the page must name the places and exclude everything else");
+    for (const [what, pattern] of [
+      ["the booking step box", /The booking step \(signed in\): one optional, unchecked box, "Text me about my ProFixter visits"/],
+      ["the guest Free Visit request", /The Free Visit request form \(no account\): no checkbox/],
+      ["account settings", /Account settings: two separate, unchecked boxes/],
+      ["a call with staff", /A phone call with our staff, for texts about your visits only: staff must ask and record Yes or No; neither answer is pre-selected\. It is never used for marketing texts\./],
+      ["the confirmation page", /profixter\.com\/texts\/confirm, for marketing texts, used only once this method is registered with the carriers/],
+    ]) {
+      assert.ok(pattern.test(shown), `the consent page must describe ${what} exactly`);
+    }
+    assert.ok(shown.includes(`"${serverGuestLine()}"`), "the consent page must quote the guest line exactly");
     assert.ok(/Account sign-up collects no SMS consent/i.test(src), "the page must say sign-up collects none");
     assert.ok(/Twilio Verify/.test(src), "the page must say how the one-time code is sent");
     assert.ok(
-      /Marketing texts are offered only in account settings/i.test(src),
-      "marketing must be described as offered in settings only"
+      /Marketing texts are offered to customers only in account settings until the confirmation page is registered/i.test(src),
+      "marketing must be described as offered in settings only, until the confirmation page is registered"
     );
+    assert.ok(/We never send marketing texts on a yes given on a phone call/i.test(src), "a spoken yes never starts marketing");
     assert.ok(
       /Texting us does not by itself subscribe you/i.test(src),
       "the page must say texting in is not consent"
     );
+    for (const stale of [/only places we collect SMS consent/i, /do not accept verbal/i, /no verbal opt-in/i, /verbal or paper opt-ins/i, /"Text me about my visits"/]) {
+      assert.ok(!stale.test(shown), `the consent page still says something no longer true: ${stale}`);
+    }
   });
 
   await frontendTest("the consent-record claim matches what is actually stored", () => {
@@ -797,11 +955,57 @@ async function main() {
       /Accepting the Terms of Service is not SMS consent/i,
       /Texting ProFixter is not SMS consent/i,
       /Replying START or UNSTOP is not SMS consent/i,
-      /no verbal opt-in, no paper opt-in, no keyword opt-in, and no purchased, rented or shared list/i,
+      /There is no keyword opt-in, and no purchased, rented or shared list/i,
+      /A yes given on a phone call covers only texts about that caller(?:'|&apos;)s visits, and is never used for marketing texts/i,
+      /Marketing texts are never sent on what staff record/i,
     ];
     for (const claim of claims) {
       assert.ok(claim.test(src), `the evidence page is missing: ${claim}`);
     }
+  });
+
+  await frontendTest("it no longer makes the claims that stopped being true", () => {
+    /*
+     * "Exactly two places" and "no verbal opt-in" were true until the guest
+     * Free Visit line and staff-recorded agreement existed (2026-11-03). A
+     * reviewer who reads either and then meets the Free Visit form has found
+     * an undeclared opt-in - the 30896 finding.
+     */
+    const shown = renderedText(readMarkup(P.evidence));
+    for (const stale of [/exactly two places/i, /do not accept verbal/i, /do not accept paper/i, /no verbal opt-in/i, /no paper opt-in/i, /"Text me about my visits"/]) {
+      assert.ok(!stale.test(shown), `the evidence page still says something no longer true: ${stale}`);
+    }
+  });
+
+  await frontendTest("it lists every place consent is collected, each quoted exactly", () => {
+    const src = readText(P.evidence);
+    const markup = readMarkup(P.evidence);
+    const shown = renderedText(markup);
+    assert.ok(/SMS consent is collected in these five places, and nowhere else/i.test(src), "the page must list the places and exclude the rest");
+    for (const [what, pattern] of [
+      ["the booking step", /The booking step \(signed-in customers\) - one optional, unchecked box, "Text me about my ProFixter visits"/],
+      ["the guest request", /The Free Visit request form \(no account needed\) - .*There is no checkbox\..*pressing the button is the agreement\. It covers calls and texts about that one requested visit and nothing else, never marketing\./],
+      ["account settings", /This is the only place customers switch on marketing texts\./],
+      ["a call with staff", /A phone call with ProFixter staff - for texts about the caller's own visits only\. Staff must ask.*they must choose Yes or No, and neither is pre-selected\. The record names the staff member and the time\./],
+      ["the confirmation page", /The confirmation page profixter\.com\/texts\/confirm - for marketing texts, and only once this method is registered with the carriers\./],
+    ]) {
+      assert.ok(pattern.test(shown), `the evidence page must describe ${what}`);
+    }
+    /* Each screen's own words, as quoted wording blocks. */
+    for (const quote of [
+      serverGuestLine(),
+      "Texts come from ProFixter at (631) 888-6340.",
+      "Did they agree to texts about their visits?",
+      "Yes, text me occasional ProFixter offers",
+    ]) {
+      assert.ok(markup.includes(`quote="${quote}"`), `the evidence page must quote the screen exactly: ${quote}`);
+    }
+    /* What staff record is quoted from the records themselves. */
+    const adminPhone = VERSIONS()["sms_service.admin_phone.v1"].text;
+    assert.ok(shown.includes(`"${adminPhone}"`), "the staff-recorded wording must be quoted from sms_service.admin_phone.v1");
+    const visitRecord = readSource(path.join(__dirname, "..", "utils", "admin", "adminVisits.js"));
+    assert.ok(visitRecord.includes("text: `Agreed by phone to be contacted by call or text about this visit; recorded in Admin by ${"), "the guest visit record the page quotes");
+    assert.ok(shown.includes('"Agreed by phone to be contacted by call or text about this visit; recorded in Admin by" followed by the staff member\'s name'));
   });
 
   await frontendTest("it describes the registered flow: nothing at sign-up, both choices optional", () => {
@@ -823,7 +1027,7 @@ async function main() {
     assert.ok(!/Service SMS is required/i.test(src), "the old required-service claim must be gone");
     for (const quote of [
       registeredQuote("terms.continue.v1"),
-      registeredQuote("sms_service.booking.v1"),
+      registeredQuote("sms_service.booking.v2"),
       registeredQuote("sms_service.settings.v1"),
       registeredQuote("sms_marketing.settings.v1"),
     ]) {
@@ -833,8 +1037,8 @@ async function main() {
       );
     }
     assert.ok(
-      /only place marketing texts are offered/i.test(src),
-      "marketing must be described as offered in account settings only"
+      /only place customers switch on marketing texts/i.test(src),
+      "marketing must be described as switched on by customers in account settings only"
     );
     assert.ok(/Message frequency varies/.test(src) && /Message and data rates may apply/.test(src));
   });
@@ -846,25 +1050,28 @@ async function main() {
     }
   });
 
-  await frontendTest("it references the three Registration 2.0 screenshots, and no old one", () => {
+  await frontendTest("it references the four current screenshots, and no old one", () => {
     /*
      * The old five showed the three-box sign-up form, which no longer exists.
-     * Their files stay in public/ (history), but the page must not show them:
-     * a screenshot of a form that is gone is evidence of the wrong flow.
+     * The v2 three (2026-10-28) showed the old booking box and no Free Visit
+     * request. Their files stay in public/ (history), but the page must not
+     * show them: a screenshot of a screen that is gone is evidence of the
+     * wrong flow.
      */
     const src = readSource(P.evidence);
     const shots = [
-      "/compliance/a2p-v2-signup.png",
-      "/compliance/a2p-v2-booking.png",
-      "/compliance/a2p-v2-settings.png",
+      "/compliance/a2p-v3-signup.png",
+      "/compliance/a2p-v3-booking.png",
+      "/compliance/a2p-v3-free-visit.png",
+      "/compliance/a2p-v3-settings.png",
     ];
     for (const shot of shots) {
       assert.ok(src.includes(shot), `missing screenshot reference ${shot}`);
       const file = path.join(FRONTEND, "public", shot);
       assert.ok(fs.existsSync(file), `${shot} is referenced but not committed`);
     }
-    for (const old of ["a2p-signup-desktop", "a2p-signup-mobile", "a2p-signup-terms-separate", "a2p-registered-no-sms", "a2p-account-sms-switches"]) {
-      assert.ok(!src.includes(`/compliance/${old}.png`), `the evidence page still shows the old form: ${old}`);
+    for (const old of ["a2p-signup-desktop", "a2p-signup-mobile", "a2p-signup-terms-separate", "a2p-registered-no-sms", "a2p-account-sms-switches", "a2p-v2-signup", "a2p-v2-booking", "a2p-v2-settings"]) {
+      assert.ok(!src.includes(`/compliance/${old}.png`), `the evidence page still shows an old screen: ${old}`);
     }
   });
 

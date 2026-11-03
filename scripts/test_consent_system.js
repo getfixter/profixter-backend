@@ -17,7 +17,8 @@
  * Registration 2.0 (2026-10-28): the new sign-up asks for no SMS consent (codes
  * go through Twilio Verify, outside the campaign). Service texts are offered as
  * one optional unticked box at the booking step - recorded as
- * "sms_service.booking.v1" from source "booking_step" - and in settings;
+ * "sms_service.booking.v1" from source "booking_step" (v2 from 2026-11-03,
+ * with the brand in the label) - and in settings;
  * marketing texts in settings only, so the booking step may never grant them.
  *   - no fabrication: the audit changes nothing, unknown stays unknown, a
  *     guest's visit consent never becomes marketing, and a guest who later
@@ -244,9 +245,11 @@ async function main() {
     assert.strictEqual(h[0].purpose, "service");
     assert.strictEqual(h[0].source, "booking_step");
     assert.strictEqual(h[0].consentVersion, CURRENT.booking.service);
-    assert.strictEqual(h[0].consentVersion, "sms_service.booking.v1");
-    assert.strictEqual(h[0].consentText, VERSIONS["sms_service.booking.v1"].text);
-    assert.match(h[0].consentText, /"Text me about my visits" \(optional, unticked\)/, "the record names the box and that it was unticked");
+    /* v2 since 2026-11-03: the brand in the label, the documents linked at the box. */
+    assert.strictEqual(h[0].consentVersion, "sms_service.booking.v2");
+    assert.strictEqual(h[0].consentText, VERSIONS["sms_service.booking.v2"].text);
+    assert.match(h[0].consentText, /"Text me about my ProFixter visits" \(optional, unticked\)/, "the record names the box and that it was unticked");
+    assert.match(h[0].consentText, /Reply STOP to opt out or HELP for help\." followed by links to the SMS Terms/, "and the line and documents shown with it");
     assert.strictEqual((await consentStatusFor(u)).smsMarketing, "unknown", "marketing stays never-asked");
   });
 
@@ -297,7 +300,7 @@ async function main() {
     const Booking = require("../models/Booking");
     const phone = "+16315559555";
     const email = `guest${Date.now()}@homeowner-mail.net`;
-    await Booking.collection.insertOne({ guestRequestId: new mongoose.Types.ObjectId(), user: null, phone, email, status: "Pending Confirmation", guestContactConsent: { text: "By booking, you agree to be contacted by call or text about your visit", at: new Date() }, createdAt: new Date() });
+    await Booking.collection.insertOne({ guestRequestId: new mongoose.Types.ObjectId(), user: null, phone, email, status: "Pending Confirmation", guestContactConsent: { text: "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help.", at: new Date() }, createdAt: new Date() });
     const r = await fetch(`${base}/api/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

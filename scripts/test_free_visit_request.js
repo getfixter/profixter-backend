@@ -38,7 +38,14 @@ async function test(name, fn) {
   }
 }
 
+/*
+ * The line under the request button, word for word (FrontEnd FreeVisitForm).
+ * v2 since 2026-11-03: the brand, frequency and STOP/HELP. v1 is still
+ * accepted from a page loaded before the change, and stored as shown.
+ */
 const CONSENT =
+  "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help.";
+const CONSENT_V1 =
   "By booking, you agree to be contacted by call or text about your visit. Msg & data rates may apply.";
 
 async function waitFor(check, ms = 4000) {
@@ -205,9 +212,13 @@ async function main() {
     ["a single name", { name: "Jane" }, "INVALID_NAME"],
     ["no job description", { note: "fix" }, "NOTE_REQUIRED"],
     ["a different consent line", { consentText: "By booking you agree." }, "CONSENT_MISMATCH"],
+    ["the current line with STOP/HELP cut off", { consentText: CONSENT.replace(" Reply STOP to opt out or HELP for help.", "") }, "CONSENT_MISMATCH"],
+    ["no consent line at all", { consentText: "" }, "CONSENT_MISMATCH"],
     ["a day in the past", { requestedDate: "2020-01-01" }, "DATE_UNAVAILABLE"],
   ]) {
     await test(`refuses ${label}`, async () => {
+      // Every case comes from one test address; the hourly per-IP limit (10) is not what is being tested here.
+      require("../utils/rateLimit")._reset();
       const res = await post({ ...good, ...patch, eventId: `evt-${code}-${Math.random()}` });
       assert.strictEqual(res.status, 400, JSON.stringify(res.body));
       assert.strictEqual(res.body.code, code);
@@ -216,6 +227,25 @@ async function main() {
   await test("nothing was saved or sent for any refused request", async () => {
     assert.strictEqual(await Request.countDocuments({ serviceType: "free_visit_request" }), 1);
     assert.strictEqual(capi.length, 1);
+  });
+
+  await test("a page loaded before the v2 line still works, and stores the v1 line it showed", async () => {
+    require("../utils/rateLimit")._reset();
+    const day = futureSlot(4);
+    const old = await post({ ...good, phone: "(631) 555-0166", email: "old.page@example.com", requestedDate: day.date, requestedTime: day.time, consentText: CONSENT_V1, eventId: "evt-free-visit-v1" });
+    assert.strictEqual(old.status, 201, JSON.stringify(old.body));
+    const row = await Request.findById(old.body.requestId).lean();
+    assert.strictEqual(row.contactConsent.text, CONSENT_V1, "the stored evidence is the sentence that person saw, not the current one");
+    assert.ok(row.contactConsent.at);
+    /* Its own request-received text passes on that stored line (and the background sends finish before the database closes). */
+    const sms = await waitFor(async () => {
+      const r = await SmsMessage.find({ toPhone: "+16315550166" }).lean();
+      return r.length >= 1 && r.every((m) => m.status !== "pending") ? r : null;
+    }, 10000);
+    const received = (sms || []).find((m) => m.notificationType === "FREE_VISIT_REQUEST_RECEIVED");
+    assert.ok(received, "the request-received text was attempted");
+    assert.strictEqual(received.status, "simulated", received.suppressionReason);
+    await waitFor(() => emails.filter((m) => String(m.to || "").includes("old.page@example.com")).length >= 1, 10000);
   });
 
   console.log("\nThe consent rule stays narrow");

@@ -25,7 +25,8 @@ const { setCommunicationPreference } = require("./communicationControls");
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EMAIL_KEY = "admin_account_created";
-const DEFAULT_COMMUNICATION = { "service.sms": true, "service.email": true, "marketing.sms": true, "marketing.email": true };
+// Texts are never assumed (2026-11-03): staff answer the service-text question, and a call never qualifies marketing texts.
+const DEFAULT_COMMUNICATION = { "service.sms": false, "service.email": true, "marketing.sms": false, "marketing.email": true };
 
 class CustomerAccessError extends Error {
   constructor(code, message, status = 400, extra = {}) {

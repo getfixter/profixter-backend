@@ -43,6 +43,15 @@ const VERSIONS = {
     purpose: "service",
     text: 'Checkbox "Text me about my visits" (optional, unticked) at the booking step, linking to profixter.com/communication-consent#service-texts: booking confirmations, appointment reminders and arrival updates. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.',
   },
+  /*
+   * 2026-11-03: the brand in the label and the documents linked at the box.
+   * v1 stays: rows recorded under it name it.
+   */
+  "sms_service.booking.v2": {
+    channel: "sms",
+    purpose: "service",
+    text: 'Checkbox "Text me about my ProFixter visits" (optional, unticked) at the booking step: "Optional. Booking confirmations, appointment reminders and arrival updates. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help." followed by links to the SMS Terms (profixter.com/communication-consent#service-texts), the Privacy Policy and the Terms of Service.',
+  },
   "terms.continue.v1": {
     channel: "terms",
     purpose: "terms",
@@ -100,7 +109,7 @@ const CURRENT = {
   signup: { service: "sms_service.signup.v1", marketing: "sms_marketing.signup.v1" },
   sms_settings: { service: "sms_service.settings.v1", marketing: "sms_marketing.settings.v1" },
   email_settings: { marketing: "email_marketing.settings.v1" },
-  booking: { service: "sms_service.booking.v1" },
+  booking: { service: "sms_service.booking.v2" },
   continue_terms: "terms.continue.v1",
   admin_phone: {
     service: "sms_service.admin_phone.v1",
