@@ -2,6 +2,7 @@ const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
 const stripe = require("stripe")(STRIPE_SECRET_KEY || "sk_test_missing_stripe_secret_key");
 const Subscription = require("../models/Subscription");
 const User = require("../models/User");
+const { stampFirstVisitExemption } = require("./membershipFirstVisit");
 
 function hasStripeSecretKey() {
   return !!STRIPE_SECRET_KEY;
@@ -1277,6 +1278,8 @@ async function upsertSubscriptionRecordFromStripe({
   subscription.stripeCheckoutSessionId =
     stripeCheckoutSessionId || subscription.stripeCheckoutSessionId || null;
   subscription.billingCycle = billingCycle;
+  // A membership bought after booking its first visit: that visit may come sooner than the member lead time.
+  stampFirstVisitExemption(subscription, metadata);
   subscription.startDate =
     toDate(canonicalStripeSubscription.start_date) || subscription.startDate || new Date();
   const period = handleCurrentPeriodStartEnd(canonicalStripeSubscription);

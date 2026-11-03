@@ -73,6 +73,8 @@ const BookingSlotReservationSchema = new mongoose.Schema(
      * the customer's hold token is kept; the token itself proves ownership.
      */
     signInHold: { type: Boolean, default: false, index: true },
+    /* A sign-in hold carried into a membership checkout: the Stripe page it belongs to (utils/membershipFirstVisit). */
+    checkoutSessionId: { type: String, default: null },
     holdSecretHash: { type: String, default: "" },
     releasedAt: { type: Date, default: null },
     releaseReason: { type: String, trim: true, maxlength: 500, default: "" },

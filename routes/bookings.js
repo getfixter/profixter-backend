@@ -13,6 +13,12 @@ const mongoose = require("mongoose");
 const moment = require("moment-timezone");
 
 const Booking = require("../models/Booking");
+const {
+  firstVisitExemptionActive,
+  claimFirstVisitExemption,
+  releaseFirstVisitExemption,
+  attachFirstVisitBooking,
+} = require("../utils/membershipFirstVisit");
 const User = require("../models/User");
 const { contactRequiredBody, missingBookingContact } = require("../utils/bookingContact");
 const Subscription = require("../models/Subscription");
@@ -1958,6 +1964,8 @@ router.post(
     let bookingCommitted = false;
     // Declared out here so the catch block can release a reserved offer.
     let introVisitClaimed = false;
+    // The new membership's first-visit exemption, spent just before the booking is written.
+    let firstVisitClaimedFor = null;
     let lifetimeCheck = null;
     let clientKey = "";
 
@@ -2058,9 +2066,23 @@ router.post(
        * endpoints and are untouched. So is anything an administrator books —
        * this route is the customer's.
        */
+      /*
+       * Except the first visit of a membership bought after booking it
+       * (utils/membershipFirstVisit): that one may take the time the customer
+       * held before paying. Read here; spent atomically below.
+       */
+      const firstVisitExempt = Boolean(activeSub) && firstVisitExemptionActive(activeSub);
+      // A retry of the press that spent it (a dropped connection, a second tap): the booking it already made.
+      const spentOn = activeSub?.firstVisitExemption?.bookingId;
+      if (spentOn && !firstVisitExempt) {
+        const made = await Booking.findOne({ _id: spentOn, user: me._id }).lean();
+        if (made && new Date(made.date).getTime() === bookingDate.getTime() && !/cancel/i.test(String(made.status || ""))) {
+          return res.json(bookingCreatedBody(made, { duplicate: true }));
+        }
+      }
       if (activeSub) {
         const requestedYMD = bookingYMD(bookingDate);
-        if (isBeforeEarliestMemberVisit(requestedYMD)) {
+        if (isBeforeEarliestMemberVisit(requestedYMD) && !firstVisitExempt) {
           const earliest = earliestMemberVisitYMD();
           return res.status(400).json({
             code: MEMBER_VISIT_LEAD_ERROR_CODE,
@@ -2328,6 +2350,17 @@ router.post(
         bookingData.status = "Pending Confirmation";
       };
       if (usingFreeFirstVisit && lifetimeCheck) applyLifetime(lifetimeCheck);
+      // The first booking of the membership spends its exemption, whatever the date; two at once cannot both have it.
+      if (firstVisitExempt) {
+        if (await claimFirstVisitExemption(activeSub._id)) firstVisitClaimedFor = activeSub._id;
+        else if (isBeforeEarliestMemberVisit(bookingYMD(bookingDate))) {
+          return res.status(400).json({
+            code: MEMBER_VISIT_LEAD_ERROR_CODE,
+            message: memberVisitLeadMessage(),
+            earliestBookableDate: earliestMemberVisitYMD(),
+          });
+        }
+      }
       let booking;
       if (useReservationEngine) {
         // Their own sign-in hold on this time (Book a Handyman) gives way to the booking.
@@ -2368,6 +2401,7 @@ router.post(
         });
       }
       bookingCommitted = true;
+      if (firstVisitClaimedFor) await attachFirstVisitBooking(firstVisitClaimedFor, booking._id).catch(() => null);
 
       // The offer was already reserved atomically before creation. Link the
       // booking to it so cancellation and completion can reconcile later.
@@ -2532,6 +2566,12 @@ router.post(
       // The introductory offer was reserved before booking creation. If the
       // booking never committed, hand it back so the customer is not left
       // holding a claim they could not use. Never releases a consumed offer.
+      try {
+        if (firstVisitClaimedFor && !bookingCommitted) await releaseFirstVisitExemption(firstVisitClaimedFor);
+      } catch (releaseError) {
+        console.error("releaseFirstVisitExemption failed:", releaseError?.message);
+      }
+
       try {
         if (introVisitClaimed && !bookingCommitted) {
           await releaseIntroVisitClaim({

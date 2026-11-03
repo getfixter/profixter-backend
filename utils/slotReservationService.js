@@ -1455,8 +1455,12 @@ async function createBookingWithReservation({
  * When the real booking is made, the route releases the hold and reserves
  * the time for the booking straight after (consumeSignInHold), so the
  * customer's own hold never stands in their way.
+ *
+ * Thirty minutes (2026-11-03, was 20): long enough to register, choose a
+ * membership and reach Stripe. A membership checkout then extends it to cover
+ * the Stripe page (utils/membershipFirstVisit).
  */
-const SIGN_IN_HOLD_MINUTES = 20;
+const SIGN_IN_HOLD_MINUTES = 30;
 const crypto = require("crypto");
 
 function hashHoldSecret(secret) {
@@ -1570,6 +1574,23 @@ async function createSignInHold({ slotStart, token = null, minutes = SIGN_IN_HOL
     }
     throw error;
   }
+}
+
+/**
+ * A membership checkout page expired unpaid: free the hold it was opened with.
+ * Only when the hold still belongs to that page - a newer checkout for the
+ * same visit re-tags the hold, and the old page's expiry must not free it.
+ */
+async function releaseCheckoutHold({ holdId, checkoutSessionId, reason = "Membership checkout expired unpaid" }) {
+  if (!mongoose.isValidObjectId(holdId) || !checkoutSessionId) return { released: false };
+  let released = false;
+  await runReservationTransaction(async (session) => {
+    const hold = await BookingSlotReservation.findOne({ _id: holdId, signInHold: true, status: "held", checkoutSessionId }).session(session);
+    if (!hold) return;
+    await releaseHoldDocument(hold, session, reason);
+    released = true;
+  });
+  return { released };
 }
 
 /**
@@ -2597,6 +2618,7 @@ module.exports = {
   createBookingWithReservation,
   createSignInHold,
   releaseSignInHold,
+  releaseCheckoutHold,
   slotSeatsInUse,
   companySlotCapacity,
   consumeSignInHold,

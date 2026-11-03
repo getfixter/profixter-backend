@@ -219,7 +219,8 @@ async function run() {
   const bookings = read("../routes/bookings.js");
   assert.match(
     bookings,
-    /if \(activeSub\) \{\s*const requestedYMD = bookingYMD\(bookingDate\);\s*if \(isBeforeEarliestMemberVisit\(requestedYMD\)\)/,
+    // The one exception is a new membership's first visit, booked before paying (utils/membershipFirstVisit), spent once.
+    /if \(activeSub\) \{\s*const requestedYMD = bookingYMD\(bookingDate\);\s*if \(isBeforeEarliestMemberVisit\(requestedYMD\) && !firstVisitExempt\)/,
     "member bookings inside the window must still be refused server-side"
   );
   assert.match(bookings, /code: "SLOT_UNAVAILABLE"/, "taken slots must still be refused server-side");

@@ -45,6 +45,7 @@ const {
   cancelBookingWithReservation,
   promoteHeldReservationForBooking,
   reservationEngineEnabled,
+  releaseCheckoutHold,
 } = require("../utils/slotReservationService");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
@@ -2602,6 +2603,9 @@ module.exports = async (req, res) => {
            * throws, so it cannot fail this event.
            */
           await proposeCheckoutRecovery(event.data.object, findUserForStripeObject);
+          // Booked before paying (utils/membershipFirstVisit): the visit time held for this page goes back on the calendar.
+          const holdId = event.data.object?.metadata?.firstVisitHoldId;
+          if (holdId) await releaseCheckoutHold({ holdId, checkoutSessionId: event.data.object.id });
         }
         break;
 

@@ -56,6 +56,17 @@ const SubscriptionSchema = new mongoose.Schema(
       index: true,
     },
 
+    /*
+     * Bought after booking the first visit (utils/membershipFirstVisit): that
+     * first visit may take an open time sooner than the member seven-day rule.
+     * Granted once from the checkout's metadata; spent by the first booking.
+     */
+    firstVisitExemption: {
+      grantedAt: { type: Date, default: null },
+      usedAt: { type: Date, default: null },
+      bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null },
+    },
+
     status: {
       type: String,
       enum: [

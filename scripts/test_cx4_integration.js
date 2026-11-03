@@ -365,7 +365,8 @@ async function main() {
       assert.ok(hold.signInHold && hold.status === "held" && hold.holdExpiresAt > new Date());
       assert.ok(!(await Booking.exists({ _id: hold.bookingId })), "no booking exists for it");
       const minutes = (new Date(hold.holdExpiresAt) - Date.now()) / 60000;
-      assert.ok(minutes > 19 && minutes <= 20, `${minutes}`);
+      // Thirty minutes since 2026-11-03 (long enough to register, choose a plan and reach Stripe).
+      assert.ok(minutes > 29 && minutes <= 30, `${minutes}`);
     });
     const otherA = await User.create({ userId: "70000011", name: "Ana Other", email: "ana@mailbox.org", phone: "+15165550161", role: "customer", addresses: [{ line1: "1 Oak St", city: "Farmingdale", state: "NY", zip: "11735" }] });
     const otherB = await User.create({ userId: "70000012", name: "Ben Other", email: "ben@mailbox.org", phone: "+15165550162", role: "customer", addresses: [{ line1: "2 Oak St", city: "Farmingdale", state: "NY", zip: "11735" }] });

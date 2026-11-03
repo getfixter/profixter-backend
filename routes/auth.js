@@ -3,6 +3,7 @@ const { linkGuestFreeVisitsQuietly } = require("../utils/freeVisit/guestLink");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
+const { firstVisitExemptionActive } = require("../utils/membershipFirstVisit");
 const { normalizeEmail, normalizePhoneE164 } = require("../utils/identity");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
@@ -65,6 +66,8 @@ function authUserDTO(user, coverageMap) {
      * matters instead of up front, and never re-ask for what it has.
      */
     phoneVerified: Boolean(user.phoneVerifiedAt),
+    /* A new account that must verify a mobile number before anything else (phoneRequiredFor). */
+    phoneRequired: phoneRequiredFor(user),
     emailVerified: Boolean(user.emailVerifiedAt),
     emailIsAppleRelay: Boolean(user.emailIsAppleRelay),
     hasPassword: Boolean(user.password),
@@ -140,7 +143,7 @@ async function buildPerAddressCoverage(user) {
     if (!s.addressId) continue;
 
     const key = String(s.addressId);
-    if (!map[key]) map[key] = { active: true, plan, source: "subscription" };
+    if (!map[key]) map[key] = { active: true, plan, source: "subscription", firstVisitExempt: firstVisitExemptionActive(s) };
   }
 
   const addrless = subs.find((s) => subscriptionGrantsAccess(s) && !s.addressId);
@@ -245,7 +248,25 @@ function toAddressDTOWithCoverage(a, coverageMap) {
      */
     paidPlan: c.paidPlan || null,
     loyaltyUpgrade: c.loyaltyUpgrade || null,
+    /* A membership bought after booking its first visit, not yet booked: that visit is not held to the member lead time. */
+    firstVisitExempt: Boolean(c.active && c.firstVisitExempt),
   };
+}
+
+/*
+ * Every customer account made from 2026-11-03 must verify a mobile number
+ * before it is set up (the Fixter reaches them on the day). Phone sign-ups
+ * verify one to get in; email-code, Google and Apple sign-ups are asked for
+ * it straight after (the site's PhoneRequiredGate) until they do. Older
+ * accounts, staff and Admin-made customers are never asked by this rule.
+ */
+const PHONE_REQUIRED_SINCE = new Date(process.env.PHONE_REQUIRED_SINCE || "2026-11-03T05:00:00Z");
+const PHONE_REQUIRED_METHODS = ["email_code", "google", "apple"];
+function phoneRequiredFor(user) {
+  if (!user || user.phoneVerifiedAt || isEmployeeRecord(user) || user.role === "admin") return false;
+  if (!PHONE_REQUIRED_METHODS.includes(String(user.signupMethod || ""))) return false;
+  const created = user.createdAt ? new Date(user.createdAt) : null;
+  return Boolean(created && created >= PHONE_REQUIRED_SINCE);
 }
 
 // Cold-lead matching (findBestLeadMatch, markLeadRegistered) lives in

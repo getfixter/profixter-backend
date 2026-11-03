@@ -4,6 +4,15 @@ const auth = require("../middleware/auth");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const { CLIENT_URL, CheckoutRefusal, openMembershipCheckout } = require("../utils/membershipCheckout");
+const { createSignInHold, reservationEngineEnabled } = require("../utils/slotReservationService");
+const {
+  readFirstVisit,
+  firstVisitExemptionEligible,
+  checkoutExpiry,
+  holdMinutesForCheckout,
+  firstVisitCheckoutMetadata,
+  tagHoldWithCheckout,
+} = require("../utils/membershipFirstVisit");
 const {
   WELCOME_OFFER_PERCENT,
   WELCOME_CHECKOUT_LIFETIME_S,
@@ -160,12 +169,48 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         });
       }
     }
+    /*
+     * Booked before paying (utils/membershipFirstVisit): the time they chose is
+     * held through the Stripe page, which expires with it. A time that is gone
+     * refuses the checkout, so nobody pays for a visit we cannot keep.
+     */
+    const firstVisit = readFirstVisit(req.body?.firstVisit);
+    let firstVisitMetadata = {};
+    let firstVisitHoldToken = "";
+    let firstVisitHoldExpiresAt = null;
+    if (firstVisit) {
+      if (firstVisit.slotStart <= new Date()) {
+        return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time has passed. Pick another - everything else is saved." });
+      }
+      firstVisitHoldToken = firstVisit.holdToken;
+      if (reservationEngineEnabled()) {
+        // An older checkout page for this visit must not free the hold when it expires.
+        await tagHoldWithCheckout(firstVisit.holdToken, null);
+        try {
+          const hold = await createSignInHold({ slotStart: firstVisit.slotStart, token: firstVisit.holdToken || null, minutes: holdMinutesForCheckout() });
+          firstVisitHoldToken = hold.token;
+          firstVisitHoldExpiresAt = hold.holdExpiresAt;
+        } catch (error) {
+          if (error?.code === "SLOT_UNAVAILABLE") {
+            return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time was just taken. Pick another - everything else is saved." });
+          }
+          throw error;
+        }
+      }
+      firstVisitMetadata = firstVisitCheckoutMetadata({
+        exempt: await firstVisitExemptionEligible(req.user.id),
+        requestedDate: firstVisit.requestedDate,
+        requestedTime: firstVisit.requestedTime,
+        holdToken: firstVisitHoldToken,
+      });
+    }
     const { session, eventId, trialEndUnix, welcomeOfferApplied } = await openMembershipCheckout({
       userId: req.user.id,
       plan,
       billingCycle,
       addressId,
       welcomeOffer,
+      ...(firstVisit ? { metadata: firstVisitMetadata, expiresAt: checkoutExpiry() } : {}),
       /*
        * Started from Book a Handyman: the confirmation page still runs (it
        * fires the Subscribe the ad accounts count) and then hands the
@@ -185,10 +230,13 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         userAgent: req.headers["user-agent"] || "",
       },
     });
+    if (firstVisitHoldToken) await tagHoldWithCheckout(firstVisitHoldToken, session.id).catch(() => null);
     return res.status(200).json({
       url: session.url,
       eventId,
       sessionId: session.id,
+      // The hold may have been renewed under a new token (an expired one cannot be extended).
+      ...(firstVisit ? { holdToken: firstVisitHoldToken || null, holdExpiresAt: firstVisitHoldExpiresAt, firstVisitExempt: firstVisitMetadata.firstVisitExempt === "1" } : {}),
       // So the screen can say when the first charge happens instead of
       // leaving the customer to discover it on a statement.
       billingStartsAt: trialEndUnix ? new Date(trialEndUnix * 1000).toISOString() : null,

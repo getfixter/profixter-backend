@@ -4,9 +4,12 @@ const { PUBLIC_CONTACT_EMAIL } = require("./publicContact");
 
 const API_URL = String(process.env.PUBLIC_API_URL || process.env.API_URL || "").replace(/\/+$/, "");
 const REPLY_TO = process.env.MAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL;
-const LOGO_URL =
-  process.env.BRAND_LOGO_URL ||
-  "https://profixter-assets.s3.us-east-1.amazonaws.com/mrfixter-logoBlackText.png";
+/*
+ * The Profixter logo badge (2026-11-03), a 340px PNG served by the website so
+ * email clients that refuse WebP still show it. A default in code, not an EB
+ * variable: the environment's variables are at AWS's 4096-character limit.
+ */
+const LOGO_URL = process.env.BRAND_LOGO_URL || "https://www.profixter.com/images/profixter-logo-email.png";
 
 function escapeHtml(value = "") {
   return String(value)
