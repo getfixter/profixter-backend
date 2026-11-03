@@ -122,3 +122,46 @@ after the campaign shows VERIFIED with this flow.
 
 Before submitting, make sure /sms-consent-example shows the current booking
 checkbox and account settings (reviewers open it).
+
+## Automatic service-text enrollment at phone verification (NOT enabled, 2026-11-03)
+
+The owner asked whether service texts (booking confirmations, reminders,
+arrival updates) could switch on automatically once a customer verifies a
+mobile number. **They do not, and must not, until everything below is done.**
+Every new account must now verify a phone (PhoneRequiredGate), so agreeing to
+texts "by continuing" would make text consent a condition of having an
+account. That is the pattern carriers rejected as error 30923 ("consent
+required for service"), and it would also contradict what the public evidence
+pages (/sms-consent-example, /communication-consent, /privacy, /terms) say.
+Today, service texts are an optional, unticked "Text me about my visits" box at
+booking (now in Book a Handyman too) and a switch in account settings, and
+service email is on by default.
+
+Before automatic enrollment could even be considered:
+
+1. **Legal check (owner's counsel).** Confirm that, for informational texts, a
+   number the customer provides and verifies for their visits, with a clear
+   disclosure, counts as prior express consent for us, and that requiring the
+   number for an account does not make the texts "a condition of purchase".
+2. **Make it separable on screen.** The customer must be able to verify a
+   phone *without* agreeing to texts. That means either a visible, optional
+   choice on the phone step (e.g. "Also text me about my visits", unticked), or
+   a disclosure plus a one-tap "No thanks" that is just as easy as continuing.
+   A pre-ticked box is not consent.
+3. **Re-register the message flow with Twilio** (Console only; a VERIFIED
+   campaign cannot be edited by API - see "Order of operations" above). The
+   new flow must describe the phone-verification screen exactly: where it
+   appears (sign-up, sign-in, "Add your mobile number"), the exact wording, the
+   opt-out on screen, that consent is optional and not required to create an
+   account or book, and the STOP/HELP language. Attach a screenshot of each
+   screen. Wait until Twilio shows the campaign VERIFIED with the new flow.
+4. **Update every public statement to match**: /sms-consent-example (it says
+   "Sign-up collects no SMS consent"), /communication-consent, /privacy and
+   /terms, and the pinned checks in scripts/test_a2p_public_evidence.js.
+5. **Record it as its own consent version** in utils/consent/consentText.js
+   (word-for-word screen text), write a ConsentEvent for each enrollment, and
+   never override a customer's own "off" or a STOP (smsEligibility already
+   refuses both at send time).
+6. **Only then** switch it on in code, behind a code default (EB environment
+   variables are at AWS's 4096-character limit, so a new env flag cannot be
+   added without removing others).

@@ -47,6 +47,7 @@ const {
   reservationEngineEnabled,
   releaseCheckoutHold,
 } = require("../utils/slotReservationService");
+const { markFirstVisitPaid, markFirstVisitExpired, fulfillFirstVisitDraft } = require("../utils/membershipFirstVisitFulfillment");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const {
@@ -1759,6 +1760,19 @@ async function handleCheckoutCompleted(session, eventId) {
 
   await alertIfHomeBilledTwice({ user, subscription, stripeSubscription });
 
+  /*
+   * The first visit they booked before paying (utils/membershipFirstVisitFulfillment):
+   * booked now, exactly once, whether or not they come back to the website.
+   * Never fails this event - a draft that could not be finished stays "paid"
+   * and the sweep (jobs/oneTimeVisitHolds.js) retries it, then hands it to Admin.
+   */
+  try {
+    const draft = await markFirstVisitPaid(session, subscription);
+    if (draft) await fulfillFirstVisitDraft(draft._id);
+  } catch (error) {
+    logWebhook("error", "first_visit_fulfillment_deferred", { stripeSessionId: session.id, message: String(error?.message || error).slice(0, 200) });
+  }
+
   const plan = String(subscription.subscriptionType || "").toLowerCase();
   const billingCycle = subscription.billingCycle || "monthly";
   const value = subscription.planPrice || getPlanPrice(plan, billingCycle);
@@ -2606,6 +2620,7 @@ module.exports = async (req, res) => {
           // Booked before paying (utils/membershipFirstVisit): the visit time held for this page goes back on the calendar.
           const holdId = event.data.object?.metadata?.firstVisitHoldId;
           if (holdId) await releaseCheckoutHold({ holdId, checkoutSessionId: event.data.object.id });
+          await markFirstVisitExpired(event.data.object);
         }
         break;
 

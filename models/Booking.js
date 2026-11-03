@@ -168,6 +168,8 @@ const BookingSchema = new mongoose.Schema({
   // sending real photos: a key from utils/bookingLibrary.js, never an image
   // URL. Empty on every booking that did not use the library.
   libraryReference: { type: String, trim: true, default: "" },
+  /* Booked by the Stripe webhook from a membership first-visit draft (utils/membershipFirstVisitFulfillment). */
+  firstVisitDraftId: { type: mongoose.Schema.Types.ObjectId, default: undefined },
   contentUpdates: [
     {
       actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

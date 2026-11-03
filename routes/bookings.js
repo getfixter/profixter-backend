@@ -19,6 +19,13 @@ const {
   releaseFirstVisitExemption,
   attachFirstVisitBooking,
 } = require("../utils/membershipFirstVisit");
+const {
+  createFirstVisitDraft,
+  fulfillFirstVisitDraft,
+  closeFirstVisitDraftsFor,
+  firstVisitDraftView,
+} = require("../utils/membershipFirstVisitFulfillment");
+const MembershipFirstVisitDraft = require("../models/MembershipFirstVisitDraft");
 const User = require("../models/User");
 const { contactRequiredBody, missingBookingContact } = require("../utils/bookingContact");
 const Subscription = require("../models/Subscription");
@@ -1217,6 +1224,88 @@ router.post(
 );
 
 /*
+ * A membership's first visit, saved before the Stripe page opens
+ * (utils/membershipFirstVisitFulfillment): the job, the home, the photos and
+ * the held time, so the Stripe webhook books it once the payment is confirmed
+ * - whether or not the customer comes back. Photos are sanitized and stored
+ * exactly as a booking's are. The checkout then names this draft.
+ */
+router.post(
+  "/first-visit-draft",
+  auth,
+  ensureNotBlacklisted,
+  upload.array("images", MAX_PHOTOS),
+  sanitizeUploadedPhotos,
+  async (req, res) => {
+    try {
+      const me = await User.findById(req.user.id);
+      if (!me) return res.status(404).json({ message: "User not found" });
+      const addressId = String(req.body?.addressId || "");
+      const home = mongoose.isValidObjectId(addressId) ? me.addresses?.id?.(addressId) : null;
+      if (!home) return res.status(400).json({ message: "Address not found on your account.", code: "ADDRESS_REQUIRED" });
+      const date = String(req.body?.requestedDate || "");
+      const time = String(req.body?.requestedTime || "");
+      const start = /^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}$/.test(time) ? moment.tz(`${date} ${time}`, "YYYY-MM-DD HH:mm", true, "America/New_York") : null;
+      if (!start?.isValid() || start.isBefore(moment())) {
+        return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time has passed. Pick another - everything else is saved." });
+      }
+      const task = String(req.body?.note || req.body?.service || "").trim();
+      if (task.split(/\s+/).filter(Boolean).length < 3) return res.status(400).json({ message: "Tell us in a few words what needs doing.", code: "TASK_REQUIRED" });
+      const { images, uploadedS3Keys } = await uploadBookingImages({ files: req.files || [], bookingDate: start.toDate(), bookingNumber: `fv${Date.now()}` });
+      const draft = await createFirstVisitDraft({
+        user: me,
+        addressId: home._id,
+        service: task.slice(0, 120),
+        note: task,
+        images,
+        s3Keys: uploadedS3Keys,
+        requestedDate: date,
+        requestedTime: time,
+        slotStart: start.toDate(),
+        holdToken: String(req.body?.holdToken || ""),
+      });
+      return res.status(201).json({ draftId: String(draft._id) });
+    } catch (error) {
+      console.error("first visit draft failed:", error.message);
+      return res.status(500).json({ message: "Could not save your visit. Please try again." });
+    }
+  }
+);
+
+/* Where the customer's first visit stands (the success page shows this; it never books anything). */
+router.get("/first-visit-draft/:id", auth, async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Not found" });
+  const view = await firstVisitDraftView(req.params.id, req.user.id);
+  if (!view) return res.status(404).json({ message: "Not found" });
+  return res.json(view);
+});
+
+/*
+ * The success page's "finish it now": only for the customer's own draft, only
+ * when Stripe itself says the checkout is complete and paid, and then through
+ * the same exactly-once fulfillment the webhook uses.
+ */
+router.post("/first-visit-draft/:id/fulfill", auth, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const draft = await MembershipFirstVisitDraft.findOne({ _id: req.params.id, user: req.user.id });
+    if (!draft) return res.status(404).json({ message: "Not found" });
+    if (["draft", "checkout_open"].includes(draft.status) && draft.checkoutSessionId) {
+      const session = await stripe.checkout.sessions.retrieve(draft.checkoutSessionId);
+      const paid = session?.status === "complete" && ["paid", "no_payment_required"].includes(String(session?.payment_status || ""));
+      if (paid) {
+        await MembershipFirstVisitDraft.updateOne({ _id: draft._id, status: { $in: ["draft", "checkout_open"] } }, { $set: { status: "paid", paidAt: new Date() } });
+      }
+    }
+    await fulfillFirstVisitDraft(draft._id);
+    return res.json(await firstVisitDraftView(draft._id, req.user.id));
+  } catch (error) {
+    console.error("first visit fulfill (success page) failed:", error.message);
+    return res.status(500).json({ message: "We're still confirming your payment." });
+  }
+});
+
+/*
  * Book a Handyman: hold the chosen time while the customer signs in or
  * registers (utils/slotReservationService createSignInHold). Public - the
  * customer has no account yet - so it is rate limited, takes only a day and a
@@ -2401,7 +2490,11 @@ router.post(
         });
       }
       bookingCommitted = true;
-      if (firstVisitClaimedFor) await attachFirstVisitBooking(firstVisitClaimedFor, booking._id).catch(() => null);
+      if (firstVisitClaimedFor) {
+        await attachFirstVisitBooking(firstVisitClaimedFor, booking._id).catch(() => null);
+        // A first visit the server could not book (needs_admin) is now booked by the customer: close it.
+        await closeFirstVisitDraftsFor(firstVisitClaimedFor, booking._id).catch(() => null);
+      }
 
       // The offer was already reserved atomically before creation. Link the
       // booking to it so cancellation and completion can reconcile later.

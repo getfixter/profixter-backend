@@ -13,6 +13,7 @@ const {
   firstVisitCheckoutMetadata,
   tagHoldWithCheckout,
 } = require("../utils/membershipFirstVisit");
+const { draftForCheckout, attachDraftToCheckout } = require("../utils/membershipFirstVisitFulfillment");
 const {
   WELCOME_OFFER_PERCENT,
   WELCOME_CHECKOUT_LIFETIME_S,
@@ -176,6 +177,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
      */
     const firstVisit = readFirstVisit(req.body?.firstVisit);
     let firstVisitMetadata = {};
+    let firstVisitDraft = null;
     let firstVisitHoldToken = "";
     let firstVisitHoldExpiresAt = null;
     if (firstVisit) {
@@ -203,6 +205,24 @@ router.post("/create-checkout-session", auth, async (req, res) => {
         requestedTime: firstVisit.requestedTime,
         holdToken: firstVisitHoldToken,
       });
+      /*
+       * The saved visit this payment books (utils/membershipFirstVisitFulfillment):
+       * the webhook books it when Stripe confirms the payment, with or without
+       * the customer coming back. It must be theirs, for this home and time.
+       */
+      if (req.body?.firstVisit?.draftId) {
+        firstVisitDraft = await draftForCheckout({
+          draftId: String(req.body.firstVisit.draftId),
+          userId: req.user.id,
+          addressId,
+          requestedDate: firstVisit.requestedDate,
+          requestedTime: firstVisit.requestedTime,
+        });
+        if (!firstVisitDraft) {
+          return res.status(409).json({ code: "FIRST_VISIT_DRAFT_INVALID", message: "Your visit details changed. Please review them and continue again." });
+        }
+        firstVisitMetadata.firstVisitDraftId = String(firstVisitDraft._id);
+      }
     }
     const { session, eventId, trialEndUnix, welcomeOfferApplied } = await openMembershipCheckout({
       userId: req.user.id,
@@ -231,6 +251,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       },
     });
     if (firstVisitHoldToken) await tagHoldWithCheckout(firstVisitHoldToken, session.id).catch(() => null);
+    if (firstVisitDraft) await attachDraftToCheckout(firstVisitDraft, { checkoutSessionId: session.id, holdToken: firstVisitHoldToken });
     return res.status(200).json({
       url: session.url,
       eventId,

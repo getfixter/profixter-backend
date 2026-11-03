@@ -16,6 +16,16 @@
  *    after 30 days. An existing member's normal booking keeps the seven days.
  *  - /api/auth/me: firstVisitExempt per home; phoneRequired for new
  *    email/Google/Apple accounts without a verified phone, never for older ones.
+ *  - Server-side fulfillment (utils/membershipFirstVisitFulfillment): the visit
+ *    (job, home, photos, time, hold) is saved before Stripe; a paid checkout
+ *    books exactly one visit from the webhook alone - the customer never comes
+ *    back - awaiting approval; replays, duplicate events and concurrent calls
+ *    book once; a late webhook with a free slot still books; a taken slot is
+ *    recorded for Admin (activity log, owner and customer emailed, exemption
+ *    kept) and closes when the customer rebooks; an existing member inside the
+ *    seven days goes to Admin; the success page reads (and, once Stripe says
+ *    paid, finishes) the draft; the sweep finishes what the webhook could not;
+ *    an expired page drops the draft.
  *
  * Stripe, S3 and email are faked; SMS is rendered and recorded, never sent.
  *
@@ -72,9 +82,10 @@ async function main() {
   s3.putPublicObject = async ({ Key }) => `https://test-bucket.s3.amazonaws.com/${Key}`;
   s3.deletePublicObjects = async () => ({ deleted: 0 });
   const mail = require("../utils/emailService");
-  mail.sendRaw = async () => ({ ok: true });
-  mail.sendTx = async () => ({ ok: true });
-  mail.sendPromo = async () => ({ ok: true });
+  const sent = [];
+  mail.sendRaw = async (m) => (sent.push({ kind: "raw", to: m.to, subject: m.subject, text: m.text }), { ok: true });
+  mail.sendTx = async (key, to, data) => (sent.push({ kind: "tx", key, to, data }), { ok: true });
+  mail.sendPromo = async (to, m) => (sent.push({ kind: "promo", to, subject: m.subject, html: m.html }), { ok: true });
   const passThrough = global.fetch;
   global.fetch = async (url, init) => (String(url).includes("graph.facebook.com") ? { ok: true, json: async () => ({}), text: async () => "" } : passThrough(url, init));
 
@@ -134,6 +145,9 @@ async function main() {
   }
 
   const Booking = require("../models/Booking");
+  const AdminActivityLog = require("../models/AdminActivityLog");
+  const Draft = require("../models/MembershipFirstVisitDraft");
+  const sharp = require("sharp");
   const BookingSlotReservation = require("../models/BookingSlotReservation");
   const ReservationTimeBucket = require("../models/ReservationTimeBucket");
   const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
@@ -433,6 +447,214 @@ async function main() {
       }
     });
 
+
+    console.log("\nPaid, then the browser closed: the server books it");
+    const photo = await sharp({ create: { width: 640, height: 480, channels: 3, background: "#7799bb" } }).jpeg().toBuffer();
+    /* The website's two calls before Stripe: save the visit, then open the checkout naming it. */
+    const prepare = async (who, day, time, { holdToken = "" } = {}) => {
+      if (!holdToken) {
+        const h = await call("POST", "/api/bookings/hold", { body: { requestedDate: day, requestedTime: time } });
+        assert.strictEqual(h.status, 200, `hold ${JSON.stringify(h.body)}`);
+        holdToken = h.body.token;
+      }
+      const form = new FormData();
+      form.append("addressId", String(who.addresses[0]._id));
+      form.append("note", "Replace an existing faucet in the kitchen.");
+      form.append("requestedDate", day);
+      form.append("requestedTime", time);
+      form.append("holdToken", holdToken);
+      form.append("images", new Blob([photo], { type: "image/jpeg" }), "sink.jpg");
+      const d = await call("POST", "/api/bookings/first-visit-draft", { form, as: who });
+      assert.strictEqual(d.status, 201, `draft ${JSON.stringify(d.body)}`);
+      const c = await call("POST", "/api/stripe/checkout/create-checkout-session", {
+        as: who,
+        body: { plan: "basic", billingCycle: "monthly", addressId: String(who.addresses[0]._id), returnTo: "handyman", firstVisit: { draftId: d.body.draftId, holdToken, requestedDate: day, requestedTime: time } },
+      });
+      assert.strictEqual(c.status, 200, `checkout ${JSON.stringify(c.body)}`);
+      return { draftId: d.body.draftId, page: fake.created[fake.created.length - 1], holdToken: c.body.holdToken };
+    };
+    /* Stripe: the subscription exists and checkout.session.completed is delivered. Nobody calls the website. */
+    const completed = (who, page) => {
+      const sub = fake.subs.get(`sub_${page.id}`) || makeStripeSub({ id: `sub_${page.id}`, customer: who.stripeCustomerId, user: who, addressId: who.addresses[0]._id, metadata: page.config.subscription_data.metadata });
+      return { id: page.id, object: "checkout.session", mode: "subscription", status: "complete", payment_status: "paid", customer: who.stripeCustomerId, subscription: sub.id, metadata: page.metadata, client_reference_id: page.config.client_reference_id };
+    };
+    const deliverWithId = async (id, type, object) => {
+      const payload = JSON.stringify({ id, object: "event", type, data: { object } });
+      const header = stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET });
+      return (await fetch(`${base}/api/stripe/webhook`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": header }, body: payload })).status;
+    };
+
+    let ana;
+    let anaPrep;
+    const anaDay = openDay(11);
+    await check("the visit, its photo and the held time are saved before Stripe, and the page names them", async () => {
+      ana = await customer();
+      anaPrep = await prepare(ana, anaDay, "08:00");
+      const draft = await Draft.findById(anaPrep.draftId).lean();
+      assert.strictEqual(draft.status, "checkout_open");
+      assert.strictEqual(draft.checkoutSessionId, anaPrep.page.id);
+      assert.strictEqual(draft.images.length, 1, "the photo is stored");
+      assert.strictEqual(draft.holdId, anaPrep.holdToken.split(".")[0]);
+      assert.strictEqual(anaPrep.page.metadata.firstVisitDraftId, anaPrep.draftId);
+    });
+    await check("payment confirmed by the webhook alone books exactly one visit, awaiting approval", async () => {
+      const session = completed(ana, anaPrep.page);
+      assert.strictEqual(await deliverWithId("evt_paid_ana", "checkout.session.completed", session), 200);
+      const bookings = await Booking.find({ user: ana._id }).lean();
+      assert.strictEqual(bookings.length, 1, `bookings ${bookings.length}`);
+      const b = bookings[0];
+      assert.ok(/Pending/i.test(b.status), b.status);
+      assert.strictEqual(String(b.firstVisitDraftId), anaPrep.draftId);
+      assert.strictEqual(b.images.length, 1, "with the customer's photo");
+      assert.strictEqual(b.accessType, "membership");
+      assert.strictEqual(moment(b.date).tz(TZ).format("YYYY-MM-DD HH:mm"), `${anaDay} 08:00`);
+      const draft = await Draft.findById(anaPrep.draftId).lean();
+      assert.strictEqual(draft.status, "booked");
+      assert.strictEqual(String(draft.bookingId), String(b._id));
+      const sub = await Subscription.findOne({ user: ana._id });
+      assert.strictEqual(String(sub.firstVisitExemption.bookingId), String(b._id), "the exemption is spent on it");
+      assert.ok(sent.some((m) => m.kind === "tx" && m.key === "booking_created" && m.to === ana.email), "the customer is emailed the booking");
+      assert.ok(sent.some((m) => m.kind === "promo" && /New Booking/.test(m.subject || "")), "the owner is told");
+    });
+    await check("the same event again, a duplicate event, and the success page book nothing more", async () => {
+      const session = completed(ana, anaPrep.page);
+      assert.strictEqual(await deliverWithId("evt_paid_ana", "checkout.session.completed", session), 200);
+      assert.strictEqual(await deliverWithId("evt_paid_ana_dup", "checkout.session.completed", session), 200);
+      const view = await call("POST", `/api/bookings/first-visit-draft/${anaPrep.draftId}/fulfill`, { as: ana });
+      assert.strictEqual(view.status, 200);
+      assert.strictEqual(view.body.status, "booked");
+      assert.ok(view.body.booking?.bookingNumber, "the success page shows the booking");
+      assert.strictEqual(await Booking.countDocuments({ user: ana._id }), 1);
+    });
+    await check("two fulfillments at once book once", async () => {
+      const ivy = await customer();
+      const prep = await prepare(ivy, openDay(12), "13:00");
+      const session = completed(ivy, prep.page);
+      assert.strictEqual(await deliver("customer.subscription.created", fake.subs.get(session.subscription)), 200);
+      await Draft.updateOne({ _id: prep.draftId }, { $set: { status: "paid" } });
+      const { fulfillFirstVisitDraft } = require("../utils/membershipFirstVisitFulfillment");
+      await Promise.all([fulfillFirstVisitDraft(prep.draftId), fulfillFirstVisitDraft(prep.draftId), fulfillFirstVisitDraft(prep.draftId)]);
+      assert.strictEqual(await Booking.countDocuments({ user: ivy._id }), 1);
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "booked");
+    });
+    await check("a late payment notice after the hold lapsed still books while the time is free", async () => {
+      const ned = await customer();
+      const prep = await prepare(ned, openDay(13), "10:00");
+      await BookingSlotReservation.updateOne({ _id: prep.holdToken.split(".")[0] }, { $set: { holdExpiresAt: new Date(Date.now() - 60000) } });
+      assert.strictEqual(await deliverWithId("evt_paid_ned", "checkout.session.completed", completed(ned, prep.page)), 200);
+      assert.strictEqual(await Booking.countDocuments({ user: ned._id }), 1);
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "booked");
+    });
+    let tom;
+    let tomPrep;
+    await check("a time taken before the payment came through: recorded for Admin, both told, exemption kept", async () => {
+      tom = await customer();
+      const day = openDay(14);
+      tomPrep = await prepare(tom, day, "13:00");
+      // The hold lapses and someone else holds the time before Stripe's notice arrives.
+      await BookingSlotReservation.updateOne({ _id: tomPrep.holdToken.split(".")[0] }, { $set: { holdExpiresAt: new Date(Date.now() - 60000) } });
+      const other = await call("POST", "/api/bookings/hold", { body: { requestedDate: day, requestedTime: "13:00" } });
+      assert.strictEqual(other.status, 200, "someone else has it now");
+      sent.length = 0;
+      assert.strictEqual(await deliverWithId("evt_paid_tom", "checkout.session.completed", completed(tom, tomPrep.page)), 200);
+      assert.strictEqual(await Booking.countDocuments({ user: tom._id }), 0, "nothing double-booked");
+      const draft = await Draft.findById(tomPrep.draftId).lean();
+      assert.strictEqual(draft.status, "needs_admin");
+      assert.strictEqual(draft.failureReason, "slot_unavailable");
+      const logEntry = await AdminActivityLog.findOne({ action: "first_visit_needs_admin", entityId: String(tom._id) }).lean();
+      assert.ok(logEntry && logEntry.details.reason === "slot_unavailable", "an Admin activity entry");
+      assert.ok(sent.some((m) => m.kind === "promo" && /Action needed: first visit not booked/.test(m.subject)), "the owner is emailed");
+      assert.ok(sent.some((m) => m.kind === "raw" && m.to === tom.email && /pick another time/i.test(m.text)), "the customer is asked to pick another time");
+      const sub = await Subscription.findOne({ user: tom._id });
+      assert.ok(sub.firstVisitExemption.grantedAt && !sub.firstVisitExemption.usedAt, "the exemption is still theirs");
+      const view = await call("GET", `/api/bookings/first-visit-draft/${tomPrep.draftId}`, { as: tom });
+      assert.strictEqual(view.body.status, "needs_admin");
+    });
+    await check("the customer then books another soon time themselves: booked, and the Admin item closes", async () => {
+      const res = await memberBooking(tom, openDay(14), "08:00");
+      assert.ok([200, 201].includes(res.status), JSON.stringify(res.body));
+      assert.strictEqual((await Draft.findById(tomPrep.draftId)).status, "rebooked");
+      // A late retry of the old notice does not add a second booking.
+      await deliverWithId("evt_paid_tom_retry", "checkout.session.completed", completed(tom, tomPrep.page));
+      assert.strictEqual(await Booking.countDocuments({ user: tom._id }), 1);
+    });
+    await check("an existing member buying for another home, inside the seven days: to Admin, not booked", async () => {
+      const max = await customer();
+      await buy(max, { id: "cs_max_first", config: { subscription_data: { metadata: { firstVisitExempt: "1" } } } });
+      // Their first membership's exemption is spent; now a second home.
+      await Subscription.updateMany({ user: max._id }, { $set: { "firstVisitExemption.usedAt": new Date() } });
+      max.addresses.push({ label: "Rental", line1: "77 Bay Rd", city: "Farmingdale", state: "NY", zip: "11735", county: "Nassau" });
+      await max.save();
+      const day = openDay(1);
+      const h = await call("POST", "/api/bookings/hold", { body: { requestedDate: day, requestedTime: "10:00" } });
+      const form = new FormData();
+      for (const [k, v] of Object.entries({ addressId: String(max.addresses[1]._id), note: "Hang two shelves in the den.", requestedDate: day, requestedTime: "10:00", holdToken: h.body.token })) form.append(k, v);
+      const d = await call("POST", "/api/bookings/first-visit-draft", { form, as: max });
+      const c = await call("POST", "/api/stripe/checkout/create-checkout-session", { as: max, body: { plan: "basic", billingCycle: "monthly", addressId: String(max.addresses[1]._id), firstVisit: { draftId: d.body.draftId, holdToken: h.body.token, requestedDate: day, requestedTime: "10:00" } } });
+      assert.strictEqual(c.status, 200, JSON.stringify(c.body));
+      const page = fake.created[fake.created.length - 1];
+      assert.strictEqual(page.metadata.firstVisitExempt, "0");
+      const sub = makeStripeSub({ id: `sub_${page.id}`, customer: max.stripeCustomerId, user: max, addressId: max.addresses[1]._id, metadata: page.config.subscription_data.metadata });
+      const session = { id: page.id, object: "checkout.session", mode: "subscription", status: "complete", payment_status: "paid", customer: max.stripeCustomerId, subscription: sub.id, metadata: page.metadata, client_reference_id: String(max.addresses[1]._id) };
+      assert.strictEqual(await deliverWithId("evt_paid_max", "checkout.session.completed", session), 200);
+      const draft = await Draft.findById(d.body.draftId).lean();
+      assert.strictEqual(draft.status, "needs_admin");
+      assert.strictEqual(draft.failureReason, "member_lead_time");
+      assert.strictEqual(await Booking.countDocuments({ user: max._id, addressId: max.addresses[1]._id }), 0);
+    });
+    await check("no webhook yet: the success page finishes a paid draft once Stripe says paid (and not before)", async () => {
+      const zoe = await customer();
+      const prep = await prepare(zoe, openDay(15), "08:00");
+      // Not paid yet at Stripe: nothing is booked.
+      const early = await call("POST", `/api/bookings/first-visit-draft/${prep.draftId}/fulfill`, { as: zoe });
+      assert.strictEqual(early.body.status, "checkout_open");
+      assert.strictEqual(await Booking.countDocuments({ user: zoe._id }), 0);
+      // Paid at Stripe; only the subscription sync has arrived.
+      const session = completed(zoe, prep.page);
+      fake.sessions.get(prep.page.id).status = "complete";
+      fake.sessions.get(prep.page.id).payment_status = "paid";
+      assert.strictEqual(await deliver("customer.subscription.created", fake.subs.get(session.subscription)), 200);
+      const res = await call("POST", `/api/bookings/first-visit-draft/${prep.draftId}/fulfill`, { as: zoe });
+      assert.strictEqual(res.body.status, "booked", JSON.stringify(res.body));
+      assert.strictEqual(await Booking.countDocuments({ user: zoe._id }), 1);
+      // Another customer cannot read or finish it.
+      const stranger = await customer();
+      assert.strictEqual((await call("GET", `/api/bookings/first-visit-draft/${prep.draftId}`, { as: stranger })).status, 404);
+    });
+    await check("the sweep finishes a paid draft the webhook could not (membership not synced yet)", async () => {
+      const kai = await customer();
+      const prep = await prepare(kai, openDay(16), "10:00");
+      const session = completed(kai, prep.page);
+      // Paid, but the membership is not there yet: it waits as "paid".
+      await Draft.updateOne({ _id: prep.draftId }, { $set: { status: "paid", updatedAt: new Date(Date.now() - 5 * 60000) } }, { timestamps: false });
+      const { fulfillFirstVisitDraft, sweepFirstVisitDrafts } = require("../utils/membershipFirstVisitFulfillment");
+      await fulfillFirstVisitDraft(prep.draftId);
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "paid", "waits for the membership");
+      assert.strictEqual(await deliver("customer.subscription.created", fake.subs.get(session.subscription)), 200);
+      await Draft.updateOne({ _id: prep.draftId }, { $set: { updatedAt: new Date(Date.now() - 5 * 60000) } }, { timestamps: false });
+      await sweepFirstVisitDrafts();
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "booked");
+      assert.strictEqual(await Booking.countDocuments({ user: kai._id }), 1);
+    });
+    await check("an unpaid page that expires drops the draft and frees the time", async () => {
+      const lia = await customer();
+      const prep = await prepare(lia, openDay(17), "08:00");
+      assert.strictEqual(await deliver("checkout.session.expired", { ...prep.page, status: "expired", object: "checkout.session" }), 200);
+      assert.strictEqual((await Draft.findById(prep.draftId)).status, "expired");
+      assert.strictEqual((await BookingSlotReservation.findById(prep.holdToken.split(".")[0])).status, "released");
+      assert.strictEqual(await Booking.countDocuments({ user: lia._id }), 0);
+    });
+    await check("a checkout naming somebody else's draft is refused", async () => {
+      const a = await customer();
+      const b = await customer();
+      const day = openDay(18);
+      const form = new FormData();
+      for (const [k, v] of Object.entries({ addressId: String(a.addresses[0]._id), note: "Fix a sticking front door.", requestedDate: day, requestedTime: "13:00" })) form.append(k, v);
+      const d = await call("POST", "/api/bookings/first-visit-draft", { form, as: a });
+      const c = await call("POST", "/api/stripe/checkout/create-checkout-session", { as: b, body: { plan: "basic", billingCycle: "monthly", addressId: String(b.addresses[0]._id), firstVisit: { draftId: d.body.draftId, requestedDate: day, requestedTime: "13:00" } } });
+      assert.strictEqual(c.status, 409);
+      assert.strictEqual(c.body.code, "FIRST_VISIT_DRAFT_INVALID");
+    });
   } finally {
     server.close();
     await mongoose.disconnect();

@@ -114,6 +114,13 @@ function startOneTimeVisitHoldCleanup() {
     } catch (error) {
       console.error("One-time visit hold cleanup cycle failed:", error.message);
     }
+    // Paid membership first visits the webhook could not finish (utils/membershipFirstVisitFulfillment).
+    try {
+      const finished = await require("../utils/membershipFirstVisitFulfillment").sweepFirstVisitDrafts();
+      if (finished) console.log(`Finished ${finished} membership first visit(s)`);
+    } catch (error) {
+      console.error("Membership first visit sweep failed:", error.message);
+    }
   };
 
   const interval = setInterval(run, CLEANUP_INTERVAL_MS);
