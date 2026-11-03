@@ -274,12 +274,15 @@ async function deletePost(postId, { env = process.env } = {}) {
   // the live copy, if the Social Planner replaced ours when it published
   const { id } = await resolvePost(postId, env);
   /*
-   * bulk-delete, not DELETE /posts/:id. For a PUBLISHED post (the copy that is
-   * live on Google) the single delete answers 400 "Cannot read properties of
-   * undefined"; bulk-delete removes it (seen 2026-11-03, deletedCount 2).
+   * The documented single delete. NOT bulk-delete: that removes a post from
+   * the Social Planner's own database only and leaves it live on Google
+   * (GHL docs; learned the hard way 2026-11-03). For a PUBLISHED post the
+   * single delete has answered 400 "Cannot read properties of undefined" - the
+   * error surfaces, the action stays "succeeded", and the post must then be
+   * deleted in Google Business Profile itself.
    */
-  const data = await call("POST", `/social-media-posting/${locationId}/posts/bulk-delete`, { env, body: { postIds: [id] } });
-  return { deleted: id, deletedCount: data?.results?.deletedCount ?? null };
+  await call("DELETE", `/social-media-posting/${locationId}/posts/${encodeURIComponent(id)}`, { env });
+  return { deleted: id };
 }
 
 module.exports = { PLATFORM, SocialError, config, connectionCheck, createGbpPost, deletePost, gbpPostBody, gbpPostBodyProblems, googleBusinessAccount, postStatus, scheduleDateFrom, setFetchForTests };

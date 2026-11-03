@@ -78,11 +78,6 @@ async function main() {
     if (opts.method === "GET" && /\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts } });
     if (opts.method === "GET" && u.pathname === "/users/") return reply(200, { users: [{ id: "user-admin", roles: { role: "admin" } }] });
     if (opts.method === "POST" && /\/posts\/list$/.test(u.pathname)) return reply(201, { results: { posts: Object.entries(posts).map(([id, p]) => ({ _id: id, ...p })) } });
-    if (opts.method === "POST" && /\/posts\/bulk-delete$/.test(u.pathname)) {
-      const ids = JSON.parse(opts.body || "{}").postIds || [];
-      for (const id of ids) delete posts[id];
-      return reply(201, { success: true, results: { deletedCount: ids.length } });
-    }
     if (opts.method === "POST" && /\/posts$/.test(u.pathname)) {
       const id = `post-${Object.keys(posts).length + 1}`;
       posts[id] = { _id: id, status: "scheduled" };
