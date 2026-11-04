@@ -123,6 +123,8 @@ const SUITES = [
   // Halloween 2026 campaign sender: consent per channel, members excluded, once only (in-memory Mongo, SMS simulated).
   "test_halloween_campaign.js",
   "test_admin_marketing_consent.js",
+  // Post-visit review requests: the 60-minute delay, one per booking, the per-customer cooldown, locks.
+  "test_booking_review_requests.js",
 ];
 
 /**
@@ -153,6 +155,7 @@ const SUITES = [
  *   test_visibility_integration.js          boots an in-memory MongoDB binary
  *   test_admin_tools_integration.js         boots an in-memory MongoDB replica set
  *   test_cx4_integration.js                 boots an in-memory MongoDB replica set
+ *   test_cx5_integration.js                 boots an in-memory MongoDB binary
  *   test_membership_first_visit.js          boots an in-memory MongoDB replica set
  *   seed_intro_visit_testdata.js     writes synthetic data, local only
  *   local_s3_stub.js                 local test helper, not a test

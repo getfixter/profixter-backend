@@ -75,6 +75,8 @@ function authUserDTO(user, coverageMap) {
     temporaryPassword: temporaryPassword.isIssued(user),
     /* Whether service texts (booking confirmations, reminders) are switched on. */
     smsServiceTexts: user.smsPreferences?.transactionalEnabled === true,
+    /* Whether offer texts are switched on (the phone screen then does not offer them again). */
+    smsMarketingTexts: user.smsPreferences?.marketingEnabled === true,
     needsName: !String(user.name || "").trim(),
     authProviders: Array.isArray(user.authProviders) ? user.authProviders : [],
     subscription: user.subscription || null,

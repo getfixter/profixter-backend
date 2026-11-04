@@ -16,8 +16,8 @@ const AuthChallengeSchema = new mongoose.Schema(
     channel: { type: String, enum: ["sms", "email"], required: true },
     /** E.164 phone or lowercased email. */
     target: { type: String, required: true },
-    /* "reset" codes are a separate kind: they can never sign anybody in, and vice versa. */
-    purpose: { type: String, enum: ["auth", "attach", "reset"], default: "auth" },
+    /* "reset" and "reauth" (confirm it's you before changing a verified email or phone) are separate kinds: they can never sign anybody in, and vice versa. */
+    purpose: { type: String, enum: ["auth", "attach", "reset", "reauth"], default: "auth" },
     provider: { type: String, enum: ["local", "twilio_verify"], default: "local" },
     codeHash: { type: String, default: "" },
     attempts: { type: Number, default: 0 },

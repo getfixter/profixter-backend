@@ -647,5 +647,116 @@ module.exports = function createAdminCustomerProfileRouter({ getAddressPlansForU
     }
   });
 
+  /*
+   * Customer details → "Reviewed us".
+   *
+   * The owner's own mark that this customer left a Google review. While it is
+   * set, the post-visit review email is never sent to them
+   * (jobs/bookingReviewRequests.js). Set by hand only: nothing guesses it from
+   * the names on Google reviews. Changing it tells the customer nothing and
+   * sends nothing - including for past visits when it is cleared.
+   */
+  const onlyOwner = requirePermission(PERMISSIONS.ADMIN);
+
+  async function reviewState(user, req) {
+    const lastSent = await Booking.findOne({ user: user._id, reviewRequestSentAt: { $ne: null } })
+      .sort({ reviewRequestSentAt: -1 })
+      .select("reviewRequestSentAt")
+      .lean();
+    const lastAskedAt = [user.reviewRequestLastAt, lastSent?.reviewRequestSentAt]
+      .filter(Boolean)
+      .map((d) => new Date(d))
+      .sort((a, b) => b - a)[0] || null;
+    return {
+      reviewedUs: user.reviewedUs?.at ? { at: user.reviewedUs.at, byName: user.reviewedUs.byName || "" } : null,
+      lastAskedAt,
+      canEdit: req.accessRole === "admin",
+    };
+  }
+
+  router.get("/users/:id/reviewed-us", auth, ...customersOrMembers, async (req, res) => {
+    try {
+      const user = await loadCustomer(req, res);
+      if (!user) return undefined;
+      return res.json(await reviewState(user, req));
+    } catch (error) {
+      console.error("GET /admin/users/:id/reviewed-us error:", error);
+      return res.status(500).json({ message: "Failed to load the review status" });
+    }
+  });
+
+  router.put("/users/:id/reviewed-us", auth, ...onlyOwner, async (req, res) => {
+    try {
+      const reviewed = req.body?.reviewed;
+      if (reviewed !== true && reviewed !== false) {
+        return res.status(400).json({ message: "reviewed must be true or false" });
+      }
+      const user = await loadCustomer(req, res);
+      if (!user) return undefined;
+      const actor = req.accessUser || req.authUser || {};
+      const byName = String(actor.name || actor.email || "Owner").slice(0, 120);
+      const wasReviewed = Boolean(user.reviewedUs?.at);
+      if (wasReviewed !== reviewed) {
+        const now = new Date();
+        await User.updateOne(
+          { _id: user._id },
+          reviewed
+            ? { $set: { "reviewedUs.at": now, "reviewedUs.by": req.user?.id || null, "reviewedUs.byName": byName } }
+            : { $unset: { reviewedUs: "" } }
+        );
+        await createAdminActivityLog(req, {
+          action: reviewed ? "Customer Marked Reviewed" : "Customer Review Mark Cleared",
+          entityType: "User",
+          entityId: user._id,
+          entityName: user.name || maskEmail(user.email) || user.userId,
+          details: { reviewedUs: reviewed, previous: wasReviewed ? { at: user.reviewedUs.at, byName: user.reviewedUs.byName || "" } : null },
+        });
+        console.log(JSON.stringify({ event: "customer_reviewed_us_changed", userId: String(user._id), reviewed }));
+      }
+      const fresh = await User.findById(user._id).lean();
+      return res.json(await reviewState(fresh, req));
+    } catch (error) {
+      console.error("PUT /admin/users/:id/reviewed-us error:", error);
+      return res.status(500).json({ message: "Failed to save the review status" });
+    }
+  });
+
+  /*
+   * The review requests at a glance, for the owner: how many went out, how
+   * many were held back and why, and how many times the Google link was
+   * opened. A click is someone opening the review form - never proof that a
+   * review was posted.
+   */
+  router.get("/review-requests/summary", auth, ...customersOrMembers, async (req, res) => {
+    try {
+      const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      const sinceDay = since.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      const ReviewLinkClick = require("../models/ReviewLinkClick");
+      const [sent, skipped, clicks, reviewedCustomers] = await Promise.all([
+        Booking.countDocuments({ reviewRequestSentAt: { $gte: since } }),
+        Booking.aggregate([
+          { $match: { reviewRequestSkippedAt: { $gte: since } } },
+          { $group: { _id: "$reviewRequestSkipReason", n: { $sum: 1 } } },
+        ]),
+        ReviewLinkClick.aggregate([
+          { $match: { date: { $gte: sinceDay } } },
+          { $group: { _id: "$via", n: { $sum: "$count" } } },
+        ]),
+        User.countDocuments({ "reviewedUs.at": { $ne: null } }),
+      ]);
+      return res.json({
+        days,
+        sent,
+        skipped: Object.fromEntries(skipped.map((row) => [row._id || "other", row.n])),
+        linkOpens: Object.fromEntries(clicks.map((row) => [row._id || "other", row.n])),
+        reviewedCustomers,
+      });
+    } catch (error) {
+      console.error("GET /admin/review-requests/summary error:", error);
+      return res.status(500).json({ message: "Failed to load the review summary" });
+    }
+  });
+
   return router;
 };

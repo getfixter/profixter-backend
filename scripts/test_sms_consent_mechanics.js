@@ -229,19 +229,32 @@ async function main() {
   await frontendTest("sign-up holds no SMS consent state and no checkbox", () => {
     /*
      * Nothing to pre-tick and nothing to require, because nothing is asked.
-     * The phone sheet that completes an account before booking is held to the
-     * same rule.
      */
-    for (const [name, src] of [
-      ["signup", signup],
-      ["ContactCompletion", fe("app", "components", "auth", "ContactCompletion.tsx")],
-    ]) {
-      const code = stripComments(src);
-      assert.ok(!/type="checkbox"/.test(code), `${name} renders a checkbox`);
-      for (const state of ["smsTransactionalConsent", "smsMarketingConsent", "agreeTerms", "serviceConsent", "marketingConsent"]) {
-        assert.ok(!new RegExp(`\\b${state}\\b`).test(code), `${name} still carries ${state}`);
-      }
+    const code = stripComments(signup);
+    assert.ok(!/type="checkbox"/.test(code), "signup renders a checkbox");
+    for (const state of ["smsTransactionalConsent", "smsMarketingConsent", "agreeTerms", "serviceConsent", "marketingConsent"]) {
+      assert.ok(!new RegExp(`\\b${state}\\b`).test(code), `signup still carries ${state}`);
     }
+  });
+
+  await frontendTest("the mobile-number screen's boxes are optional, unticked and sent only with the code", () => {
+    /*
+     * 2026-11-03 (owner): "Add your mobile number" carries one optional,
+     * unticked offers box, and a visit-texts box when a number is changed.
+     * Never pre-ticked, never required (the number is verified either way),
+     * never sent with the request for a code - only with the code itself, as
+     * literal choices the server records after verifying the number.
+     */
+    const code = stripComments(fe("app", "components", "auth", "ContactCompletion.tsx"));
+    assert.ok(/const \[offers, setOffers\] = useState\(false\)/.test(code), "the offers box starts unticked");
+    assert.ok(/const \[visitTexts, setVisitTexts\] = useState\(false\)/.test(code), "the visit-texts box starts unticked");
+    assert.ok(!/defaultChecked|checked=\{true\}/.test(code), "nothing may render a box ticked");
+    for (const state of ["smsTransactionalConsent", "smsMarketingConsent", "agreeTerms", "serviceConsent", "marketingConsent"]) {
+      assert.ok(!new RegExp(`\\b${state}\\b`).test(code), `ContactCompletion still carries the old ${state}`);
+    }
+    const starts = code.match(/startPhoneOtp\(\{[^}]*\}\)/g) || [];
+    assert.ok(starts.length >= 2 && starts.every((c) => /^startPhoneOtp\(\{ phone: [^,}]+ \}\)$/.test(c)), "requesting a code carries the number only");
+    assert.ok(/smsOptIn: \{ marketing: showOffers && offers, service: showVisitTexts && visitTexts \}/.test(code), "only boxes shown and ticked are sent, with the code");
   });
 
   await frontendTest("the booking box starts unchecked", () => {

@@ -41,6 +41,13 @@
  * old claims coming back; the guest line, the booking box's links and the
  * settings documents line are pinned to the screens that show them.
  *
+ * 2026-11-03 (later): the owner asked for one optional, unticked offers box on
+ * the "Add your mobile number" screen (ContactCompletion), recorded only after
+ * the code verifies the number ("sms_marketing.phone_verify.v1"), and - when a
+ * number is changed - an optional, unticked visit-texts box
+ * ("sms_service.phone_change.v1"). The six places are pinned, each box's words
+ * exactly; the phone sign-up screen still has no box and no marketing wording.
+ *
  * These cases need the sibling FrontEnd checkout and skip loudly without it,
  * the same arrangement test_sms_consent_mechanics.js uses and for the same
  * reason: a compliance assertion that silently stopped running would be worse
@@ -380,7 +387,7 @@ async function main() {
      * this screen sends is a one-time text the person requests, delivered by
      * Twilio Verify outside the campaign; it needs no box.
      */
-    for (const file of [P.signup, P.authSteps, P.contact]) {
+    for (const file of [P.signup, P.authSteps]) {
       const markup = readMarkup(file);
       assert.ok(!/type="checkbox"/.test(markup), `${path.basename(file)} must not render a checkbox`);
       for (const id of ["sms-service-consent", "sms-marketing-consent", "agree-terms", "contact-sms-service", "contact-sms-marketing"]) {
@@ -391,6 +398,39 @@ async function main() {
         `${path.basename(file)} still carries sign-up consent state or controls`
       );
     }
+    /*
+     * The mobile-number screen: one checkbox component, used for exactly the
+     * two registered boxes, both starting unticked and never pre-ticked.
+     */
+    const contact = readMarkup(P.contact);
+    assert.strictEqual((contact.match(/type="checkbox"/g) || []).length, 1, "ContactCompletion renders checkboxes through one component only");
+    assert.ok(contact.includes('id="contact-sms-offers"') && contact.includes('id="contact-sms-visits"'), "the two boxes keep their ids");
+    assert.ok(/const \[offers, setOffers\] = useState\(false\)/.test(contact), "the offers box starts unticked");
+    assert.ok(/const \[visitTexts, setVisitTexts\] = useState\(false\)/.test(contact), "the visit-texts box starts unticked");
+    assert.ok(!/defaultChecked|checked=\{true\}/.test(contact), "no box may be pre-ticked");
+    for (const id of ["sms-service-consent", "sms-marketing-consent", "agree-terms", "contact-sms-service", "contact-sms-marketing"]) {
+      assert.ok(!contact.includes(`id="${id}"`), `ContactCompletion still renders ${id}`);
+    }
+    assert.ok(!/smsTransactionalConsent|smsMarketingConsent|setAgreeTerms|ConsentRow|ConsentCheckbox|ContactConsent/.test(contact), "no old sign-up consent controls");
+  });
+
+  await frontendTest("the mobile-number screen's two boxes show the registered words exactly", () => {
+    const src = readSource(P.contact);
+    // Each version quotes the box label first and its disclosure line last (the screen's name sits between).
+    const quotes = (version) => {
+      const all = [...VERSIONS()[version].text.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      return [all[0], all[all.length - 1]];
+    };
+    const [offersLabel, offersDetails] = quotes("sms_marketing.phone_verify.v1");
+    const [visitsLabel, visitsDetails] = quotes("sms_service.phone_change.v1");
+    assert.ok(src.includes(`const OFFERS_LABEL = "${offersLabel}";`), "the offers label differs from sms_marketing.phone_verify.v1");
+    assert.ok(src.includes(`const OFFERS_DETAILS = "${offersDetails}";`), "the offers line differs from sms_marketing.phone_verify.v1");
+    assert.ok(src.includes(`const VISITS_LABEL = "${visitsLabel}";`), "the visit-texts label differs from sms_service.phone_change.v1");
+    assert.ok(src.includes(`const VISITS_DETAILS = "${visitsDetails}";`), "the visit-texts line differs from sms_service.phone_change.v1");
+    assert.ok(/termsHash="marketing"/.test(src) && /termsHash="service-texts"/.test(src), "each box links its own section of the SMS Terms");
+    assert.ok(/href="\/privacy"/.test(src), "each box links the Privacy Policy");
+    // Sent with the code, never with the request for one.
+    assert.ok(/smsOptIn: \{ marketing: showOffers && offers, service: showVisitTexts && visitTexts \}/.test(src), "only what was shown and ticked is sent");
   });
 
   await frontendTest("the phone step is minimal: heading, number, button, the one line", () => {
@@ -449,13 +489,16 @@ async function main() {
      * box, not a sentence, not a "we may send you offers" - none of it belongs
      * on the screen where an account is created.
      */
-    for (const file of [P.signup, P.authSteps, P.contact]) {
+    for (const file of [P.signup, P.authSteps]) {
       const text = renderedText(readMarkup(file));
       assert.ok(
         !/\boffers?\b|promotion|marketing|special deals|discounts?/i.test(text),
-        `${path.basename(file)} mentions marketing; marketing is offered only in account settings`
+        `${path.basename(file)} mentions marketing; it is offered only in account settings and on the mobile-number screen`
       );
     }
+    // The mobile-number screen offers it in its one box and nowhere else on the screen.
+    const contactText = renderedText(readMarkup(P.contact).replace(/const OFFERS_LABEL = "[^"]+";/, ""));
+    assert.ok(!/promotion|special deals|discounts?/i.test(contactText), "no promotional wording outside the box");
   });
 
   await frontendTest("the method screen states the Terms the same way, without the text clause", () => {
@@ -763,7 +806,7 @@ async function main() {
     }
   });
 
-  await frontendTest("the consent page names all five places consent is collected, and only those", () => {
+  await frontendTest("the consent page names all six places consent is collected, and only those", () => {
     /*
      * It used to say "the booking step and your account settings are the only
      * places" and "we do not accept verbal or paper opt-ins". From 2026-11-03
@@ -773,22 +816,24 @@ async function main() {
      */
     const src = readText(P.consent);
     const shown = renderedText(readMarkup(P.consent));
-    assert.ok(/We collect SMS consent in these five places and nowhere else/i.test(src), "the page must name the places and exclude everything else");
+    assert.ok(/We collect SMS consent in these six places and nowhere else/i.test(src), "the page must name the places and exclude everything else");
     for (const [what, pattern] of [
       ["the booking step box", /The booking step \(signed in\): one optional, unchecked box, "Text me about my ProFixter visits"/],
       ["the guest Free Visit request", /The Free Visit request form \(no account\): no checkbox/],
       ["account settings", /Account settings: two separate, unchecked boxes/],
+      ["the mobile-number screen", /The mobile-number screen \(signed in\), where you add or change the mobile number on your account: one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts, recorded only after you enter the code that verifies the number\./],
       ["a call with staff", /A phone call with our staff, for texts about your visits only: staff must ask and record Yes or No; neither answer is pre-selected\. It is never used for marketing texts\./],
       ["the confirmation page", /profixter\.com\/texts\/confirm, for marketing texts, used only once this method is registered with the carriers/],
     ]) {
       assert.ok(pattern.test(shown), `the consent page must describe ${what} exactly`);
     }
     assert.ok(shown.includes(`"${serverGuestLine()}"`), "the consent page must quote the guest line exactly");
-    assert.ok(/Account sign-up collects no SMS consent/i.test(src), "the page must say sign-up collects none");
+    assert.ok(/The phone sign-up screen collects no SMS consent/i.test(src), "the page must say sign-up collects none");
+    assert.ok(/Verifying a number is never consent by itself/i.test(src), "verifying a number is never consent");
     assert.ok(/Twilio Verify/.test(src), "the page must say how the one-time code is sent");
     assert.ok(
-      /Marketing texts are offered to customers only in account settings until the confirmation page is registered/i.test(src),
-      "marketing must be described as offered in settings only, until the confirmation page is registered"
+      /Marketing texts are offered to customers only in account settings and on the mobile-number screen until the\s+confirmation page is registered/i.test(src),
+      "marketing must be described as offered in settings and on the mobile-number screen only, until the confirmation page is registered"
     );
     assert.ok(/We never send marketing texts on a yes given on a phone call/i.test(src), "a spoken yes never starts marketing");
     assert.ok(
@@ -981,11 +1026,12 @@ async function main() {
     const src = readText(P.evidence);
     const markup = readMarkup(P.evidence);
     const shown = renderedText(markup);
-    assert.ok(/SMS consent is collected in these five places, and nowhere else/i.test(src), "the page must list the places and exclude the rest");
+    assert.ok(/SMS consent is\s+collected in these six places, and nowhere else/i.test(src), "the page must list the places and exclude the rest");
     for (const [what, pattern] of [
       ["the booking step", /The booking step \(signed-in customers\) - one optional, unchecked box, "Text me about my ProFixter visits"/],
       ["the guest request", /The Free Visit request form \(no account needed\) - .*There is no checkbox\..*pressing the button is the agreement\. It covers calls and texts about that one requested visit and nothing else, never marketing\./],
-      ["account settings", /This is the only place customers switch on marketing texts\./],
+      ["account settings", /Account settings - two separate, unchecked boxes, one for service texts and one for marketing texts\./],
+      ["the mobile-number screen", /The mobile-number screen \(signed-in customers\) - shown when a customer adds a mobile number to their account .*one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts only\. It is recorded only after the customer enters the code that verifies the number/],
       ["a call with staff", /A phone call with ProFixter staff - for texts about the caller's own visits only\. Staff must ask.*they must choose Yes or No, and neither is pre-selected\. The record names the staff member and the time\./],
       ["the confirmation page", /The confirmation page profixter\.com\/texts\/confirm - for marketing texts, and only once this method is registered with the carriers\./],
     ]) {
@@ -1017,7 +1063,8 @@ async function main() {
      */
     const src = readText(P.evidence);
     const shown = renderedText(readMarkup(P.evidence));
-    assert.ok(/Sign-up collects no SMS consent/i.test(src), "sign-up must be described as collecting none");
+    assert.ok(/The phone sign-up screen collects no SMS consent/i.test(src), "sign-up must be described as collecting none");
+    assert.ok(/Verifying\s+a number is never consent/i.test(src), "verifying a number is never consent");
     assert.ok(/no text-message checkboxes/i.test(src), "the sign-up screen has no SMS checkboxes");
     assert.ok(/Twilio Verify/.test(src), "the one-time code is sent through Twilio Verify");
     assert.ok(/Service SMS is optional/i.test(src), "service texts must be described as optional");
@@ -1030,6 +1077,8 @@ async function main() {
       registeredQuote("sms_service.booking.v2"),
       registeredQuote("sms_service.settings.v1"),
       registeredQuote("sms_marketing.settings.v1"),
+      registeredQuote("sms_marketing.phone_verify.v1"),
+      registeredQuote("sms_service.phone_change.v1"),
     ]) {
       assert.ok(
         shown.includes(quote) || readSource(P.evidence).includes(`quote="${quote}"`),
@@ -1037,8 +1086,8 @@ async function main() {
       );
     }
     assert.ok(
-      /only place customers switch on marketing texts/i.test(src),
-      "marketing must be described as switched on by customers in account settings only"
+      /switch on marketing texts\s+themselves only here or with the optional box on the mobile-number screen/i.test(src),
+      "marketing must be described as switched on by customers themselves, in account settings or on the mobile-number screen only"
     );
     assert.ok(/Message frequency varies/.test(src) && /Message and data rates may apply/.test(src));
   });
@@ -1050,7 +1099,7 @@ async function main() {
     }
   });
 
-  await frontendTest("it references the four current screenshots, and no old one", () => {
+  await frontendTest("it references the five current screenshots, and no old one", () => {
     /*
      * The old five showed the three-box sign-up form, which no longer exists.
      * The v2 three (2026-10-28) showed the old booking box and no Free Visit
@@ -1064,6 +1113,7 @@ async function main() {
       "/compliance/a2p-v3-booking.png",
       "/compliance/a2p-v3-free-visit.png",
       "/compliance/a2p-v3-settings.png",
+      "/compliance/a2p-v3-phone.png",
     ];
     for (const shot of shots) {
       assert.ok(src.includes(shot), `missing screenshot reference ${shot}`);

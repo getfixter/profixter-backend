@@ -2,6 +2,8 @@ const MINUTE_MS = 60 * 1000;
 
 const REVIEW_REQUEST_DELAY_MS = 60 * MINUTE_MS;
 const REVIEW_REQUEST_LOCK_MS = 10 * MINUTE_MS;
+/* Visits completed longer ago than this are never asked about (no catch-up emails). */
+const REVIEW_REQUEST_MAX_AGE_MS = 7 * 24 * 60 * MINUTE_MS;
 
 function normalizeStatus(status) {
   return String(status || "").trim().toLowerCase();
@@ -53,6 +55,10 @@ function evaluateReviewRequest(booking, nowInput = new Date()) {
     };
   }
 
+  if (nowMs - completedAtMs > REVIEW_REQUEST_MAX_AGE_MS) {
+    return { eligible: false, reason: "too_old", minutesSinceCompletion };
+  }
+
   const lockExpiresAtMs = new Date(booking?.reviewRequestLockExpiresAt).getTime();
   if (Number.isFinite(lockExpiresAtMs) && lockExpiresAtMs > nowMs) {
     return {
@@ -73,6 +79,7 @@ module.exports = {
   MINUTE_MS,
   REVIEW_REQUEST_DELAY_MS,
   REVIEW_REQUEST_LOCK_MS,
+  REVIEW_REQUEST_MAX_AGE_MS,
   evaluateReviewRequest,
   isCompletionTransition,
   normalizeStatus,

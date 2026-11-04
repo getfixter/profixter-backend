@@ -284,6 +284,51 @@ router.post("/step", stepLimiter, async (req, res) => {
   return res.status(204).end();
 });
 
+/**
+ * The Google review link was opened (profixter.com/review, models/ReviewLinkClick).
+ *
+ * Sent as text/plain so the browser fires it without a preflight while the
+ * page is already leaving for Google. Public and always 204, like /step: a
+ * random browser id (only to count a browser once a day) and where the link
+ * was. Nothing personal is stored, and bots are ignored.
+ */
+const reviewOpenLimiter = rateLimit({
+  limit: 20,
+  windowMs: 10 * 60 * 1000,
+  keyResolver: (req) => clientIp(req) || null,
+});
+
+router.post("/review-open", express.text({ type: "text/plain", limit: "1kb" }), reviewOpenLimiter, async (req, res) => {
+  try {
+    const ReviewLinkClick = require("../models/ReviewLinkClick");
+    const { FunnelStepSeen } = require("../models/FunnelStep");
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = {};
+      }
+    }
+    const visitorId = String(body?.visitorId || "");
+    const via = ReviewLinkClick.VIAS.includes(String(body?.via || "")) ? String(body.via) : "other";
+    if (!/^[A-Za-z0-9_-]{12,64}$/.test(visitorId) || BOT_UA.test(String(req.headers["user-agent"] || ""))) {
+      return res.status(204).end();
+    }
+    const date = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    try {
+      await FunnelStepSeen.create({ key: `${visitorId}|review:${via}|${date}`, expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) });
+    } catch (error) {
+      if (error?.code === 11000) return res.status(204).end(); // already counted today
+      throw error;
+    }
+    await ReviewLinkClick.updateOne({ date, via }, { $inc: { count: 1 } }, { upsert: true });
+  } catch (error) {
+    console.warn("Review link open failed:", error.message);
+  }
+  return res.status(204).end();
+});
+
 router.post("/visit", visitLimiter, async (req, res) => {
   try {
     const body = req.body || {};

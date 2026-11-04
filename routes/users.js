@@ -419,13 +419,38 @@ router.patch("/me/profile", auth, async (req, res) => {
   try {
     const me = await User.findById(req.user.id);
     if (!me) return res.status(404).json({ message: "User not found" });
-    const name = String(req.body?.name || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const name = String(req.body?.name || "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
     if (!name) return res.status(400).json({ message: "Please enter your name.", field: "name" });
+    if (!/\p{L}/u.test(name)) return res.status(400).json({ message: "Please enter your name using letters.", field: "name" });
+    /*
+     * The customer's own name, added or corrected (Account → Personal info).
+     * First and last follow the full name, so every screen that reads either
+     * agrees. Bookings already made keep the name they were made under.
+     */
+    const previous = String(me.name || "").trim();
     me.name = name;
     const [first, ...rest] = name.split(" ");
-    if (!me.firstName) me.firstName = first.slice(0, 60);
-    if (!me.lastName && rest.length) me.lastName = rest.join(" ").slice(0, 60);
+    me.firstName = first.slice(0, 60);
+    me.lastName = rest.join(" ").slice(0, 60);
     await me.save();
+    if (previous && previous !== name && me.role !== "employee") {
+      try {
+        const AdminActivityLog = require("../models/AdminActivityLog");
+        await AdminActivityLog.create({
+          action: "Customer Profile Updated",
+          entityType: "User",
+          entityId: String(me._id),
+          entityName: name,
+          actorUserId: me._id,
+          actorName: name,
+          actorRole: "customer",
+          details: { selfService: true, changes: [{ field: "name", label: "Name", from: previous, to: name }] },
+          ipAddress: String(req.headers?.["x-forwarded-for"] || req.ip || "").split(",")[0].trim(),
+        });
+      } catch (error) {
+        console.error("Name change history write failed:", error.message);
+      }
+    }
     const { authUserDTO, buildPerAddressCoverage } = require("./auth");
     return res.json({ user: authUserDTO(me, await buildPerAddressCoverage(me)) });
   } catch (e) {

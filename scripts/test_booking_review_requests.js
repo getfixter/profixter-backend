@@ -107,6 +107,9 @@ function matchesValue(actual, expected) {
     typeof expected === "object" &&
     !(expected instanceof Date)
   ) {
+    if (Object.prototype.hasOwnProperty.call(expected, "$regex")) {
+      return new RegExp(expected.$regex, expected.$options || "").test(String(actual || ""));
+    }
     if (Object.prototype.hasOwnProperty.call(expected, "$exists")) {
       return expected.$exists ? actual !== undefined : actual === undefined;
     }
@@ -189,12 +192,14 @@ function createFakeBookingModel(initialDocuments) {
 
 async function testWorkerCycle() {
   const BookingModel = createFakeBookingModel([
-    { ...completedBooking(59), _id: "too-early" },
-    { ...completedBooking(61), _id: "due" },
-    { ...completedBooking(61), _id: "canceled", status: "Canceled" },
+    // Four different customers: this is about one booking, not the per-customer cooldown.
+    { ...completedBooking(59), _id: "too-early", email: "early@example.com" },
+    { ...completedBooking(61), _id: "due", email: "due@example.com" },
+    { ...completedBooking(61), _id: "canceled", status: "Canceled", email: "canceled@example.com" },
     {
       ...completedBooking(61),
       _id: "already-sent",
+      email: "sent@example.com",
       reviewRequestSentAt: new Date(),
     },
   ]);
@@ -260,9 +265,9 @@ async function testFailureReleasesLock() {
 }
 
 /*
- * The per-customer cooldown: off by default (every completed booking is asked,
- * exactly as before), and when set, a customer asked within the window is not
- * asked again - their new booking is marked skipped, not emailed.
+ * The per-customer cooldown: 90 days by default (2026-11-03; it used to be off),
+ * 0 turns it off, and a customer asked within the window is not asked again -
+ * their new booking is marked skipped, not emailed.
  */
 async function testCustomerCooldown() {
   const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);

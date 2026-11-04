@@ -4,6 +4,7 @@ const RepAttribution = require("../../models/RepAttribution");
 const SiteVisitor = require("../../models/SiteVisitor");
 const { normalizeEmail, normalizePhone } = require("../identity");
 const { sanitizeAttribution } = require("../analytics/attribution");
+const { consentResetForPhoneChange } = require("../sms/consentOnPhoneChange");
 
 /**
  * Who someone is, and creating them when they are new.
@@ -115,22 +116,59 @@ async function attachVerifiedPhone(user, e164) {
    * account, which is all verification means.
    */
   const alreadyVerifiedHere = user.phone === e164 && user.phoneVerifiedAt;
+  const previousPhone = user.phone || "";
+  /*
+   * Text consent belongs to the number, not the account
+   * (utils/sms/consentOnPhoneChange.js): a different number starts with none,
+   * exactly as when Admin changes it. The history stays; only the two
+   * eligibility flags go. Opting the new number in is a separate, explicit
+   * choice (routes/authV2.js applyPhoneOptIn).
+   */
+  const verdict = consentResetForPhoneChange({ previousPhone, nextPhone: e164, smsPreferences: user.smsPreferences });
+  if (verdict.reset) {
+    user.set("smsPreferences.transactionalEnabled", undefined);
+    user.set("smsPreferences.marketingEnabled", undefined);
+  }
   user.phone = e164;
   if (!alreadyVerifiedHere) user.phoneVerifiedAt = new Date();
   addProvider(user, "phone");
   await user.save();
-  return { ok: true };
+  if (verdict.reset) {
+    const { recordConsent } = require("../consent/ledger");
+    for (const [purpose, cleared] of [["service", verdict.clearedTransactional], ["marketing", verdict.clearedMarketing]]) {
+      if (cleared) {
+        await recordConsent({
+          user: user._id,
+          channel: "sms",
+          purpose,
+          action: "reset",
+          source: "phone_change",
+          phone: verdict.previous,
+          detail: "consent covered the previous number only",
+        });
+      }
+    }
+  }
+  return { ok: true, previousPhone, consentReset: verdict.reset ? { service: verdict.clearedTransactional, marketing: verdict.clearedMarketing } : null };
 }
 
 async function attachVerifiedEmail(user, email) {
   const clean = normalizeEmail(email);
   const holder = await findCustomerByEmail(clean);
   if (holder && String(holder._id) !== String(user._id)) return { ok: false, code: "IDENTIFIER_IN_USE" };
+  const previousEmail = user.email || "";
+  if (previousEmail && previousEmail !== clean) user.emailIsAppleRelay = false;
   user.email = clean;
   user.emailVerifiedAt = new Date();
   addProvider(user, "email_code");
-  await user.save();
-  return { ok: true };
+  try {
+    await user.save();
+  } catch (error) {
+    // Two accounts racing for the same address: the unique index decides.
+    if (isDuplicateKey(error)) return { ok: false, code: "IDENTIFIER_IN_USE" };
+    throw error;
+  }
+  return { ok: true, previousEmail };
 }
 
 /* -------------------------------------------------------- lead matching */

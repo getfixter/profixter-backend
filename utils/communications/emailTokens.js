@@ -125,6 +125,14 @@ const EMAIL_DEFINITIONS = {
     preheader: "Your Profixter password has been updated.",
     tokens: () => ({}),
   },
+  account_contact_changed: {
+    label: "Email or mobile number changed",
+    preheader: "Your Profixter contact details were updated.",
+    tokens: (v) => ({
+      changedWhat: v.field === "phone" ? "mobile number" : "email address",
+      maskedNew: String(v.maskedNew || ""),
+    }),
+  },
 
   /* ----------------------------- Bookings ---------------------------- */
   booking_created: { label: "Booking received", preheader: "We received your request.", tokens: bookingTokens },

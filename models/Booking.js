@@ -286,6 +286,8 @@ const BookingSchema = new mongoose.Schema({
   reviewRequestSentAt: { type: Date, default: null },
   reviewRequestLockExpiresAt: { type: Date, default: null },
   reviewRequestSkippedAt: { type: Date, default: null },
+  // Why it was skipped: customer_cooldown, reviewed_us, too_old (jobs/bookingReviewRequests.js).
+  reviewRequestSkipReason: { type: String, default: "" },
 
 }, { timestamps: true });
 

@@ -463,6 +463,11 @@ const EMAIL_SETTINGS = {
   password_otp: { label: "Password reset code", trigger: "A password reset is requested.", appliesTo: "All accounts" },
   login_code: { label: "Sign-in code", trigger: "A customer signs in or signs up with an email code.", appliesTo: "All accounts" },
   password_changed: { label: "Password changed", trigger: "An account password changes.", appliesTo: "All accounts" },
+  account_contact_changed: {
+    label: "Email or mobile number changed",
+    trigger: "A customer changes their own email or mobile number (sent to the email the account had before).",
+    appliesTo: "All accounts",
+  },
   admin_booking_canceled: { label: "Admin: booking cancelled", trigger: "A booking is cancelled.", appliesTo: "Internal" },
   admin_full_day_booked: { label: "Admin: Full Day booked", trigger: "A Full Day is booked.", appliesTo: "Internal" },
   gift_invitation: { label: "Gift invitation", trigger: "A gift membership is purchased.", appliesTo: "Gift recipients" },

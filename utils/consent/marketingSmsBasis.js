@@ -34,6 +34,8 @@ const SELF_GIVEN_SOURCES = new Set([
   "account_settings",
   "website",
   "sms_keyword",
+  // The optional box on the "Add your mobile number" screen, recorded once the code proves the number (2026-11-03).
+  "phone_verification",
 ]);
 
 /* How Admin can say the customer agreed. Only the written ones can qualify. */

@@ -8,7 +8,12 @@ function createCustomerEmailTemplates({
 }) {
   const SUPPORT_EMAIL = PUBLIC_CONTACT_EMAIL;
   const TIP_URL = tipPageUrl();
-  const REVIEW_URL = "https://www.profixter.com/review";
+  /*
+   * /review opens Google's review form. ?via=email only counts the click
+   * (anonymously, by day); the page works the same without it, so links in
+   * emails already sent keep working.
+   */
+  const REVIEW_URL = "https://www.profixter.com/review?via=email";
   const ACCOUNT_URL = "https://www.profixter.com/account";
   const BOOK_URL = "https://www.profixter.com/book";
   const MEMBERSHIP_URL = "https://www.profixter.com/membership";
@@ -183,6 +188,26 @@ function createCustomerEmailTemplates({
         text: `${greeting(name)}\n\nYour Profixter password was changed. If you did not make this change, contact ${SUPPORT_EMAIL}.`,
       }),
 
+    /*
+     * A customer changed their own email or mobile number (Account → Personal
+     * info). Sent to the address the account had BEFORE an email change, so
+     * the person who owned it hears about it even if somebody else made it.
+     * The new value is shown only partly.
+     */
+    account_contact_changed: ({ name = "there", field = "email", maskedNew = "" }) => {
+      const what = field === "phone" ? "mobile number" : "email address";
+      return email({
+        subject: `Your Profixter ${what} was changed`,
+        preheader: `The ${what} on your Profixter account was updated.`,
+        content: `
+          <h1 style="margin:0 0 16px;font-size:24px;line-height:31px;">Your ${what} was changed</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">The ${what} on your Profixter account was changed${maskedNew ? ` to <strong>${safe(maskedNew)}</strong>` : ""}. Your membership, visits and history are unchanged.</p>
+          <p style="margin:0;">If you did not make this change, call us at ${ONE_TIME_PHONE} or email <a href="mailto:${SUPPORT_EMAIL}" style="color:#1d4ed8;">${SUPPORT_EMAIL}</a> right away.</p>`,
+        text: `${greeting(name)}\n\nThe ${what} on your Profixter account was changed${maskedNew ? ` to ${maskedNew}` : ""}. Your membership, visits and history are unchanged.\n\nIf you did not make this change, call ${ONE_TIME_PHONE} or email ${SUPPORT_EMAIL} right away.`,
+      });
+    },
+
     welcome: ({ name = "there", userId }) =>
       email({
         subject: "Welcome to Profixter",
@@ -345,6 +370,24 @@ function createCustomerEmailTemplates({
 
     booking_review_request: (vars = {}) => {
       const { name = "there", bookingNumber } = vars;
+      /*
+       * A Free Visit is a walk-through of the to-do list with no labor, so its
+       * email asks about the visit, never about work that was not done. A
+       * historical free first visit (labor included) keeps the usual copy.
+       */
+      if (vars.freeVisitPurpose === "consultation") {
+        return email({
+          subject: "How was your Free Visit?",
+          preheader: "We would appreciate your honest feedback.",
+          content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">How was your Free Visit?</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 16px;">Thank you for having us over to go through your to-do list${bookingNumber ? ` (booking <strong>#${safe(bookingNumber)}</strong>)` : ""}.</p>
+          <p style="margin:0;">If you have a moment, we would appreciate an honest review of your visit. It helps us improve and helps local homeowners find dependable home service.</p>
+          ${button(REVIEW_URL, "Share your feedback")}`,
+          text: `${greeting(name)}\n\nThank you for having us over to go through your to-do list${bookingNumber ? ` (booking #${bookingNumber})` : ""}. We would appreciate an honest review of your visit.\n\nShare your feedback: ${REVIEW_URL}\n\n${SUPPORT_EMAIL}`,
+        });
+      }
       const oneTime = isOneTimeVisit(vars);
       const fullDay = isFullDayVisit(vars);
       return email({

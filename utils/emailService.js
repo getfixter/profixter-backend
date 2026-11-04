@@ -47,7 +47,7 @@ const URLS = {
   tip: process.env.TIP_LINK || "https://www.profixter.com/tip",
   plans: process.env.PLANS_URL || "https://profixter.com",
   schedule: process.env.SCHEDULE_URL || "https://profixter.com",
-  review: process.env.REVIEW_URL || "https://www.profixter.com/review",
+  review: process.env.REVIEW_URL || "https://www.profixter.com/review?via=email",
   site: process.env.SITE_URL || "https://profixter.com",
   supportTel: process.env.SUPPORT_TEL_URL || "tel:+16315991363",
   supportSMS:

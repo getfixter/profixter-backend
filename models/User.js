@@ -417,6 +417,26 @@ const UserSchema = new mongoose.Schema(
       serviceChangeSource: { type: String, default: "" },
     },
 
+    /*
+     * Post-visit review requests (jobs/bookingReviewRequests.js).
+     *
+     * reviewRequestLastAt is when this customer was last ASKED, whichever of
+     * their bookings it was for. The job reserves it atomically before an
+     * email goes out, so two bookings - or two servers - can never both ask
+     * inside the cooldown.
+     *
+     * reviewedUs is the owner's own mark that this customer left a Google
+     * review: set by hand in Admin, never guessed from review names. While it
+     * is set nobody asks them again, and clearing it sends nothing for past
+     * visits.
+     */
+    reviewRequestLastAt: { type: Date, default: null },
+    reviewedUs: {
+      at: { type: Date, default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      byName: { type: String, default: "" },
+    },
+
     // Non-subscriber nurture sequence tracking
     nurture: {
       email1SentAt: { type: Date, default: null },

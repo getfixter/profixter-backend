@@ -52,6 +52,29 @@ const VERSIONS = {
     purpose: "service",
     text: 'Checkbox "Text me about my ProFixter visits" (optional, unticked) at the booking step: "Optional. Booking confirmations, appointment reminders and arrival updates. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help." followed by links to the SMS Terms (profixter.com/communication-consent#service-texts), the Privacy Policy and the Terms of Service.',
   },
+  /*
+   * 2026-11-03: the "Add your mobile number" screen
+   * (FrontEnd app/components/auth/ContactCompletion.tsx), where a new
+   * customer - and anyone adding or changing their number - types the phone
+   * and presses "Text me a code". One optional, unticked box. Verifying the
+   * number is never consent; only the box is, and it is recorded only once
+   * the code proves the number belongs to the person who ticked it.
+   */
+  "sms_marketing.phone_verify.v1": {
+    channel: "sms",
+    purpose: "marketing",
+    text: 'Checkbox "Text me ProFixter offers, too." (optional, unticked) on the "Add your mobile number" screen, under the phone field: "Optional, not required to buy. Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help." followed by links to the SMS Terms (profixter.com/communication-consent#marketing) and the Privacy Policy. Recorded only after the number is verified with a code.',
+  },
+  /*
+   * The same screen when a customer CHANGES their number (Account → Personal
+   * info): text consent covered the old number only (utils/sms/consentOnPhoneChange.js),
+   * so visit texts are offered again for the new one - unticked.
+   */
+  "sms_service.phone_change.v1": {
+    channel: "sms",
+    purpose: "service",
+    text: 'Checkbox "Text me about my ProFixter visits" (optional, unticked) on the "Change your mobile number" screen: "Booking confirmations, reminders and arrival updates. Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help." Recorded only after the new number is verified with a code.',
+  },
   "terms.continue.v1": {
     channel: "terms",
     purpose: "terms",
@@ -110,6 +133,7 @@ const CURRENT = {
   sms_settings: { service: "sms_service.settings.v1", marketing: "sms_marketing.settings.v1" },
   email_settings: { marketing: "email_marketing.settings.v1" },
   booking: { service: "sms_service.booking.v2" },
+  phone_verify: { marketing: "sms_marketing.phone_verify.v1", service: "sms_service.phone_change.v1" },
   continue_terms: "terms.continue.v1",
   admin_phone: {
     service: "sms_service.admin_phone.v1",

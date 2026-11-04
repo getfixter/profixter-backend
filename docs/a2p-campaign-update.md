@@ -199,18 +199,28 @@ below instead.
 - New (marketing, held until this flow is VERIFIED): the one-click page
   /texts/confirm, and a customer's own written permission recorded by staff
   with its evidence.
-- Unchanged: account settings (two separate unchecked boxes; the only place
-  customers switch on marketing today); STOP stops everything; START only
-  lifts a STOP and grants no consent; no purchased or shared lists.
+- Unchanged: account settings (two separate unchecked boxes); STOP stops
+  everything; START only lifts a STOP and grants no consent; no purchased or
+  shared lists.
 - Account settings now also show the sending number and link the SMS Terms,
   Privacy Policy and Terms of Service under the two boxes.
+- New (2026-11-03, later): the mobile-number screen (adding or changing the
+  number on an account, also shown right after an email/Google/Apple
+  sign-up) has one optional, unchecked box "Text me ProFixter offers, too."
+  (`sms_marketing.phone_verify.v1`), recorded only after the code verifies
+  the number; a number change also offers an unchecked visit-texts box
+  (`sms_service.phone_change.v1`), because consent stays with the old number.
+  The registered 2026-09-11 flow already describes an optional marketing box
+  on the website sign-up form, so these qualify for marketing now
+  (marketingSmsBasis source `phone_verification`); this flow describes the
+  screen exactly so the registration matches the site word for word.
 
-### Message flow (paste into the "Message flow" field; 1,919 characters, plain ASCII)
+### Message flow (paste into the "Message flow" field; 1,986 characters, plain ASCII)
 
 Twilio does not state a limit on this field in this file; it is kept under
 2,000 characters.
 
-> ProFixter (Premium Island Homes Inc.) collects SMS consent in five places. Texts are never required to book or buy. (1) Booking step (signed-in customers, e.g. https://www.profixter.com/book/handyman): an optional, unchecked box "Text me about my ProFixter visits" above the final button, for booking confirmations, reminders and arrival updates. (2) Free Visit request at https://www.profixter.com/book/free (no account): no checkbox; the line directly under the "Request my Free Visit" button reads "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help." Pressing the button consents to texts about that one visit only, never marketing. (3) Account settings at https://www.profixter.com/account: two separate unchecked boxes, "Text me about my ProFixter visits." and "Text me occasional ProFixter offers." (marketing). (4) Phone call: staff must ask whether the caller agrees to texts about their visits and record Yes or No (nothing pre-selected); the record names the staff member and time. A spoken yes is never used for marketing. (5) Marketing, staff-assisted: a customer who asks staff for offers by text may be emailed a link to https://www.profixter.com/texts/confirm and texts start only after they press "Yes, text me occasional ProFixter offers"; a customer's own written request (their email, text or signed form) is recorded by staff with that evidence. Every web opt-in states the brand, message frequency, rates and STOP/HELP and links the SMS Terms (https://www.profixter.com/communication-consent) and Privacy Policy (https://www.profixter.com/privacy). Sign-up collects no SMS consent: one-time codes are sent by Twilio Verify, outside this campaign. START only lifts a STOP. No purchased, rented or shared lists. Screenshots: https://www.profixter.com/sms-consent-example
+> ProFixter (Premium Island Homes Inc.) collects SMS consent in six places. Texts are never required to book or buy. (1) Booking step (signed in): optional unchecked box "Text me about my ProFixter visits" above the final button, for visit updates. (2) Free Visit request at https://www.profixter.com/book/free (no account): no checkbox; the line under the "Request my Free Visit" button reads "By requesting a visit, you agree that ProFixter may call or text you about this visit. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help." Pressing it covers texts about that visit only. (3) Account settings at https://www.profixter.com/account: two separate unchecked boxes, "Text me about my ProFixter visits." and "Text me occasional ProFixter offers." (marketing). (4) Mobile-number screen, where a signed-in customer adds or changes their number (incl. right after an email, Google or Apple sign-up): optional unchecked box "Text me ProFixter offers, too." (marketing), saved only after the number is verified by code; on a number change also an unchecked "Text me about my ProFixter visits". (5) Phone call: staff must ask whether the caller agrees to texts about their visits and record Yes or No (nothing pre-selected), with staff name and time; never used for marketing. (6) Marketing, staff-assisted: a customer who asks for offers by text may get an email link to https://www.profixter.com/texts/confirm and texts start only after they press "Yes, text me occasional ProFixter offers"; a customer's own written request is recorded by staff with that evidence. Every web opt-in states brand, frequency, rates and STOP/HELP and links the SMS Terms (https://www.profixter.com/communication-consent) and Privacy Policy. The phone sign-up screen collects no SMS consent; one-time codes go via Twilio Verify, outside this campaign. START only lifts a STOP. No purchased or shared lists. Screenshots: https://www.profixter.com/sms-consent-example
 
 ### Campaign description (only if the console asks for it again)
 
