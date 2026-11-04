@@ -277,7 +277,7 @@ async function runCampaign(
    * cooldown, not by the window.
    */
   const qualifyingSources = [...SELF_GIVEN_SOURCES];
-  if (adminAssistedOptInRegistered()) qualifyingSources.push("sms_confirm_link", "admin_written");
+  if (adminAssistedOptInRegistered()) qualifyingSources.push("sms_confirm_link", "admin_written", "phone_verification");
   const candidates = await UserModel.find({
     role: "customer",
     isActive: true,

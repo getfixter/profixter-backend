@@ -391,7 +391,7 @@ async function run() {
     return post("/api/auth/otp/phone/verify", { phone, code: lastCode(phone), mode: "attach", ...extra }, token);
   }
 
-  await test("ticked: recorded after the code, with source, wording, number and time; it qualifies", async () => {
+  await test("ticked: recorded after the code, with source, wording, number and time; sends wait for the registered flow", async () => {
     const pat = await customer();
     const res = await addPhone(pat, "+16315552001", { smsOptIn: { marketing: true } });
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -402,7 +402,11 @@ async function run() {
     assert.equal(user.smsPreferences.marketingConsentSource, "phone_verification");
     assert.ok(user.smsPreferences.marketingConsentAt);
     assert.notEqual(user.smsPreferences.transactionalEnabled, true, "service texts are not switched on by the offers box");
-    assert.equal(marketingSmsBasis(user).status, "qualifies");
+    // A screen the registered A2P flow does not name yet: held until Twilio confirms the 2026-11-03 flow.
+    assert.equal(marketingSmsBasis(user).status, "awaiting_registration");
+    process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED = "true";
+    assert.equal(marketingSmsBasis(user).status, "qualifies", "qualifies once the flow is registered");
+    delete process.env.SMS_ADMIN_ASSISTED_OPTIN_REGISTERED;
     const row = await ConsentEvent.findOne({ user: pat._id, purpose: "marketing" }).lean();
     assert.equal(row.action, "granted");
     assert.equal(row.source, "phone_verification");

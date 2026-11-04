@@ -210,10 +210,12 @@ below instead.
   (`sms_marketing.phone_verify.v1`), recorded only after the code verifies
   the number; a number change also offers an unchecked visit-texts box
   (`sms_service.phone_change.v1`), because consent stays with the old number.
-  The registered 2026-09-11 flow already describes an optional marketing box
-  on the website sign-up form, so these qualify for marketing now
-  (marketingSmsBasis source `phone_verification`); this flow describes the
-  screen exactly so the registration matches the site word for word.
+  The registered 2026-09-11 flow describes a marketing box on the sign-up
+  form, not this screen, so marketing texts on this basis are HELD
+  (marketingSmsBasis source `phone_verification` -> awaiting_registration)
+  until this flow is VERIFIED and `SMS_ADMIN_ASSISTED_OPTIN_REGISTERED` is
+  switched on (the same switch as the confirmation page and written
+  permission). Consent is recorded now; only sending waits.
 
 ### Message flow (paste into the "Message flow" field; 1,986 characters, plain ASCII)
 

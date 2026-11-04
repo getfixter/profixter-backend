@@ -19,6 +19,11 @@
  *    would put the verified campaign - and every service text - at risk. They
  *    qualify once Twilio confirms the updated message flow
  *    (SMS_ADMIN_ASSISTED_OPTIN_REGISTERED=true; docs/a2p-campaign-update.md).
+ *  - The customer ticked the optional box on the "Add your mobile number"
+ *    screen (source phone_verification, 2026-11-03), recorded only after the
+ *    code proved the number: their own electronic act, but on a screen the
+ *    registered flow does not name yet. Held exactly like the two above until
+ *    Twilio confirms the 2026-11-03 message flow, which describes it.
  *  - Admin recorded a phone call: the call is real and stays on record, but a
  *    spoken yes is not written consent. The customer completes it themselves
  *    (account settings now; the one-click link once registered).
@@ -34,8 +39,6 @@ const SELF_GIVEN_SOURCES = new Set([
   "account_settings",
   "website",
   "sms_keyword",
-  // The optional box on the "Add your mobile number" screen, recorded once the code proves the number (2026-11-03).
-  "phone_verification",
 ]);
 
 /* How Admin can say the customer agreed. Only the written ones can qualify. */
@@ -65,6 +68,7 @@ function marketingSmsBasis(user) {
   if (SELF_GIVEN_SOURCES.has(source)) return { status: "qualifies", basis: "customer_electronic", method: "customer_self_service" };
   const pending = (basis, how) => ({ status: adminAssistedOptInRegistered() ? "qualifies" : "awaiting_registration", basis, method: how });
   if (source === "sms_confirm_link") return pending("customer_confirmed_link", "customer_confirmed_link");
+  if (source === "phone_verification") return pending("customer_phone_screen", "customer_self_service");
   if (source === "admin_written" && ADMIN_METHODS[method]?.written && String(prefs.marketingConsentEvidence || "").trim().length >= MIN_EVIDENCE) {
     return pending("admin_recorded_written", method);
   }

@@ -821,7 +821,7 @@ async function main() {
       ["the booking step box", /The booking step \(signed in\): one optional, unchecked box, "Text me about my ProFixter visits"/],
       ["the guest Free Visit request", /The Free Visit request form \(no account\): no checkbox/],
       ["account settings", /Account settings: two separate, unchecked boxes/],
-      ["the mobile-number screen", /The mobile-number screen \(signed in\), where you add or change the mobile number on your account: one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts, recorded only after you enter the code that verifies the number\./],
+      ["the mobile-number screen", /The mobile-number screen \(signed in\), where you add or change the mobile number on your account: one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts, recorded only after you enter the code that verifies the number; offer texts on it start only once this method is registered with the carriers\./],
       ["a call with staff", /A phone call with our staff, for texts about your visits only: staff must ask and record Yes or No; neither answer is pre-selected\. It is never used for marketing texts\./],
       ["the confirmation page", /profixter\.com\/texts\/confirm, for marketing texts, used only once this method is registered with the carriers/],
     ]) {
@@ -1031,7 +1031,7 @@ async function main() {
       ["the booking step", /The booking step \(signed-in customers\) - one optional, unchecked box, "Text me about my ProFixter visits"/],
       ["the guest request", /The Free Visit request form \(no account needed\) - .*There is no checkbox\..*pressing the button is the agreement\. It covers calls and texts about that one requested visit and nothing else, never marketing\./],
       ["account settings", /Account settings - two separate, unchecked boxes, one for service texts and one for marketing texts\./],
-      ["the mobile-number screen", /The mobile-number screen \(signed-in customers\) - shown when a customer adds a mobile number to their account .*one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts only\. It is recorded only after the customer enters the code that verifies the number/],
+      ["the mobile-number screen", /The mobile-number screen \(signed-in customers\) - shown when a customer adds a mobile number to their account .*one optional, unchecked box, "Text me ProFixter offers, too\.", for marketing texts only\. It is recorded only after the customer enters the code that verifies the number.*no marketing text is sent on this box until this method is registered with the carriers\./],
       ["a call with staff", /A phone call with ProFixter staff - for texts about the caller's own visits only\. Staff must ask.*they must choose Yes or No, and neither is pre-selected\. The record names the staff member and the time\./],
       ["the confirmation page", /The confirmation page profixter\.com\/texts\/confirm - for marketing texts, and only once this method is registered with the carriers\./],
     ]) {
