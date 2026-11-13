@@ -583,8 +583,11 @@ async function main() {
       assert.strictEqual(adminFree.images.length, 1);
       assert.ok(/^https:\/\/test-bucket\.s3\.amazonaws\.com\/uploads\/.+booking-\d{8}\/.+admin-create-kitchen\.jpg$/.test(adminFree.images[0]), adminFree.images[0]);
     });
-    await check("the customer is told as usual, and called a visit, not a membership visit", async () => {
-      assert.ok(sentEmails.some((m) => m.templateKey === "booking_created" && m.to === member.email));
+    await check("the customer is told it is confirmed (Q-2: owner-booked, reserved, assigned, nothing owed), and called a visit", async () => {
+      assert.strictEqual(adminFree.status, "Confirmed");
+      assert.ok(adminFree.assignedFixterId, "a technician was assigned by the engine");
+      assert.ok(sentEmails.some((m) => m.templateKey === "booking_confirmed" && m.to === member.email));
+      assert.ok(!sentEmails.some((m) => m.templateKey === "booking_created" && m.to === member.email), "no \"we will confirm\" email for a confirmed visit");
       const sms = await SmsMessage.findOne({ booking: adminFree._id }).lean();
       assert.ok(sms && /your visit/i.test(sms.body) && !/membership visit/i.test(sms.body), sms?.body);
     });
