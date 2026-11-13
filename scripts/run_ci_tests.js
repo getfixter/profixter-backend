@@ -140,6 +140,8 @@ const SUITES = [
   "test_sessions_logout.js",
   // 2 MB body limit, public lead rate limits, no public ping, generic 5xx.
   "test_server_hardening.js",
+  // Local Admin preview stack: live-looking env refused, outbound network blocked, fakes in place (no DB, no network).
+  "preview/test_preview_safety.js",
   // Queued campaign send: snapshot, lease, resume never resends (in-memory Mongo, SES faked).
   "test_campaign_send_queue.js",
   // GoHighLevel retired: no Google posting, no GHL replies (in-memory Mongo).
