@@ -166,8 +166,20 @@ function _resetTouchCache() {
   lastTouch.clear();
 }
 
+/**
+ * A purpose token (reauth proof, phone link/choice, password reset...) is
+ * signed with the same secret as a sign-in token but is not one. It carries
+ * `purpose` or `typ`; a sign-in token carries neither. Review fix 8
+ * (2026-11-13): such a token is never accepted as a session, so a reauth
+ * proof cannot outlive the sign-out of the session that minted it.
+ */
+function isPurposeToken(decoded) {
+  return Boolean(decoded && (decoded.purpose !== undefined || decoded.typ !== undefined));
+}
+
 module.exports = {
   TOUCH_INTERVAL_MS,
+  isPurposeToken,
   tokenHash,
   summarizeUserAgent,
   signSessionToken,

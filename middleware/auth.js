@@ -20,6 +20,8 @@ module.exports = async function (req, res, next) {
     if (!token) return res.status(401).json({ message: "No token" });
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // A reauth or other purpose token is not a sign-in token (it is read only where it is meant to be).
+    if (sessions.isPurposeToken(decoded)) return res.status(401).json({ message: "Token invalid" });
 
     // ⚠️ Keep it consistent: downstream expects req.user.id (Mongo _id from token)
     req.user = { id: decoded.id };

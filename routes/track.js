@@ -27,7 +27,8 @@ async function optionalAuth(req, _res, next) {
     const token = (bearer && bearer.replace(/^Bearer\s+/i, "")) || req.header("x-auth-token");
     if (token) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      if (decoded?.id) req.user = { _id: decoded.id };
+      // A reauth or other purpose token is not a sign-in (review fix 8).
+      if (decoded?.id && decoded.purpose === undefined && decoded.typ === undefined) req.user = { _id: decoded.id };
     }
   } catch {
     /* An unreadable token is simply an anonymous caller. */

@@ -96,6 +96,8 @@ async function requireSignedInUser(req) {
   } catch {
     throw new AuthFlowError("SIGN_IN_REQUIRED");
   }
+  // A reauth proof (or any purpose token) is never a session.
+  if (sessions.isPurposeToken(payload)) throw new AuthFlowError("SIGN_IN_REQUIRED");
   const user = await User.findById(payload?.id);
   if (!user || user.role === "employee") throw new AuthFlowError("SIGN_IN_REQUIRED");
   if (!accounts.sessionIsCurrent(payload, user)) throw new AuthFlowError("SIGN_IN_REQUIRED");
@@ -151,7 +153,7 @@ function sessionToken(req) {
 function recentlyConfirmed(req, user) {
   try {
     const session = jwt.verify(sessionToken(req), process.env.JWT_SECRET);
-    if (session?.iat && Date.now() - session.iat * 1000 <= FRESH_SESSION_MS) return true;
+    if (!sessions.isPurposeToken(session) && session?.iat && Date.now() - session.iat * 1000 <= FRESH_SESSION_MS) return true;
   } catch {
     /* requireSignedInUser already refused a bad session */
   }

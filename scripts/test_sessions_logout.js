@@ -219,6 +219,30 @@ async function run() {
     assert.equal(delivered.length, 1);
   });
 
+  await test("review 8: a reauth proof (or any purpose token) is never accepted as a sign-in token", async () => {
+    const user = await makeUser({ phone: "+16315550143", phoneVerifiedAt: new Date() });
+    const token = await login(user);
+    delivered.length = 0;
+    assert.equal((await call("POST", "/api/auth/reauth/start", { channel: "sms" }, token)).status, 200);
+    const code = delivered[delivered.length - 1]?.code;
+    assert.ok(code, JSON.stringify(delivered));
+    const verified = await call("POST", "/api/auth/reauth/verify", { channel: "sms", code }, token);
+    assert.equal(verified.status, 200, JSON.stringify(verified.body));
+    const reauthToken = verified.body.reauthToken;
+    assert.equal(jwt.decode(reauthToken).purpose, "reauth");
+    // Its intended use (a body proof next to the real session) is untouched; as a bearer token it is refused.
+    assert.equal((await call("GET", "/api/protected", null, reauthToken)).status, 401, "middleware/auth refuses it");
+    assert.notEqual((await call("POST", "/api/auth/reauth/start", { channel: "sms" }, reauthToken)).status, 200, "the 2.0 routes refuse it");
+    await call("POST", "/api/auth/logout", null, token);
+    assert.equal((await call("GET", "/api/protected", null, reauthToken)).status, 401, "nothing outlives the sign-out");
+    // Hand-made purpose tokens with a valid id and tokenVersion are refused the same way.
+    for (const extra of [{ purpose: "reauth" }, { typ: "phone_link" }, { typ: "reset" }]) {
+      assert.equal((await call("GET", "/api/protected", null, legacyToken(user, extra))).status, 401, JSON.stringify(extra));
+    }
+    // A plain legacy sign-in token (no sid, no purpose) still works: no forced logout.
+    assert.equal((await call("GET", "/api/protected", null, legacyToken(user))).status, 200);
+  });
+
   await test("lastSeenAt updates are throttled to one write per five minutes", async () => {
     const user = await makeUser();
     const token = await login(user);
