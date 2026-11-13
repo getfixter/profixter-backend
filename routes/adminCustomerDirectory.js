@@ -185,8 +185,8 @@ function allowedActionsFor(req, user, { blocked, resendEligible = false }) {
     viewBilling: true,
     changeCommunication: manage,
     resendAccess: manage && !archived && resendEligible,
-    /* Charge customer straight from the profile (no booking): the owner only, enforced again by its routes. */
-    chargeCustomer: owner,
+    /* Charge customer straight from the profile (no booking): Owner or General Fixter, enforced again by its routes. */
+    chargeCustomer: require("../utils/extraCharges/access").canChargeCustomers(req),
   };
 }
 

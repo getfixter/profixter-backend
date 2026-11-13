@@ -93,6 +93,8 @@ const AdditionalChargeSchema = new mongoose.Schema(
       statement: { type: String, required: true },
       confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
       confirmedByName: { type: String, default: "" },
+      /* "owner" or "general_fixter": who pressed it. */
+      confirmedByRole: { type: String, default: "" },
       confirmedAt: { type: Date, required: true },
       totalCents: { type: Number, required: true },
     },

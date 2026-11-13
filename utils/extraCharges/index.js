@@ -82,8 +82,8 @@ const money = (cents) => `$${(Number(cents || 0) / 100).toLocaleString("en-US", 
 const idOf = (v) => (v && typeof v === "object" ? String(v.id || "") : String(v || ""));
 const sameId = (a, b) => String(a || "") === String(b || "");
 
-function consentStatement(totalCents) {
-  return `The owner pressed "Charge ${money(totalCents)}".`;
+function consentStatement(totalCents, role = "owner") {
+  return `The ${role === "general_fixter" ? "General Fixter" : "owner"} pressed "Charge ${money(totalCents)}".`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -808,8 +808,10 @@ function actingAdmin(req) {
   return { _id: a._id || req.user?.id || null, name: a.name || a.email || "", email: a.email || "" };
 }
 
+/** The Owner or a General Fixter (utils/extraCharges/access.js); everyone else, including a field Fixter, is refused. */
 function assertOwner(req) {
-  if (req?.accessRole !== "admin") throw new ExtraChargeError("OWNER_ONLY", "Only the owner can charge extras.", 403);
+  const { DENIED, canChargeCustomers } = require("./access");
+  if (!canChargeCustomers(req)) throw new ExtraChargeError(DENIED.code, DENIED.message, 403);
 }
 
 /** Charge from a booking: the account is the booking's stored owner. */
@@ -939,7 +941,7 @@ async function createCharge(req, scope, body = {}) {
     description: input.note,
     totalCents: input.totalCents,
     tax: { status: "not_calculated" },
-    consent: { statement: consentStatement(input.totalCents), confirmedBy: admin._id, confirmedByName: admin.name, confirmedAt: now, totalCents: input.totalCents },
+    consent: { statement: consentStatement(input.totalCents, require("./access").chargeRoleOf(req)), confirmedBy: admin._id, confirmedByName: admin.name, confirmedByRole: require("./access").chargeRoleOf(req) || "", confirmedAt: now, totalCents: input.totalCents },
     method,
     status: method === "card" ? "charging" : "awaiting_payment",
     paymentMethodId: method === "card" ? target.paymentMethodId : "",

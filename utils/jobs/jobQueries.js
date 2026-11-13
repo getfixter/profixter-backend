@@ -418,9 +418,9 @@ function staffNotesOf(booking) {
   }));
 }
 
-/** Charge extra is the owner's alone, on a confirmed or completed visit. */
+/** Charge customer: the Owner or a General Fixter (utils/extraCharges/access.js), on a confirmed or completed visit. */
 function canChargeExtra(req, booking) {
-  return req?.accessRole === "admin" && [STATUS.CONFIRMED, STATUS.COMPLETED].includes(canonicalStatus(booking.status));
+  return require("../extraCharges/access").canChargeCustomers(req) && [STATUS.CONFIRMED, STATUS.COMPLETED].includes(canonicalStatus(booking.status));
 }
 
 async function extraChargeSummary(bookingId) {
@@ -472,8 +472,8 @@ async function jobDetail(req, booking, { now = new Date() } = {}) {
     completedAt: booking.completedAt || null,
     createdAt: booking.createdAt || null,
     allowedActions: [...allowedActionsFor(req, booking), ...(canChargeExtra(req, booking) ? ["chargeExtra"] : [])],
-    // Owner only: the extras on this visit (Charge extra), summarised; the sheet loads the full list.
-    extraCharges: req?.accessRole === "admin" ? await extraChargeSummary(booking._id) : undefined,
+    // Owner and General Fixter only: the charges on this visit, summarised; the sheet loads the full list.
+    extraCharges: require("../extraCharges/access").canChargeCustomers(req) ? await extraChargeSummary(booking._id) : undefined,
     history: { href: `/api/admin/bookings/${booking._id}/history` },
   };
 }

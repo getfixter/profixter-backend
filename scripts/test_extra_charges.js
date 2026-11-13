@@ -435,9 +435,9 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
 
   try {
     /* ------------------------------ access ------------------------------ */
-    await check("only the owner may preview, charge, list or act; everyone else is refused by the server", async () => {
+    await check("only the Owner and a General Fixter may preview, charge, list or act; a field Fixter, a manager and a customer are refused by the server", async () => {
       const input = { description: "Hang extra shelf", amount: "40", taxTreatment: CAPITAL };
-      for (const who of [general, manager, field, alice]) {
+      for (const who of [manager, field, alice]) {
         for (const [m, p] of [["GET", `/api/admin/jobs/${aliceJob._id}/extra-charges`], ["GET", `/api/admin/jobs/${aliceJob._id}/extra-charges/target`], ["POST", `/api/admin/jobs/${aliceJob._id}/extra-charges`]]) {
           const r = await call(m, p, who, { ...input, idempotencyKey: key(), customerAgreed: true, method: "card" });
           assert.strictEqual(r.status, 403, `${who.name} ${m} ${p} -> ${r.status}`);
@@ -448,13 +448,18 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(piCreates(), 0);
     });
 
-    await check("the job sheet offers Charge extra to the owner only, on confirmed or completed visits", async () => {
+    await check("the job sheet offers Charge customer to the Owner and a General Fixter (not a field Fixter, even on their own job), on confirmed or completed visits", async () => {
       const mine = await call("GET", `/api/admin/jobs/${aliceJob._id}`, owner);
       assert.ok(mine.body.job.allowedActions.includes("chargeExtra"));
       assert.deepStrictEqual(mine.body.job.extraCharges, { count: 0, paidCents: 0, open: 0 });
       const gf = await call("GET", `/api/admin/jobs/${aliceJob._id}`, general);
-      assert.ok(!gf.body.job.allowedActions.includes("chargeExtra"));
-      assert.strictEqual(gf.body.job.extraCharges, undefined);
+      assert.ok(gf.body.job.allowedActions.includes("chargeExtra"));
+      assert.deepStrictEqual(gf.body.job.extraCharges, { count: 0, paidCents: 0, open: 0 });
+      const assigned = await makeBooking(alice, { assignedFixterId: field._id, status: "Completed" });
+      const ff = await call("GET", `/api/admin/jobs/${assigned._id}`, field);
+      assert.strictEqual(ff.status, 200, "the field Fixter still sees their own job");
+      assert.ok(!ff.body.job.allowedActions.includes("chargeExtra"));
+      assert.strictEqual(ff.body.job.extraCharges, undefined);
       const pending = await makeBooking(alice, { status: "Pending" });
       const p = await call("GET", `/api/admin/jobs/${pending._id}`, owner);
       assert.ok(!p.body.job.allowedActions.includes("chargeExtra"));
@@ -1104,9 +1109,9 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
     });
 
     /* ---------------- the customer profile: charges with no booking ---------------- */
-    await check("customer profile: only the owner may see who pays, charge, list or act; the profile offers it to the owner only", async () => {
+    await check("customer profile: only the Owner and a General Fixter may see who pays, charge, list or act; the profile offers it to them only", async () => {
       const charges0 = await AdditionalCharge.countDocuments();
-      for (const who of [general, manager, field, alice]) {
+      for (const who of [manager, field, alice]) {
         for (const [m, p] of [["GET", custBase(alice)], ["GET", `${custBase(alice)}/target`], ["POST", custBase(alice)], ["POST", `${custBase(alice)}/${aliceCharge.id}/refresh`]]) {
           const r = await call(m, p, who, { amount: "40", idempotencyKey: key(), method: "card" });
           assert.strictEqual(r.status, 403, `${who.name} ${m} ${p} -> ${r.status}`);
@@ -1118,7 +1123,95 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(mine.status, 200, JSON.stringify(mine.body));
       assert.strictEqual(mine.body.allowedActions.chargeCustomer, true);
       const theirs = await call("GET", `/api/admin/customers/${alice._id}`, manager);
-      assert.strictEqual(theirs.body.allowedActions.chargeCustomer, false);
+      assert.strictEqual(theirs.body.allowedActions.chargeCustomer, false, "customers.manage alone does not grant charging");
+      const gf = await call("GET", `/api/admin/customers/${alice._id}`, general);
+      assert.strictEqual(gf.status, 200, JSON.stringify(gf.body));
+      assert.strictEqual(gf.body.allowedActions.chargeCustomer, true);
+      // Nothing else widened for the General Fixter: no customer edits, memberships, archiving or contact changes.
+      for (const k of ["editProfile", "editContact", "changePlan", "scheduleCancellation", "grantComplimentary", "sellMembership", "archive"]) assert.strictEqual(gf.body.allowedActions[k], false, k);
+      // The existing customer-access restriction holds: a field Fixter cannot open a profile at all.
+      assert.strictEqual((await call("GET", `/api/admin/customers/${alice._id}`, field)).status, 403);
+    });
+
+    await check("role matrix on BOTH entry points: Owner and General Fixter preview, charge, retry, copy and send a link, close; a field Fixter gets 403 on every one, also with real charge ids", async () => {
+      const gwen = await makeUser({ name: "Gwen Gate", stripeCustomerId: "cus_gwen" });
+      addCustomer("cus_gwen", { pm: "pm_gwen", behavior: "decline", last4: "7070" });
+      const gJob = await makeBooking(gwen, { assignedFixterId: field._id, status: "Completed" });
+      const entries = [
+        { name: "booking", base: `/api/admin/jobs/${gJob._id}/extra-charges` },
+        { name: "profile", base: custBase(gwen) },
+      ];
+      const made = [];
+      let amount = 31;
+      for (const who of [owner, general]) {
+        for (const e of entries) {
+          const t = await call("GET", `${e.base}/target`, who);
+          assert.strictEqual(t.status, 200, `${who.name} ${e.name} target`);
+          assert.strictEqual(t.body.target.card.last4, "7070");
+          amount += 1;
+          const c = await call("POST", e.base, who, {
+            amount: String(amount), idempotencyKey: key(), targetFingerprint: t.body.target.fingerprint, method: "card",
+            // a tampered browser: someone else's ids are ignored
+            stripeCustomerId: "cus_alice", paymentMethodId: "pm_alice", userId: String(alice._id), customerId: String(alice._id),
+          });
+          assert.strictEqual(c.status, 201, `${who.name} ${e.name} charge ${JSON.stringify(c.body)}`);
+          assert.strictEqual(c.body.charge.status, "failed", "declined: the real result");
+          const rec = await AdditionalCharge.findById(c.body.charge.id).lean();
+          assert.deepStrictEqual([String(rec.user), rec.stripeCustomerId, rec.paymentMethodId], [String(gwen._id), "cus_gwen", "pm_gwen"], "only the account's own Stripe customer and card");
+          assert.strictEqual(rec.consent.confirmedByName, who.name);
+          assert.strictEqual(rec.consent.confirmedByRole, who === owner ? "owner" : "general_fixter");
+          assert.strictEqual(rec.consent.statement, `The ${who === owner ? "owner" : "General Fixter"} pressed "Charge $${amount}.00".`);
+          const retry = await call("POST", `${e.base}/${rec._id}/retry-card`, who, { idempotencyKey: key(), expectedCardLast4: "7070" });
+          assert.strictEqual(retry.status, 200, `${who.name} ${e.name} retry ${JSON.stringify(retry.body)}`);
+          const copy = await call("POST", `${e.base}/${rec._id}/payment-link`, who, { idempotencyKey: key(), send: false });
+          assert.strictEqual(copy.status, 200, `${who.name} ${e.name} copy link`);
+          const emails = sentEmails.length;
+          const send = await call("POST", `${e.base}/${rec._id}/payment-link`, who, { idempotencyKey: key(), send: true, channels: ["email"] });
+          assert.strictEqual(send.status, 200, `${who.name} ${e.name} send link`);
+          assert.strictEqual(sentEmails.length, emails + 1, "sent through the (fake) mailer only");
+          assert.strictEqual(sentEmails.at(-1).to, gwen.email, "to the account's own email");
+          assert.strictEqual((await call("POST", `${e.base}/${rec._id}/refresh`, who, {})).status, 200);
+          made.push({ e, id: String(rec._id) });
+        }
+      }
+      // The General Fixter's charge, its link and its record are the same kind of record as the owner's.
+      assert.strictEqual(await AdditionalCharge.countDocuments({ user: gwen._id }), 4);
+
+      // A field Fixter: refused on every action, both entry points, even on their own assigned job and with real ids.
+      const counts = async () => [await AdditionalCharge.countDocuments(), await AdminPaymentLink.countDocuments(), piCreates(), sentEmails.length];
+      const before = await counts();
+      for (const e of entries) {
+        const t = await call("GET", `${e.base}/target`, field);
+        assert.strictEqual(t.status, 403, `field ${e.name} target`);
+        assert.strictEqual(t.body.code, "CHARGE_NOT_ALLOWED");
+        assert.strictEqual((await call("GET", e.base, field)).status, 403);
+        assert.strictEqual((await call("POST", e.base, field, { amount: "25", idempotencyKey: key(), targetFingerprint: "x", method: "card" })).status, 403);
+        assert.strictEqual((await call("POST", e.base, field, { amount: "25", idempotencyKey: key(), targetFingerprint: "x", method: "link", send: true, channels: ["email", "sms"] })).status, 403);
+      }
+      for (const { e, id } of made) {
+        for (const [action, body] of [["refresh", {}], ["retry-card", { idempotencyKey: key(), expectedCardLast4: "7070" }], ["payment-link", { idempotencyKey: key(), send: false }], ["payment-link", { idempotencyKey: key(), send: true, channels: ["email", "sms"] }], ["close", {}]]) {
+          const r = await call("POST", `${e.base}/${id}/${action}`, field, body);
+          assert.strictEqual(r.status, 403, `field ${e.name} ${action} -> ${r.status}`);
+        }
+      }
+      // An old pay page link still belongs to the customer, not to staff: it needs no staff role and is unaffected.
+      assert.deepStrictEqual(await counts(), before, "nothing made, charged or sent for the field Fixter");
+      assert.ok(!(await AdditionalCharge.find({ user: gwen._id }).lean()).some((r) => r.status === "canceled"), "the field Fixter closed nothing");
+
+      // Duplicate protection holds across roles and screens: the owner's amount from the job, then the General Fixter from the profile.
+      F.pms.get("pm_gwen").behavior = "ok";
+      const ot = await call("GET", `${entries[0].base}/target`, owner);
+      const first = await call("POST", entries[0].base, owner, { amount: "66", idempotencyKey: key(), targetFingerprint: ot.body.target.fingerprint, method: "card" });
+      assert.strictEqual(first.body.charge.status, "paid");
+      const gt = await call("GET", `${entries[1].base}/target`, general);
+      const again = await call("POST", entries[1].base, general, { amount: "66", idempotencyKey: key(), targetFingerprint: gt.body.target.fingerprint, method: "card" });
+      assert.strictEqual(again.status, 409);
+      assert.strictEqual(again.body.code, "POSSIBLE_DUPLICATE");
+      // And a General Fixter's stale screen is refused like the owner's.
+      F.pms.set("pm_gwen2", { id: "pm_gwen2", type: "card", customer: "cus_gwen", card: { brand: "visa", last4: "8080", exp_month: 1, exp_year: 2031 } });
+      F.customers.get("cus_gwen").invoice_settings.default_payment_method = "pm_gwen2";
+      const stale = await call("POST", entries[1].base, general, { amount: "12", idempotencyKey: key(), targetFingerprint: gt.body.target.fingerprint, method: "card" });
+      assert.strictEqual(stale.body.code, "TARGET_CHANGED");
     });
 
     let directCharge;
