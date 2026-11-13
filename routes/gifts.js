@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
+const { ensureNotBlacklisted } = require("../middleware/blacklist");
 const GiftMembership = require("../models/GiftMembership");
 const User = require("../models/User");
 const { normalizeEmail } = require("../utils/identity");
@@ -227,7 +228,7 @@ router.get("/options", async (_req, res) => {
  * once Stripe confirms payment, so an abandoned checkout leaves no record and
  * a browser that lies about success gets nothing.
  */
-router.post("/checkout-session", auth, async (req, res) => {
+router.post("/checkout-session", auth, ensureNotBlacklisted, async (req, res) => {
   try {
     if (!hasStripeSecretKey()) {
       return res.status(503).json({ message: "Payments are unavailable right now" });
@@ -794,7 +795,7 @@ router.get("/claim/:token/details", auth, async (req, res) => {
   }
 });
 
-router.post("/claim/:token", auth, async (req, res) => {
+router.post("/claim/:token", auth, ensureNotBlacklisted, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });

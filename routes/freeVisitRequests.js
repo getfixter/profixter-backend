@@ -45,6 +45,7 @@ const { sendTransactionalSms } = require("../utils/sms/smsService");
 const { customerDayAvailability } = require("../utils/customerCalendarService");
 const { reservationEngineEnabled } = require("../utils/slotReservationService");
 const { buildSignupAddress } = require("../utils/addressVerification");
+const { findActiveBlock, refuseBlocked } = require("../utils/customerBlock");
 const { isZipInServiceArea, countyForZip } = require("../utils/serviceArea");
 
 const router = express.Router();
@@ -399,6 +400,9 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
     if (!validEmail(email)) {
       return res.status(400).json({ code: "INVALID_EMAIL", field: "email", message: "Please enter a valid email address." });
     }
+    /* A person Admin blocked, by email or phone in any format; never by address. */
+    const block = await findActiveBlock({ email, phone });
+    if (block) return refuseBlocked(res, "free_visit_request", block);
     if (!consultation && note.split(/\s+/).filter(Boolean).length < 3) {
       return res.status(400).json({ code: "NOTE_REQUIRED", field: "note", message: "Tell us in a few words what needs doing." });
     }
@@ -496,6 +500,7 @@ router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPh
                 service: "Free Visit",
                 freeVisitPurpose: "consultation",
                 address: serviceAddress.line1,
+                unit: serviceAddress.unit || "",
                 city: serviceAddress.city,
                 state: serviceAddress.state,
                 zip: serviceAddress.zip,

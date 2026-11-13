@@ -12,6 +12,7 @@ const {
   PAYMENT_RECOVERY_STATUSES,
 } = require("./subscriptionManagement");
 const { projectedGiftCoverageEnd } = require("./gifts/giftAccess");
+const { BLOCKED_STATUS, blockedBody, findActiveBlockForUser, logBlockedAttempt } = require("./customerBlock");
 
 /**
  * Open a Stripe Checkout for one membership at one home.
@@ -94,6 +95,12 @@ async function expireOpenMembershipCheckouts({ user, stripeCustomerId, addressId
 async function membershipSaleCheck({ user, addressId }) {
   const address = user.addresses?.id ? user.addresses.id(addressId) : (user.addresses || []).find((a) => String(a._id) === String(addressId));
   if (!address) return { refusal: { status: 400, body: { message: "Address not found for this account", code: "ADDRESS_NOT_FOUND" } } };
+  /* A blocked person buys nothing, whichever way the checkout is opened (own Buy, pay by phone, link). */
+  const block = await findActiveBlockForUser(user);
+  if (block) {
+    logBlockedAttempt("membership_checkout", block);
+    return { refusal: { status: BLOCKED_STATUS, body: blockedBody() } };
+  }
   const activeSub = await Subscription.findOne({
     user: user._id,
     addressId: new mongoose.Types.ObjectId(String(addressId)),
