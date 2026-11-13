@@ -241,7 +241,11 @@ app.use(
 );
 app.use("/api/admin/calendar", adminCalendar);
 app.use("/api/admin", require("./routes/adminBookingReservations"));
+// Project workflow (overview, next steps, schedule, closeout, billing from the agreement). New paths only; mounted first.
+app.use("/api/admin/projects", require("./routes/adminProjectWorkflow"));
 app.use("/api/admin/projects", require("./routes/projects"));
+// Leads with the homeowner answers, and lead -> project conversion.
+app.use("/api/admin/leads", require("./routes/adminLeads"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/contracts", require("./routes/adminContracts"));
 app.use("/api/admin/change-orders", require("./routes/adminChangeOrders"));

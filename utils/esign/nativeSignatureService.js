@@ -74,21 +74,7 @@ function storageKey(signature, kind, fileName) {
 /* Document state: may this document still be signed?                  */
 /* ------------------------------------------------------------------ */
 
-/**
- * Change Order statuses in which a customer signature may still execute it.
- * Draft is excluded because nothing unissued can be signed; the locked states
- * (Executed, Declined, Voided) are excluded because the owner closed them.
- */
-const SIGNABLE_CHANGE_ORDER_STATUSES = Object.freeze([
-  "Ready to Send",
-  "Sent",
-  "Viewed",
-  "Awaiting Signature",
-  "Partially Signed",
-]);
-
-/** Agreement statuses in which a customer signature may still execute it. */
-const SIGNABLE_CONTRACT_STATUSES = Object.freeze(["Generated", "Emailed"]);
+const { SIGNABLE_CHANGE_ORDER_STATUSES, SIGNABLE_CONTRACT_STATUSES } = require("./documentStates");
 
 /** Raised when the authoritative document no longer accepts this signature. */
 class DocumentNotSignableError extends Error {

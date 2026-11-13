@@ -14,6 +14,7 @@ const {
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
 const { getProjectFinancialSummary } = require("../utils/projectFinancialsService");
+const { logProjectActivity } = require("../utils/projectActivity");
 const {
   buildCustomerFallbackSearchQuery,
   buildCustomerSearchQuery,
@@ -562,12 +563,44 @@ router.put("/:id", async (req, res) => {
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
     delete update.projectNumber;
 
+    // A manual status change is recorded with who made it. The derived stage
+    // (GET /:id/overview) is computed separately and never written here.
+    const before = await Project.findById(req.params.id).select("status").lean();
+    const statusChanged = update.status !== undefined && before && update.status !== before.status;
+    const actor = req.accessUser || req.authUser || {};
     const project = await Project.findByIdAndUpdate(
       req.params.id,
-      { $set: update },
+      {
+        $set: update,
+        ...(statusChanged
+          ? {
+              $push: {
+                statusHistory: {
+                  from: before.status,
+                  to: update.status,
+                  at: new Date(),
+                  actorId: mongoose.isValidObjectId(req.user?.id) ? req.user.id : null,
+                  actorName: String(actor.name || actor.email || "Admin").slice(0, 160),
+                  reason: String(req.body?.statusReason || "").slice(0, 1000),
+                  source: "manual",
+                },
+              },
+            }
+          : {}),
+      },
       { new: true, runValidators: true }
     );
     if (!project) return res.status(404).json({ message: "Project not found" });
+    if (statusChanged) {
+      await logProjectActivity(req, {
+        action: "Project Status Changed",
+        entityType: "Project",
+        entityId: project._id,
+        entityName: project.projectNumber,
+        before: { status: before.status },
+        after: { status: project.status },
+      });
+    }
     return res.json({ project });
   } catch (error) {
     console.error("PUT /admin/projects/:id failed:", error);

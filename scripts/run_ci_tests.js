@@ -138,6 +138,8 @@ const SUITES = [
   "test_no_promote_after.js",
   // Void/cancel/supersede beat a live signing link; signed copies write-once; invoice void with payments refused.
   "test_document_integrity.js",
+  // Lead -> project, next steps, overview, deposit/milestone billing once, closeout, needs-action collectors.
+  "test_project_workflow.js",
   // Project suites that existed but were never registered.
   "test_premium_island_contracts.js",
   "test_premium_island_invoices.js",
