@@ -96,7 +96,9 @@ function readInput(body = {}) {
   if (subtotalCents > MAX_CENTS) throw new ExtraChargeError("AMOUNT_TOO_LARGE", `One extra can be at most ${money(MAX_CENTS)}. Use a project invoice for larger work.`);
   const taxTreatment = readTreatment(body.taxTreatment);
   const writtenApprovalRef = String(body.writtenApprovalRef || "").replace(/\s+/g, " ").trim().slice(0, 300);
-  return { description, subtotalCents, taxTreatment, writtenApprovalRef };
+  const b = body.taxBasis && typeof body.taxBasis === "object" ? body.taxBasis : {};
+  const taxBasis = { document: String(b.document || "").trim().slice(0, 40), reference: String(b.reference || "").replace(/\s+/g, " ").trim().slice(0, 200), onFile: b.onFile === true };
+  return { description, subtotalCents, taxTreatment, writtenApprovalRef, taxBasis };
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,6 +118,7 @@ function fingerprintOf(bookingId, target, input, tax) {
         input.subtotalCents,
         tax ? tax.taxCents : null,
         input.taxTreatment,
+        input.taxTreatment === "Taxable Repair / Maintenance" ? null : [input.taxBasis?.document || "", input.taxBasis?.reference || "", Boolean(input.taxBasis?.onFile)],
       ])
     )
     .digest("hex")
@@ -134,7 +137,7 @@ async function buildPreview(booking, input) {
   let tax = null;
   let taxError = null;
   try {
-    tax = await quoteTax({ stripe: stripe(), subtotalCents: input.subtotalCents, treatment: input.taxTreatment, address: target.serviceAddress, reference: `booking-${booking.bookingNumber || booking._id}` });
+    tax = await quoteTax({ stripe: stripe(), subtotalCents: input.subtotalCents, treatment: input.taxTreatment, address: target.serviceAddress, reference: `booking-${booking.bookingNumber || booking._id}`, basis: input.taxBasis });
   } catch (error) {
     if (!(error instanceof TaxBlocker)) throw error;
     taxError = { code: error.code, message: error.message, taxabilityReason: error.taxabilityReason || "", taxCode: error.taxCode || "" };
@@ -159,7 +162,7 @@ async function buildPreview(booking, input) {
       taxCents: tax ? tax.taxCents : null,
       totalCents: tax ? input.subtotalCents + tax.taxCents : null,
       tax: tax
-        ? { ok: true, treatment: tax.treatment, source: tax.source, ratePercent: tax.ratePercent, taxCode: tax.taxCode, taxabilityReason: tax.taxabilityReason }
+        ? { ok: true, treatment: tax.treatment, source: tax.source, ratePercent: tax.ratePercent, taxCode: tax.taxCode, taxabilityReason: tax.taxabilityReason, basis: tax.basis || null }
         : { ok: false, treatment: input.taxTreatment, ...taxError },
       direct,
       link,
@@ -853,6 +856,7 @@ async function create(req, bookingId, body = {}) {
     tax: {
       treatment: tax.treatment,
       source: tax.source,
+      basis: tax.basis || null,
       calculationId: tax.calculationId,
       calculationExpiresAt: tax.calculationExpiresAt,
       taxCode: tax.taxCode,
@@ -1005,7 +1009,7 @@ function serialize(r) {
     subtotalCents: x.subtotalCents,
     taxCents: x.taxCents,
     totalCents: x.totalCents,
-    tax: { treatment: x.tax?.treatment || "", source: x.tax?.source || "", ratePercent: x.tax?.ratePercent || "", taxCode: x.tax?.taxCode || "", recorded: Boolean(x.tax?.transactionId), recordError: x.tax?.transactionError || "" },
+    tax: { treatment: x.tax?.treatment || "", source: x.tax?.source || "", ratePercent: x.tax?.ratePercent || "", taxCode: x.tax?.taxCode || "", recorded: Boolean(x.tax?.transactionId), recordError: x.tax?.transactionError || "", basis: x.tax?.basis?.document ? { document: x.tax.basis.document, label: x.tax.basis.label || "", reference: x.tax.basis.reference || "" } : null },
     status: x.status,
     statusLabel: STATUS_LABEL[x.status] || x.status,
     method: x.method,

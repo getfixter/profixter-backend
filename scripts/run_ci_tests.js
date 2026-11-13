@@ -16,6 +16,8 @@ const path = require("path");
 const SUITES = [
   // First: nothing below is worth running if the app cannot even be loaded.
   "test_module_load.js",
+  // Then: say which MongoDB this run is on (and fail if it is not the pinned one).
+  "test_mongo_version.js",
   "test_service_area.js",
   "test_signup_address.js",
   "test_change_order_totals.js",

@@ -316,7 +316,16 @@ app.use("/api/pay", require("../routes/pay"));
 
 let base;
 const tokenFor = (u) => jwt.sign({ id: String(u._id), tv: Number(u.tokenVersion || 0) }, process.env.JWT_SECRET, { expiresIn: "10m" });
+const BASIS = {
+  "Capital Improvement - No Sales Tax": { document: "ST-124", reference: "ST-124 signed 11/13, in the job folder", onFile: true },
+  "Tax Exempt": { document: "ST-119.1", reference: "Exempt org cert #EX-12345", onFile: true },
+};
 async function call(method, path, user, body) {
+  if (body && BASIS[body.taxTreatment] && body.taxBasis === undefined) body = { ...body, taxBasis: BASIS[body.taxTreatment] };
+  if (body && body.taxBasis === null) {
+    body = { ...body };
+    delete body.taxBasis;
+  }
   const r = await fetch(`${base}${path}`, {
     method,
     headers: { "content-type": "application/json", ...(user ? { authorization: `Bearer ${tokenFor(user)}` } : {}) },
@@ -463,7 +472,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
     await check("tax: no-tax classifications are $0, 'Not Determined' and a Stripe answer of no tax are blockers, never a silent $0", async () => {
       const cap = await previewFor(owner, aliceJob, { description: "New deck stairs", amount: "200", taxTreatment: CAPITAL });
       assert.strictEqual(cap.taxCents, 0);
-      assert.strictEqual(cap.tax.source, "owner_treatment");
+      assert.strictEqual(cap.tax.source, "documented_exemption");
       const none = await previewFor(owner, aliceJob, { description: "Something", amount: "200" });
       assert.strictEqual(none.tax.ok, false);
       assert.strictEqual(none.tax.code, "TAX_TREATMENT_REQUIRED");
@@ -930,6 +939,34 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual((await call("POST", `/api/pay/${token}/checkout`)).status, 410);
       const paidClose = await call("POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/${aliceCharge.id}/close`, owner, {});
       assert.strictEqual(paidClose.status, 409);
+    });
+
+    await check("no tax needs a documented basis: missing, wrong for the treatment, or not on file is refused; the basis is stored", async () => {
+      const job = await makeBooking(alice);
+      const none = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: null });
+      assert.strictEqual(none.tax.code, "TAX_BASIS_REQUIRED");
+      assert.strictEqual(none.direct.allowed, false);
+      assert.strictEqual(none.link.allowed, false);
+      const wrong = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-119.1", reference: "cert 1234", onFile: true } });
+      assert.strictEqual(wrong.tax.code, "TAX_BASIS_REQUIRED", "an exempt-org certificate is not a capital-improvement basis");
+      const notOnFile = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-124", reference: "ST-124 signed", onFile: false } });
+      assert.strictEqual(notOnFile.tax.code, "TAX_BASIS_REQUIRED");
+      const noRef = await previewFor(owner, job, { description: "Ramp", amount: "100", taxTreatment: "Tax Exempt", taxBasis: { document: "GOVERNMENT_PO", reference: "x", onFile: true } });
+      assert.strictEqual(noRef.tax.code, "TAX_BASIS_REQUIRED");
+      const ok = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL });
+      assert.strictEqual(ok.tax.ok, true);
+      assert.strictEqual(ok.tax.basis.document, "ST-124");
+      // The basis is part of what the owner confirmed: changing it after review is refused.
+      const r = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-124", reference: "a different reference", onFile: true }, idempotencyKey: key(), customerAgreed: true, previewFingerprint: ok.fingerprint, expectedTotalCents: ok.totalCents, method: "card" });
+      assert.strictEqual(r.status, 409);
+      assert.strictEqual(r.body.code, "PREVIEW_CHANGED");
+      const good = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, idempotencyKey: key(), customerAgreed: true, previewFingerprint: ok.fingerprint, expectedTotalCents: ok.totalCents, method: "card" });
+      assert.strictEqual(good.status, 201, JSON.stringify(good.body));
+      const rec = await AdditionalCharge.findById(good.body.charge.id).lean();
+      assert.deepStrictEqual({ d: rec.tax.basis.document, r: rec.tax.basis.reference, f: rec.tax.basis.onFile, s: rec.tax.source }, { d: "ST-124", r: "ST-124 signed 11/13, in the job folder", f: true, s: "documented_exemption" });
+      assert.strictEqual(good.body.charge.tax.basis.document, "ST-124");
+      const log = await AdminActivityLog.findOne({ "details.additionalChargeId": good.body.charge.id }).lean();
+      assert.strictEqual(log.details.taxBasis.document, "ST-124");
     });
 
     await check("tax code not configured: taxable work is refused with TAX_CODE_NOT_CONFIGURED; exempt work still allowed", async () => {

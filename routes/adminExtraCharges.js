@@ -78,6 +78,7 @@ router.post("/jobs/:id/extra-charges", auth, ...ownerOnly, async (req, res) => {
       await log(req, record.method === "card" ? "Extra Charged (Saved Card)" : "Extra Charge Payment Link Created", record, {
         consent: { statement: record.consent.statement, confirmedAt: record.consent.confirmedAt, writtenApprovalRef: record.consent.writtenApprovalRef },
         card: record.card?.last4 ? `${record.card.brand} •••• ${record.card.last4}` : "",
+        taxBasis: record.tax?.basis?.document ? { document: record.tax.basis.document, reference: record.tax.basis.reference } : null,
         paymentIntentId: record.paymentIntentId || "",
         delivery: delivery || null,
       });

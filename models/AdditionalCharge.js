@@ -76,7 +76,14 @@ const AdditionalChargeSchema = new mongoose.Schema(
     totalCents: { type: Number, required: true, min: 50 },
     tax: {
       treatment: { type: String, required: true },
-      source: { type: String, default: "" }, // stripe_tax | owner_treatment
+      source: { type: String, default: "" }, // stripe_tax | documented_exemption
+      /* No-tax treatments only: the document that makes it true (utils/extraCharges/tax.js). */
+      basis: {
+        document: { type: String, default: "" },
+        label: { type: String, default: "" },
+        reference: { type: String, default: "" },
+        onFile: { type: Boolean, default: false },
+      },
       calculationId: { type: String, default: "" },
       calculationExpiresAt: { type: Date, default: null },
       taxCode: { type: String, default: "" },

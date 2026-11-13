@@ -32,6 +32,10 @@ jobs:
       EB_APPLICATION_NAME: ${{ secrets.EB_APPLICATION_NAME }}
       EB_ENVIRONMENT_NAME: ${{ secrets.EB_ENVIRONMENT_NAME }}
       VERSION_LABEL: backend-${{ github.sha }}
+      # The MongoDB the backend suite runs on (mongodb-memory-server). Pinned so
+      # every release is validated against the same server; the first suite
+      # (scripts/test_mongo_version.js) prints it and fails on any other version.
+      MONGOMS_VERSION: "8.2.6"
 
     steps:
       - name: Checkout backend repo

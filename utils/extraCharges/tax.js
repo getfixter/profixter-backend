@@ -21,6 +21,36 @@ const { TAX_TREATMENTS, TAXABLE_TREATMENT } = require("../invoiceValidation");
 
 const NO_TAX_TREATMENTS = new Set(["Capital Improvement - No Sales Tax", "Tax Exempt"]);
 
+/*
+ * No tax is never just a choice: it needs the document that makes it true,
+ * named, referenced and confirmed on file (NY: a capital improvement needs
+ * the customer's signed Form ST-124; an exempt sale needs the exemption
+ * certificate or a government purchase order). The basis is stored with the
+ * charge and is part of the preview fingerprint.
+ */
+const BASIS_DOCUMENTS = Object.freeze({
+  "Capital Improvement - No Sales Tax": { "ST-124": "NY Form ST-124, Certificate of Capital Improvement (signed by the customer)" },
+  "Tax Exempt": {
+    "ST-119.1": "NY Form ST-119.1, Exempt Organization Certificate",
+    "ST-121": "NY Form ST-121, Exempt Use Certificate",
+    GOVERNMENT_PO: "Government purchase order (government entity)",
+    OTHER_CERTIFICATE: "Another NY exemption certificate",
+  },
+});
+
+function readBasis(treatment, basis) {
+  const allowed = BASIS_DOCUMENTS[treatment];
+  if (!allowed) return null;
+  const document = String(basis?.document || "").trim();
+  const reference = String(basis?.reference || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  if (!allowed[document]) {
+    throw new TaxBlocker("TAX_BASIS_REQUIRED", treatment === "Tax Exempt" ? "Name the exemption document (certificate or government purchase order) that makes this sale tax exempt." : "A capital improvement needs the customer's signed Form ST-124. Name it to charge without tax.");
+  }
+  if (reference.length < 4) throw new TaxBlocker("TAX_BASIS_REQUIRED", "Add the document's reference: its number, date, or where it is filed.");
+  if (basis?.onFile !== true) throw new TaxBlocker("TAX_BASIS_REQUIRED", "Confirm the document is on file before charging without tax.");
+  return { document, label: allowed[document], reference, onFile: true };
+}
+
 class TaxBlocker extends Error {
   constructor(code, message, extra = {}) {
     super(message);
@@ -53,13 +83,14 @@ function readTreatment(value) {
  * @returns {Promise<{taxCents, treatment, source, calculationId, calculationExpiresAt, taxCode, taxabilityReason, ratePercent}>}
  * @throws TaxBlocker
  */
-async function quoteTax({ stripe, subtotalCents, treatment, address, reference }) {
+async function quoteTax({ stripe, subtotalCents, treatment, address, reference, basis = null }) {
   const t = readTreatment(treatment);
   if (t === "Not Determined") {
     throw new TaxBlocker("TAX_TREATMENT_REQUIRED", "Choose how sales tax applies to this work before charging.");
   }
   if (NO_TAX_TREATMENTS.has(t)) {
-    return { taxCents: 0, treatment: t, source: "owner_treatment", calculationId: "", calculationExpiresAt: null, taxCode: "", taxabilityReason: "", ratePercent: "0" };
+    const documented = readBasis(t, basis);
+    return { taxCents: 0, treatment: t, source: "documented_exemption", basis: documented, calculationId: "", calculationExpiresAt: null, taxCode: "", taxabilityReason: "", ratePercent: "0" };
   }
   if (t !== TAXABLE_TREATMENT) throw new TaxBlocker("TAX_TREATMENT_REQUIRED", "Choose how sales tax applies to this work before charging.");
 
@@ -117,4 +148,4 @@ async function quoteTax({ stripe, subtotalCents, treatment, address, reference }
   };
 }
 
-module.exports = { NO_TAX_TREATMENTS, TaxBlocker, quoteTax, readTreatment, taxCodeSetting };
+module.exports = { BASIS_DOCUMENTS, NO_TAX_TREATMENTS, TaxBlocker, quoteTax, readBasis, readTreatment, taxCodeSetting };
