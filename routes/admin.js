@@ -65,7 +65,7 @@ const { completedBookingCountsForUsers, completedBookingCountForUser } = require
 const { adminLoyaltyForUsers, programActive: loyaltyProgramActive } = require("../utils/loyalty/adminLoyalty");
 const { effectiveAt: loyaltyEffectiveAt } = require("../utils/loyalty/loyaltyConfig");
 const { loadAddressPlans } = require("../utils/admin/planStatus");
-const { findActiveBlockForUser } = require("../utils/customerBlock");
+const { blockMatchClausesForUser, findActiveBlockForUser } = require("../utils/customerBlock");
 const { formatAddressLine } = require("../utils/formatAddress");
 
 const mail = require("../utils/emailService");
@@ -1055,9 +1055,9 @@ router.get(
           .lean(),
         Blacklist.find({
           $or: [
-            { user: userObjectId },
+            // The same clauses as the block check, plus the legacy string userId.
+            ...blockMatchClausesForUser(user),
             { userId: user.userId },
-            ...(email ? [{ email }] : []),
           ],
         })
           .select("user userId name email reason createdAt blockedByName liftedAt liftedByName liftReason")
@@ -2509,6 +2509,11 @@ router.delete("/blacklist/:id", auth, ...blacklistManage, async (req, res) => {
 
     if (!target && /^[0-9a-fA-F]{24}$/.test(id)) {
       target = await Blacklist.findOne({ user: id }).lean();
+      // A customer id: the entry that actually blocks them, however it matched (legacy phone spellings too).
+      if (!target) {
+        const customer = await User.findById(id).select("email phone").lean();
+        if (customer) target = await findActiveBlockForUser(customer);
+      }
     }
 
     if (!target) {

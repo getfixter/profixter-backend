@@ -41,7 +41,7 @@ const { toE164 } = require("../utils/sms/smsPhone");
 const { completedBookingCountForUser } = require("../utils/customerBookingCounts");
 const { adminLoyaltyForUsers } = require("../utils/loyalty/adminLoyalty");
 const { formatAddressLine, formatPhone } = require("../utils/formatAddress");
-const { findActiveBlockForUser } = require("../utils/customerBlock");
+const { blockMatchClausesForUser, findActiveBlockForUser } = require("../utils/customerBlock");
 const { loadAddressPlans } = require("../utils/admin/planStatus");
 const { billingForCustomer } = require("../utils/admin/customerBilling");
 const directory = require("../utils/admin/customerDirectory");
@@ -143,8 +143,8 @@ function blockDto(entry) {
 }
 
 async function blockHistoryFor(user) {
-  const or = [{ user: user._id }];
-  if (user.email) or.push({ email: String(user.email).toLowerCase() });
+  // The same clauses as the block check, so every entry that blocks this person shows here.
+  const or = blockMatchClausesForUser(user);
   const rows = await Blacklist.find({ $or: or }).setOptions({ includeLifted: true }).sort({ createdAt: -1 }).limit(20).lean();
   return rows.map(blockDto);
 }
@@ -695,10 +695,8 @@ router.post("/customers/:id/block", auth, ...blacklistManage, async (req, res) =
 
 /** Lift every active entry covering this person. The entries stay, as history. */
 async function liftBlocksFor(user, { req, reason }) {
-  const or = [{ user: user._id }];
-  if (user.email) or.push({ email: String(user.email).toLowerCase() });
-  const digits = String(user.phone || "").replace(/\D/g, "").replace(/^1(\d{10})$/, "$1");
-  if (digits.length === 10) or.push({ phoneDigits: digits });
+  // The same clauses as findActiveBlock (legacy phone spellings included): what blocks them, lifts.
+  const or = blockMatchClausesForUser(user);
   const active = await Blacklist.find({ $or: or }).lean();
   if (!active.length) return [];
   const who = actor(req);

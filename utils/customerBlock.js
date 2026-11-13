@@ -47,9 +47,23 @@ function phoneSpellings(digits) {
  * @param {{ userId?, email?, phone? }} who  userId is the Mongo _id
  */
 async function findActiveBlock({ userId = null, email = "", phone = "" } = {}) {
+  const clauses = blockMatchClauses({ userId, email, phone });
+  if (!clauses.length) return null;
+  return Blacklist.findOne({ $or: clauses }).lean();
+}
+
+/**
+ * The $or clauses that decide which Blacklist entries cover this person.
+ * The ONE definition: the block check, unblock and block history all use it,
+ * so an entry that blocks somebody is always one their unblock can lift and
+ * their history can show - including entries written before phoneDigits
+ * existed (raw phone spellings).
+ */
+function blockMatchClauses({ userId = null, email = "", phone = "" } = {}) {
   const clauses = [];
   if (userId && mongoose.isValidObjectId(String(userId))) clauses.push({ user: new mongoose.Types.ObjectId(String(userId)) });
   const mail = normalizeEmail(email);
+  // Emails are stored lowercased and trimmed; scripts/backfill_blacklist_normalization.js fixes older rows.
   if (mail) clauses.push({ email: mail });
   const digits = blacklistPhoneDigits(phone);
   if (digits.length >= 10) {
@@ -57,8 +71,13 @@ async function findActiveBlock({ userId = null, email = "", phone = "" } = {}) {
     // Entries written before phoneDigits existed.
     clauses.push({ phone: { $in: phoneSpellings(digits) } });
   }
-  if (!clauses.length) return null;
-  return Blacklist.findOne({ $or: clauses }).lean();
+  return clauses;
+}
+
+/** blockMatchClauses for a User document (id, email, phone together). */
+function blockMatchClausesForUser(user) {
+  if (!user) return [];
+  return blockMatchClauses({ userId: user._id, email: user.email, phone: user.phone });
 }
 
 /** Block check for a signed-in account: its id, email and phone together. */
@@ -116,9 +135,12 @@ module.exports = {
   BLOCKED_STATUS,
   blockedBody,
   blockedUserIdSet,
+  blockMatchClauses,
+  blockMatchClausesForUser,
   findActiveBlock,
   findActiveBlockForUser,
   isUserBlocked,
+  phoneSpellings,
   logBlockedAttempt,
   refuseBlocked,
 };

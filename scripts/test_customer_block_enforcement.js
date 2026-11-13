@@ -245,6 +245,57 @@ async function run() {
     assert.equal((await call("DELETE", `/api/admin/customers/${user._id}/block`, boss, {})).body.code, "NOT_BLOCKED");
   });
 
+  /* Review fix 3 (2026-11-13): unblock and history use the block check's own clauses. */
+  await test("review 3: a legacy entry (raw phone spelling, no phoneDigits) for another account shows in history and is lifted", async () => {
+    const boss = await owner();
+    const a = await mk({ phone: "+16315550188", email: "a-legacy@example.com" });
+    await Blacklist.collection.insertOne({ user: a._id, email: "a-legacy@example.com", phone: "(631) 555-0188", reason: "legacy for A", createdAt: new Date() });
+    const b = await mk({ phone: "631.555.0188", email: "b-legacy@example.com" });
+    assert.ok(isBlockedResponse(await call("POST", "/api/bookings", b, {})), "B is blocked through A's legacy entry");
+    const profile = await call("GET", `/api/admin/customers/${b._id}`, boss);
+    assert.equal(profile.status, 200, JSON.stringify(profile.body));
+    const history = profile.body.blockHistory || profile.body.block?.history || profile.body.history;
+    assert.ok(Array.isArray(history) && history.some((row) => row.active && row.reason === "legacy for A"), JSON.stringify(profile.body.blockHistory));
+    const lifted = await call("DELETE", `/api/admin/customers/${b._id}/block`, boss, { reason: "Number reassigned" });
+    assert.equal(lifted.status, 200, JSON.stringify(lifted.body));
+    assert.ok(!isBlockedResponse(await call("POST", "/api/bookings", b, {})), "B can book after the unblock");
+    assert.equal(await Blacklist.collection.countDocuments({ liftedAt: null }), 0);
+  });
+
+  await test("review 3: the legacy DELETE /blacklist/:customerId lifts a block matched only by legacy phone spelling", async () => {
+    const boss = await owner();
+    await Blacklist.collection.insertOne({ email: "gone@example.com", phone: "631-555-0189", reason: "legacy phone only", createdAt: new Date() });
+    const b = await mk({ phone: "+16315550189", email: "b2@example.com" });
+    assert.ok(isBlockedResponse(await call("POST", "/api/bookings", b, {})));
+    const removed = await call("DELETE", `/api/admin/blacklist/${b._id}`, boss, { reason: "ok" });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.ok(!isBlockedResponse(await call("POST", "/api/bookings", b, {})));
+  });
+
+  await test("review 3: the Blacklist backfill is dry-run by default, normalizes on --write, and is idempotent", async () => {
+    const { backfillBlacklist } = require("./backfill_blacklist_normalization");
+    await Blacklist.collection.insertMany([
+      { email: " Mixed@Example.COM ", phone: "+1 (631) 555-0190", reason: "legacy", createdAt: new Date() },
+      { email: "ok@example.com", phone: "6315550191", phoneDigits: "6315550191", reason: "current", createdAt: new Date() },
+      { email: "lifted@example.com", phone: "631.555.0192", reason: "old", createdAt: new Date(), liftedAt: new Date() },
+    ]);
+    const dry = await backfillBlacklist();
+    assert.equal(dry.mode, "dry-run");
+    assert.equal(dry.rowsChanged, 2);
+    assert.equal(dry.rowsUpdated, 0);
+    assert.equal(await Blacklist.collection.countDocuments({ phoneDigits: { $exists: true } }), 1, "dry run writes nothing");
+    const wet = await backfillBlacklist({ write: true });
+    assert.equal(wet.rowsUpdated, 2);
+    assert.equal(wet.emailNormalized, 1);
+    const fixed = await Blacklist.collection.findOne({ reason: "legacy" });
+    assert.equal(fixed.email, "mixed@example.com");
+    assert.equal(fixed.phoneDigits, "6315550190");
+    assert.equal((await Blacklist.collection.findOne({ reason: "old" })).phoneDigits, "6315550192");
+    const again = await backfillBlacklist({ write: true });
+    assert.equal(again.rowsChanged, 0, "second run changes nothing");
+    assert.ok(await findActiveBlock({ email: "MIXED@example.com" }));
+  });
+
   await test("an Admin-created visit for a blocked customer is refused before any slot or payment work", async () => {
     const { createAdminVisit } = require("../utils/admin/adminVisits");
     const boss = await owner();
