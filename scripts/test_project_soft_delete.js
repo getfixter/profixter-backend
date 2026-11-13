@@ -27,7 +27,11 @@ const PROJECTS_MODULE = "app/components/admin/ProjectsModule.tsx";
 const projectsModule = fs.existsSync(path.join(__dirname, "..", "..", "FrontEnd", PROJECTS_MODULE))
   ? frontendSource(PROJECTS_MODULE)
   : null;
-const adminService = frontendSource("lib/admin-service.ts");
+const ADMIN_SERVICE = "lib/admin-service.ts";
+// CI checks out the backend alone: frontend source checks run only where the sibling checkout exists.
+const adminService = fs.existsSync(path.join(__dirname, "..", "..", "FrontEnd", ADMIN_SERVICE))
+  ? frontendSource(ADMIN_SERVICE)
+  : null;
 
 assert(Project.schema.path("isDeleted"), "Project must have a soft-delete flag");
 assert(Project.schema.path("deletedAt"), "Project must keep deletion timestamp");
@@ -106,11 +110,15 @@ assert.doesNotMatch(
   "Contract routes must not delete generated or signed S3 files for project soft-delete"
 );
 
+if (adminService) {
 assert.match(
   adminService,
   /getProjectDeletionSummary/,
   "Frontend service must load delete summary before confirmation"
 );
+} else {
+  console.warn(`WARNING: ${ADMIN_SERVICE} is not in the sibling FrontEnd checkout; its check was skipped.`);
+}
 if (!projectsModule) {
   console.warn(`WARNING: ${PROJECTS_MODULE} is not in the sibling FrontEnd checkout; its delete-modal copy checks were skipped.`);
 } else {
