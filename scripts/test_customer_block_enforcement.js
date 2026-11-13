@@ -245,6 +245,25 @@ async function run() {
     assert.equal((await call("DELETE", `/api/admin/customers/${user._id}/block`, boss, {})).body.code, "NOT_BLOCKED");
   });
 
+  await test("an Admin-created visit for a blocked customer is refused before any slot or payment work", async () => {
+    const { createAdminVisit } = require("../utils/admin/adminVisits");
+    const boss = await owner();
+    const user = await mk({ phone: "+16315550188" });
+    await block(boss, user);
+    for (const kind of ["admin_free", "membership", "one_time"]) {
+      await assert.rejects(
+        createAdminVisit({ body: { type: kind, mode: "existing", userId: String(user._id), addressId: String(user.addresses[0]._id) }, admin: boss }),
+        (error) => error.code === "CUSTOMER_BLOCKED"
+      );
+    }
+    /* A guest entered with the blocked phone in another format is refused too. */
+    await assert.rejects(
+      createAdminVisit({ body: { type: "admin_free", mode: "guest", guestName: "Someone Else", guestEmail: "other@example.com", guestPhone: "(631) 555-0188", guestLine1: "1 Elm St", guestCity: "Massapequa", guestZip: "11758" }, admin: boss }),
+      (error) => error.code === "CUSTOMER_BLOCKED"
+    );
+    assert.equal(stripeCalls.length, 0);
+  });
+
   await test("the old blacklist endpoints still work, and their unblock keeps history too", async () => {
     const boss = await owner();
     const user = await mk({ phone: "+16315550101" });

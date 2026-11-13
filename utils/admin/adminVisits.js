@@ -22,6 +22,7 @@ const { ensureVisitEntitlementIndexesOnce } = require("../visitEntitlementIndexS
 const { stripe, hasStripeSecretKey, resolveUserStripeCustomerId } = require("../subscriptionManagement");
 const { logBookingCreated } = require("../bookingHistory");
 const { createLink, sendLink } = require("./paymentLinks");
+const { findActiveBlock } = require("../customerBlock");
 
 /**
  * Admin creates a visit: for a customer, or for somebody with no account.
@@ -105,7 +106,7 @@ async function resolveCustomer(body) {
     return {
       mode,
       user,
-      address: { _id: address._id, line1: address.line1, city: address.city, state: address.state, zip: address.zip, county: address.county || "" },
+      address: { _id: address._id, line1: address.line1, unit: address.unit || "", city: address.city, state: address.state, zip: address.zip, county: address.county || "" },
       contact: { name: user.name || "", email: user.email, phone: user.phone },
     };
   }
@@ -147,6 +148,7 @@ function baseBookingData({ who, start, bookingNumber, task, description, adminNo
     email: who.contact.email,
     addressId: who.address._id || null,
     address: who.address.line1 || "",
+    unit: who.address.unit || "",
     city: who.address.city || "",
     state: who.address.state || "",
     zip: who.address.zip || "",
@@ -398,6 +400,9 @@ async function createAdminVisit({ body = {}, files = [], admin, clientUrl }) {
   const kind = String(body.type || "");
   if (!KINDS.has(kind)) throw new AdminVisitError("TYPE_REQUIRED", "Choose the visit type.");
   const who = await resolveCustomer(body);
+  /* The owner's block applies here too: by account, email and phone (never by address). */
+  const block = await findActiveBlock({ userId: who.user?._id || null, email: who.contact.email, phone: who.contact.phone });
+  if (block) throw new AdminVisitError("CUSTOMER_BLOCKED", "This customer is blocked. Unblock them on their profile first.", 409);
 
   const task = clean(body.task, 120);
   const description = String(body.description || "").trim().slice(0, 4000);
