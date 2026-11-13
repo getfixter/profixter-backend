@@ -72,7 +72,6 @@ registry.defineAction({
   riskTier: "medium",
   defaultMode: "supervised",
   maxMode: "autonomous",
-  promoteAfter: 2,
   limits: { perDay: 3 },
   verifyAfterMs: 0,
   maxAttempts: 2,
@@ -122,7 +121,7 @@ async function main() {
     assert.strictEqual(await GrowthAction.countDocuments({}), 1);
   });
 
-  await test("approve runs it; verification counts; streak promotes to autonomous", async () => {
+  await test("approve runs it; verification counts; a streak never promotes it - only the owner does", async () => {
     const owner = { kind: "owner", name: "Owner" };
     for (let i = 0; i < 2; i += 1) {
       const { action } = await engine.propose("test_action", { n: i }, { idempotencyKey: `p${i}` });
@@ -130,14 +129,29 @@ async function main() {
       assert.strictEqual(done.status, "succeeded");
       await engine.verificationSweep({ now: later(1000) });
     }
-    const policy = await GrowthPolicy.findOne({ type: "test_action" }).lean();
-    assert.strictEqual(policy.mode, "autonomous");
-    assert.strictEqual(policy.setBy.kind, "auto_promotion");
+    let policy = await GrowthPolicy.findOne({ type: "test_action" }).lean();
+    assert.strictEqual(policy.mode, "supervised", "no automatic supervised -> autonomous");
+    assert.strictEqual(policy.consecutiveVerifiedSuccesses, 2, "the streak is still counted for the owner to see");
+    assert.ok(!(await AdminActivityLog.exists({ action: "growth_action.policy_promoted" })));
 
+    const { action: held } = await engine.propose("test_action", { n: 8 }, { idempotencyKey: "still-held" });
+    assert.strictEqual(held.status, "awaiting_approval");
+
+    await engine.setPolicyMode("test_action", "autonomous", owner);
+    policy = await GrowthPolicy.findOne({ type: "test_action" }).lean();
+    assert.strictEqual(policy.setBy.kind, "owner");
     const { action } = await engine.propose("test_action", { n: 9 }, { idempotencyKey: "auto" });
     assert.strictEqual(action.status, "approved");
     await engine.executionSweep();
     assert.strictEqual((await GrowthAction.findById(action._id)).status, "succeeded");
+  });
+
+  await test("a definition asking for automatic promotion is refused at registration", async () => {
+    assert.throws(
+      () => registry.defineAction({ type: "test_promoting", label: "x", description: "x", riskTier: "low", defaultMode: "supervised", maxMode: "autonomous", promoteAfter: 3, execute: async () => ({}) }),
+      /promoteAfter is not supported/
+    );
+    assert.strictEqual(registry.getDefinition("test_promoting"), null);
   });
 
   await test("a failure demotes an autonomous type back to supervised", async () => {

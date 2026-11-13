@@ -69,6 +69,8 @@ const EstimateLeadSchema = new mongoose.Schema(
 
     // ── Metadata ───────────────────────────────────────────────────────────
     source: { type: String, default: "estimate_builder" },
+    /* The renovation project this lead was converted into (POST /api/admin/leads/estimate/:id/convert-to-project). */
+    projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
     /*
      * Set on requests from the retired Shower Studio (2026). Kept so those
      * leads still carry their design id; the studiodesigns collection is left

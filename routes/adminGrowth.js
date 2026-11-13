@@ -35,7 +35,7 @@ function ownerActor(req) {
 function fail(res, error, fallback) {
   const status = error?.status || 500;
   if (status >= 500) console.error(fallback, error);
-  return res.status(status).json({ message: status >= 500 ? fallback : error.message });
+  return res.status(status).json({ message: status >= 500 ? fallback : error.message, ...(status < 500 && error?.code ? { code: error.code } : {}) });
 }
 
 router.get("/summary", canRead, async (req, res) => {
@@ -384,7 +384,9 @@ router.get("/conversations", canRead, async (req, res) => {
         lastInboundAt: t.lastInboundAt,
         messages: (t.messages || []).slice(-6).map((m) => ({ direction: m.direction, by: m.by, body: String(m.body || "").slice(0, 600), at: m.at })),
       })),
-      enabled: process.env.CONVERSATIONS_ENABLED === "true",
+      // read-only history: the GoHighLevel reply agent was retired on 2026-11-12
+      enabled: false,
+      retired: true,
     });
   } catch (error) {
     fail(res, error, "Could not load conversations.");

@@ -63,6 +63,12 @@ const BookingSchema = new mongoose.Schema({
     index: true,
   },
   selectedTask: { type: String, trim: true, default: "" },
+  /*
+   * The renovation project this visit belongs to (a site visit, a measure, a
+   * project work day). Set and cleared only by the project link endpoints in
+   * routes/adminProjectWorkflow.js; null for every ordinary handyman visit.
+   */
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
   paymentHoldExpiresAt: { type: Date, default: null, index: true },
   reservationIssue: {
     status: { type: String, default: "" },

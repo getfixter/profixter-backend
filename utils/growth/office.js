@@ -9,11 +9,16 @@
  * number is null and the UI says so.
  *
  * Robots map onto the agents in utils/agents/definitions.js:
- *   Odysseus        - visibility    (SEO and organic acquisition)
- *   Leonidas        - outreach      (lawful new channels; never mail or Meta)
- *   Marcus - conversion + the live reply responder ("conversation")
- * King Arthur (utils/council) manages the three; he is not a robot here.
- * King Arthur (utils/council) directs the three as the Kingdom's marketing director.
+ *   Odysseus - visibility  (organic search, Google Maps, directories)
+ *   Leonidas - outreach    (organic social and community; never mail or Meta)
+ *   Marcus   - conversion  (follow-up emails to prospects from approved
+ *              playbooks). Records of the retired GoHighLevel reply agent
+ *              ("conversation", retired 2026-11-12) still show under him.
+ * King Arthur (utils/council) directs the three as the Kingdom's marketing
+ * director; he is not a robot here.
+ *
+ * The capability text must match what the code does. The live part of each
+ * card (capabilities()) is computed from the real switches and policies.
  */
 const AgentRun = require("../../models/AgentRun");
 const AgentFinding = require("../../models/AgentFinding");
@@ -42,10 +47,15 @@ const ROBOTS = [
     does: [
       "Watches Google: which pages and searches bring homeowners, and Maps rankings by town",
       "Proposes better page titles, descriptions and intros (you approve)",
-      "Drafts service-area pages, guides, Google Business Profile posts and directory profiles",
+      "Drafts service-area pages, guides, Google Business Profile posts and directory profiles (you post them)",
       "Researches competitors, directories and what homeowners ask AI assistants",
     ],
-    cannot: ["Publish anything on its own", "Change services, prices, plans, booking rules or the service area", "See revenue, billing or membership data", "Touch advertising"],
+    cannot: [
+      "Publish anything on its own - Google posts are drafts you post by hand",
+      "Change services, prices, plans, booking rules or the service area",
+      "See revenue, billing or membership data",
+      "Touch advertising",
+    ],
     personality: "A patient explorer. Always charting where homeowners search.",
   },
   {
@@ -72,19 +82,20 @@ const ROBOTS = [
   {
     key: "conversation",
     name: "Marcus",
-    role: "Customer re-engagement",
+    role: "Prospect follow-up",
     agents: ["conversion", "conversation"],
     actionTypes: ["conversation_reply", "playbook_email"],
-    mission: "Bring back homeowners who already know Profixter - free visits that did not join, registrations that never booked, past members - with consent-compliant follow-ups.",
+    mission: "Bring back homeowners who already know Profixter but never became members - registrations that never booked, free visits that did not join - with consent-compliant follow-up emails.",
     does: [
-      "Drafts follow-up email workflows for each audience (you approve the wording)",
+      "Drafts follow-up email playbooks for each audience - you approve the wording once",
+      "After that approval the emails send automatically (at most 12 a day, 9am-6pm), until you retire the playbook",
       "Works from counts and consent only - never names, contact details or amounts",
       "Respects unsubscribes, opt-outs, frequency caps and cool-downs",
-      "Learns from what homeowners ask when they write in",
     ],
     cannot: [
-      "Send anything without your approval",
-      "Text anyone who did not opt in; GoHighLevel is out of scope",
+      "Send an email whose wording you have not approved",
+      "Text anyone, or reply through GoHighLevel (retired)",
+      "Contact anyone who has ever had a membership",
       "Offer discounts, prices or guarantees",
       "See revenue, billing or subscription data",
     ],
@@ -116,12 +127,43 @@ function shortText(s, n = 220) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
+/**
+ * The real state of one action type: the per-type switch (or the global one)
+ * AND its trust policy. "Watch-only" only when it really cannot act.
+ */
+async function actionState(type) {
+  const engine = require("./actionEngine");
+  const def = require("./actionRegistry").getDefinition(type);
+  if (!def || def.retiredReason) return { enabled: false, mode: "off", retired: Boolean(def?.retiredReason) };
+  const mode = await engine.resolveMode(def);
+  return { enabled: engine.typeEnabled(type), mode, retired: false };
+}
+
+async function capabilityFlags() {
+  const [seoPage, playbookEmail] = await Promise.all([actionState("seo_page_update"), actionState("playbook_email")]);
+  return { seoPage, playbookEmail };
+}
+
+function actingNote(s, { approval, autonomous, off }) {
+  if (!s.enabled || s.mode === "off" || s.mode === "shadow") return { state: "off", note: off };
+  if (s.mode === "autonomous") return { state: "on", note: autonomous };
+  return { state: "approval", note: approval };
+}
+
 function capabilities(robot, flags) {
   const pending = "Waits for your approval";
   if (robot.key === "visibility") {
     return [
       { label: "Search Console data", state: flags.searchConsole ? "on" : "off", note: flags.searchConsole ? "Connected" : "Not receiving data yet" },
-      { label: "Page wording changes", state: flags.engine ? "approval" : "off", note: flags.engine ? pending : "Watch-only: proposals are recorded, nothing changes" },
+      {
+        label: "Page wording changes",
+        ...actingNote(flags.seoPage, {
+          approval: pending,
+          autonomous: "Runs on its own - you set it to autonomous",
+          off: "Watch-only: proposals are recorded, nothing changes",
+        }),
+      },
+      { label: "Google Business Profile posts", state: "approval", note: "Drafts only - you post them by hand" },
       { label: "New pages", state: "approval", note: "Drafts only - you publish" },
     ];
   }
@@ -134,9 +176,16 @@ function capabilities(robot, flags) {
     ];
   }
   return [
-    { label: "Live replies to homeowners", state: flags.conversations ? "approval" : "off", note: flags.conversations ? pending : "Off until you approve going live" },
-    { label: "Re-engagement workflows", state: "on", note: "Drafts twice a week" },
-    { label: "Follow-up emails", state: flags.engine ? "approval" : "off", note: flags.engine ? "You approve the wording" : "Watch-only" },
+    { label: "Replies to homeowners in GoHighLevel", state: "never", note: "Retired - answer from Profixter's own channels" },
+    { label: "Follow-up email playbooks", state: "on", note: "Drafts twice a week - you approve the wording" },
+    {
+      label: "Follow-up emails",
+      ...actingNote(flags.playbookEmail, {
+        approval: "Each email waits for your approval",
+        autonomous: "Send automatically once you approve a playbook's wording (max 12 a day)",
+        off: "Watch-only: nothing is sent",
+      }),
+    },
     { label: "Booking visits", state: "never", note: "Homeowners book on profixter.com" },
   ];
 }
@@ -160,7 +209,6 @@ async function robotStates({ now = new Date() } = {}) {
   const last = Object.fromEntries(latestRuns.map((r) => [r._id, r.run]));
   const cost = Object.fromEntries(monthCost.map((c) => [c._id, c.cents || 0]));
   const on = agentsEnabled();
-  const conversationsOn = process.env.CONVERSATIONS_ENABLED === "true";
 
   return ROBOTS.map((robot) => {
     const runNow = running.find((r) => robot.agents.includes(r.agent));
@@ -204,7 +252,8 @@ async function robotStates({ now = new Date() } = {}) {
         : null,
       monthCostCents: Math.round(robot.agents.reduce((n, a) => n + (cost[a] || 0), 0) * 100) / 100,
       guidanceVersion: Math.max(0, ...robot.agents.map((a) => settings[a]?.version || 0)),
-      liveReplies: robot.key === "conversation" ? conversationsOn : undefined,
+      // the GoHighLevel reply agent is retired (2026-11-12)
+      liveReplies: robot.key === "conversation" ? false : undefined,
       work: { inDecisions: mine.decisions, beingWorkedOn: mine.being_worked_on, arthurReviewing: mine.arthur_reviewing },
     };
   });
@@ -237,7 +286,10 @@ async function buildOffice({ now = new Date(), fresh = false } = {}) {
     generatedAt: now,
     agentsEnabled: agentsEnabled(),
     engineEnabled: process.env.GROWTH_ACTIONS_ENABLED === "true",
-    conversationsEnabled: process.env.CONVERSATIONS_ENABLED === "true",
+    // the GoHighLevel reply agent is retired (2026-11-12): never live, whatever the old switch says
+    conversationsEnabled: false,
+    // types that act on their own through the per-type switch (playbook_email at most)
+    actingTypes: require("./actionEngine").enabledTypes(),
     robots,
     kpis: {
       firstFreeVisits: acquisition?.firstFreeVisits || null,
@@ -428,8 +480,7 @@ async function robotDetail(key, { now = new Date() } = {}) {
   const settings = settingsList[0] || { guidance: "", version: 0, history: [] };
   const toolErrors = runs.flatMap((r) => (r.toolCalls || []).filter((t) => t.ok === false).map((t) => ({ at: r.startedAt, tool: t.name, error: shortText(t.error, 200) }))).slice(0, 6);
   const flags = {
-    engine: process.env.GROWTH_ACTIONS_ENABLED === "true",
-    conversations: process.env.CONVERSATIONS_ENABLED === "true",
+    ...(await capabilityFlags()),
     searchConsole: Boolean((await require("../visibility/summary").buildVisibilitySummary().catch(() => null))?.search?.available),
   };
   require("./plainExplainer")
@@ -487,4 +538,4 @@ async function robotDetail(key, { now = new Date() } = {}) {
   return detail;
 }
 
-module.exports = { ROBOTS, approvalsList, buildOffice, invalidateOffice, robotDetail, robotOfAction, robotStates };
+module.exports = { capabilities, capabilityFlags, ROBOTS, approvalsList, buildOffice, invalidateOffice, robotDetail, robotOfAction, robotStates };

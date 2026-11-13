@@ -4,6 +4,7 @@ const express = require("express");
 const { rateLimit } = require("../utils/rateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
 const router = express.Router();
+const { publicLeadLimiter } = require("../utils/http/serverHardening");
 const Request = require("../models/Request");
 const {
   sendAdminEventNotification,
@@ -35,7 +36,7 @@ function serviceLabel(serviceType) {
 // -----------------------------------------------------------------------------
 // OLD endpoint kept for compatibility
 // -----------------------------------------------------------------------------
-router.post("/", async (req, res) => {
+router.post("/", publicLeadLimiter("request_legacy_ip"), async (req, res) => {
   try {
     const {
       name,
@@ -102,7 +103,7 @@ router.post("/", async (req, res) => {
 // -----------------------------------------------------------------------------
 // NEW public service request endpoint
 // -----------------------------------------------------------------------------
-router.post("/public", async (req, res) => {
+router.post("/public", publicLeadLimiter("request_public_ip"), async (req, res) => {
   try {
     const name = clean(req.body.name);
     const email = normalizeEmail(req.body.email);
@@ -272,7 +273,7 @@ router.post("/callback", callbackIpLimit, async (req, res) => {
   }
 });
 
-router.post("/membership", async (req, res) => {
+router.post("/membership", publicLeadLimiter("request_membership_ip"), async (req, res) => {
   try {
     const name = clean(req.body.name).slice(0, 120);
     const rawPhone = clean(req.body.phone);

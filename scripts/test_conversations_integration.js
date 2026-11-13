@@ -154,44 +154,39 @@ async function main() {
     assert.strictEqual(out.status, "escalated");
   });
 
-  await test("sending: only via the engine, 8am-9pm, one reply per homeowner message, re-checked at send time", async () => {
+  await test("retired 2026-11-12: a drafted reply is only recorded, and even an approved one never reaches GoHighLevel", async () => {
     process.env.GROWTH_ACTIONS_ENABLED = "true";
     nextDecision = decision();
     const t = await inbound("interested!");
     await service.processThread(t);
     const a = await GrowthAction.findOne({ type: "conversation_reply" });
-    assert.strictEqual(a.status, "awaiting_approval", "supervised by default");
+    assert.strictEqual(a.status, "shadow", "capped at shadow: recorded, never queued");
+    // an old record left approved from before the retirement
     await GrowthAction.updateOne({ _id: a._id }, { $set: { status: "approved" } });
-    const night = new Date("2026-10-12T03:00:00Z"); // 11pm NY
-    assert.ok(windowWait(night));
-    const deferred = await engine.execute(a._id, { now: night });
-    assert.strictEqual(deferred.status, "approved");
-    assert.strictEqual(ghlCalls.filter((c) => c.method !== "GET").length, 0);
-    const day = new Date("2026-10-12T15:00:00Z"); // 11am NY
-    await GrowthAction.updateOne({ _id: a._id }, { $set: { nextAttemptAt: null } });
-    const sent = await engine.execute(a._id, { now: day });
-    assert.strictEqual(sent.status, "succeeded", JSON.stringify(sent.result));
-    const post = ghlCalls.find((c) => c.method === "POST" && c.path === "/conversations/messages");
-    assert.strictEqual(post.body.type, "SMS");
-    assert.ok(ghlCalls.some((c) => c.path.endsWith("/tags")));
+    assert.ok(windowWait(new Date("2026-10-12T03:00:00Z")), "the send window helper still answers for old records");
+    const out = await engine.execute(a._id, { now: new Date("2026-10-12T15:00:00Z") });
+    assert.strictEqual(out.status, "skipped");
+    assert.match(out.result.reason, /^ghl_retired/);
+    assert.strictEqual(ghlCalls.filter((c) => c.method !== "GET").length, 0, "nothing was sent, tagged or noted in GoHighLevel");
     const thread = await ConversationThread.findById(t._id).lean();
-    assert.strictEqual(thread.status, "replied");
-    assert.strictEqual(thread.messages[thread.messages.length - 1].by, "agent");
-    // No GHL booking/calendar/appointment endpoint was ever called.
-    assert.ok(!ghlCalls.some((c) => /calendar|appointment/i.test(c.path)));
+    assert.ok(!thread.messages.some((m) => m.by === "agent"));
   });
 
-  await test("a homeowner writing again, or opting out, cancels a pending reply", async () => {
-    process.env.GROWTH_ACTIONS_ENABLED = "true";
-    nextDecision = decision();
+  await test("approving an old pending reply closes it as skipped, without sending", async () => {
     const t = await inbound("tell me more");
-    await service.processThread(t);
-    const a = await GrowthAction.findOne({ type: "conversation_reply" });
-    await service.ingestInbound({ conversationId: t.ghlConversationId, contactId: t.ghlContactId, body: "actually, also a door", messageId: "again" });
-    await GrowthAction.updateOne({ _id: a._id }, { $set: { status: "approved" } });
-    const out = await engine.execute(a._id, { now: new Date("2026-10-12T15:00:00Z") });
-    assert.strictEqual(out.result.reason, "homeowner_wrote_again");
-    assert.strictEqual(ghlCalls.filter((c) => c.path === "/conversations/messages").length, 0);
+    const a = await GrowthAction.create({
+      type: "conversation_reply",
+      idempotencyKey: "old-pending",
+      status: "awaiting_approval",
+      riskTier: "medium",
+      modeAtProposal: "supervised",
+      summary: "Reply",
+      payload: { threadId: String(t._id), reply: "Hi", channel: "SMS", inboundCount: 1 },
+    });
+    const out = await engine.approve(a._id, { kind: "owner", name: "Owner" });
+    assert.strictEqual(out.status, "skipped");
+    assert.match(out.result.reason, /^ghl_retired/);
+    assert.strictEqual(ghlCalls.length, 0);
   });
 
   await test("a Profixter customer (or anyone we cannot check) goes to a person - no model call, nothing sent through GoHighLevel", async () => {
@@ -219,27 +214,22 @@ async function main() {
     process.env.AGENTS_ENABLED = "true";
   });
 
-  await test("webhook: off unless enabled; secret required; accepts GHL's payload", async () => {
+  await test("the GoHighLevel inbound-message webhook is gone (404); rep attribution stays", async () => {
     process.env.GHL_WEBHOOK_SECRET = "hook-secret";
+    process.env.CONVERSATIONS_ENABLED = "true";
     const app = express();
     app.use(express.json());
     app.use("/api/ghl", require("../routes/ghl"));
     const server = http.createServer(app).listen(0);
-    const url = `http://127.0.0.1:${server.address().port}/api/ghl/inbound-message`;
-    const post = (body, secret = "hook-secret") =>
-      realFetch(url, { method: "POST", headers: { "Content-Type": "application/json", "x-ghl-secret": secret }, body: JSON.stringify(body) });
-    const payload = { type: "InboundMessage", contactId: "c-hook", conversationId: "conv-hook", messageType: "SMS", body: "is the first visit really free?", direction: "inbound", messageId: "hook-1" };
+    const base = `http://127.0.0.1:${server.address().port}/api/ghl`;
+    const post = (p, body) => realFetch(`${base}${p}`, { method: "POST", headers: { "Content-Type": "application/json", "x-ghl-secret": "hook-secret" }, body: JSON.stringify(body) });
     try {
-      delete process.env.CONVERSATIONS_ENABLED;
-      assert.strictEqual((await post(payload)).status, 202);
-      process.env.CONVERSATIONS_ENABLED = "true";
-      assert.strictEqual((await post(payload, "wrong")).status, 401);
-      nextDecision = decision();
-      assert.strictEqual((await post(payload)).status, 200);
-      await new Promise((r) => setTimeout(r, 300));
-      const t = await ConversationThread.findOne({ ghlConversationId: "conv-hook" }).lean();
-      assert.strictEqual(t.messages.length, 1);
-      assert.strictEqual(t.status, "reply_proposed");
+      const payload = { type: "InboundMessage", contactId: "c-hook", conversationId: "conv-hook", messageType: "SMS", body: "is the first visit really free?", direction: "inbound", messageId: "hook-1" };
+      assert.strictEqual((await post("/inbound-message", payload)).status, 404);
+      assert.strictEqual(await ConversationThread.countDocuments({ ghlConversationId: "conv-hook" }), 0);
+      assert.strictEqual(modelCalls, 0);
+      // the rep-attribution webhook still answers (400: a phone is required)
+      assert.strictEqual((await post("/lead-assigned", {})).status, 400);
     } finally {
       server.close();
       delete process.env.CONVERSATIONS_ENABLED;

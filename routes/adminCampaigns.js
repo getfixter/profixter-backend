@@ -1,10 +1,14 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const Counter = require("../models/Counter");
 const EmailCampaign = require("../models/EmailCampaign");
+const EmailCampaignRecipient = require("../models/EmailCampaignRecipient");
+const { countsFor, processCampaign } = require("../jobs/campaignSender");
+const { createAdminActivityLog } = require("../utils/adminActivityLog");
 const {
   normalizeSegment,
   publicRecipient,
@@ -22,13 +26,6 @@ const sectionAccess = requirePermission(PERMISSIONS.COMMUNICATIONS_MANAGE);
 const ADMIN_EMAIL = String(
   process.env.MAIL_ADMIN || "getfixter@gmail.com"
 ).trim().toLowerCase();
-const SEND_BATCH_SIZE = Math.max(1, Number(process.env.EMAIL_BATCH_SIZE || 10));
-const SEND_BATCH_DELAY_MS = Math.max(
-  0,
-  Number(process.env.EMAIL_BATCH_DELAY_MS || 300)
-);
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function validateCampaignInput(body = {}) {
   const segment = normalizeSegment(body.segment || "all");
@@ -261,6 +258,89 @@ router.post("/campaigns/test", auth, ...sectionAccess, async (req, res) => {
   }
 });
 
+/*
+ * How long POST /campaigns/send waits for the background sender before it
+ * answers. The send itself is durable either way (jobs/campaignSender); the
+ * wait only lets a small campaign report its final counts in the response, as
+ * the inline sender used to. Larger campaigns answer "sending" and are
+ * followed with GET /campaigns/:id.
+ */
+const SEND_RESPONSE_WAIT_MS = () =>
+  Math.max(0, Number(process.env.CAMPAIGN_SEND_RESPONSE_WAIT_MS ?? 20000));
+const DUPLICATE_WINDOW_STATUSES = ["queued", "sending"];
+
+function readIdempotencyKey(req) {
+  const raw = req.body?.idempotencyKey ?? req.get?.("Idempotency-Key") ?? "";
+  const key = String(raw || "").trim();
+  if (!key) return "";
+  if (key.length > 200) {
+    const error = new Error("idempotencyKey must be 200 characters or fewer");
+    error.statusCode = 400;
+    error.code = "INVALID_IDEMPOTENCY_KEY";
+    throw error;
+  }
+  return key;
+}
+
+async function campaignResponse(campaignId, extra = {}) {
+  const campaign = await EmailCampaign.findById(campaignId).lean();
+  const counts = await countsFor(campaign._id);
+  const failures = await EmailCampaignRecipient.find({ campaignId: campaign._id, status: "failed" })
+    .sort({ index: 1 })
+    .limit(200)
+    .select("email error")
+    .lean();
+  const finished = !DUPLICATE_WINDOW_STATUSES.includes(campaign.status);
+  return {
+    // Unchanged fields the current Admin composer reads.
+    campaignId: campaign.campaignNumber,
+    segment: campaign.selectedSegment,
+    total: campaign.totalRecipients || counts.total,
+    sent: counts.sent,
+    failed: counts.failed,
+    skipped: campaign.excludedCount + counts.skipped,
+    excluded: campaign.excludedCount,
+    adminCopySent: Boolean(campaign.adminCopySent),
+    status: campaign.status,
+    errors: failures.map(({ email, error }) => ({ email, error })),
+    // Background sending.
+    id: String(campaign._id),
+    campaignNumber: campaign.campaignNumber,
+    pending: counts.pending + counts.sending,
+    finished,
+    queued: !finished,
+    ...extra,
+  };
+}
+
+async function waitForCampaign(promise) {
+  const waitMs = SEND_RESPONSE_WAIT_MS();
+  if (!waitMs) return;
+  let timer;
+  await Promise.race([
+    promise.catch(() => {}),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, waitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+function kickSender(campaignId) {
+  // CAMPAIGN_SEND_IMMEDIATE=false leaves all sending to the minute sweep.
+  if (process.env.CAMPAIGN_SEND_IMMEDIATE === "false") return Promise.resolve();
+  return processCampaign(campaignId).catch((error) => {
+    // The minute sweep picks the campaign up again once the lease runs out.
+    console.error(
+      JSON.stringify({
+        event: "email_campaign_kick_failed",
+        campaignId: String(campaignId),
+        error: String(error?.message || error).slice(0, 300),
+      })
+    );
+  });
+}
+
 router.post("/campaigns/send", auth, ...sectionAccess, async (req, res) => {
   let campaign = null;
   try {
@@ -271,26 +351,79 @@ router.post("/campaigns/send", auth, ...sectionAccess, async (req, res) => {
     }
 
     const input = validateCampaignInput(req.body);
+    const idempotencyKey = readIdempotencyKey(req);
+
+    // A retried request (same key) returns the campaign it already created.
+    if (idempotencyKey) {
+      const existing = await EmailCampaign.findOne({ idempotencyKey }).select("_id").lean();
+      if (existing) return res.json(await campaignResponse(existing._id, { duplicate: true }));
+    }
+    // A second press of Send while the same campaign is still going out.
+    const inFlight = await EmailCampaign.findOne({
+      status: { $in: DUPLICATE_WINDOW_STATUSES },
+      selectedSegment: input.segment,
+      subject: input.subject,
+      $or: [{ adminCopySent: true }, { leaseUntil: { $gt: new Date() } }],
+    })
+      .select("_id")
+      .lean();
+    if (inFlight) {
+      return res.json(
+        await campaignResponse(inFlight._id, {
+          duplicate: true,
+          code: "CAMPAIGN_ALREADY_SENDING",
+          message: "This campaign is already being sent. Showing its progress instead of sending it again.",
+        })
+      );
+    }
+
     const {
       recipients,
       excludedRecipients,
       eligibleBeforeExclusions,
     } = await resolveAudience(input.segment, input);
     const campaignNumber = await nextCampaignNumber();
-    campaign = await EmailCampaign.create({
-      campaignNumber,
-      subject: input.subject,
-      body: input.body,
-      ctaText: input.ctaText,
-      ctaUrl: input.ctaUrl,
-      selectedSegment: input.segment,
-      resolvedRecipientCount: eligibleBeforeExclusions,
-      actorUserId: req.authUser?._id || req.user?.id || null,
-      actorName: req.authUser?.name || "",
-      actorEmail: req.authUser?.email || "",
-      status: "sending",
-      startedAt: new Date(),
-    });
+    try {
+      campaign = await EmailCampaign.create({
+        campaignNumber,
+        subject: input.subject,
+        body: input.body,
+        ctaText: input.ctaText,
+        ctaUrl: input.ctaUrl,
+        selectedSegment: input.segment,
+        resolvedRecipientCount: eligibleBeforeExclusions,
+        totalRecipients: recipients.length,
+        excludedCount: excludedRecipients.length,
+        skippedCount: excludedRecipients.length,
+        actorUserId: req.authUser?._id || req.user?.id || null,
+        actorName: req.authUser?.name || "",
+        actorEmail: req.authUser?.email || "",
+        status: "queued",
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        // Held by this request until the snapshot and admin copy are done,
+        // so the background sender cannot start on a half-written list.
+        leaseOwner: "request",
+        leaseUntil: new Date(Date.now() + 5 * 60 * 1000),
+      });
+    } catch (error) {
+      if (error?.code === 11000 && idempotencyKey) {
+        const existing = await EmailCampaign.findOne({ idempotencyKey }).select("_id").lean();
+        if (existing) return res.json(await campaignResponse(existing._id, { duplicate: true }));
+      }
+      throw error;
+    }
+
+    if (recipients.length) {
+      await EmailCampaignRecipient.insertMany(
+        recipients.map((recipient, index) => ({
+          campaignId: campaign._id,
+          index,
+          email: recipient.email,
+          recipient,
+        })),
+        { ordered: false }
+      );
+    }
 
     const timestamp = new Date().toLocaleString("en-US", {
       timeZone: "America/New_York",
@@ -309,6 +442,7 @@ router.post("/campaigns/send", auth, ...sectionAccess, async (req, res) => {
         timestamp,
       }),
     });
+    // The admin copy goes first, as before: if it cannot be sent, no customer is emailed.
     await sendPromo(ADMIN_EMAIL, {
       ...adminRendered,
       logContext: {
@@ -321,110 +455,156 @@ router.post("/campaigns/send", auth, ...sectionAccess, async (req, res) => {
         source: "adminCampaignSend",
       },
     });
-    campaign.adminCopySent = true;
-    await campaign.save();
+    await EmailCampaign.updateOne(
+      { _id: campaign._id },
+      { $set: { adminCopySent: true, leaseOwner: "", leaseUntil: null } }
+    );
 
-    const results = [];
-    for (let index = 0; index < recipients.length; index += SEND_BATCH_SIZE) {
-      const batch = recipients.slice(index, index + SEND_BATCH_SIZE);
-      const batchResults = await Promise.all(
-        batch.map(async (recipient) => {
-          try {
-            const rendered = renderCampaignEmail({ ...input, recipient });
-            const headers = rendered.unsubscribeUrl
-              ? {
-                  "List-Unsubscribe": `<${rendered.unsubscribeUrl}>`,
-                  "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-                }
-              : {};
-            const info = await sendPromo(recipient.email, {
-              ...rendered,
-              headers,
-              logContext: {
-                templateKey: "campaign",
-                campaignId: campaign._id,
-                campaignNumber,
-                recipientName: recipient.name || recipient.fullName || "",
-                recipientEmail: recipient.email,
-                customerName: recipient.name || recipient.fullName || "",
-                customerEmail: recipient.email,
-                userId: recipient._id || recipient.userId || null,
-                emailType: "campaign",
-                source: "adminCampaignSend",
-              },
-            });
-            return {
-              email: recipient.email,
-              status: "sent",
-              providerMessageId: info?.messageId || "",
-              error: "",
-            };
-          } catch (error) {
-            return {
-              email: recipient.email,
-              status: "failed",
-              providerMessageId: "",
-              error: String(error?.message || "Email send failed").slice(0, 500),
-            };
-          }
-        })
-      );
-      results.push(...batchResults);
-      if (index + SEND_BATCH_SIZE < recipients.length) {
-        await sleep(SEND_BATCH_DELAY_MS);
-      }
-    }
+    await createAdminActivityLog(req, {
+      action: "email_campaign_queued",
+      entityType: "EmailCampaign",
+      entityId: campaign._id,
+      entityName: campaignNumber,
+      details: {
+        campaignNumber,
+        segment: input.segment,
+        subject: input.subject,
+        recipientCount: recipients.length,
+        excludedCount: excludedRecipients.length,
+        idempotencyKey: idempotencyKey || "",
+      },
+    }).catch((error) => console.error("Campaign activity log failed:", error?.message));
 
-    const sentCount = results.filter((item) => item.status === "sent").length;
-    const failedCount = results.filter((item) => item.status === "failed").length;
-    const errorsSummary = results
-      .filter((item) => item.error)
-      .slice(0, 50)
-      .map((item) => `${item.email}: ${item.error}`);
-
-    campaign.sentCount = sentCount;
-    campaign.failedCount = failedCount;
-    campaign.skippedCount = excludedRecipients.length;
-    campaign.status = failedCount ? "completed_with_errors" : "completed";
-    campaign.errorsSummary = errorsSummary;
-    campaign.recipientResults = results;
-    campaign.completedAt = new Date();
-    await campaign.save();
-
-    return res.json({
-      campaignId: campaign.campaignNumber,
-      segment: input.segment,
-      total: recipients.length,
-      sent: sentCount,
-      failed: failedCount,
-      skipped: excludedRecipients.length,
-      excluded: excludedRecipients.length,
-      adminCopySent: true,
-      status: campaign.status,
-      errors: results
-        .filter((item) => item.status === "failed")
-        .map(({ email, error }) => ({ email, error })),
-    });
+    await waitForCampaign(kickSender(campaign._id));
+    return res.json(await campaignResponse(campaign._id));
   } catch (error) {
     console.error("Campaign send failed:", error);
     if (campaign) {
-      campaign.status = "failed";
-      campaign.completedAt = new Date();
-      campaign.errorsSummary = [String(error?.message || "Campaign failed")];
-      await campaign.save().catch(() => {});
+      // Nothing was sent to customers: the admin copy or the snapshot failed first.
+      await EmailCampaign.updateOne(
+        { _id: campaign._id, adminCopySent: false },
+        {
+          $set: {
+            status: "failed",
+            completedAt: new Date(),
+            leaseOwner: "",
+            leaseUntil: null,
+            errorsSummary: [String(error?.message || "Campaign failed")],
+          },
+        }
+      ).catch(() => {});
+      await EmailCampaignRecipient.updateMany(
+        { campaignId: campaign._id, status: "pending" },
+        { $set: { status: "skipped", error: "campaign failed before sending" } }
+      ).catch(() => {});
     }
     return res
       .status(error.statusCode || 500)
-      .json({ message: error.message || "Failed to send campaign" });
+      .json({ message: error.message || "Failed to send campaign", code: error.code || "CAMPAIGN_SEND_FAILED" });
   }
 });
 
-router.get("/campaigns/:campaignNumber", auth, ...sectionAccess, async (req, res) => {
-  const campaign = await EmailCampaign.findOne({
-    campaignNumber: req.params.campaignNumber,
-  }).lean();
-  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
-  return res.json({ campaign });
+async function findCampaign(idOrNumber) {
+  const value = String(idOrNumber || "").trim();
+  if (mongoose.isValidObjectId(value) && /^[a-f0-9]{24}$/i.test(value)) {
+    const byId = await EmailCampaign.findById(value).lean();
+    if (byId) return byId;
+  }
+  return EmailCampaign.findOne({ campaignNumber: value }).lean();
+}
+
+/** Progress of one campaign, by id or campaign number (EML-YYYY-NNNNN). */
+router.get("/campaigns/:campaignId", auth, ...sectionAccess, async (req, res) => {
+  try {
+    const campaign = await findCampaign(req.params.campaignId);
+    if (!campaign) return res.status(404).json({ message: "Campaign not found", code: "NOT_FOUND" });
+    const counts = await countsFor(campaign._id);
+    const recentFailures = await EmailCampaignRecipient.find({ campaignId: campaign._id, status: "failed" })
+      .sort({ updatedAt: -1 })
+      .limit(50)
+      .select("email error updatedAt")
+      .lean();
+    const finished = !DUPLICATE_WINDOW_STATUSES.includes(campaign.status);
+    return res.json({
+      campaign: {
+        _id: String(campaign._id),
+        campaignNumber: campaign.campaignNumber,
+        status: campaign.status,
+        subject: campaign.subject,
+        segment: campaign.selectedSegment,
+        total: campaign.totalRecipients || counts.total,
+        sent: counts.sent,
+        failed: counts.failed,
+        skipped: (campaign.excludedCount || 0) + counts.skipped,
+        excluded: campaign.excludedCount || 0,
+        pending: counts.pending + counts.sending,
+        adminCopySent: Boolean(campaign.adminCopySent),
+        actorName: campaign.actorName || campaign.actorEmail || "",
+        createdAt: campaign.createdAt,
+        startedAt: campaign.startedAt,
+        completedAt: campaign.completedAt,
+        lastProgressAt: campaign.lastProgressAt || null,
+        finished,
+      },
+      recentFailures: recentFailures.map((row) => ({
+        email: row.email,
+        error: row.error,
+        at: row.updatedAt,
+      })),
+      allowedActions: {
+        resume: counts.pending > 0 && !(campaign.leaseUntil && new Date(campaign.leaseUntil) > new Date()),
+      },
+    });
+  } catch (error) {
+    console.error("Load campaign failed:", error);
+    return res.status(500).json({ message: "Failed to load campaign", code: "CAMPAIGN_LOAD_FAILED" });
+  }
+});
+
+/**
+ * Continue a campaign that stopped (crash, deploy, failure). Only rows still
+ * pending are sent; anything sent, failed or interrupted is never resent.
+ */
+router.post("/campaigns/:campaignId/resume", auth, ...sectionAccess, async (req, res) => {
+  try {
+    const campaign = await findCampaign(req.params.campaignId);
+    if (!campaign) return res.status(404).json({ message: "Campaign not found", code: "NOT_FOUND" });
+    if (!campaign.adminCopySent) {
+      return res.status(409).json({
+        message: "This campaign never started (its admin copy was not sent). Create a new campaign instead.",
+        code: "INVALID_TRANSITION",
+      });
+    }
+    const counts = await countsFor(campaign._id);
+    if (!counts.pending) {
+      return res.status(409).json({ message: "Nothing left to send for this campaign.", code: "NOTHING_TO_RESUME" });
+    }
+    const now = new Date();
+    const updated = await EmailCampaign.findOneAndUpdate(
+      {
+        _id: campaign._id,
+        $or: [{ leaseUntil: null }, { leaseUntil: { $lt: now } }],
+      },
+      { $set: { status: "queued", completedAt: null, leaseOwner: "", leaseUntil: null } },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(409).json({ message: "This campaign is already sending.", code: "CAMPAIGN_ALREADY_SENDING" });
+    }
+    await createAdminActivityLog(req, {
+      action: "email_campaign_resumed",
+      entityType: "EmailCampaign",
+      entityId: campaign._id,
+      entityName: campaign.campaignNumber,
+      details: { campaignNumber: campaign.campaignNumber, pending: counts.pending, previousStatus: campaign.status },
+    }).catch((error) => console.error("Campaign activity log failed:", error?.message));
+
+    await waitForCampaign(kickSender(campaign._id));
+    return res.json(await campaignResponse(campaign._id));
+  } catch (error) {
+    console.error("Resume campaign failed:", error);
+    return res.status(500).json({ message: "Failed to resume campaign", code: "CAMPAIGN_RESUME_FAILED" });
+  }
 });
 
 module.exports = router;

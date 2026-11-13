@@ -65,7 +65,7 @@ YOUR JOB (marketing only - you have no revenue, billing, membership or schedulin
 
 WHAT THE OWNER HAS AUTHORIZED (2026-10-12) - you are a proactive Marketing Director
 - Develop new legitimate, FREE, organic acquisition strategies; assign meaningful work, coordinate the knights and measure results. Execution and measurable growth over drafts: no knight has to produce a draft every shift.
-- Actions the engine can carry out, under the owner's trust policy (approval at first, then on their own after verified successes, automatically suspended after repeated failures): Google Business Profile posts (Odysseus, gbp_post), search titles and page text on profixter.com (Odysseus), follow-up emails to eligible prospects from owner-approved playbooks (Marcus). The recentActions list shows what was really published or sent, with its link or delivery outcome - report only that as done.
+- Actions the engine can carry out, under the owner's trust policy (each needs the owner's approval unless the owner has set that type to run on its own - nothing promotes itself - and a type is automatically suspended after repeated failures): search titles and page text on profixter.com (Odysseus), follow-up emails to eligible prospects from playbooks whose wording the owner approved (Marcus; these send on their own once the wording is approved). Google Business Profile posts are drafts the owner posts by hand; the system never publishes them (retired 2026-11-12). The recentActions list shows what was really published or sent, with its link or delivery outcome - report only that as done.
 - Not automated (no connected account): Facebook and Instagram (never automatic - owner rule), directories and listings (claiming needs the owner's identity verification), Reddit and online communities, local press pitches, new SMS wording (needs the owner and the registered texting campaign). For these, bring the owner the exact, ready step - sparingly.
 - 100% ORGANIC: paid marketing of any kind is PROHIBITED - never propose, purchase or start it (ads, sponsorships, paid or premium listings, sponsored articles, influencer payments, boosted posts). Your tools refuse it. The AI budget pays only for the agents' own running cost.
 
@@ -250,7 +250,7 @@ async function councilState({ now = new Date() } = {}) {
       changesEngineOn: built?.engineEnabled ?? null,
       // with the general switch off, these types still act on their own (GROWTH_ACTIONS_ENABLED_TYPES)
       // read from the setting itself: the council never loads the action engine
-      typesActingOnTheirOwn: String(process.env.GROWTH_ACTIONS_ENABLED_TYPES || "").split(",").map((t) => t.trim()).filter(Boolean),
+      typesActingOnTheirOwn: require("../growth/switches").enabledTypes(),
       liveRepliesOn: built?.conversationsEnabled ?? null,
     },
     results: built

@@ -141,7 +141,7 @@ async function policiesView() {
       mode: clampMode(p?.mode || def.defaultMode, def.maxMode),
       defaultMode: def.defaultMode,
       maxMode: def.maxMode,
-      promoteAfter: def.promoteAfter,
+      promoteAfter: null, // kept for older clients: automatic promotion no longer exists
       perDay: def.limits?.perDay || null,
       streak: p?.consecutiveVerifiedSuccesses || 0,
       verifiedSuccesses: p?.verifiedSuccesses || 0,

@@ -36,7 +36,7 @@ const ROBOT_NAMES = { visibility: "Odysseus", outreach: "Leonidas", conversion: 
 const ROBOT_ROLES = {
   Odysseus: "our organic search & visibility agent (Google, Maps, AI search, directories)",
   Leonidas: "our organic social & community agent (Instagram, Facebook, local community)",
-  "Marcus": "our customer re-engagement agent (consent-compliant follow-ups; also drafts replies to homeowners who write in)",
+  "Marcus": "our prospect follow-up agent (follow-up emails from playbooks whose wording I approve; his old GoHighLevel reply drafts are retired and never sent)",
   "King Arthur": "my AI manager - he coordinates the three specialists and recommends, but cannot approve anything",
 };
 
@@ -71,7 +71,7 @@ Fixed business rules the agents must follow (they cannot change these):
 - Meta (Facebook/Instagram) ads are run by an outside agency; the AI can only read ad data.
 - No postcards or mail by AI. No texting or emailing purchased or imported contact lists.
 - Text/email replies are business-only, and anyone who asks to stop is never contacted again.
-- Anything customer-facing or risky waits for my approval; the system only lets an action type run on its own after several approved, verified successes, and sends it back to "needs approval" after any failure.`;
+- Anything customer-facing or risky waits for my approval. An action type runs on its own only when I set it to (it never promotes itself), and any failure sends it back to "needs approval". The one exception today: follow-up emails send on their own once I have approved the email's wording.`;
 
 function askBlock(kind) {
   if (kind === "approval") {
@@ -165,9 +165,9 @@ const ACTION_FACTS = {
     ifApproved: "The new text goes live within minutes; the system checks the live page and measures the effect after 28 days.",
   },
   conversation_reply: {
-    what: "Send ONE reply (text or email, through our GoHighLevel CRM) to a homeowner who wrote to us first.",
-    reversible: "No - a sent message cannot be unsent.",
-    ifApproved: "The reply is sent between 8am and 9pm New York time, only if the homeowner has not written again or opted out in the meantime, and only if they are not already a Profixter customer.",
+    what: "A reply to a homeowner through GoHighLevel. Retired on 2026-11-12: these are never sent any more.",
+    reversible: "Nothing is sent, so there is nothing to undo.",
+    ifApproved: "Nothing is sent. Approving only closes the item as skipped (GoHighLevel retired); answer the homeowner from Profixter's own channels.",
   },
   playbook_email: {
     what: "Send an already-approved follow-up email to one person in its audience.",
@@ -219,8 +219,8 @@ async function explainAction(a, { robotName, thread } = {}) {
     const lastIn = [...(thread?.messages || [])].reverse().find((m) => m.direction === "inbound");
     say =
       a.plain ||
-      `Boss, a homeowner in ${town} wrote to us. I'd like to send them the reply below. It explains our free first visit and links to our booking page - I won't book anything for them.`;
-    ask = "Can I send this reply?";
+      `Boss, a homeowner in ${town} wrote to us through GoHighLevel and I drafted the reply below. Replies through GoHighLevel are retired, so nothing will be sent - if they still need an answer, reply from Profixter's own channels.`;
+    ask = "Close this item? Nothing is sent.";
     details.push(`Their message: "${redact(lastIn?.body || "(not available)", { names })}"`, `My reply: "${redact(p.reply || "", { names })}"`);
     sections.push({
       heading: "The conversation (personal details removed)",
@@ -553,7 +553,7 @@ function explainResults(office) {
     },
     {
       heading: "Conversations (homeowners who wrote to us), last 30 days",
-      body: lines({ Total: k.conversations30?.total, "About our services": k.conversations30?.qualified, "AI replies": office.conversationsEnabled ? "on (each reply needs approval until trusted)" : "off" }),
+      body: lines({ Total: k.conversations30?.total, "About our services": k.conversations30?.qualified, "AI replies": "retired (GoHighLevel replies were switched off for good on 2026-11-12)" }),
     },
     {
       heading: "AI team costs",

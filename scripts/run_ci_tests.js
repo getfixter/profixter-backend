@@ -135,6 +135,26 @@ const SUITES = [
   "test_customer_block_enforcement.js",
   // Customer list/search/profile, lean DTOs, billing proxy (Stripe faked), notes, archive, consent, comms history.
   "test_admin_customer_directory.js",
+  // Admin redesign (BE-DOCS), 2026-11-12.
+  // Revocable sessions: logout, logout-all, legacy-token denylist (in-memory Mongo).
+  "test_sessions_logout.js",
+  // 2 MB body limit, public lead rate limits, no public ping, generic 5xx.
+  "test_server_hardening.js",
+  // Queued campaign send: snapshot, lease, resume never resends (in-memory Mongo, SES faked).
+  "test_campaign_send_queue.js",
+  // GoHighLevel retired: no Google posting, no GHL replies (in-memory Mongo).
+  "test_ghl_retirement.js",
+  // Nothing promotes itself from supervised to autonomous; honest office texts.
+  "test_no_promote_after.js",
+  // Void/cancel/supersede beat a live signing link; signed copies write-once; invoice void with payments refused.
+  "test_document_integrity.js",
+  // Lead -> project, next steps, overview, deposit/milestone billing once, closeout, needs-action collectors.
+  "test_project_workflow.js",
+  // Project suites that existed but were never registered.
+  "test_premium_island_contracts.js",
+  "test_premium_island_invoices.js",
+  "test_project_soft_delete.js",
+  "test_project_customer_selection.js",
 ];
 
 /**

@@ -470,6 +470,9 @@ router.post("/native/manual-upload", signedUpload.single("file"), async (req, re
       action: "Signed Document Upload Failed",
       details: { message: error?.message || "Unknown error" },
     });
+    if (error?.code === "DOCUMENT_NOT_SIGNABLE") {
+      return res.status(409).json({ message: error.message, code: "INVALID_TRANSITION" });
+    }
     return res.status(400).json({ message: error?.message || "Failed to record the signed document" });
   }
 });

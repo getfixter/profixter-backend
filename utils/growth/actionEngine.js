@@ -1,7 +1,7 @@
 const GrowthAction = require("../../models/GrowthAction");
 const GrowthPolicy = require("../../models/GrowthPolicy");
 const AdminActivityLog = require("../../models/AdminActivityLog");
-const { clampMode, getDefinition, rank } = require("./actionRegistry");
+const { clampMode, getDefinition, listDefinitions, rank } = require("./actionRegistry");
 
 /**
  * The one path by which the growth system acts.
@@ -32,35 +32,8 @@ const VERIFY_CLAIM_MS = 10 * 60 * 1000;
 const VERIFY_GIVE_UP_MS = 7 * 24 * 60 * 60 * 1000;
 const COUNTED_TOWARD_LIMIT = ["approved", "running", "succeeded", "failed", "rolled_back"];
 
-function engineEnabled() {
-  return process.env.GROWTH_ACTIONS_ENABLED === "true";
-}
-
-/*
- * PER-TYPE SWITCH. With the global switch off, a type may still act when the
- * owner has turned on just that type: GROWTH_ACTIONS_ENABLED_TYPES lists them
- * (comma-separated). Only types in SELECTIVELY_ENABLEABLE can be turned on this
- * way:
- *   gbp_post        organic Google Business Profile posting (owner's standing
- *                   approval, 2026-10-12)
- *   playbook_email  Marcus's follow-up emails from owner-approved playbooks
- *                   (owner, 2026-10-27) - every send still re-checks approval,
- *                   copy rules, membership, segment, unsubscribe and the caps
- * Texts (post_free_visit_sms, any SMS) and website changes can never be
- * switched on by this list; they need the global switch.
- */
-const SELECTIVELY_ENABLEABLE = new Set(["gbp_post", "playbook_email"]);
-
-function enabledTypes(env = process.env) {
-  return String(env.GROWTH_ACTIONS_ENABLED_TYPES || "")
-    .split(",")
-    .map((t) => t.trim())
-    .filter((t) => SELECTIVELY_ENABLEABLE.has(t));
-}
-
-function typeEnabled(type, env = process.env) {
-  return engineEnabled() || enabledTypes(env).includes(type);
-}
+// The switches live in ./switches so read-only code (the council) can report them without loading the engine.
+const { SELECTIVELY_ENABLEABLE, enabledTypes, engineEnabled, typeEnabled } = require("./switches");
 
 function actorRole(actor) {
   return actor?.kind || "system";
@@ -202,6 +175,14 @@ async function execute(actionId, { now = new Date() } = {}) {
   if (!claimed) return null;
 
   const def = getDefinition(claimed.type);
+  if (def?.retiredReason) {
+    claimed.status = "skipped";
+    claimed.result = { reason: def.retiredReason };
+    claimed.verification = { status: "skipped", checkAfter: null, checkedAt: now, detail: "" };
+    await claimed.save();
+    await audit("skipped", claimed, null, { reason: def.retiredReason });
+    return claimed.toObject();
+  }
   if (!def) {
     claimed.status = "failed";
     claimed.lastError = "No definition for this action type in this build";
@@ -266,8 +247,13 @@ async function execute(actionId, { now = new Date() } = {}) {
 /* Trust: promotion and demotion                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Count a verified success. This never changes the trust level: promotion from
+ * supervised to autonomous is the owner's decision alone (setPolicyMode), so a
+ * streak of successes is recorded for the owner to see and nothing more.
+ */
 async function recordVerifiedSuccess(def) {
-  const policy = await GrowthPolicy.findOneAndUpdate(
+  await GrowthPolicy.findOneAndUpdate(
     { type: def.type },
     {
       $inc: { verifiedSuccesses: 1, consecutiveVerifiedSuccesses: 1 },
@@ -275,37 +261,6 @@ async function recordVerifiedSuccess(def) {
     },
     { upsert: true, new: true }
   );
-
-  const mode = clampMode(policy.mode, def.maxMode);
-  if (
-    mode === "supervised" &&
-    def.promoteAfter &&
-    rank(def.maxMode) >= rank("autonomous") &&
-    policy.consecutiveVerifiedSuccesses >= def.promoteAfter
-  ) {
-    const promoted = await GrowthPolicy.findOneAndUpdate(
-      { type: def.type, mode: "supervised" },
-      {
-        $set: {
-          mode: "autonomous",
-          promotedAt: new Date(),
-          setBy: {
-            kind: "auto_promotion",
-            userId: null,
-            note: `${policy.consecutiveVerifiedSuccesses} consecutive verified successes`,
-            at: new Date(),
-          },
-        },
-      },
-      { new: true }
-    );
-    if (promoted) {
-      await audit("policy_promoted", { _id: promoted._id, type: def.type, summary: def.label }, null, {
-        to: "autonomous",
-        streak: policy.consecutiveVerifiedSuccesses,
-      });
-    }
-  }
 }
 
 const SUSPEND_AFTER_FAILURES = 2;
@@ -408,7 +363,52 @@ function httpError(message, status) {
   return Object.assign(new Error(message), { status });
 }
 
+/**
+ * A retired type (definition.retiredReason) never runs. Whatever state an old
+ * record of it is in - waiting for approval, or approved and queued - it is
+ * closed as "skipped" with the reason recorded on it, so the owner sees why.
+ */
+async function closeRetired(action, def, actor, now = new Date()) {
+  const closed = await GrowthAction.findOneAndUpdate(
+    { _id: action._id, status: { $in: ["awaiting_approval", "approved"] } },
+    {
+      $set: {
+        status: "skipped",
+        result: { reason: def.retiredReason },
+        verification: { status: "skipped", checkAfter: null, checkedAt: now, detail: "" },
+        nextAttemptAt: null,
+        expiresAt: null,
+        ...(actor ? { decidedBy: actor, decidedAt: now } : {}),
+      },
+    },
+    { new: true }
+  );
+  if (closed) await audit("skipped", closed, actor || null, { reason: def.retiredReason });
+  return closed;
+}
+
+async function retiredSweep({ now = new Date() } = {}) {
+  const retired = listDefinitions().filter((d) => d.retiredReason);
+  if (!retired.length) return { retiredClosed: 0 };
+  const rows = await GrowthAction.find({ type: { $in: retired.map((d) => d.type) }, status: { $in: ["awaiting_approval", "approved"] } })
+    .select("_id type")
+    .limit(100)
+    .lean();
+  let retiredClosed = 0;
+  for (const row of rows) {
+    if (await closeRetired(row, getDefinition(row.type), null, now)) retiredClosed += 1;
+  }
+  return { retiredClosed };
+}
+
 async function approve(actionId, actor, note = "") {
+  const pending = await GrowthAction.findOne({ _id: actionId, status: "awaiting_approval" }).select("_id type").lean();
+  const pendingDef = pending && getDefinition(pending.type);
+  if (pendingDef?.retiredReason) {
+    const closed = await closeRetired(pending, pendingDef, actor);
+    if (!closed) throw httpError("This action is no longer waiting for approval.", 409);
+    return closed.toObject();
+  }
   const action = await GrowthAction.findOneAndUpdate(
     { _id: actionId, status: "awaiting_approval" },
     {
@@ -454,6 +454,13 @@ async function rollback(actionId, actor) {
   const current = await GrowthAction.findById(actionId);
   if (!current) throw httpError("Action not found.", 404);
   const def = getDefinition(current.type);
+  if (def?.retiredReason) {
+    // never call GoHighLevel, and never touch a post that is already on Google
+    throw Object.assign(
+      httpError("This kind of action is retired with GoHighLevel and cannot be undone from here. Anything already published is managed in that platform itself (a Google post in Google Business Profile).", 400),
+      { code: "GHL_RETIRED" }
+    );
+  }
   if (!def?.rollback) throw httpError("This kind of action cannot be undone automatically.", 400);
   if (current.status !== "succeeded") throw httpError("Only a succeeded action can be rolled back.", 409);
 
@@ -599,7 +606,8 @@ async function runSweeps({ now = new Date() } = {}) {
   const executed = await executionSweep({ now });
   const verified = await verificationSweep({ now });
   const expired = await expirySweep({ now });
-  return { ...interrupted, ...executed, ...verified, ...expired };
+  const retired = await retiredSweep({ now });
+  return { ...interrupted, ...executed, ...verified, ...expired, ...retired };
 }
 
 module.exports = {
@@ -615,11 +623,12 @@ module.exports = {
   propose,
   reject,
   resolveMode,
+  retiredSweep,
   rollback,
   runSweeps,
   setPolicyMode,
   usedToday,
   verificationSweep,
   // tests only
-  _internal: { recordFailure },
+  _internal: { recordFailure, recordVerifiedSuccess },
 };

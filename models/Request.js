@@ -50,6 +50,8 @@ const RequestSchema = new mongoose.Schema({
      */
     enum: ["new", "pending_confirmation", "confirmed", "completed", "declined", "canceled", "contacted", "won", "lost"],
   },
+  /* The renovation project this lead was converted into (POST /api/admin/leads/request/:id/convert-to-project). */
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null, index: true },
   /* The reserved visit this free-visit request is. */
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null, index: true },
   /* Why a request could not get a reservation (backfill of older requests). */

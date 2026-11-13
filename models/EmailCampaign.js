@@ -45,8 +45,26 @@ const EmailCampaignSchema = new mongoose.Schema(
     recipientResults: { type: [RecipientResultSchema], default: [] },
     startedAt: { type: Date, default: null },
     completedAt: { type: Date, default: null },
+    /*
+     * Durable background sending (jobs/campaignSender). The request queues the
+     * campaign and snapshots its recipients (models/EmailCampaignRecipient);
+     * a worker holding the lease sends them. A lease that runs out (crash,
+     * deploy) lets the next worker resume without resending.
+     */
+    idempotencyKey: { type: String, default: undefined, trim: true },
+    excludedCount: { type: Number, default: 0 },
+    totalRecipients: { type: Number, default: 0 },
+    leaseOwner: { type: String, default: "" },
+    leaseUntil: { type: Date, default: null },
+    lastProgressAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
+
+EmailCampaignSchema.index(
+  { idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: "string" } } }
+);
+EmailCampaignSchema.index({ status: 1, leaseUntil: 1 });
 
 module.exports = mongoose.model("EmailCampaign", EmailCampaignSchema);

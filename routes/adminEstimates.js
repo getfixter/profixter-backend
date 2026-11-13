@@ -4,6 +4,7 @@ const auth = require("../middleware/auth");
 const User = require("../models/User");
 const Project = require("../models/Project");
 const Estimate = require("../models/Estimate");
+const Contract = require("../models/Contract");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const {
   createAdminActivityLog,
@@ -305,6 +306,23 @@ router.delete("/:id", async (req, res) => {
     if (!estimate) return res.status(404).json({ message: "Estimate not found" });
     const project = await getActiveProjectOrRespond(estimate.projectId, res);
     if (!project) return null;
+
+    // An accepted estimate, or one an agreement was built from, is part of the
+    // project record. The agreement keeps a snapshot, but the source must stay.
+    if (estimate.status === "Accepted") {
+      return res.status(409).json({
+        message: "An accepted estimate cannot be deleted. It is part of the project record.",
+        code: "ESTIMATE_IN_USE",
+      });
+    }
+    const referencingAgreements = await Contract.countDocuments({ estimateId: estimate._id });
+    if (referencingAgreements > 0) {
+      return res.status(409).json({
+        message: "An agreement was built from this estimate, so it cannot be deleted.",
+        code: "ESTIMATE_IN_USE",
+        referencingAgreements,
+      });
+    }
 
     const audit = await createAdminActivityLog(req, {
       action: "Estimate Delete Started",

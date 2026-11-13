@@ -154,7 +154,11 @@ const adminLink = {
   customer: (id) => (id ? `/admin/customers/${encodeURIComponent(id)}` : ""),
   invoice: (id) => (id ? `/admin/projects?invoiceId=${encodeURIComponent(id)}` : ""),
   bookings: () => "/admin/jobs",
-  lead: (id) => (id ? `/admin/leads/${encodeURIComponent(id)}` : "/admin/leads"),
+  /* The lead notification knows only the id, so the Leads list opens the matching row. */
+  lead: (id) => (id ? `/admin/leads?open=${encodeURIComponent(id)}` : "/admin/leads"),
+  leadDetail: (model, id) =>
+    model && id ? `/admin/leads/${encodeURIComponent(model)}-${encodeURIComponent(id)}` : "/admin/leads",
+  project: (id) => (id ? `/admin/projects/${encodeURIComponent(id)}` : "/admin/projects"),
   customers: () => "/admin/customers",
   tips: () => "/admin/tips",
 };

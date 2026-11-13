@@ -32,7 +32,7 @@ const Contract = require("../../models/Contract");
 const ChangeOrder = require("../../models/ChangeOrder");
 const ESignature = require("../../models/ESignature");
 const { putPrivateObject, getObjectBuffer } = require("../s3");
-const { COMPANY_INFO } = require("../../config/premiumIslandHomesContract");
+const { LEGAL_ENTITY: COMPANY_INFO } = require("../../config/legalEntity");
 const {
   DISCLOSURE_VERSION,
 } = require("../../config/electronicSignatureDisclosure");
@@ -68,6 +68,94 @@ function storageKey(signature, kind, fileName) {
     kind,
     sanitizePart(fileName),
   ].join("/");
+}
+
+/* ------------------------------------------------------------------ */
+/* Document state: may this document still be signed?                  */
+/* ------------------------------------------------------------------ */
+
+const { SIGNABLE_CHANGE_ORDER_STATUSES, SIGNABLE_CONTRACT_STATUSES } = require("./documentStates");
+
+/** Raised when the authoritative document no longer accepts this signature. */
+class DocumentNotSignableError extends Error {
+  constructor(message, reason = "document_not_signable") {
+    super(message);
+    this.name = "DocumentNotSignableError";
+    this.code = "DOCUMENT_NOT_SIGNABLE";
+    this.reason = reason;
+  }
+}
+
+/** The signature id recorded by the most recent execution entry, if any. */
+function executingSignatureId(doc) {
+  const entry = (doc?.auditHistory || [])
+    .slice()
+    .reverse()
+    .find((item) => item?.details?.signatureId);
+  return entry ? String(entry.details.signatureId) : "";
+}
+
+/**
+ * Why this signature can no longer execute this document, or "" when it can.
+ *
+ * The document record is the authority. A signing link is only an invitation;
+ * once the owner voids, declines, cancels, supersedes or revises the document,
+ * the invitation is dead whatever state the token is in.
+ */
+function documentSignabilityReason(documentType, doc, signature = null) {
+  if (!doc) return "This document no longer exists.";
+  const signatureId = signature ? String(signature._id) : "";
+
+  if (documentType === "CHANGE_ORDER") {
+    if (doc.status === "Executed") {
+      // A replay of the very signature that executed it is not another signer.
+      if (signatureId && executingSignatureId(doc) === signatureId) return "";
+      return "This change order has already been executed.";
+    }
+    if (doc.status === "Voided") return "This change order was withdrawn and can no longer be signed.";
+    if (doc.status === "Declined") return "This change order was declined and can no longer be signed.";
+    if (!SIGNABLE_CHANGE_ORDER_STATUSES.includes(doc.status)) {
+      return "This change order is not ready to be signed.";
+    }
+    return "";
+  }
+
+  if (doc.status === "Signed") {
+    if (signatureId && executingSignatureId(doc) === signatureId) return "";
+    return "This agreement has already been signed.";
+  }
+  if (doc.status === "Canceled") return "This agreement was canceled and can no longer be signed.";
+  if (doc.status === "Superseded" || doc.current === false) {
+    return "This agreement was replaced by a newer version and can no longer be signed.";
+  }
+  if (doc.status === "Draft") return "This agreement is being revised and can no longer be signed.";
+  if (!SIGNABLE_CONTRACT_STATUSES.includes(doc.status)) return "This agreement cannot be signed.";
+  if (
+    signature?.frozenDocument?.key &&
+    signature?.frozenDocument?.documentVersion &&
+    Number(signature.frozenDocument.documentVersion) !== Number(doc.version || 1)
+  ) {
+    return "This agreement was replaced by a newer version and can no longer be signed.";
+  }
+  return "";
+}
+
+/** Signed copies may be recorded only for an issued, still-open document. */
+function manualUploadRefusal(documentType, doc) {
+  if (!doc) return "Document not found";
+  if (documentType === "CHANGE_ORDER") {
+    if (!doc.generatedPdf?.key) return "Generate the change order before recording a signed copy.";
+    if (!SIGNABLE_CHANGE_ORDER_STATUSES.includes(doc.status)) {
+      return `A ${String(doc.status || "").toLowerCase()} change order cannot take a signed copy.`;
+    }
+    return "";
+  }
+  if (doc.signedPdf?.key) return "This agreement already has a signed copy. It cannot be replaced.";
+  if (!SIGNABLE_CONTRACT_STATUSES.includes(doc.status)) {
+    return `A signed copy can be recorded only for a generated or emailed agreement (this one is ${doc.status}).`;
+  }
+  if (doc.current === false) return "A signed copy can be recorded only for the current agreement version.";
+  return "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -114,7 +202,11 @@ async function loadDocument(documentType, documentId) {
         ? "A canceled agreement cannot be sent for signature."
         : contract.status === "Draft"
           ? "Generate the agreement before sending it for signature."
-          : "",
+          : contract.status === "Signed"
+            ? "This agreement is already signed. Changes go through a change order."
+            : contract.status === "Superseded" || contract.current === false
+              ? "A superseded agreement cannot be sent for signature. Send the current version."
+              : "",
   };
 }
 
@@ -331,15 +423,30 @@ async function completeSignature({ signature, signatureImageBuffer, consentAccep
 
   const rejection = native.tokenRejectionReason(signature);
   if (rejection && rejection !== null) {
-    if (rejection === "completed" && signature.status === "Completed") return signature;
+    if (rejection === "completed" && signature.status === "Completed") {
+      signature.$locals.replay = true;
+      return signature;
+    }
     throw new Error(`This signing link is no longer valid (${rejection}).`);
+  }
+
+  // 0. The document is the authority. A withdrawn document refuses the
+  //    signature outright, and the dead link is revoked so it stops showing.
+  const before = await loadDocument(signature.documentType, signature.documentId);
+  const refusal = documentSignabilityReason(signature.documentType, before?.doc, signature);
+  if (refusal) {
+    await revokeActiveSignatureRecord(signature._id, "document_not_signable", context);
+    throw new DocumentNotSignableError(refusal);
   }
 
   // 1. Claim. Losing here means another submission is already executing.
   const claimed = await native.claimForCompletion(signature._id);
   if (!claimed) {
     const current = await ESignature.findById(signature._id);
-    if (current?.status === "Completed") return current;
+    if (current?.status === "Completed") {
+      current.$locals.replay = true;
+      return current;
+    }
     throw new Error("This document is already being signed.");
   }
 
@@ -400,6 +507,16 @@ async function completeSignature({ signature, signatureImageBuffer, consentAccep
       CacheControl: "private, max-age=0, no-cache",
     });
 
+    // 5b. Re-check the document. The owner may have voided or canceled it
+    //     while the artifacts were being produced.
+    const retainedFiles = { signatureKey, executedKey, certificateKey };
+    const latest = await loadDocument(claimed.documentType, claimed.documentId);
+    const lateRefusal = documentSignabilityReason(claimed.documentType, latest?.doc, claimed);
+    if (lateRefusal) {
+      await failSignatureAfterDocumentChange(claimed, lateRefusal, retainedFiles, context);
+      throw new DocumentNotSignableError(lateRefusal, "document_changed_during_signing");
+    }
+
     // 6. Only now is the record allowed to say Completed.
     claimed.signatureImage = {
       key: signatureKey,
@@ -433,11 +550,23 @@ async function completeSignature({ signature, signatureImageBuffer, consentAccep
     );
     await claimed.save();
 
-    // 7. Financial/document execution, only after completion is durable.
-    await executeDocument(claimed);
+    // 7. Financial/document execution, only after completion is durable. The
+    //    document update is conditional on its signable state, so a void that
+    //    lands in this last window still wins and nothing is executed.
+    const executedDoc = await executeDocument(claimed);
+    if (!executedDoc) {
+      const current = await loadDocument(claimed.documentType, claimed.documentId);
+      const reason =
+        documentSignabilityReason(claimed.documentType, current?.doc, claimed) ||
+        "The document changed while it was being signed.";
+      await failSignatureAfterDocumentChange(claimed, reason, retainedFiles, context);
+      throw new DocumentNotSignableError(reason, "document_changed_during_signing");
+    }
 
     return claimed;
   } catch (error) {
+    // The signature was closed deliberately; releasing the claim would reopen it.
+    if (error instanceof DocumentNotSignableError) throw error;
     // Nothing may look executed. Release the claim so a retry can proceed;
     // deterministic S3 keys make a retry overwrite rather than duplicate.
     await native.releaseClaim(claimed._id);
@@ -462,49 +591,96 @@ async function completeSignature({ signature, signatureImageBuffer, consentAccep
  * status transition itself - changeOrderTotals.js remains the only place that
  * decides what a status is worth.
  */
-async function executeDocument(signature) {
-  if (signature.documentType === "CHANGE_ORDER") {
-    const changeOrder = await ChangeOrder.findById(signature.documentId);
-    if (!changeOrder || changeOrder.status === "Executed") return changeOrder || null;
-
-    changeOrder.status = "Executed";
-    changeOrder.executedAt = signature.completedAt || new Date();
-    changeOrder.executedPdf = {
-      key: signature.executedPdf.key,
-      url: "",
-      fileName: signature.executedPdf.fileName,
-      size: signature.executedPdf.size,
-      uploadedAt: signature.completedAt || new Date(),
-      uploadedBy: signature.createdBy || null,
-      source: "native_esign",
-    };
-    changeOrder.auditHistory.push({
-      event: "Executed by electronic signature",
-      at: new Date(),
-      details: { signatureId: String(signature._id), executedSha256: signature.executedSha256 },
-    });
-    await changeOrder.save();
-    return changeOrder;
-  }
-
-  const contract = await Contract.findById(signature.documentId);
-  if (!contract || contract.status === "Signed") return contract || null;
-  contract.status = "Signed";
-  contract.signedPdf = {
+async function executeDocument(
+  signature,
+  { event = "Executed by electronic signature", source = "native_esign" } = {}
+) {
+  const at = signature.completedAt || new Date();
+  const auditEntry = {
+    event,
+    at: new Date(),
+    details: { signatureId: String(signature._id), executedSha256: signature.executedSha256 },
+  };
+  const executedFile = {
     key: signature.executedPdf.key,
     url: "",
     fileName: signature.executedPdf.fileName,
     size: signature.executedPdf.size,
-    uploadedAt: signature.completedAt || new Date(),
+    uploadedAt: at,
     uploadedBy: signature.createdBy || null,
   };
-  contract.auditHistory.push({
-    event: "Executed by electronic signature",
-    at: new Date(),
-    details: { signatureId: String(signature._id), executedSha256: signature.executedSha256 },
-  });
-  await contract.save();
-  return contract;
+
+  if (signature.documentType === "CHANGE_ORDER") {
+    const existing = await ChangeOrder.findById(signature.documentId);
+    if (!existing) return null;
+    // A replay of the signature that already executed it is an idempotent success;
+    // execution by anyone else is a refusal (null).
+    if (existing.status === "Executed") {
+      return executingSignatureId(existing) === String(signature._id) ? existing : null;
+    }
+    // Atomic: only a change order still in a signable state flips. A void that
+    // won the race leaves this update matching nothing.
+    return ChangeOrder.findOneAndUpdate(
+      { _id: signature.documentId, status: { $in: SIGNABLE_CHANGE_ORDER_STATUSES } },
+      {
+        $set: { status: "Executed", executedAt: at, executedPdf: { ...executedFile, source } },
+        $push: { auditHistory: auditEntry },
+      },
+      { new: true }
+    );
+  }
+
+  const existing = await Contract.findById(signature.documentId);
+  if (!existing) return null;
+  if (existing.status === "Signed") {
+    return executingSignatureId(existing) === String(signature._id) ? existing : null;
+  }
+  const filter = {
+    _id: signature.documentId,
+    status: { $in: SIGNABLE_CONTRACT_STATUSES },
+    current: { $ne: false },
+    // The signed-copy slot is write-once.
+    $or: [{ "signedPdf.key": { $exists: false } }, { "signedPdf.key": "" }, { "signedPdf.key": null }],
+  };
+  // A ceremony signature is bound to the exact version it froze.
+  if (signature.frozenDocument?.key && signature.frozenDocument?.documentVersion) {
+    filter.version = Number(signature.frozenDocument.documentVersion);
+  }
+  return Contract.findOneAndUpdate(
+    filter,
+    { $set: { status: "Signed", signedPdf: executedFile }, $push: { auditHistory: auditEntry } },
+    { new: true }
+  );
+}
+
+/**
+ * The document changed after this signature was claimed. The stored files are
+ * kept (they are evidence of what happened), but the signature is closed as
+ * Failed with its token revoked, and the document is never flipped.
+ */
+async function failSignatureAfterDocumentChange(claimed, reason, files = {}, context = {}) {
+  const now = new Date();
+  await ESignature.updateOne(
+    { _id: claimed._id },
+    {
+      $set: {
+        status: "Failed",
+        "signingToken.state": "revoked",
+        voidedAt: now,
+        completedAt: null,
+      },
+      $push: {
+        auditEvents: {
+          event: "SIGNATURE_REFUSED_DOCUMENT_CHANGED",
+          at: now,
+          ip: String(context.ip || "").slice(0, 64),
+          userAgent: String(context.userAgent || "").slice(0, 400),
+          actorEmail: "",
+          details: { reason: String(reason || "").slice(0, 300), retainedFiles: files },
+        },
+      },
+    }
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -527,35 +703,98 @@ async function declineSignature({ signature, reason = "", context = {} }) {
   return claimed;
 }
 
+/**
+ * Atomically revoke one signature whose token is still active. Returns the
+ * updated record, or null when it was no longer active (completed, declined,
+ * expired, revoked - or claimed by a submission in flight, which then fails
+ * its own document re-check).
+ */
+async function revokeActiveSignatureRecord(signatureId, reason = "", context = {}) {
+  const now = new Date();
+  return ESignature.findOneAndUpdate(
+    {
+      _id: signatureId,
+      "signingToken.state": "active",
+      status: { $nin: ["Completed", "Declined", "Cancelled", "Expired"] },
+    },
+    {
+      $set: { "signingToken.state": "revoked", status: "Cancelled", voidedAt: now },
+      $push: {
+        auditEvents: {
+          event: native.AUDIT.REVOKED,
+          at: now,
+          ip: String(context.ip || "").slice(0, 64),
+          userAgent: String(context.userAgent || "").slice(0, 400),
+          actorEmail: String(context.actorEmail || "").toLowerCase(),
+          details: { reason: String(reason || "").slice(0, 500) },
+        },
+      },
+    },
+    { new: true }
+  );
+}
+
 /** Admin revocation. The frozen document and its history are retained. */
 async function revokeSignature({ signature, reason = "", context = {} }) {
   if (signature.status === "Completed") {
     throw new Error("A completed signature cannot be revoked.");
   }
-  signature.signingToken.state = "revoked";
-  signature.status = "Cancelled";
-  signature.voidedAt = new Date();
-  signature.addAuditEvent(native.AUDIT.REVOKED, { reason: String(reason || "").slice(0, 500) }, context);
-  await signature.save();
+  const updated = await revokeActiveSignatureRecord(signature._id, reason, context);
+  const current = updated || (await ESignature.findById(signature._id));
+  if (!updated && current?.status === "Completed") {
+    throw new Error("A completed signature cannot be revoked.");
+  }
+  if (current) {
+    // Keep the caller's object in step with what is stored.
+    signature.status = current.status;
+    signature.voidedAt = current.voidedAt;
+    signature.signingToken = current.signingToken;
+    signature.auditEvents = current.auditEvents;
+  }
   return signature;
 }
 
-/** Mark genuinely elapsed requests expired. Safe to run repeatedly. */
+/**
+ * Revoke every live native signing request for a document. Called by void,
+ * cancel, regenerate, revise, supersede and signed-copy upload, so an
+ * outstanding link can never execute a document the owner withdrew.
+ * Returns how many were revoked.
+ */
+async function revokeSignaturesForDocument(documentType, documentId, reason = "", context = {}) {
+  const active = await ESignature.find({
+    documentType,
+    documentId,
+    "signingToken.state": "active",
+  }).select("_id");
+  let revoked = 0;
+  for (const row of active) {
+    if (await revokeActiveSignatureRecord(row._id, reason, context)) revoked += 1;
+  }
+  return revoked;
+}
+
+/** Mark genuinely elapsed requests expired. Safe to run repeatedly; atomic per row. */
 async function expireStaleRequests(now = new Date()) {
   const stale = await ESignature.find({
     provider: "native",
     "signingToken.state": "active",
     "signingToken.expiresAt": { $lt: now },
-  }).limit(200);
+  })
+    .select("_id")
+    .limit(200);
 
-  for (const signature of stale) {
-    signature.signingToken.state = "expired";
-    signature.status = "Expired";
-    signature.expiredAt = now;
-    signature.addAuditEvent(native.AUDIT.EXPIRED, {});
-    await signature.save();
+  let expired = 0;
+  for (const row of stale) {
+    const updated = await ESignature.findOneAndUpdate(
+      { _id: row._id, "signingToken.state": "active", "signingToken.expiresAt": { $lt: now } },
+      {
+        $set: { "signingToken.state": "expired", status: "Expired", expiredAt: now },
+        $push: { auditEvents: { event: native.AUDIT.EXPIRED, at: now, details: {} } },
+      }
+    );
+    if (updated) expired += 1;
   }
-  return stale.length;
+  return expired;
 }
 
 /* ------------------------------------------------------------------ */
@@ -580,6 +819,11 @@ async function recordManualUpload({
 }) {
   const target = await loadDocument(documentType, documentId);
   if (!target) throw new Error("Document not found");
+  const uploadRefusal = manualUploadRefusal(documentType, target.doc);
+  if (uploadRefusal) throw new DocumentNotSignableError(uploadRefusal, "manual_upload_not_allowed");
+
+  // A paper signature supersedes any outstanding link for the same document.
+  await revokeSignaturesForDocument(documentType, target.doc._id, "signed_copy_uploaded", context);
 
   const signature = await ESignature.create({
     projectId: target.projectId,
@@ -619,7 +863,22 @@ async function recordManualUpload({
   );
   await signature.save();
 
-  await executeDocument(signature);
+  const executedDoc = await executeDocument(signature, {
+    event: "Signed copy uploaded",
+    source: "manual_upload",
+  });
+  if (!executedDoc) {
+    // Kept for audit, never counted: the document changed under the upload.
+    await failSignatureAfterDocumentChange(
+      signature,
+      "The document changed before the upload was recorded.",
+      { manualKey: key },
+      context
+    );
+    throw new DocumentNotSignableError(
+      "The document changed before the upload was recorded. Nothing was marked signed."
+    );
+  }
   return signature;
 }
 
@@ -630,6 +889,13 @@ async function readStoredExecuted(signature) {
 }
 
 module.exports = {
+  SIGNABLE_CHANGE_ORDER_STATUSES,
+  SIGNABLE_CONTRACT_STATUSES,
+  DocumentNotSignableError,
+  documentSignabilityReason,
+  manualUploadRefusal,
+  revokeActiveSignatureRecord,
+  revokeSignaturesForDocument,
   readStoredExecuted,
   SigningConfigurationError,
   ESIGN_S3_PREFIX,

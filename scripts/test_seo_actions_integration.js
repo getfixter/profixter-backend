@@ -151,11 +151,12 @@ async function main() {
     }
   });
 
-  await test("title updates can earn autonomy; they start needing approval", async () => {
+  await test("title updates start needing approval and never promote themselves (only the owner can)", async () => {
     assert.strictEqual(def.defaultMode, "supervised");
     assert.strictEqual(def.maxMode, "autonomous");
     assert.strictEqual(def.riskTier, "low");
-    assert.strictEqual(getDefinition("seo_content_update").promoteAfter, 5);
+    assert.strictEqual(def.promoteAfter, null);
+    assert.strictEqual(getDefinition("seo_content_update").promoteAfter, null);
   });
 
   delete process.env.GROWTH_ACTIONS_ENABLED;

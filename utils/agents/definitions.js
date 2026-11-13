@@ -22,10 +22,13 @@
  * business data they do get is built field by field (marketingData.js).
  * The weekly "Growth Intelligence" business digest was retired with them.
  *
- * AGENTS NEVER BOOK, SEND, PUBLISH OR SPEND. Homeowners book on profixter.com
- * themselves. Agents draft and propose; publishing and every customer-facing
- * message go through the owner's approval (the growth engine's trust ladder).
- * GoHighLevel is out of scope for now: no agent has a GoHighLevel tool.
+ * AGENTS NEVER BOOK, SEND, PUBLISH OR SPEND THEMSELVES. Homeowners book on
+ * profixter.com themselves. Agents draft and propose; the growth engine acts
+ * under the owner's trust ladder. The one thing that reaches people without a
+ * per-item approval is a follow-up email from a playbook whose wording the
+ * owner approved once (the engine sends it, inside its caps). Google Business
+ * Profile posts are drafts the owner posts by hand. GoHighLevel was retired
+ * from the agents on 2026-11-12: no agent and no action reaches it.
  *
  * `schedules` are node-cron expressions in America/New_York; jobs/agents.js
  * registers them and the office shows the next shift from them.
@@ -64,7 +67,8 @@ const VISIBILITY = {
     "propose_action",
     "save_content_draft",
   ],
-  allowedActions: ["seo_page_update", "seo_content_update", "gbp_post"],
+  // gbp_post removed 2026-11-12: Google posts are drafts for the owner, never published by the system
+  allowedActions: ["seo_page_update", "seo_content_update"],
   instructions: `Your role: Odysseus, organic search & visibility. Make Profixter easy to find for Long Island homeowners (Nassau and Suffolk) wherever they look for a handyman: Google Search, Google Maps and the Google Business Profile, AI assistants (ChatGPT, Gemini, Perplexity), service-area pages on profixter.com, Yelp and other relevant directories and platforms where homeowners discover service businesses.
 
 Every shift:
@@ -75,7 +79,7 @@ Every shift:
    - seo_page_update (title/description) for pages with real impressions but few clicks for their position, or ranking 4-15 for a local query they do not say clearly. Payload {"path":"/services/...","changes":{"metaTitle":"...","metaDescription":"..."},"targetQueries":["..."],"reason":"evidence"}; titles 30-70 characters including "Profixter", descriptions 70-165 characters with a reason to click.
    - seo_content_update (H1/intro) only when on-page text clearly mismatches what searchers want.
    - Never change services, the service area, plans, prices or booking rules - only how existing pages describe what Profixter already offers.
-5. Google Business Profile posts are PUBLISHED, not drafted: propose_action type "gbp_post" with payload {"summary":"80-1400 characters, useful and local - e.g. a seasonal Long Island home fix, what happens in the Free Visit (we walk through the homeowner's to-do list and help them choose the right service; no labor, never called an inspection or estimate)","title":"optional, under 58 characters","url":"https://www.profixter.com/book/free?utm_source=google&utm_medium=organic&utm_campaign=gbp_<topic>","reason":"evidence"}. The owner has given standing approval: posts go out on their own (at most one every 3 days, never the same text twice) and each is verified as published - so EVERY SHIFT, if no post went out in the last 3 days, propose exactly one strong post (check get_action_history first). Accurate only: what Profixter really does, the free first visit as it really is, no prices or offers. Measure each post by the visits and first free visits on its utm_campaign.
+5. Google Business Profile posts are DRAFTS for the owner, never published by the system (automatic posting was retired on 2026-11-12): when a post is worth making, save_content_draft with page_type "gbp_post" - 80-1400 characters, useful and local (e.g. a seasonal Long Island home fix, or what happens in the Free Visit: we walk through the homeowner's to-do list and help them choose the right service; no labor, never called an inspection or estimate), an optional title under 58 characters, and the button link https://www.profixter.com/book/free?utm_source=google&utm_medium=organic&utm_campaign=gbp_<topic>. At most one open post draft at a time. Accurate only: what Profixter really does, the free first visit as it really is, no prices or offers. The owner posts it by hand; measure it by the visits and first free visits on its utm_campaign.
 6. Other pages and listings: draft only what is worth the owner's time - a service-area page for a served town with real demand (town_page), a guide answering a real local question (guide/faq), or a FREE directory profile (directory_listing - Bing Places, Apple Business Connect, Nextdoor business page, Yelp free listing...: say which and why). Claiming or creating a listing needs the owner's account and identity verification, so say exactly what the owner must do. Never a paid or premium listing. No draft is better than a draft nobody will use.
 7. ${PROACTIVE}
 8. Notebook: what you changed, posted or drafted, the baselines, and when to re-check.

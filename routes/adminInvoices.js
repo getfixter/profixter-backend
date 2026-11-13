@@ -626,6 +626,30 @@ router.get("/project/:projectId", async (req, res) => {
   }
 });
 
+const { logProjectActivity } = require("../utils/projectActivity");
+
+/** Totals an edit is judged by, kept in the history before and after. */
+function invoiceTotalsSummary(invoice) {
+  const paidCents = (invoice.payments || []).reduce((sum, row) => sum + Number(row.amountCents || 0), 0);
+  return {
+    status: invoice.status,
+    invoiceTotalCents: Number(invoice.invoiceTotalCents || 0),
+    paidCents,
+    balanceCents: Math.max(Number(invoice.invoiceTotalCents || 0) - paidCents, 0),
+    lineItemCount: (invoice.lineItems || []).length,
+  };
+}
+
+function isStripePayment(payment) {
+  return payment?.provider === "stripe" || Boolean(payment?.stripePaymentIntentId);
+}
+
+const STRIPE_PAYMENT_READ_ONLY = {
+  message:
+    "This payment was collected online through Stripe and cannot be edited or removed here. Refunds are made in the Stripe dashboard; the payment record stays as it was collected.",
+  code: "STRIPE_PAYMENT_READ_ONLY",
+};
+
 router.post("/project/:projectId/draft", async (req, res) => {
   try {
     const project = await getProjectOr404(req.params.projectId, res);
@@ -684,9 +708,20 @@ router.post("/project/:projectId/draft", async (req, res) => {
       if (invoice.status === "Voided") {
         return res.status(409).json({ message: "Voided invoices cannot be edited" });
       }
+      if (invoice.status === "Paid in Full") {
+        return res.status(409).json({
+          message: "A paid-in-full invoice is locked. Create a new invoice for any further billing.",
+          code: "INVOICE_LOCKED",
+        });
+      }
+      if (invoice.status === "Superseded") {
+        return res.status(409).json({ message: "A superseded invoice cannot be edited.", code: "INVOICE_LOCKED" });
+      }
     }
 
     const previousSignature = invoice ? contentSignature(invoice.toObject()) : "";
+    const totalsBefore = invoice ? invoiceTotalsSummary(invoice) : null;
+    const wasIssued = Boolean(invoice && invoice.status !== "Draft");
     const { errors, update } = validateInvoiceDraftInput(body, project, invoice);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
     update.customerId = objectIdOrNull(update.customerId);
@@ -721,9 +756,28 @@ router.post("/project/:projectId/draft", async (req, res) => {
       } else {
         invoice.addEvent("Draft updated", req);
       }
+      // An issued invoice changing is a record the customer may already hold;
+      // the history keeps exactly what moved.
+      if (wasIssued) {
+        invoice.addEvent("Issued invoice edited", req, {
+          before: totalsBefore,
+          after: invoiceTotalsSummary(invoice),
+        });
+      }
     }
 
     await invoice.save();
+    if (wasIssued) {
+      await logProjectActivity(req, {
+        action: "Issued Invoice Edited",
+        entityType: "Invoice",
+        entityId: invoice._id,
+        entityName: invoice.invoiceNumber,
+        before: totalsBefore,
+        after: invoiceTotalsSummary(invoice),
+        details: { projectId: String(project._id) },
+      });
+    }
     return res.status(201).json({
       invoice: serializeInvoice(invoice, { parentProject: project }),
       financialWarnings: live
@@ -1003,6 +1057,14 @@ router.post("/:id/payments", async (req, res) => {
       invoice.addEvent("Paid in full", req, { paidInFullAt: invoice.dates?.paidInFullAt });
       await invoice.save();
     }
+    await logProjectActivity(req, {
+      action: "Invoice Payment Recorded",
+      entityType: "Invoice",
+      entityId: invoice._id,
+      entityName: invoice.invoiceNumber,
+      after: invoiceTotalsSummary(invoice),
+      details: { amountCents: payment.amountCents, method: payment.method },
+    });
     return res.status(201).json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
   } catch (error) {
     return handleWriteError(error, res, "Failed to add invoice payment");
@@ -1016,6 +1078,9 @@ router.patch("/:id/payments/:paymentId", async (req, res) => {
     if (invoice.status === "Voided") return res.status(409).json({ message: "Voided invoice payments cannot be edited" });
     const payment = invoice.payments.id(req.params.paymentId);
     if (!payment) return res.status(404).json({ message: "Payment not found" });
+    if (isStripePayment(payment)) return res.status(409).json(STRIPE_PAYMENT_READ_ONLY);
+    const paymentBefore = { amountCents: payment.amountCents, method: payment.method, paymentDate: payment.paymentDate };
+    const totalsBefore = invoiceTotalsSummary(invoice);
 
     const errors = [];
     const nextPayment = normalizePaymentInput(req.body, errors, payment);
@@ -1039,6 +1104,18 @@ router.patch("/:id/payments/:paymentId", async (req, res) => {
       invoice.addEvent("Paid in full", req, { paidInFullAt: invoice.dates?.paidInFullAt });
       await invoice.save();
     }
+    await logProjectActivity(req, {
+      action: "Invoice Payment Edited",
+      entityType: "Invoice",
+      entityId: invoice._id,
+      entityName: invoice.invoiceNumber,
+      before: { ...totalsBefore, payment: paymentBefore },
+      after: {
+        ...invoiceTotalsSummary(invoice),
+        payment: { amountCents: nextPayment.amountCents, method: nextPayment.method },
+      },
+      details: { paymentId: req.params.paymentId },
+    });
     return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
   } catch (error) {
     return handleWriteError(error, res, "Failed to edit invoice payment");
@@ -1052,6 +1129,8 @@ router.delete("/:id/payments/:paymentId", async (req, res) => {
     if (invoice.status === "Voided") return res.status(409).json({ message: "Voided invoice payments cannot be removed" });
     const payment = invoice.payments.id(req.params.paymentId);
     if (!payment) return res.status(404).json({ message: "Payment not found" });
+    if (isStripePayment(payment)) return res.status(409).json(STRIPE_PAYMENT_READ_ONLY);
+    const totalsBefore = invoiceTotalsSummary(invoice);
     const wasPaid = invoice.status === "Paid in Full";
     const details = {
       paymentId: req.params.paymentId,
@@ -1067,6 +1146,15 @@ router.delete("/:id/payments/:paymentId", async (req, res) => {
       invoice.addEvent("Reopened due to payment correction", req, { paymentId: req.params.paymentId });
       await invoice.save();
     }
+    await logProjectActivity(req, {
+      action: "Invoice Payment Removed",
+      entityType: "Invoice",
+      entityId: invoice._id,
+      entityName: invoice.invoiceNumber,
+      before: totalsBefore,
+      after: invoiceTotalsSummary(invoice),
+      details,
+    });
     return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
   } catch (error) {
     return handleWriteError(error, res, "Failed to remove invoice payment");
@@ -1080,10 +1168,30 @@ router.post("/:id/void", async (req, res) => {
     if (invoice.status === "Voided") {
       return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
     }
+    // Money already received must never drop out of the project's Paid total.
+    const recordedPayments = invoice.payments || [];
+    if (recordedPayments.length) {
+      const paidCents = recordedPayments.reduce((sum, row) => sum + Number(row.amountCents || 0), 0);
+      const stripeCount = recordedPayments.filter(isStripePayment).length;
+      return res.status(409).json({
+        message:
+          `This invoice has ${recordedPayments.length} recorded payment${recordedPayments.length === 1 ? "" : "s"} ` +
+          `($${(paidCents / 100).toFixed(2)}), so it cannot be voided. ` +
+          (stripeCount
+            ? "Online (Stripe) payments stay on the invoice; any refund is made in the Stripe dashboard. "
+            : "") +
+          "Remove a manual payment only if it was recorded by mistake, then void.",
+        code: "HAS_PAYMENTS",
+        paidCents,
+        paymentCount: recordedPayments.length,
+        stripePaymentCount: stripeCount,
+      });
+    }
     const confirmation = cleanString(req.body.confirmation, 40);
     if (confirmation !== "VOID") {
       return res.status(400).json({ message: "Type VOID to confirm invoice voiding" });
     }
+    const statusBefore = invoice.status;
     // A voided invoice must not leave a live page still able to take money.
     await voidDestination(invoice, "Invoice voided");
 
@@ -1095,6 +1203,15 @@ router.post("/:id/void", async (req, res) => {
     invoice.updatedBy = req.user.id;
     invoice.addEvent("Voided", req, { reason: invoice.voidReason });
     await invoice.save();
+    await logProjectActivity(req, {
+      action: "Invoice Voided",
+      entityType: "Invoice",
+      entityId: invoice._id,
+      entityName: invoice.invoiceNumber,
+      before: { status: statusBefore },
+      after: { status: "Voided" },
+      reason: invoice.voidReason,
+    });
     return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
   } catch (error) {
     return handleWriteError(error, res, "Failed to void invoice");

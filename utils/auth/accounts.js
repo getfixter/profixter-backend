@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const sessions = require("./sessions");
 const User = require("../../models/User");
 const RepAttribution = require("../../models/RepAttribution");
 const SiteVisitor = require("../../models/SiteVisitor");
@@ -69,9 +70,18 @@ async function findCustomerByEmail(email) {
   return users.find((user) => user.role !== "employee") || null;
 }
 
-/** The one place sessions are minted. "tv" lets a password reset end them all. */
-function issueSession(user) {
-  return jwt.sign({ id: user._id, tv: Number(user.tokenVersion || 0) }, process.env.JWT_SECRET, { expiresIn: ACCOUNT_TTL });
+/**
+ * The one place sessions are minted. "tv" lets a password reset (or "sign out
+ * everywhere") end them all; "sid" names the server-side Session row that a
+ * single sign-out revokes (utils/auth/sessions). Async because the row is
+ * written before the token is handed out.
+ */
+async function issueSession(user, req) {
+  return sessions.signSessionToken(user, {
+    payload: { id: user._id, tv: Number(user.tokenVersion || 0) },
+    expiresIn: ACCOUNT_TTL,
+    req,
+  });
 }
 
 /** Whether a decoded session still belongs to the account's current sessions. */

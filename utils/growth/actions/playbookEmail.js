@@ -238,7 +238,6 @@ defineAction({
   // owner, 2026-10-27: Marcus operates independently; approval is of the playbook wording, not each email
   defaultMode: "autonomous",
   maxMode: "autonomous",
-  promoteAfter: null,
   limits: { perDay: PER_DAY },
   // over the limit: not stored, proposed again later - never parked in the owner's approvals
   overLimit: "later",

@@ -2565,11 +2565,14 @@ router.delete("/blacklist/:id", auth, ...blacklistManage, async (req, res) => {
 
 /* ───────────────── REQUESTS / LEADS ───────────────── */
 
+const { MANUAL_STATUSES: LEAD_MANUAL_STATUSES } = require("../utils/projects/leadConversion");
+const { logProjectActivity: logLeadActivity } = require("../utils/projectActivity");
+
 // GET /api/admin/requests
 router.get("/requests", auth, ...leadsManage, async (_req, res) => {
   try {
     const [requests, estimateLeads] = await Promise.all([
-      Request.find({}).sort({ createdAt: -1 }).lean(),
+      Request.find({}).select("-password").sort({ createdAt: -1 }).lean(),
       EstimateLead.find({}).sort({ createdAt: -1 }).lean(),
     ]);
     const mappedEstimateLeads = estimateLeads.map((lead) => ({
@@ -2623,14 +2626,28 @@ router.put("/requests/:id/status", auth, ...leadsManage, async (req, res) => {
       if (!mongoose.isValidObjectId(estimateId)) {
         return res.status(400).json({ message: "Invalid estimate lead ID" });
       }
+      // EstimateLead has no pending_confirmation (that belongs to free-visit
+      // requests); writing it would store a value its own schema forbids.
+      if (!LEAD_MANUAL_STATUSES.estimate.includes(String(status))) {
+        return res.status(400).json({ message: "Invalid status for an estimate lead", code: "INVALID_STATUS" });
+      }
+      const beforeEstimate = await EstimateLead.findById(estimateId).select("status name").lean();
       const estimateLead = await EstimateLead.findByIdAndUpdate(
         estimateId,
         { $set: { status } },
-        { new: true }
+        { new: true, runValidators: true }
       );
       if (!estimateLead) {
         return res.status(404).json({ message: "Estimate lead not found" });
       }
+      await logLeadActivity(req, {
+        action: "Lead Status Changed",
+        entityType: "Lead",
+        entityId: `estimate:${estimateLead._id}`,
+        entityName: estimateLead.name || "",
+        before: { status: beforeEstimate?.status || "" },
+        after: { status: estimateLead.status },
+      });
       return res.json({
         request: {
           _id: `estimate:${estimateLead._id}`,
@@ -2649,15 +2666,27 @@ router.put("/requests/:id/status", auth, ...leadsManage, async (req, res) => {
       });
     }
 
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid lead ID" });
+    }
+    const beforeRequest = await Request.findById(req.params.id).select("status name").lean();
     const request = await Request.findByIdAndUpdate(
       req.params.id,
       { $set: { status } },
-      { new: true }
-    );
+      { new: true, runValidators: true }
+    ).select("-password");
 
     if (!request) {
       return res.status(404).json({ message: "Request not found" });
     }
+    await logLeadActivity(req, {
+      action: "Lead Status Changed",
+      entityType: "Lead",
+      entityId: String(request._id),
+      entityName: request.name || "",
+      before: { status: beforeRequest?.status || "" },
+      after: { status: request.status },
+    });
 
     res.json({ request });
   } catch (err) {

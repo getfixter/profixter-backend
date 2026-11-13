@@ -105,7 +105,7 @@ test("record scope: without bookings.assign a caller is limited to their own job
 test("operational email links open the new Admin pages (J-17)", () => {
   assert.strictEqual(adminLink.booking("abc"), "/admin/jobs/abc");
   assert.strictEqual(adminLink.customer("u1"), "/admin/customers/u1");
-  assert.strictEqual(adminLink.lead("l1"), "/admin/leads/l1");
+  assert.strictEqual(adminLink.lead("l1"), "/admin/leads?open=l1");
   assert.strictEqual(adminLink.lead(), "/admin/leads");
   assert.strictEqual(adminLink.bookings(), "/admin/jobs");
   assert.strictEqual(adminLink.booking(""), "");

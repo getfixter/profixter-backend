@@ -138,19 +138,31 @@ function startAgentJobs() {
   }, 90 * 1000).unref?.();
   // Old postcard/mail notes from before the mail tools were removed: retire them (idempotent).
   setTimeout(() => require("../utils/agents/retirePostal").retirePostalRecords().catch((e) => console.error("retirePostalRecords failed:", e.message)), 60 * 1000).unref?.();
-  // Google Business Profile connection, read-only (no post), after the secret store's first load
-  setTimeout(async () => {
+  /*
+   * After the secret store's first load: what the agents and the action engine
+   * really are. The boot line below cannot know - ANTHROPIC_API_KEY arrives
+   * from the secret store after this file runs. (The GoHighLevel Social
+   * Planner connection check that used to run here was removed with Google
+   * posting on 2026-11-12.)
+   */
+  setTimeout(() => {
     try {
-      const c = await require("../utils/ghl/socialPlanner").connectionCheck();
-      console.log(JSON.stringify({ event: "ghl_social_check", ...c, actionEngine: require("../utils/growth/actionEngine").engineEnabled() ? "on" : "off", enabledTypes: require("../utils/growth/actionEngine").enabledTypes() }));
+      const engine = require("../utils/growth/actionEngine");
+      console.log(JSON.stringify({ event: "agent_jobs_ready", enabled: agentsEnabled(), actionEngine: engine.engineEnabled() ? "on" : "off", enabledTypes: engine.enabledTypes() }));
     } catch (e) {
-      console.error(JSON.stringify({ event: "ghl_social_check", auth: "error", error: String(e.message).slice(0, 200) }));
+      console.error("agent_jobs_ready check failed:", e.message);
     }
   }, 4 * 60 * 1000).unref?.();
   // Check 5 minutes after boot (after the secret store's first load), then every 30 minutes.
   setTimeout(() => firstActivation().catch(() => {}), 5 * 60 * 1000).unref?.();
   cron.schedule("*/30 * * * *", () => firstActivation().catch(() => {}), { timezone: TIMEZONE });
-  console.log(JSON.stringify({ event: "agent_jobs_started", enabled: agentsEnabled(), agents: Object.keys(AGENTS) }));
+  /*
+   * Schedules registered. Whether the agents may run is decided on every run
+   * (agentsEnabled), not here: at boot the API key is usually not loaded yet,
+   * so this line reports only the switch; "agent_jobs_ready" reports the real
+   * state a few minutes later.
+   */
+  console.log(JSON.stringify({ event: "agent_jobs_started", switchOn: process.env.AGENTS_ENABLED === "true", enabledCheckedPerRun: true, agents: Object.keys(AGENTS) }));
 }
 
 module.exports = { councilReview, firstActivation, runSlot, startAgentJobs };

@@ -819,7 +819,7 @@ async function main() {
     assert.strictEqual(totals.invoicedCents, 0);
   });
 
-  await test("payments recorded on a voided invoice do not inflate project paid totals", async () => {
+  await test("an invoice with recorded payments cannot be voided, so paid money never disappears", async () => {
     const project = await makeProject();
     await makeAgreement(project, $(20000));
     const invoice = await createInvoiceFromAgreement(project);
@@ -829,15 +829,17 @@ async function main() {
       amountCents: $(5000),
       method: "Cash",
     });
-    await api("POST", `/api/admin/invoices/${invoice.json.invoice.id}/void`, {
+    const voided = await api("POST", `/api/admin/invoices/${invoice.json.invoice.id}/void`, {
       projectId: String(project._id),
       confirmation: "VOID",
       reason: "Wrong customer",
     });
+    assert.strictEqual(voided.status, 409);
+    assert.strictEqual(voided.json.code, "HAS_PAYMENTS");
 
     const { totals } = await summaryFor(project);
-    assert.strictEqual(totals.invoicedCents, 0);
-    assert.strictEqual(totals.paidCents, 0);
+    assert.strictEqual(totals.paidCents, $(5000), "the recorded payment still counts");
+    assert.ok(totals.invoicedCents > 0, "the invoice still stands");
   });
 
   await test("two invoices are counted once each, not compounded", async () => {
