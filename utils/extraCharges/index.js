@@ -34,6 +34,7 @@ const MIN_CENTS = 50; // Stripe's minimum charge in USD
 const MAX_CENTS = 500000; // $5,000 per extra
 const LINK_DAYS = 7;
 const SYNC_MIN_MS = 10 * 1000;
+const CHARGING_OWNED_MS = 90 * 1000; // longer than stripe-node's 80s request timeout
 const UNKNOWN_RETRY_MS = 23 * 60 * 60 * 1000; // inside Stripe's 24h idempotency window
 const CHARGEABLE_STATUSES = new Set(["Confirmed", "Completed"]);
 const statusOf = (booking) => require("../jobs/jobStatus").canonicalStatus(booking.status);
@@ -475,6 +476,8 @@ async function expireOpenSessions(record, { except = "" } = {}) {
  */
 async function reconcile(record, { force = false } = {}) {
   if (!record) return record;
+  // A card attempt in flight belongs to the request that started it: never ask Stripe beside it.
+  if (record.status === "charging" && Date.now() - new Date(record.statusChangedAt || record.createdAt).getTime() < CHARGING_OWNED_MS) return record;
   if (!force && record.lastStripeSyncAt && Date.now() - new Date(record.lastStripeSyncAt).getTime() < SYNC_MIN_MS) return record;
   await AdditionalCharge.updateOne({ _id: record._id }, { $set: { lastStripeSyncAt: new Date() } });
 
@@ -541,6 +544,8 @@ function cardParams(record) {
 
 async function handleCardError(record, attempt, error) {
   const type = String(error?.type || error?.rawType || "");
+  // The same key already in flight at Stripe (a concurrent duplicate): that request owns the outcome.
+  if (type === "StripeIdempotencyError" || error?.code === "idempotency_key_in_use") return AdditionalCharge.findById(record._id);
   const pi = error?.payment_intent || error?.raw?.payment_intent || null;
   if (pi?.id) await updateAttempt(record._id, { n: attempt.n }, { paymentIntentId: pi.id });
   if (type === "StripeCardError" || type === "card_error") {
