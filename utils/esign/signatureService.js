@@ -321,6 +321,9 @@ async function syncDocumentStatus(signature) {
     if (!next || changeOrder.status === next) return changeOrder;
     // Executed is final: a late event must never reopen it.
     if (changeOrder.status === "Executed") return changeOrder;
+    // A change order the owner voided or that was declined is never executed
+    // by a late provider event.
+    if (next === "Executed" && ["Voided", "Declined"].includes(changeOrder.status)) return changeOrder;
 
     changeOrder.status = next;
     if (next === "Executed") changeOrder.executedAt = signature.completedAt || new Date();
@@ -340,6 +343,8 @@ async function syncDocumentStatus(signature) {
   if (signature.documentType === "CONTRACT" && signature.status === "Completed") {
     const contract = await Contract.findById(signature.documentId);
     if (!contract || contract.status === "Signed") return contract || null;
+    // Canceled, superseded or revised agreements are never signed by a late event.
+    if (!["Generated", "Emailed"].includes(contract.status) || contract.current === false) return contract;
     contract.status = "Signed";
     contract.auditHistory.push({
       event: "Signature completed",

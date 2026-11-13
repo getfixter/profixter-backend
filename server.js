@@ -475,6 +475,8 @@ startOverrideRefresh();
  */
 startGiftLifecycle();
 startMembershipNotices();
+/* Native signing requests whose link ran out are closed as Expired (hourly). */
+require("./jobs/signatureExpiry").startSignatureExpiry();
 /* Email campaigns queued in Admin are sent here, durably (resumes after a restart, never resends). */
 require("./jobs/campaignSender").startCampaignSender();
 

@@ -34,6 +34,44 @@ function isBindingAgreement(contract) {
 }
 
 /**
+ * Only a Signed agreement is executed value. Generated and Emailed are issued
+ * to the customer but still awaiting signature: proposed, not agreed.
+ */
+const EXECUTED_AGREEMENT_STATUSES = Object.freeze(["Signed"]);
+const AWAITING_SIGNATURE_STATUSES = Object.freeze(["Generated", "Emailed"]);
+
+function isSignedAgreement(contract) {
+  return EXECUTED_AGREEMENT_STATUSES.includes(String(contract?.status || ""));
+}
+
+function isAwaitingSignature(contract) {
+  return AWAITING_SIGNATURE_STATUSES.includes(String(contract?.status || ""));
+}
+
+/** The newest signed version, if the customer has signed any. */
+function pickSignedAgreement(contracts = []) {
+  const list = Array.isArray(contracts) ? contracts : [];
+  return [...list].sort((a, b) => Number(b.version || 0) - Number(a.version || 0)).find(isSignedAgreement) || null;
+}
+
+/**
+ * The issued-but-unsigned version the customer is being asked to sign, if any.
+ * Only a version newer than the signed one (or any, when nothing is signed)
+ * counts: an older unsigned version is history, not a live proposal.
+ */
+function pickProposedAgreement(contracts = [], signed = null) {
+  const list = Array.isArray(contracts) ? contracts : [];
+  const byVersionDesc = [...list].sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
+  const candidate =
+    byVersionDesc.find((contract) => contract.current && isAwaitingSignature(contract)) ||
+    byVersionDesc.find(isAwaitingSignature) ||
+    null;
+  if (!candidate) return null;
+  if (signed && Number(candidate.version || 0) <= Number(signed.version || 0)) return null;
+  return candidate;
+}
+
+/**
  * The agreement of record for a project.
  *
  * An Agreement is revised by versioning: every version shares one contract
@@ -48,6 +86,9 @@ function pickAgreementOfRecord(contracts = []) {
   const list = Array.isArray(contracts) ? contracts : [];
   const byVersionDesc = [...list].sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
   return (
+    // A signed version always outranks an unsigned revision started on top of
+    // it: the customer has not agreed to the revision's number.
+    byVersionDesc.find(isSignedAgreement) ||
     byVersionDesc.find((contract) => contract.current && isBindingAgreement(contract)) ||
     byVersionDesc.find(isBindingAgreement) ||
     byVersionDesc.find((contract) => contract.current) ||
@@ -77,7 +118,7 @@ function agreementVersionIds(contracts, agreement) {
 async function loadProjectDocuments(projectId) {
   const contracts = await Contract.find({ projectId })
     .select(
-      "contractNumber version current status adjustedContractPriceCents originalContractPriceCents totalPriceCents dates estimateId estimateSnapshot"
+      "contractNumber version current status adjustedContractPriceCents originalContractPriceCents totalPriceCents depositAmountCents paymentSchedule dates estimateId estimateSnapshot"
     )
     .sort({ version: -1 })
     .lean();
@@ -137,6 +178,9 @@ function serializeAgreementReference(agreement) {
     version: Number(agreement.version || 1),
     status: agreement.status || "",
     isBinding: isBindingAgreement(agreement),
+    isSigned: isSignedAgreement(agreement),
+    awaitingSignature: isAwaitingSignature(agreement),
+    adjustedContractPriceCents: Number(agreement.adjustedContractPriceCents ?? agreement.totalPriceCents ?? 0),
     contractDate: agreement.dates?.contractDate || null,
     estimate: agreement.estimateId
       ? {
@@ -177,16 +221,48 @@ async function getProjectFinancialSummary(projectId) {
     ),
   ];
 
+  // Executed versus proposed. Only a Signed agreement (plus its executed
+  // change orders) is executed value; an issued, unsigned version is reported
+  // separately as proposed and never outranks a signed one.
+  const signedAgreement = pickSignedAgreement(contracts);
+  const proposedAgreement = pickProposedAgreement(contracts, signedAgreement);
+  const executedValueCents = signedAgreement
+    ? computeProjectFinancials({
+        baselineCents: signedAgreement.adjustedContractPriceCents ?? signedAgreement.totalPriceCents ?? 0,
+        changeOrders,
+        invoices: [],
+      }).approvedAgreementCents
+    : 0;
+  const proposedValueCents = proposedAgreement
+    ? Number(proposedAgreement.adjustedContractPriceCents ?? proposedAgreement.totalPriceCents ?? 0)
+    : 0;
+  const valuation = {
+    agreementSigned: Boolean(signedAgreement),
+    executedValueCents,
+    proposedValueCents,
+    awaitingSignatureChangeOrderCents: totals.pendingChangeOrderCents,
+    invoicedCents: totals.invoicedCents,
+    paidCents: totals.paidCents,
+    outstandingCents: totals.outstandingInvoicedCents,
+    uninvoicedExecutedCents: Math.max(executedValueCents - totals.invoicedCents, 0),
+  };
+
   return {
     projectId: String(projectId),
     agreement: serializeAgreementReference(agreement),
+    signedAgreement: serializeAgreementReference(signedAgreement),
+    proposedAgreement: serializeAgreementReference(proposedAgreement),
     otherAgreementNumbers,
     changeOrders: {
       executed: changeOrders.filter(isExecuted).map(serializeChangeOrderReference),
       pending: changeOrders.filter(isPending).map(serializeChangeOrderReference),
     },
     invoices: invoices.map(serializeInvoiceReference),
-    totals,
+    // `totals` keeps its historical meaning (the agreement of record, issued or
+    // signed) because invoice creation and frozen invoice snapshots use it.
+    // The executed/proposed split is added alongside, on totals and on its own.
+    totals: { ...totals, ...valuation },
+    valuation,
   };
 }
 
@@ -253,6 +329,11 @@ function buildBillingWarnings({ context, invoiceTotalCents, agreement }) {
       code: "agreement_not_issued",
       message: `Agreement #${agreement.contractNumber} has not been issued yet. Its price is not approved value.`,
     });
+  } else if (agreement && !isSignedAgreement(agreement)) {
+    warnings.push({
+      code: "agreement_not_signed",
+      message: `Agreement #${agreement.contractNumber} is awaiting the customer's signature. Its price is proposed, not yet agreed.`,
+    });
   }
   if (approved > 0 && totalAfter > approved) {
     warnings.push({
@@ -267,7 +348,13 @@ function buildBillingWarnings({ context, invoiceTotalCents, agreement }) {
 
 module.exports = {
   BINDING_AGREEMENT_STATUSES,
+  EXECUTED_AGREEMENT_STATUSES,
+  AWAITING_SIGNATURE_STATUSES,
   isBindingAgreement,
+  isSignedAgreement,
+  isAwaitingSignature,
+  pickSignedAgreement,
+  pickProposedAgreement,
   pickAgreementOfRecord,
   agreementVersionIds,
   loadProjectDocuments,

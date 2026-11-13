@@ -235,9 +235,14 @@ async function main() {
       assert.strictEqual(res.status, 200, JSON.stringify(res.json));
       const stored = await ESignature.findById(created.signature.id);
       assert.strictEqual(stored.status, "Completed");
-      assert.strictEqual(emails.length, 1);
-      assert.ok(/signed/i.test(emails[0].subject), emails[0].subject);
-      assert.ok(emails[0].attachments?.length, "executed PDF should be attached");
+      // One to the customer (with the executed PDF), one to the owner.
+      assert.strictEqual(emails.length, 2);
+      const customerMail = emails.find((mail) => mail.attachments?.length);
+      assert.ok(customerMail, "executed PDF should be attached to the customer email");
+      assert.ok(/signed/i.test(customerMail.subject), customerMail.subject);
+      const ownerMail = emails.find((mail) => mail !== customerMail);
+      assert.ok(/Agreement Signed/.test(ownerMail.subject), ownerMail.subject);
+      assert.ok(//admin/projects//.test(ownerMail.html), "owner email links to the project");
     });
 
     await test("an email failure does not roll back completion", async () => {

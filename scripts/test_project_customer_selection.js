@@ -272,7 +272,7 @@ assert(Project.schema.path("propertySnapshot.formattedAddress"), "Project should
 
 const routeSource = fs.readFileSync(path.join(__dirname, "..", "routes", "projects.js"), "utf8");
 assert(routeSource.includes('router.get("/customer-search"'), "customer search endpoint should exist");
-assert(routeSource.includes("router.use(auth, ...requirePermission(PERMISSIONS.ADMIN))"), "customer search must be admin guarded");
+assert(routeSource.includes("router.use(auth, ...requirePermission(PERMISSIONS.PROJECTS_MANAGE))"), "customer search must require the projects section");
 assert(routeSource.includes("buildCustomerFallbackSearchQuery"), "customer search should include bounded fallback");
 assert(routeSource.includes("repairReturnedCustomerSearchFields"), "customer search should self-heal returned stale search fields");
 assert(!routeSource.includes("stripeCustomerId") && !routeSource.includes("stripeSubscriptionId"), "project customer search route must not return Stripe identifiers");

@@ -41,6 +41,19 @@ const {
   createAdminActivityLog,
   markAdminActivityLog,
 } = require("../utils/adminActivityLog");
+const { logProjectActivity } = require("../utils/projectActivity");
+const { revokeSignaturesForDocument } = require("../utils/esign/nativeSignatureService");
+
+/** Statuses from which a signed copy may be recorded (an issued, still-open agreement). */
+const SIGNED_UPLOAD_STATUSES = Object.freeze(["Generated", "Emailed"]);
+
+function signatureContext(req) {
+  return {
+    ip: String(req.ip || ""),
+    userAgent: String(req.headers?.["user-agent"] || ""),
+    actorEmail: String((req.accessUser || req.authUser || {}).email || "").toLowerCase(),
+  };
+}
 
 const router = express.Router();
 const MAX_SIGNED_PDF_BYTES = 25 * 1024 * 1024;
@@ -290,10 +303,16 @@ async function saveDraft({ project, body, req }) {
   }
 
   if (contract && contract.status !== "Draft") {
+    const losingCurrent = await Contract.find({ projectId: project._id, current: true }).select("_id");
     await Contract.updateMany(
       { projectId: project._id, current: true },
       { $set: { current: false } }
     );
+    // An outstanding signing link for a version that is being revised must not
+    // be able to execute it afterwards.
+    for (const row of losingCurrent) {
+      await revokeSignaturesForDocument("CONTRACT", row._id, "agreement_revised", signatureContext(req));
+    }
     const nextDraft = copyContractForNewDraft(contract, update, req);
     await applyEstimateLink(nextDraft, body, project);
     nextDraft.addAuditEvent("Draft created", req, {
@@ -513,6 +532,18 @@ router.post("/:id/generate", async (req, res) => {
       ContentDisposition: `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
 
+    const supersededRows = await Contract.find({
+      _id: { $ne: contract._id },
+      projectId: contract.projectId,
+      contractNumber: contract.contractNumber,
+      status: { $in: ["Generated", "Emailed"] },
+    }).select("_id");
+    for (const row of supersededRows) {
+      await revokeSignaturesForDocument("CONTRACT", row._id, "agreement_superseded", signatureContext(req));
+    }
+    // The draft itself may still carry a link from an earlier generation.
+    await revokeSignaturesForDocument("CONTRACT", contract._id, "agreement_regenerated", signatureContext(req));
+
     await Contract.updateMany(
       {
         _id: { $ne: contract._id },
@@ -604,6 +635,12 @@ router.post("/:id/email", async (req, res) => {
     if (!contract.generatedPdf?.key) {
       return res.status(409).json({ message: "Generate the contract PDF before emailing it" });
     }
+    if (contract.status === "Canceled") {
+      return res.status(409).json({
+        message: "A canceled agreement cannot be emailed.",
+        code: "INVALID_TRANSITION",
+      });
+    }
     const recipient = cleanString(req.body.recipient || contract.customerSnapshot?.email, 254).toLowerCase();
     const subject = cleanString(
       req.body.subject || `Your Premium Island Homes Agreement - ${contract.workType}`,
@@ -636,7 +673,11 @@ router.post("/:id/email", async (req, res) => {
       },
     });
 
-    contract.status = "Emailed";
+    // Only an issued, unsigned agreement moves to Emailed. Sending a copy of a
+    // Signed (or Superseded) agreement is recorded in the history and changes
+    // nothing else.
+    const statusBefore = contract.status;
+    if (contract.status === "Generated") contract.status = "Emailed";
     contract.emailHistory.push({
       recipient,
       subject,
@@ -645,9 +686,18 @@ router.post("/:id/email", async (req, res) => {
       sentBy: req.user.id,
       providerResponse: safeProviderResponse(info),
     });
-    contract.addAuditEvent("PDF emailed", req, { recipient, subject });
+    contract.addAuditEvent("PDF emailed", req, { recipient, subject, statusBefore });
     contract.updatedBy = req.user.id;
     await contract.save();
+    await logProjectActivity(req, {
+      action: "Contract Emailed",
+      entityType: "Contract",
+      entityId: contract._id,
+      entityName: contract.contractNumber,
+      before: { status: statusBefore },
+      after: { status: contract.status },
+      details: { recipient, version: contract.version },
+    });
 
     return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
@@ -663,6 +713,19 @@ router.post("/:id/signed", signedUpload.single("file"), async (req, res) => {
     const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
     if (!req.file) return res.status(400).json({ message: "Signed contract PDF is required" });
+    if (contract.signedPdf?.key) {
+      return res.status(409).json({
+        message: "This agreement already has a signed copy. It cannot be replaced.",
+        code: "SIGNED_COPY_EXISTS",
+      });
+    }
+    if (!SIGNED_UPLOAD_STATUSES.includes(contract.status) || contract.current === false) {
+      return res.status(409).json({
+        message: `A signed copy can be recorded only for the current generated or emailed agreement (this one is ${contract.status}${contract.current === false ? ", not current" : ""}).`,
+        code: "INVALID_TRANSITION",
+      });
+    }
+    const statusBefore = contract.status;
 
     const fileName = `${sanitizeFilenamePart(
       contract.contractNumber
@@ -678,20 +741,60 @@ router.post("/:id/signed", signedUpload.single("file"), async (req, res) => {
       ContentDisposition: `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
 
-    contract.status = "Signed";
-    contract.signedPdf = {
-      key,
-      url: "",
-      fileName,
-      size: req.file.size,
-      uploadedAt: new Date(),
-      uploadedBy: req.user.id,
-    };
-    contract.updatedBy = req.user.id;
-    contract.addAuditEvent("Signed copy uploaded", req, { fileName, size: req.file.size });
-    await contract.save();
-
-    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
+    // Atomic and write-once: the agreement flips only if it is still open and
+    // has no signed copy, so two uploads (or an upload racing a cancel) cannot
+    // both land.
+    const updated = await Contract.findOneAndUpdate(
+      {
+        _id: contract._id,
+        status: { $in: SIGNED_UPLOAD_STATUSES },
+        current: { $ne: false },
+        $or: [{ "signedPdf.key": "" }, { "signedPdf.key": null }, { "signedPdf.key": { $exists: false } }],
+      },
+      {
+        $set: {
+          status: "Signed",
+          signedPdf: {
+            key,
+            url: "",
+            fileName,
+            size: req.file.size,
+            uploadedAt: new Date(),
+            uploadedBy: req.user.id,
+          },
+          updatedBy: req.user.id,
+        },
+        $push: {
+          auditHistory: {
+            event: "Signed copy uploaded",
+            at: new Date(),
+            adminId: req.user.id,
+            adminEmail: actorEmail(req),
+            details: { fileName, size: req.file.size, source: "manual_upload" },
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(409).json({
+        message: "The agreement changed before the upload was recorded. Nothing was marked signed.",
+        code: "STALE",
+      });
+    }
+    // A paper signature ends any outstanding signing link for this agreement.
+    await revokeSignaturesForDocument("CONTRACT", contract._id, "signed_copy_uploaded", signatureContext(req));
+    await logProjectActivity(req, {
+      action: "Signed Contract Uploaded",
+      entityType: "Contract",
+      entityId: contract._id,
+      entityName: contract.contractNumber,
+      before: { status: statusBefore },
+      after: { status: "Signed" },
+      details: { fileName, version: contract.version },
+    });
+    updated.$locals.parentProject = contract.$locals.parentProject;
+    return res.json({ contract: serializeContract(updated, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/signed failed:", error);
     return res.status(500).json({ message: "Failed to upload signed contract" });
@@ -702,13 +805,55 @@ router.post("/:id/cancel", async (req, res) => {
   try {
     const contract = await getContractForProjectOr404(req.params.id, req, res);
     if (!contract) return null;
-    contract.status = "Canceled";
-    contract.updatedBy = req.user.id;
-    contract.addAuditEvent("Canceled", req, {
-      reason: cleanString(req.body?.reason, 1000),
+    if (contract.status === "Signed") {
+      return res.status(409).json({
+        message:
+          "A signed agreement cannot be canceled. Changes to signed work go through a change order.",
+        code: "INVALID_TRANSITION",
+      });
+    }
+    if (contract.status === "Canceled") {
+      return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
+    }
+    const statusBefore = contract.status;
+    const reason = cleanString(req.body?.reason, 1000);
+    // Close the door first: once the links are revoked nobody can sign while
+    // the cancel is being written. A submission already in flight re-checks
+    // the agreement and is refused.
+    const revoked = await revokeSignaturesForDocument("CONTRACT", contract._id, "agreement_canceled", signatureContext(req));
+    const updated = await Contract.findOneAndUpdate(
+      { _id: contract._id, status: { $ne: "Signed" } },
+      {
+        $set: { status: "Canceled", updatedBy: req.user.id },
+        $push: {
+          auditHistory: {
+            event: "Canceled",
+            at: new Date(),
+            adminId: req.user.id,
+            adminEmail: actorEmail(req),
+            details: { reason, revokedSignatures: revoked },
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(409).json({
+        message: "This agreement was signed while you were canceling it. Nothing was changed.",
+        code: "STALE",
+      });
+    }
+    await logProjectActivity(req, {
+      action: "Contract Canceled",
+      entityType: "Contract",
+      entityId: contract._id,
+      entityName: contract.contractNumber,
+      before: { status: statusBefore },
+      after: { status: "Canceled" },
+      reason,
+      details: { revokedSignatures: revoked },
     });
-    await contract.save();
-    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
+    return res.json({ contract: serializeContract(updated, { parentProject: contract.$locals.parentProject }) });
   } catch (error) {
     console.error("POST /admin/contracts/:id/cancel failed:", error);
     return res.status(500).json({ message: "Failed to cancel contract" });

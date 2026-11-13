@@ -24,6 +24,26 @@ const { rateLimit } = require("../utils/rateLimit");
 const native = require("../utils/esign/nativeSigning");
 const service = require("../utils/esign/nativeSignatureService");
 const signingEmails = require("../utils/esign/signingEmails");
+const { sendOwnerSigningNotification } = require("../utils/esign/ownerSigningNotification");
+
+/** Owner email after a signature or decline. Never allowed to fail the customer. */
+async function notifyOwner(signature, outcome, reason = "") {
+  try {
+    const target = await service.loadDocument(signature.documentType, signature.documentId);
+    await sendOwnerSigningNotification({ signature, target, outcome, reason });
+  } catch (error) {
+    console.error("native signing: owner notification failed:", error?.message);
+  }
+}
+
+/** The answer a signer gets when the document itself was withdrawn or changed. */
+function sendNotSignable(res, error) {
+  return res.status(409).json({
+    state: "unavailable",
+    code: "DOCUMENT_NOT_SIGNABLE",
+    message: `${error.message} Nothing was signed. Please contact us if you have questions.`,
+  });
+}
 const {
   CONSENT_CHECKBOX_LABEL,
   DISCLOSURE_SECTIONS,
@@ -160,8 +180,23 @@ router.get("/:token", scanLimiter, readLimiter, async (req, res) => {
     const signature = await resolveOr(res, req.params.token);
     if (!signature) return null;
 
-    await service.recordOpened(signature, native.requestEvidence(req));
     const target = await service.loadDocument(signature.documentType, signature.documentId);
+    // The document is the authority: a withdrawn document closes its link here,
+    // before the customer spends time reading it.
+    const refusal = service.documentSignabilityReason(signature.documentType, target?.doc, signature);
+    if (refusal) {
+      await service.revokeActiveSignatureRecord(
+        signature._id,
+        "document_not_signable",
+        native.requestEvidence(req)
+      );
+      return res.status(200).json({
+        state: "revoked",
+        message: `${refusal} Please contact us if you have questions.`,
+        executedDocumentAvailable: false,
+      });
+    }
+    await service.recordOpened(signature, native.requestEvidence(req));
     return res.json(publicView(signature, target));
   } catch (error) {
     console.error("GET /sign/:token failed:", error?.message);
@@ -279,6 +314,7 @@ router.post("/:token/sign", scanLimiter, submitLimiter, async (req, res) => {
     signature.addAuditEvent(native.AUDIT.CONSENT, { disclosureVersion: DISCLOSURE_VERSION }, context);
     await signature.save();
 
+    const wasCompleted = signature.status === "Completed";
     const completed = await service.completeSignature({
       signature,
       signatureImageBuffer: decoded.buffer,
@@ -304,6 +340,8 @@ router.post("/:token/sign", scanLimiter, submitLimiter, async (req, res) => {
     } catch (emailError) {
       console.error("native signing: completion email failed:", emailError?.message);
     }
+    // Only the submission that completed the request tells the owner.
+    if (!wasCompleted && !completed.$locals?.replay) await notifyOwner(completed, "completed");
 
     return res.json({
       state: "completed",
@@ -315,6 +353,7 @@ router.post("/:token/sign", scanLimiter, submitLimiter, async (req, res) => {
       executedDocumentAvailable: Boolean(completed.executedPdf?.key),
     });
   } catch (error) {
+    if (error instanceof service.DocumentNotSignableError) return sendNotSignable(res, error);
     console.error("POST /sign/:token/sign failed:", error?.message);
     // The document is not marked signed on failure; the customer may retry.
     return res.status(500).json({
@@ -330,11 +369,14 @@ router.post("/:token/decline", scanLimiter, submitLimiter, async (req, res) => {
     const signature = await resolveOr(res, req.params.token);
     if (!signature) return null;
 
-    await service.declineSignature({
+    const reason = String(req.body?.reason || "").slice(0, 2000);
+    const wasDeclined = signature.status === "Declined";
+    const declined = await service.declineSignature({
       signature,
-      reason: String(req.body?.reason || "").slice(0, 2000),
+      reason,
       context: native.requestEvidence(req),
     });
+    if (!wasDeclined) await notifyOwner(declined, "declined", reason);
 
     return res.json({ state: "declined", message: "You have declined to sign this document." });
   } catch (error) {

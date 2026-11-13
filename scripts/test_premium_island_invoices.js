@@ -67,8 +67,10 @@ function validBody(overrides = {}) {
     taxRateBasisPoints: 0,
     dueTerm: "net_15",
     dates: {
-      invoiceDate: "2026-07-15",
-      dueDate: "2026-07-30",
+      invoiceDate: "2099-07-15",
+      // Far enough ahead that the fixture never turns Overdue as the calendar moves
+      // (it was dated 2026-07 and silently started failing once that date passed).
+      dueDate: "2099-07-30",
       serviceDate: "2026-07-14",
     },
     publicNote: "Thank you for your business.",
@@ -356,7 +358,7 @@ async function main() {
   assert(routeSource.includes("private/admin/invoices"), "invoice PDFs must stay under the private invoice prefix");
   assert(routeSource.includes("getInvoiceForProjectOr404"), "invoice actions must be project scoped");
   assert(routeSource.includes("Invoice not found for this project"), "cross-project invoice access must fail closed");
-  assert(routeSource.includes("requirePermission(PERMISSIONS.ADMIN)"), "invoice management must be admin-only");
+  assert(routeSource.includes("requirePermission(PERMISSIONS.PROJECTS_MANAGE)"), "invoice management must require the projects section");
   assert(routeSource.includes("assertNoActiveContractImport"), "contract invoice imports must prevent double import");
   assert(!routeSource.includes("projectDepositPayment"), "contract deposit requirements must not be auto-imported as received payments");
   assert(!routeSource.includes("Deposit recorded on project"), "project deposit fields must not become invoice payment records");

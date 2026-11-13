@@ -56,8 +56,8 @@ assert.match(projectsRoute, /router\.post\("\/:id\/restore"/, "Project restore e
 assert.match(projectsRoute, /deletedBy:\s*req\.user\.id/, "Delete route must record the deleting admin");
 assert.match(
   projectsRoute,
-  /router\.use\(auth,\s*\.\.\.requirePermission\(PERMISSIONS\.ADMIN\)\)/,
-  "Project delete and restore routes must remain admin-protected"
+  /router\.use\(auth,\s*\.\.\.requirePermission\(PERMISSIONS\.PROJECTS_MANAGE\)\)/,
+  "Project delete and restore routes must require the projects section"
 );
 assert.doesNotMatch(
   projectsRoute,

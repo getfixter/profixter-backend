@@ -38,6 +38,20 @@ const { getCompanySignatureAsset } = require("../utils/companySignature");
 const { formatSigningDate } = require("../utils/esign/executedDocument");
 const { resolveCompanySignedAt } = require("../utils/documentDates");
 
+const { logProjectActivity } = require("../utils/projectActivity");
+const {
+  revokeSignaturesForDocument,
+  SIGNABLE_CHANGE_ORDER_STATUSES,
+} = require("../utils/esign/nativeSignatureService");
+
+function signatureContext(req) {
+  return {
+    ip: String(req.ip || ""),
+    userAgent: String(req.headers?.["user-agent"] || ""),
+    actorEmail: String((req.accessUser || req.authUser || {}).email || "").toLowerCase(),
+  };
+}
+
 const router = express.Router();
 
 const MAX_SIGNED_PDF_BYTES = 25 * 1024 * 1024;
@@ -783,26 +797,54 @@ router.post("/:id/executed", signedUpload.single("file"), async (req, res) => {
       ContentDisposition: `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
 
-    changeOrder.executedPdf = {
-      key,
-      url: "",
-      fileName,
-      size: req.file.size,
-      uploadedAt: new Date(),
-      uploadedBy: req.user.id,
-      source: "manual_upload",
-    };
-    changeOrder.status = "Executed";
-    changeOrder.executedAt = new Date();
-    changeOrder.updatedBy = req.user.id;
-    changeOrder.addAuditEvent("Executed copy uploaded", req, {
-      fileName,
-      size: req.file.size,
-      source: "manual_upload",
+    const statusBefore = changeOrder.status;
+    const updated = await ChangeOrder.findOneAndUpdate(
+      { _id: changeOrder._id, status: { $in: SIGNABLE_CHANGE_ORDER_STATUSES } },
+      {
+        $set: {
+          executedPdf: {
+            key,
+            url: "",
+            fileName,
+            size: req.file.size,
+            uploadedAt: new Date(),
+            uploadedBy: req.user.id,
+            source: "manual_upload",
+          },
+          status: "Executed",
+          executedAt: new Date(),
+          updatedBy: req.user.id,
+        },
+        $push: {
+          auditHistory: {
+            event: "Executed copy uploaded",
+            at: new Date(),
+            adminId: req.user.id,
+            adminEmail: String((req.accessUser || req.authUser || {}).email || "").toLowerCase(),
+            details: { fileName, size: req.file.size, source: "manual_upload" },
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(409).json({
+        message: "This change order cannot take a signed copy in its current state. Nothing was changed.",
+        code: "INVALID_TRANSITION",
+      });
+    }
+    await revokeSignaturesForDocument("CHANGE_ORDER", changeOrder._id, "signed_copy_uploaded", signatureContext(req));
+    await logProjectActivity(req, {
+      action: "Change Order Executed Copy Uploaded",
+      entityType: "ChangeOrder",
+      entityId: changeOrder._id,
+      entityName: changeOrder.changeOrderNumber,
+      before: { status: statusBefore },
+      after: { status: "Executed" },
+      details: { fileName },
     });
-    await changeOrder.save();
 
-    return res.json({ changeOrder: serializeChangeOrder(changeOrder) });
+    return res.json({ changeOrder: serializeChangeOrder(updated) });
   } catch (error) {
     console.error("POST /admin/change-orders/:id/executed failed:", error);
     return res.status(500).json({ message: "Failed to upload executed change order" });
@@ -827,13 +869,53 @@ router.post("/:id/void", async (req, res) => {
       return res.json({ changeOrder: serializeChangeOrder(changeOrder) });
     }
 
-    changeOrder.status = "Voided";
-    changeOrder.voidedAt = new Date();
-    changeOrder.updatedBy = req.user.id;
-    changeOrder.addAuditEvent("Voided", req, { reason: cleanString(req.body?.reason, 1000) });
-    await changeOrder.save();
+    const statusBefore = changeOrder.status;
+    const reason = cleanString(req.body?.reason, 1000);
+    // Revoke every live link first, then void atomically. A customer submission
+    // already in flight re-checks the change order and is refused, so a voided
+    // change order can never become Executed.
+    const revoked = await revokeSignaturesForDocument(
+      "CHANGE_ORDER",
+      changeOrder._id,
+      "change_order_voided",
+      signatureContext(req)
+    );
+    const updated = await ChangeOrder.findOneAndUpdate(
+      { _id: changeOrder._id, status: { $nin: ["Executed", "Voided"] } },
+      {
+        $set: { status: "Voided", voidedAt: new Date(), updatedBy: req.user.id },
+        $push: {
+          auditHistory: {
+            event: "Voided",
+            at: new Date(),
+            adminId: req.user.id,
+            adminEmail: String((req.accessUser || req.authUser || {}).email || "").toLowerCase(),
+            details: { reason, revokedSignatures: revoked },
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      const current = await ChangeOrder.findById(changeOrder._id);
+      if (current?.status === "Voided") return res.json({ changeOrder: serializeChangeOrder(current) });
+      return res.status(409).json({
+        message: "This change order was executed while you were voiding it. Nothing was changed.",
+        code: "STALE",
+      });
+    }
+    await logProjectActivity(req, {
+      action: "Change Order Voided",
+      entityType: "ChangeOrder",
+      entityId: changeOrder._id,
+      entityName: changeOrder.changeOrderNumber,
+      before: { status: statusBefore },
+      after: { status: "Voided" },
+      reason,
+      details: { revokedSignatures: revoked },
+    });
 
-    return res.json({ changeOrder: serializeChangeOrder(changeOrder) });
+    return res.json({ changeOrder: serializeChangeOrder(updated) });
   } catch (error) {
     console.error("POST /admin/change-orders/:id/void failed:", error);
     return res.status(500).json({ message: "Failed to void change order" });
