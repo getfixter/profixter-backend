@@ -1465,12 +1465,24 @@ async function handlePaymentFailure(invoice, stripeSubscription = null, user = n
   return subscription;
 }
 
-async function clearStripeSubscriptionSchedule(stripeSubscription) {
+/*
+ * Stripe request options for one step of an admin-confirmed change. Every
+ * mutating call in one change gets its own key derived from the change's key,
+ * so a retried confirm replays each step at Stripe instead of repeating it.
+ * Without a key, Stripe is called exactly as before.
+ */
+function stepOptions(idempotencyKey, step) {
+  return idempotencyKey ? { idempotencyKey: `${String(idempotencyKey).slice(0, 200)}:${step}` } : undefined;
+}
+
+async function clearStripeSubscriptionSchedule(stripeSubscription, { idempotencyKey = null } = {}) {
   const scheduleId = getStripeScheduleId(stripeSubscription);
   if (!scheduleId) return null;
-  await stripe.subscriptionSchedules.release(String(scheduleId), {
-    preserve_cancel_date: false,
-  });
+  await stripe.subscriptionSchedules.release(
+    String(scheduleId),
+    { preserve_cancel_date: false },
+    stepOptions(idempotencyKey, "schedule-release")
+  );
   return retrieveStripeSubscription(stripeSubscription.id);
 }
 
@@ -1480,9 +1492,10 @@ async function applyStripeSubscriptionUpgrade({
   user,
   addressId,
   nextPriceId,
+  idempotencyKey = null,
 }) {
   const previousPendingChange = getPendingPlanChange(stripeSubscription);
-  const activeStripeSubscription = await clearStripeSubscriptionSchedule(stripeSubscription);
+  const activeStripeSubscription = await clearStripeSubscriptionSchedule(stripeSubscription, { idempotencyKey });
   const upgradeTarget = activeStripeSubscription || stripeSubscription;
   const upgradeItem = getStripeSubscriptionItemForRecord({
     subscription,
@@ -1495,12 +1508,16 @@ async function applyStripeSubscriptionUpgrade({
 
   let updatedStripeSubscription;
   try {
-    updatedStripeSubscription = await stripe.subscriptions.update(upgradeTarget.id, {
-      proration_behavior: "always_invoice",
-      payment_behavior: "pending_if_incomplete",
-      items: [{ id: upgradeItem.id, price: nextPriceId }],
-      expand: ["items.data.price", "schedule", "latest_invoice.payment_intent"],
-    });
+    updatedStripeSubscription = await stripe.subscriptions.update(
+      upgradeTarget.id,
+      {
+        proration_behavior: "always_invoice",
+        payment_behavior: "pending_if_incomplete",
+        items: [{ id: upgradeItem.id, price: nextPriceId }],
+        expand: ["items.data.price", "schedule", "latest_invoice.payment_intent"],
+      },
+      stepOptions(idempotencyKey, "upgrade")
+    );
   } catch (error) {
     if (previousPendingChange.pendingStripePriceId) {
       const restoredSubscription = await retrieveStripeSubscription(upgradeTarget.id);
@@ -1510,6 +1527,7 @@ async function applyStripeSubscriptionUpgrade({
         user,
         addressId: String(addressId),
         nextPriceId: previousPendingChange.pendingStripePriceId,
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:restore` : null,
       });
     }
     throw error;
@@ -1524,6 +1542,7 @@ async function applyStripeSubscriptionUpgrade({
         user,
         addressId: String(addressId),
         nextPriceId: previousPendingChange.pendingStripePriceId,
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:restore` : null,
       });
     }
 
@@ -1548,14 +1567,18 @@ async function applyStripeSubscriptionUpgrade({
   }
 
   try {
-    await stripe.subscriptions.update(updatedStripeSubscription.id, {
-      metadata: {
-        ...(upgradeTarget.metadata || {}),
-        addressId: String(addressId),
-        userId: String(user.userId || user._id),
-        localSubscriptionId: String(subscription._id),
+    await stripe.subscriptions.update(
+      updatedStripeSubscription.id,
+      {
+        metadata: {
+          ...(upgradeTarget.metadata || {}),
+          addressId: String(addressId),
+          userId: String(user.userId || user._id),
+          localSubscriptionId: String(subscription._id),
+        },
       },
-    });
+      stepOptions(idempotencyKey, "metadata")
+    );
   } catch (metadataError) {
     console.warn(
       JSON.stringify({
@@ -1579,6 +1602,7 @@ async function scheduleStripeSubscriptionDowngrade({
   user,
   addressId,
   nextPriceId,
+  idempotencyKey = null,
 }) {
   const item = getStripeSubscriptionItemForRecord({ subscription, stripeSubscription });
   if (!item?.id || !item?.price?.id) {
@@ -1589,9 +1613,10 @@ async function scheduleStripeSubscriptionDowngrade({
   let schedule = scheduleId ? await retrieveStripeSubscriptionSchedule(scheduleId) : null;
 
   if (!schedule) {
-    schedule = await stripe.subscriptionSchedules.create({
-      from_subscription: stripeSubscription.id,
-    });
+    schedule = await stripe.subscriptionSchedules.create(
+      { from_subscription: stripeSubscription.id },
+      stepOptions(idempotencyKey, "schedule-create")
+    );
     scheduleId = schedule.id;
     schedule = await retrieveStripeSubscriptionSchedule(scheduleId);
   }
@@ -1621,7 +1646,7 @@ async function scheduleStripeSubscriptionDowngrade({
         proration_behavior: "none",
       },
     ],
-  });
+  }, stepOptions(idempotencyKey, "schedule-update"));
 
   return retrieveStripeSubscription(stripeSubscription.id);
 }
@@ -1698,4 +1723,7 @@ module.exports = {
   scheduleStripeSubscriptionDowngrade,
   upsertSubscriptionFromStripe,
   getOwnedSubscriptionForAddress,
+  getPendingPlanChange,
+  getStripeScheduleId,
+  stripeStepOptions: stepOptions,
 };
