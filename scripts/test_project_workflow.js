@@ -439,6 +439,25 @@ async function main() {
       assert.strictEqual((await Project.findById(project._id)).status, "Lead", "the derived stage never overwrites");
     });
 
+    await test("overview carries the recipient and amounts the confirm dialogs need (gap B4)", async () => {
+      const res = await api("GET", `/api/admin/projects/${project._id}/overview`);
+      const deposit = res.json.nextSteps.find((s) => s.key === "deposit_not_invoiced");
+      assert.strictEqual(deposit.action.amountCents, 500000);
+      assert.strictEqual(deposit.action.recipientEmail, "jane@example.com");
+      assert.strictEqual(res.json.documents.agreements[0].recipientEmail, "jane@example.com");
+
+      const p3 = await makeProject({ email: "send@example.com" });
+      const generated = await makeContract(p3, { status: "Generated", signedPdf: undefined, customerSnapshot: { fullName: "S", email: "Send@Example.com" } });
+      const issued = await makeInvoice(p3, { customerSnapshot: { fullName: "S", email: "bill@example.com" } });
+      const overview = await api("GET", `/api/admin/projects/${p3._id}/overview`);
+      const send = overview.json.nextSteps.find((s) => s.key === "send_agreement");
+      assert.ok(send, keys(overview.json.nextSteps).join(","));
+      assert.strictEqual(send.action.recipientEmail, "send@example.com");
+      assert.strictEqual(send.action.body.documentId, String(generated._id));
+      const invoiceDoc = overview.json.documents.invoices.find((row) => row.id === String(issued._id));
+      assert.strictEqual(invoiceDoc.recipientEmail, "bill@example.com");
+    });
+
     let depositInvoiceId = null;
     await test("deposit invoice from the agreement: amount is the agreement's, replay returns the same invoice", async () => {
       const first = await api("POST", `/api/admin/projects/${project._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "k-1" });
@@ -463,6 +482,9 @@ async function main() {
       const next = res.json.nextSteps.find((s) => s.key === "bill_next_milestone");
       assert.ok(next, res.json.nextSteps.map((s) => s.key).join(","));
       assert.strictEqual(next.action.body.scheduleIndex, 1);
+      assert.strictEqual(next.action.scheduleIndex, 1);
+      assert.strictEqual(next.action.amountCents, 800000);
+      assert.strictEqual(next.action.recipientEmail, "jane@example.com");
       assert.ok(!res.json.nextSteps.some((s) => s.key === "deposit_not_invoiced"));
       const billed = await api("POST", `/api/admin/projects/${project._id}/invoices/from-schedule`, { kind: "milestone", scheduleIndex: 1, idempotencyKey: "m-1" });
       assert.strictEqual(billed.status, 201, JSON.stringify(billed.json));
@@ -594,6 +616,52 @@ async function main() {
       const staged = await api("POST", "/api/admin/projects/search", { stage: "lead" });
       assert.ok(staged.json.projects.every((p) => p.derivedStage.key === "lead"));
       assert.ok(!staged.json.projects.some((p) => p.id === String(project._id)));
+    });
+
+    await test("search rows carry the overview's top next step, for every row (gap B1)", async () => {
+      const declinedProject = await makeProject({ customerName: "Declined Dan" });
+      const declined = await makeContract(declinedProject, { status: "Generated", signedPdf: undefined });
+      await ESignature.collection.insertOne({
+        projectId: declinedProject._id,
+        documentType: "CONTRACT",
+        documentId: declined._id,
+        status: "Declined",
+        signingMode: "REMOTE",
+        declineReason: "Too expensive",
+        createdAt: new Date(),
+        signingToken: { state: "revoked" },
+      });
+      const list = await api("POST", "/api/admin/projects/search", { limit: 50 });
+      assert.strictEqual(list.status, 200, JSON.stringify(list.json));
+      assert.ok(list.json.projects.length >= 3);
+      for (const row of list.json.projects) {
+        const overview = await api("GET", `/api/admin/projects/${row.id}/overview`);
+        const top = overview.json.nextSteps[0] || null;
+        assert.deepStrictEqual(
+          row.nextStep,
+          top ? { key: top.key, label: top.label, severity: top.severity } : null,
+          `row ${row.projectNumber}`
+        );
+      }
+      const dan = list.json.projects.find((row) => row.id === String(declinedProject._id));
+      assert.strictEqual(dan.nextStep.key, "signature_declined");
+      assert.strictEqual(dan.nextStep.severity, "problem");
+      const staged = await api("POST", "/api/admin/projects/search", { stage: "proposal_issued" });
+      assert.ok(staged.json.projects.every((row) => "nextStep" in row));
+    });
+
+    await test("project customer picker: POST takes the query in the body, GET still works (gap B3)", async () => {
+      await User.create({ userId: "70000001", name: "Picker Penelope", email: "penelope@example.com", role: "customer", phone: "6315550777" });
+      const post = await api("POST", "/api/admin/projects/customer-search", { q: "penelope", limit: 5 });
+      assert.strictEqual(post.status, 200, JSON.stringify(post.json));
+      assert.ok(post.json.customers.some((c) => /penelope/i.test(c.email || c.name || "")), JSON.stringify(post.json));
+      const get = await api("GET", "/api/admin/projects/customer-search?q=penelope&limit=5");
+      assert.strictEqual(get.status, 200);
+      assert.deepStrictEqual(post.json.customers.map((c) => c.id || c._id), get.json.customers.map((c) => c.id || c._id));
+      const short = await api("POST", "/api/admin/projects/customer-search", { q: "p" });
+      assert.strictEqual(short.status, 200);
+      assert.deepStrictEqual(short.json.customers, []);
+      assert.ok(short.json.message);
     });
 
     await test("needs action: projects collector finds deposit, declined signature and overdue invoice", async () => {

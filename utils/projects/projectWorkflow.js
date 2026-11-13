@@ -141,6 +141,11 @@ function step(key, label, detail, severity, action) {
   return { key, label, detail, severity, action };
 }
 
+/** The address a send for this document goes to (the route's default recipient). */
+function recipientOf(doc) {
+  return String(doc?.customerSnapshot?.email || "").trim().toLowerCase() || null;
+}
+
 /**
  * Next steps, most urgent first. Each comes from a record, says why, and
  * carries the action that resolves it.
@@ -186,7 +191,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           `Sent ${days} day${days === 1 ? "" : "s"} ago${latest.signingToken?.openedAt ? ", opened by the customer" : ", not opened yet"}.`,
           days >= AWAITING_SIGNATURE_NUDGE_DAYS ? "attention" : "info",
           latest.signingMode === "REMOTE"
-            ? { type: "endpoint", method: "POST", endpoint: `/api/admin/signatures/native/${latest._id}/resend` }
+            ? { type: "endpoint", method: "POST", endpoint: `/api/admin/signatures/native/${latest._id}/resend`, recipientEmail: recipientOf(agreement) }
             : { type: "navigate", href: `${projectHref}?tab=agreement` }
         )
       );
@@ -204,6 +209,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           method: "POST",
           endpoint: "/api/admin/signatures/native/send",
           body: { documentType: "CONTRACT", documentId: String(agreement._id), mode: "REMOTE" },
+          recipientEmail: recipientOf(agreement),
         })
       );
     } else {
@@ -213,6 +219,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           method: "POST",
           endpoint: "/api/admin/signatures/native/send",
           body: { documentType: "CONTRACT", documentId: String(agreement._id), mode: "REMOTE" },
+          recipientEmail: recipientOf(agreement),
         })
       );
     }
@@ -232,6 +239,8 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           method: "POST",
           endpoint: `/api/admin/projects/${projectId}/invoices/from-schedule`,
           body: { kind: "deposit" },
+          amountCents: deposit,
+          recipientEmail: recipientOf(signed),
         })
       );
     }
@@ -249,6 +258,9 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
             method: "POST",
             endpoint: `/api/admin/projects/${projectId}/invoices/from-schedule`,
             body: { kind: "milestone", scheduleIndex: nextIndex },
+            amountCents: Number(row.amountCents || 0),
+            scheduleIndex: nextIndex,
+            recipientEmail: recipientOf(signed),
           })
         );
       }
@@ -272,6 +284,8 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           method: "POST",
           endpoint: "/api/admin/signatures/native/send",
           body: { documentType: "CHANGE_ORDER", documentId: String(co._id), mode: "REMOTE" },
+          amountCents: Number(co.netAdjustmentCents || 0),
+          recipientEmail: recipientOf(co),
         })
       );
       continue;
@@ -287,7 +301,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
           `${co.title || "Change order"} - sent ${days} day${days === 1 ? "" : "s"} ago.`,
           days >= AWAITING_SIGNATURE_NUDGE_DAYS ? "attention" : "info",
           live && latest.signingMode === "REMOTE"
-            ? { type: "endpoint", method: "POST", endpoint: `/api/admin/signatures/native/${latest._id}/resend` }
+            ? { type: "endpoint", method: "POST", endpoint: `/api/admin/signatures/native/${latest._id}/resend`, recipientEmail: recipientOf(co) }
             : { type: "navigate", href: `${projectHref}?tab=change-orders` }
         )
       );
@@ -309,6 +323,9 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
         step("invoice_overdue", `Invoice #${invoice.invoiceNumber} is overdue`, `${money(balance)} outstanding, due ${new Date(invoice.dates.dueDate).toISOString().slice(0, 10)}.`, "problem", {
           type: "navigate",
           href: `${projectHref}?tab=invoices&invoice=${invoice._id}`,
+          invoiceId: String(invoice._id),
+          amountCents: balance,
+          recipientEmail: recipientOf(invoice),
         })
       );
     }
@@ -322,6 +339,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
         step("final_invoice", `Send the final invoice (${money(uninvoiced)} not billed)`, "The work is substantially complete and part of the agreed value is not invoiced.", "attention", {
           type: "navigate",
           href: `${projectHref}?tab=invoices`,
+          amountCents: uninvoiced,
         })
       );
     }
@@ -369,6 +387,7 @@ function documentsSummary({ contracts, changeOrders, invoices, signatures, now }
       current: c.current !== false,
       priceCents: Number(c.adjustedContractPriceCents ?? c.totalPriceCents ?? 0),
       depositAmountCents: Number(c.depositAmountCents || 0),
+      recipientEmail: recipientOf(c),
       signature: serializeSignatureState(latestSig("CONTRACT", c._id)),
     })),
     changeOrders: (changeOrders || []).map((co) => ({
@@ -377,6 +396,7 @@ function documentsSummary({ contracts, changeOrders, invoices, signatures, now }
       title: co.title || "",
       status: co.status,
       netAdjustmentCents: Number(co.netAdjustmentCents || 0),
+      recipientEmail: recipientOf(co),
       signature: serializeSignatureState(latestSig("CHANGE_ORDER", co._id)),
     })),
     invoices: (invoices || []).map((invoice) => ({
@@ -388,6 +408,7 @@ function documentsSummary({ contracts, changeOrders, invoices, signatures, now }
       balanceCents: Math.max(Number(invoice.invoiceTotalCents || 0) - paidOnInvoice(invoice), 0),
       dueDate: invoice.dates?.dueDate || null,
       overdue: isOverdue(invoice, now),
+      recipientEmail: recipientOf(invoice),
     })),
   };
 }
@@ -395,27 +416,83 @@ function documentsSummary({ contracts, changeOrders, invoices, signatures, now }
 const PROJECT_SELECT =
   "projectNumber status customerName email phone address customerId projectType notes isDeleted deletedAt leadRef qualification linkedBookingIds siteVisitBookingId scheduledStart scheduledEnd assignedFixterIds substantialCompletionAt warrantyEndsAt warrantyTermsVersion punchList statusHistory billingClaims createdAt updatedAt";
 
+/** Fields the stage and next-step rules read. Shared by the overview and the list. */
+const CONTRACT_SELECT =
+  "projectId contractNumber version current status adjustedContractPriceCents totalPriceCents depositAmountCents paymentSchedule customerSnapshot.email createdAt updatedAt";
+const CHANGE_ORDER_SELECT = "changeOrderNumber title status netAdjustmentCents sentAt updatedAt contractId sequence customerSnapshot.email";
+const INVOICE_SELECT = "projectId invoiceNumber status invoiceTotalCents payments dates sentAt contractId isArchived customerSnapshot.email createdAt";
+const SIGNATURE_SELECT =
+  "projectId documentType documentId status signingMode sentAt createdAt completedAt declinedAt declineReason signingToken.state signingToken.openedAt signingToken.expiresAt";
+/** Project fields buildNextSteps reads, for list rows. */
+const NEXT_STEP_PROJECT_SELECT = "scheduledStart substantialCompletionAt warrantyEndsAt punchList billingClaims";
+
 async function loadProjectRecords(projectId) {
   const project = await Project.findById(projectId).select(PROJECT_SELECT).lean();
   if (!project) return null;
-  const contracts = await Contract.find({ projectId })
-    .select("contractNumber version current status adjustedContractPriceCents totalPriceCents depositAmountCents paymentSchedule createdAt updatedAt")
-    .lean();
+  const contracts = await Contract.find({ projectId }).select(CONTRACT_SELECT).lean();
   const contractIds = contracts.map((c) => c._id);
   const [changeOrders, invoices, signatures] = await Promise.all([
-    ChangeOrder.find({ contractId: { $in: contractIds } })
-      .select("changeOrderNumber title status netAdjustmentCents sentAt updatedAt contractId sequence")
-      .sort({ sequence: 1 })
-      .lean(),
-    Invoice.find({ projectId, isArchived: { $ne: true } })
-      .select("invoiceNumber status invoiceTotalCents payments dates sentAt contractId isArchived createdAt")
-      .sort({ createdAt: 1 })
-      .lean(),
-    ESignature.find({ projectId })
-      .select("documentType documentId status signingMode sentAt createdAt completedAt declinedAt declineReason signingToken.state signingToken.openedAt signingToken.expiresAt")
-      .lean(),
+    ChangeOrder.find({ contractId: { $in: contractIds } }).select(CHANGE_ORDER_SELECT).sort({ sequence: 1 }).lean(),
+    Invoice.find({ projectId, isArchived: { $ne: true } }).select(INVOICE_SELECT).sort({ createdAt: 1 }).lean(),
+    ESignature.find({ projectId }).select(SIGNATURE_SELECT).lean(),
   ]);
   return { project, contracts, changeOrders, invoices, signatures };
+}
+
+function groupBy(rows, keyOf) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = String(keyOf(row));
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  }
+  return map;
+}
+
+/**
+ * The top next step for many projects at once, for list rows.
+ *
+ * Runs the SAME buildNextSteps as the overview over the same records, loaded
+ * in four batched queries (agreements, change orders, invoices, signatures)
+ * instead of one overview per row. `projects` must carry the fields in
+ * NEXT_STEP_PROJECT_SELECT; `financialsById` maps project id to its
+ * getProjectFinancialSummary result (the list already computes it).
+ *
+ * Returns Map(projectId -> {key, label, severity} | null).
+ */
+async function topNextStepsForProjects(projects, { financialsById = new Map(), now = new Date() } = {}) {
+  const result = new Map();
+  if (!projects?.length) return result;
+  const projectIds = projects.map((p) => p._id);
+  const contracts = await Contract.find({ projectId: { $in: projectIds } }).select(CONTRACT_SELECT).lean();
+  const [changeOrders, invoices, signatures] = await Promise.all([
+    contracts.length
+      ? ChangeOrder.find({ contractId: { $in: contracts.map((c) => c._id) } }).select(CHANGE_ORDER_SELECT).sort({ sequence: 1 }).lean()
+      : [],
+    Invoice.find({ projectId: { $in: projectIds }, isArchived: { $ne: true } }).select(INVOICE_SELECT).sort({ createdAt: 1 }).lean(),
+    ESignature.find({ projectId: { $in: projectIds } }).select(SIGNATURE_SELECT).lean(),
+  ]);
+  const contractsByProject = groupBy(contracts, (c) => c.projectId);
+  const projectOfContract = new Map(contracts.map((c) => [String(c._id), String(c.projectId)]));
+  const changeOrdersByProject = groupBy(changeOrders, (co) => projectOfContract.get(String(co.contractId)));
+  const invoicesByProject = groupBy(invoices, (invoice) => invoice.projectId);
+  const signaturesByProject = groupBy(signatures, (signature) => signature.projectId);
+
+  for (const project of projects) {
+    const id = String(project._id);
+    const steps = buildNextSteps({
+      project,
+      contracts: contractsByProject.get(id) || [],
+      changeOrders: changeOrdersByProject.get(id) || [],
+      invoices: invoicesByProject.get(id) || [],
+      signatures: signaturesByProject.get(id) || [],
+      financials: financialsById.get(id) || null,
+      now,
+    });
+    const top = steps[0];
+    result.set(id, top ? { key: top.key, label: top.label, severity: top.severity } : null);
+  }
+  return result;
 }
 
 /** The project overview the redesigned Admin opens on. */
@@ -524,4 +601,6 @@ module.exports = {
   workingAgreement,
   loadProjectRecords,
   loadProjectOverview,
+  topNextStepsForProjects,
+  NEXT_STEP_PROJECT_SELECT,
 };

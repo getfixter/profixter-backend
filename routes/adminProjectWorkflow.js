@@ -26,7 +26,14 @@ const Booking = require("../models/Booking");
 const User = require("../models/User");
 const Invoice = require("../models/Invoice");
 const { getProjectFinancialSummary } = require("../utils/projectFinancialsService");
-const { buildDerivedStage, depositScheduleIndex, loadProjectOverview, STAGES } = require("../utils/projects/projectWorkflow");
+const {
+  buildDerivedStage,
+  depositScheduleIndex,
+  loadProjectOverview,
+  NEXT_STEP_PROJECT_SELECT,
+  STAGES,
+  topNextStepsForProjects,
+} = require("../utils/projects/projectWorkflow");
 const { WORKMANSHIP_WARRANTY, warrantyEndsAt } = require("../config/legalEntity");
 const { logProjectActivity } = require("../utils/projectActivity");
 
@@ -107,8 +114,9 @@ function searchFilter(search) {
   return { $or: or };
 }
 
-async function listRow(project, contractsByProject, now) {
+async function listRow(project, contractsByProject, now, financialsById) {
   const financials = await getProjectFinancialSummary(project._id);
+  financialsById.set(String(project._id), financials);
   const contracts = contractsByProject.get(String(project._id)) || [];
   const derivedStage = buildDerivedStage({ project, contracts, financials, now });
   return {
@@ -142,7 +150,7 @@ router.post("/search", async (req, res) => {
     const query = { isDeleted: { $ne: true }, ...searchFilter(body.search) };
     if (body.status) query.status = String(body.status).slice(0, 40);
 
-    const select = "projectNumber customerName address phone email projectType status scheduledStart substantialCompletionAt warrantyEndsAt createdAt";
+    const select = `projectNumber customerName address phone email projectType status createdAt ${NEXT_STEP_PROJECT_SELECT}`;
     const now = new Date();
     let candidates;
     let total;
@@ -166,12 +174,20 @@ router.post("/search", async (req, res) => {
       contractsByProject.get(key).push(contract);
     }
 
-    let rows = await Promise.all(candidates.map((project) => listRow(project, contractsByProject, now)));
+    const financialsById = new Map();
+    let rows = await Promise.all(candidates.map((project) => listRow(project, contractsByProject, now, financialsById)));
     if (stage) {
       rows = rows.filter((row) => row.derivedStage.key === stage);
       total = rows.length;
       rows = rows.slice((page - 1) * limit, page * limit);
     }
+    // The overview's top next step, for the returned page only (batched).
+    const shown = new Set(rows.map((row) => row.id));
+    const nextSteps = await topNextStepsForProjects(
+      candidates.filter((project) => shown.has(String(project._id))),
+      { financialsById, now }
+    );
+    rows = rows.map((row) => ({ ...row, nextStep: nextSteps.get(row.id) || null }));
     return res.json({ projects: rows, total, page, limit, stages: STAGES });
   } catch (error) {
     console.error("POST /admin/projects/search failed:", error?.message);

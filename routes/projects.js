@@ -353,11 +353,16 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.get("/customer-search", async (req, res) => {
+/**
+ * Project customer picker. POST keeps the search text out of URLs and logs
+ * (`{q, limit?, cursor?}` in the JSON body); GET stays for the frontend that
+ * predates it. Both answer `{customers, nextCursor, limit, message?}`.
+ */
+async function searchProjectCustomers(req, res, input) {
   try {
-    const q = cleanString(req.query.q, 120);
-    const limit = normalizeLimit(req.query.limit, 12);
-    const cursor = normalizeCursor(req.query.cursor);
+    const q = cleanString(input?.q, 120);
+    const limit = normalizeLimit(input?.limit, 12);
+    const cursor = normalizeCursor(input?.cursor);
     const query = buildCustomerSearchQuery(q);
 
     if (!query) {
@@ -409,10 +414,13 @@ router.get("/customer-search", async (req, res) => {
       limit,
     });
   } catch (error) {
-    console.error("GET /admin/projects/customer-search failed:", error);
+    console.error(`${req.method} /admin/projects/customer-search failed:`, error);
     return res.status(500).json({ message: "Failed to search customers" });
   }
-});
+}
+
+router.get("/customer-search", (req, res) => searchProjectCustomers(req, res, req.query || {}));
+router.post("/customer-search", (req, res) => searchProjectCustomers(req, res, req.body || {}));
 
 router.get("/customer/:customerId", async (req, res) => {
   try {
