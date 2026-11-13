@@ -220,6 +220,19 @@ function needsActionFilter(now = new Date()) {
   };
 }
 
+/**
+ * Needs action as the caller may act on it. A field Fixter cannot confirm
+ * requests, assign, or deal with payments, so for them it holds only their own
+ * Confirmed jobs that are past time and not closed - the one thing they can do.
+ * Everyone else gets the full filter. Used by the list, the badge count and the
+ * collector alike, so the three numbers stay equal for every role.
+ */
+function needsActionFilterFor(req, now = new Date()) {
+  const scope = jobScopeFilter(req);
+  if (canSeeAllJobs(req)) return { ...needsActionFilter(now), ...scope };
+  return { status: statusMatcher([STATUS.CONFIRMED]), date: { $lt: new Date(now.getTime() - CLOSE_LAG_MS) }, ...scope };
+}
+
 /** The one reason a booking is in Needs action, most serious first. */
 function needsActionReason(booking, now = new Date()) {
   const status = canonicalStatus(booking.status);
@@ -252,7 +265,7 @@ function needsActionReason(booking, now = new Date()) {
 }
 
 async function needsActionBookings(req, { now = new Date(), limit = 50 } = {}) {
-  const filter = { ...needsActionFilter(now), ...jobScopeFilter(req) };
+  const filter = needsActionFilterFor(req, now);
   const [count, rows] = await Promise.all([
     Booking.countDocuments(filter),
     Booking.find(filter).sort({ date: 1, _id: 1 }).limit(Math.min(Math.max(1, limit), MAX_LIMIT)).select(ROW_FIELDS).lean(),
@@ -308,7 +321,7 @@ async function jobCounts(req, { now = new Date() } = {}) {
     count("today"),
     count("tomorrow"),
     count("week"),
-    Booking.countDocuments({ ...needsActionFilter(now), ...scope }),
+    Booking.countDocuments(needsActionFilterFor(req, now)),
   ]);
   return { today, tomorrow, week, needsAction };
 }
@@ -598,6 +611,7 @@ async function myDay(req, { now = new Date() } = {}) {
 }
 
 module.exports = {
+  needsActionFilterFor,
   ACTIVE_STATUSES,
   JobQueryError,
   ROW_FIELDS,

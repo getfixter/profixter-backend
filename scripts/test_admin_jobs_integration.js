@@ -774,6 +774,19 @@ async function main() {
       }
       assert.strictEqual((await call(customer, "GET", "/api/admin/needs-action")).status, 403);
     });
+    await check("a field Fixter's Needs action holds only their own not-closed jobs, not requests they cannot act on", async () => {
+      const ownPending = await Booking.create({ ...bookingData(customer, { status: "Pending", assignedFixterId: fixA._id, assignedFixterName: fixA.name }), date: at(openDay(19), "10:00") });
+      const na = await call(fixA, "GET", "/api/admin/needs-action");
+      const section = na.body.sections.find((s) => s.key === "bookings");
+      const ids = new Set(section.items.map((i) => i.id));
+      assert.ok(!ids.has(String(ownPending._id)), "an own request to review is the owner's action, not the Fixter's");
+      assert.ok(section.items.every((i) => i.kind === "job_not_closed"), JSON.stringify(section.items.map((i) => i.kind)));
+      const list = await call(fixA, "GET", "/api/admin/jobs?view=needs_action");
+      assert.strictEqual(list.body.counts.needsAction, section.count);
+      const ownerView = await call(owner, "GET", "/api/admin/needs-action");
+      assert.ok(ownerView.body.sections.find((s) => s.key === "bookings").items.some((i) => i.id === String(ownPending._id)), "the owner still sees it");
+      await Booking.deleteOne({ _id: ownPending._id });
+    });
     await check("my-day lists the caller's own jobs today and tomorrow", async () => {
       const today = moment.tz(TZ).format("YYYY-MM-DD");
       const mine = await Booking.create({ ...bookingData(customer, { status: "Confirmed", assignedFixterId: fixA._id, assignedFixterName: fixA.name }), date: at(today, "23:30") });
