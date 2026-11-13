@@ -145,6 +145,18 @@ const SubscriptionSchema = new mongoose.Schema(
       smsError: { type: String, default: null },
       skippedReason: { type: String, default: null },
     },
+    /*
+     * A membership the owner gave without payment (Admin "Complimentary",
+     * owner-only, reason required). Never a fallback for a Stripe membership
+     * that is missing or failing; refused while any other membership on the
+     * home has not ended. paymentMethod is "complimentary" on these records.
+     */
+    complimentary: {
+      reason: { type: String, default: "" },
+      grantedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      grantedByName: { type: String, default: "" },
+      grantedAt: { type: Date, default: null },
+    },
     renewalAttempts: { type: Number, default: 0 },
     planPrice: { type: Number, default: 0 },
     paymentMethod: { type: String, default: "card" },

@@ -84,7 +84,8 @@ function buildSignupAddress(input = {}) {
    * separate line2 that the key ignored would quietly merge them and hand one
    * building's worth of free first visits to whoever asked first.
    */
-  const composedLine1 = unit ? `${line1} ${unit}`.trim() : line1;
+  const alreadyFolded = unit && line1.toLowerCase().endsWith(` ${unit.toLowerCase()}`);
+  const composedLine1 = unit && !alreadyFolded ? `${line1} ${unit}`.trim() : line1;
 
   const lat = finiteCoord(input.lat, 90);
   const lng = finiteCoord(input.lng, 180);
@@ -96,6 +97,11 @@ function buildSignupAddress(input = {}) {
     address: {
       label: "Primary",
       line1: composedLine1,
+      /*
+       * The unit on its own as well, for screens that show and edit it as a
+       * field (utils/formatAddress). line1 above stays the key.
+       */
+      unit: unit.slice(0, 40),
       city,
       state,
       zip,

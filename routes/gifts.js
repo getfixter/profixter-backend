@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const auth = require("../middleware/auth");
+const { ensureNotBlacklisted } = require("../middleware/blacklist");
+const { findActiveBlockForUser, refuseBlocked } = require("../utils/customerBlock");
 const GiftMembership = require("../models/GiftMembership");
 const User = require("../models/User");
 const { normalizeEmail } = require("../utils/identity");
@@ -277,6 +279,9 @@ router.post("/checkout-session", auth, async (req, res) => {
     }
 
     const purchaser = await User.findById(req.user.id);
+    /* A blocked person buys nothing (checked after the request itself is validated). */
+    const block = purchaser ? await findActiveBlockForUser(purchaser) : null;
+    if (block) return refuseBlocked(res, "gift_checkout", block);
     if (!purchaser) return res.status(404).json({ message: "User not found" });
 
     // The purchase confirmation and the gift receipt go to the purchaser's email.
@@ -794,7 +799,7 @@ router.get("/claim/:token/details", auth, async (req, res) => {
   }
 });
 
-router.post("/claim/:token", auth, async (req, res) => {
+router.post("/claim/:token", auth, ensureNotBlacklisted, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });

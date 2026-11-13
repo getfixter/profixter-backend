@@ -8,6 +8,7 @@ const CommunicationTemplate = require("../models/CommunicationTemplate");
 const EmailLog = require("../models/EmailLog");
 const SmsMessage = require("../models/SmsMessage");
 const User = require("../models/User");
+const AdminActivityLog = require("../models/AdminActivityLog");
 
 const { TEMPLATES: EMAIL_TEMPLATES } = require("../utils/emailService");
 const { TEMPLATES: SMS_CODE_TEMPLATES, renderSms } = require("../utils/sms/smsTemplates");
@@ -796,6 +797,21 @@ function byNewest(a, b) {
   return new Date(b.at).getTime() - new Date(a.at).getTime();
 }
 
+/** Emails this account held before, from the owner-only part of its profile edit history. */
+async function pastEmailsFor(userId) {
+  const logs = await AdminActivityLog.find({ entityType: "User", entityId: String(userId), action: "Customer Profile Updated" })
+    .select("details.ownerOnly.changes")
+    .limit(200)
+    .lean();
+  const out = [];
+  for (const log of logs) {
+    for (const change of log.details?.ownerOnly?.changes || []) {
+      if (change.field === "email") out.push(change.from, change.to);
+    }
+  }
+  return out.filter((e) => typeof e === "string" && e.includes("@"));
+}
+
 /**
  * Everything ProFixter has said to one customer, both channels, newest first.
  *
@@ -811,12 +827,22 @@ router.get("/customers/:userId/history", auth, ...customerHistoryAccess, async (
     const objectId = mongoose.Types.ObjectId.isValid(rawId) ? new mongoose.Types.ObjectId(rawId) : null;
 
     const user = objectId ? await User.findById(objectId).select("email userId phone name").lean() : null;
-    const emails = [user?.email].filter(Boolean).map((e) => String(e).toLowerCase());
+    /*
+     * Every address the account has had, not only today's: an email changed in
+     * Admin is recorded (full values, owner-only part) in the profile history,
+     * and mail sent to the old address is still this customer's history.
+     */
+    const pastEmails = user ? await pastEmailsFor(user._id) : [];
+    const emails = [...new Set([user?.email, ...pastEmails].filter(Boolean).map((e) => String(e).toLowerCase()))];
+    const idValues = [rawId, ...(objectId ? [objectId] : []), ...(user?.userId ? [String(user.userId)] : [])];
 
     const smsMatch = objectId ? { $or: [{ user: objectId }, { userId: rawId }] } : { userId: rawId };
-    const emailMatch = emails.length
-      ? { $or: [{ recipientEmail: { $in: emails } }, { customerEmail: { $in: emails } }] }
-      : { userId: rawId };
+    const emailMatch = {
+      $or: [
+        ...(emails.length ? [{ recipientEmail: { $in: emails } }, { customerEmail: { $in: emails } }] : []),
+        { userId: { $in: idValues } },
+      ],
+    };
 
     const [smsRows, emailRows] = await Promise.all([
       SmsMessage.find(smsMatch).sort({ createdAt: -1 }).limit(limit).lean(),

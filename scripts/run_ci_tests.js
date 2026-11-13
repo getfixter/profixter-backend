@@ -129,6 +129,12 @@ const SUITES = [
   "test_booking_transitions.js",
   // Jobs API: Fixter record scope, atomic transitions, edits, reschedule, cancel, Needs action (in-memory replica set).
   "test_admin_jobs_integration.js",
+  // Admin redesign (BE-CUST): confirmed plan changes, cancellation, complimentary, legacy refusals, no N+1 (in-memory Mongo, Stripe faked).
+  "test_admin_customer_membership.js",
+  // Block enforced at every booking/request/checkout entry point by account, email and phone; unblock keeps history.
+  "test_customer_block_enforcement.js",
+  // Customer list/search/profile, lean DTOs, billing proxy (Stripe faked), notes, archive, consent, comms history.
+  "test_admin_customer_directory.js",
 ];
 
 /**

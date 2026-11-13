@@ -13,6 +13,7 @@ const { createAndSendLink, MEMBERSHIP_LINK_DAYS } = require("../utils/admin/paym
 const { AdminVisitError, createAdminVisit } = require("../utils/admin/adminVisits");
 const { getOneTimeVisitSettings } = require("../utils/oneTimeVisitSettings");
 const { getFullDayVisitSettings } = require("../utils/fullDayVisitSettings");
+const { isUserBlocked } = require("../utils/customerBlock");
 
 /**
  * Admin sells a membership and creates visits, on the phone with a customer.
@@ -127,7 +128,7 @@ router.get("/customers/:id/membership-options", auth, ...customersOrMembers, asy
         blocked: blocker ? { code: blocker.body?.code || "", message: blocker.body?.message || "" } : null,
       });
     }
-    return res.json({ homes, hasEmail: !!user.email, hasPhone: !!user.phone });
+    return res.json({ homes, hasEmail: !!user.email, hasPhone: !!user.phone, customerBlocked: await isUserBlocked(user) });
   } catch (error) {
     console.error("GET /admin/customers/:id/membership-options error:", error);
     return res.status(500).json({ message: "Could not load this customer's homes." });
@@ -142,6 +143,9 @@ router.post("/customers/:id/membership-sale", auth, ...customersManage, async (r
   try {
     const user = await loadCustomer(req, res);
     if (!user) return undefined;
+    if (await isUserBlocked(user)) {
+      return res.status(409).json({ code: "CUSTOMER_BLOCKED", message: "This customer is blocked. Unblock them before selling a membership." });
+    }
     const admin = actingAdmin(req);
     const plan = String(req.body?.plan || "").toLowerCase();
     const billingCycle = normalizeBillingCycle(req.body?.billingCycle, "monthly");

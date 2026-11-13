@@ -7,6 +7,7 @@ const { CLIENT_URL, CheckoutRefusal, openMembershipCheckout } = require("../util
 const { findLinkByToken, linkIsLive } = require("../utils/admin/paymentLinks");
 const { hitAll } = require("../utils/auth/authRateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
+const { findActiveBlock, refuseBlocked } = require("../utils/customerBlock");
 
 /**
  * profixter.com/pay/<token> - the customer's side of an Admin payment link.
@@ -66,6 +67,10 @@ router.post("/:token/checkout", async (req, res) => {
     if (!link) return res.status(404).json({ status: "not_found", message: "This payment link isn't valid." });
     const state = await describe(link);
     if (state.status !== "open") return res.status(410).json({ ...state, message: state.status === "paid" ? "This has already been paid. Thank you!" : "This payment link has expired. Please call us for a new one." });
+
+    /* A link sent before the person was blocked opens nothing for them now. */
+    const block = await findActiveBlock({ userId: link.user, email: link.sentTo?.email, phone: link.sentTo?.phone });
+    if (block) return refuseBlocked(res, "pay_link", block);
 
     let url = "";
     if (link.kind === "membership") {
