@@ -685,7 +685,10 @@ function testWiring() {
   assert.match(bookingsSource, /full-day\/eligibility/);
   assert.match(bookingsSource, /full-day\/book/);
   assert.match(bookingsSource, /full-day\/checkout/);
-  assert.match(bookingsSource, /restoreIncludedFullDay/);
+  // The cancel restore is one helper shared with Admin cancel (2026-11-12), which tries both benefits.
+  assert.match(bookingsSource, /restoreFullDayBenefit/);
+  const entitlementsSource = require("fs").readFileSync(require("path").join(__dirname, "..", "utils", "fullDayEntitlements.js"), "utf8");
+  assert.match(entitlementsSource, /async function restoreFullDayBenefit[\s\S]*restoreIncludedFullDay[\s\S]*restoreLoyaltyFullDay/);
   // The price must never be typed into the booking code.
   assert.doesNotMatch(bookingsSource, /price_1[A-Za-z0-9]+/);
 
