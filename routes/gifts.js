@@ -4,6 +4,7 @@ const router = express.Router();
 
 const auth = require("../middleware/auth");
 const { ensureNotBlacklisted } = require("../middleware/blacklist");
+const { findActiveBlockForUser, refuseBlocked } = require("../utils/customerBlock");
 const GiftMembership = require("../models/GiftMembership");
 const User = require("../models/User");
 const { normalizeEmail } = require("../utils/identity");
@@ -228,7 +229,7 @@ router.get("/options", async (_req, res) => {
  * once Stripe confirms payment, so an abandoned checkout leaves no record and
  * a browser that lies about success gets nothing.
  */
-router.post("/checkout-session", auth, ensureNotBlacklisted, async (req, res) => {
+router.post("/checkout-session", auth, async (req, res) => {
   try {
     if (!hasStripeSecretKey()) {
       return res.status(503).json({ message: "Payments are unavailable right now" });
@@ -278,6 +279,9 @@ router.post("/checkout-session", auth, ensureNotBlacklisted, async (req, res) =>
     }
 
     const purchaser = await User.findById(req.user.id);
+    /* A blocked person buys nothing (checked after the request itself is validated). */
+    const block = purchaser ? await findActiveBlockForUser(purchaser) : null;
+    if (block) return refuseBlocked(res, "gift_checkout", block);
     if (!purchaser) return res.status(404).json({ message: "User not found" });
 
     // The purchase confirmation and the gift receipt go to the purchaser's email.
