@@ -673,6 +673,67 @@ async function main() {
       assert.strictEqual(email.status, "failed");
       assert.ok(email.reason);
     });
+
+    /*
+     * Review fix 4 (2026-11-13): a cancel that lands after the route's
+     * freshness check (simulated at the move's technician lookup) is caught
+     * inside the move transaction: 409 BOOKING_INACTIVE, nothing moved, no
+     * customer message.
+     */
+    const cancelDuringMove = (job) => {
+      const realFindOne = User.findOne;
+      User.findOne = function patched(filter, ...rest) {
+        if (filter && filter.role === "employee" && filter.employeePosition) {
+          User.findOne = realFindOne;
+          return {
+            lean: async () => {
+              await Booking.collection.updateOne({ _id: job._id }, { $set: { status: "Canceled" } });
+              return realFindOne.call(User, filter, ...rest).lean();
+            },
+          };
+        }
+        return realFindOne.call(this, filter, ...rest);
+      };
+      return () => {
+        User.findOne = realFindOne;
+      };
+    };
+    await check("review 4: a reschedule racing a customer cancel is refused inside the move, and nobody is told", async () => {
+      const job = await reserved(other, fixA, openDay(19), "08:00", { status: "Confirmed" });
+      const emails = sentEmails.length;
+      const sms = await SmsMessage.countDocuments({ booking: job._id });
+      const restore = cancelDuringMove(job);
+      let res;
+      try {
+        res = await call(owner, "POST", `/api/admin/jobs/${job._id}/reschedule`, { date: openDay(19), time: "13:00", assignedFixterId: String(fixA._id), expectedUpdatedAt: job.updatedAt.toISOString(), idempotencyKey: key() });
+      } finally {
+        restore();
+      }
+      assert.strictEqual(res.status, 409, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, "BOOKING_INACTIVE");
+      const live = await BookingSlotReservation.findOne({ bookingId: job._id, status: "reserved" });
+      assert.strictEqual(live.slotStart.getTime(), at(openDay(19), "08:00").getTime(), "the reservation was not moved");
+      assert.strictEqual((await Booking.findById(job._id)).status, "Canceled");
+      assert.strictEqual(sentEmails.length, emails, "no email");
+      assert.strictEqual(await SmsMessage.countDocuments({ booking: job._id }), sms, "no text");
+    });
+    await check("review 4: a PATCH reassignment racing a cancel is refused inside the move; the note edit is put back", async () => {
+      const job = await reserved(customer, fixA, openDay(20), "08:00", { status: "Confirmed" });
+      const emails = sentEmails.length;
+      const restore = cancelDuringMove(job);
+      let res;
+      try {
+        res = await call(owner, "PATCH", `/api/admin/jobs/${job._id}`, { adminNote: "reassign", assignedFixterId: String(fixB._id), expectedUpdatedAt: job.updatedAt.toISOString() });
+      } finally {
+        restore();
+      }
+      assert.strictEqual(res.status, 409, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, "BOOKING_INACTIVE");
+      const fresh = await Booking.findById(job._id);
+      assert.strictEqual(String(fresh.assignedFixterId), String(fixA._id), "still the original Fixter");
+      assert.strictEqual(fresh.adminNote || "", job.adminNote || "");
+      assert.strictEqual(sentEmails.length, emails, "no assignment email");
+    });
     /* ====================== owner-created appointment ==================== */
     console.log("\nOwner-created appointment (J-11, Q-2)");
     await check("an owner-created free visit starts Confirmed, assigned, and reminder-eligible", async () => {

@@ -1837,6 +1837,11 @@ async function moveReservationForBooking({
 }) {
   const booking = await Booking.findById(bookingId);
   if (!booking) throw serviceError("BOOKING_NOT_FOUND", "Booking not found", 404);
+  // A Canceled or Completed booking is never moved or reassigned (checked
+  // again inside the transaction, where a racing cancel cannot slip past).
+  if (isTerminalBookingStatus(booking.status)) {
+    throw serviceError("BOOKING_INACTIVE", "This job was canceled or completed, so it cannot be moved or reassigned.");
+  }
   const desiredStart = slotStart || booking.date;
   // A visit is 90 minutes from its start. A Full Day is not, and rebuilding it
   // from reservationWindow() is exactly how Confirm once shrank a paid Full
@@ -1900,6 +1905,15 @@ async function moveReservationForBooking({
         bookingId,
         session
       );
+      // Review fix 4 (2026-11-13): the status precondition lives inside the
+      // move transaction. A customer cancel that landed after the route's
+      // freshness check must not be re-reserved, reassigned or announced.
+      if (transactionalBooking && isTerminalBookingStatus(transactionalBooking.status)) {
+        throw serviceError(
+          "BOOKING_INACTIVE",
+          "This job was canceled or completed, so it cannot be moved or reassigned."
+        );
+      }
       if (!transactionalBooking || !reservation) {
         throw serviceError(
           "RESERVATION_NOT_FOUND",
@@ -1907,7 +1921,7 @@ async function moveReservationForBooking({
           404
         );
       }
-      const oldDescription = `${transactionalBooking.assignedFixterName || "Technician"} · ${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`;
+      const oldDescription = `${transactionalBooking.assignedFixterName || "Technician"} ·${reservation.slotStart.toISOString()}–${reservation.slotEnd.toISOString()}`;
       const oldBuckets = await ReservationTimeBucket.find({
         reservationId: reservation._id,
       }).session(session);
