@@ -28,7 +28,9 @@ const Invoice = require("../models/Invoice");
 const { getProjectFinancialSummary } = require("../utils/projectFinancialsService");
 const {
   buildDerivedStage,
+  depositBilled,
   depositScheduleIndex,
+  milestoneBilled,
   loadProjectOverview,
   NEXT_STEP_PROJECT_SELECT,
   STAGES,
@@ -591,11 +593,72 @@ router.post("/:id/invoices/from-schedule", async (req, res, next) => {
         return fail(res, 409, "That row is the deposit. Use kind \"deposit\".", "USE_DEPOSIT");
       }
       amountCents = Number(row.amountCents || 0);
-      label = row.label;
+      // Cleaned as the draft route cleans billing.label, so the invoice line matches it exactly.
+      label = String(row.label || "").replace(/\u0000/g, "").trim().slice(0, 240);
       if (amountCents <= 0) return fail(res, 409, "That payment schedule row has no amount.", "NO_AMOUNT");
     }
 
-    const claimKey = `${contract._id}:${kind}:${scheduleIndex ?? ""}`;
+    /*
+     * Review fix 2026-11-13. The claim is keyed per PROJECT + row, not per
+     * agreement version, so a revised and re-signed agreement cannot bill the
+     * same deposit or milestone again. Before claiming, the same server-side
+     * helpers the overview uses decide whether the row is already billed -
+     * including deposits and milestones invoiced by hand before this route
+     * existed, and claims made under an older agreement version.
+     */
+    const claimKey = `${project._id}:${kind}:${scheduleIndex ?? ""}`;
+    const projectInvoices = await Invoice.find({ projectId: project._id, isArchived: { $ne: true } })
+      .select("status isArchived contractId invoiceTotalCents invoiceNumber lineItems.description createdAt")
+      .lean();
+    const invoicesById = new Map(projectInvoices.map((invoice) => [String(invoice._id), invoice]));
+    const currentClaims = (await Project.findById(project._id).select("billingClaims").lean())?.billingClaims || [];
+    const sameRow = (row) => row.kind === kind && (kind === "deposit" || Number(row.scheduleIndex) === Number(scheduleIndex));
+    const liveClaimInvoice = (row) => {
+      const invoice = row.invoiceId ? invoicesById.get(String(row.invoiceId)) : null;
+      return invoice && !["Voided", "Superseded"].includes(invoice.status) ? invoice : null;
+    };
+    const replayable = currentClaims.find((row) => sameRow(row) && row.idempotencyKey === idempotencyKey && liveClaimInvoice(row));
+    if (replayable) {
+      const invoice = liveClaimInvoice(replayable);
+      return res.status(200).json({ replayed: true, invoiceId: String(invoice._id), invoiceNumber: invoice.invoiceNumber, kind, scheduleIndex });
+    }
+    // Claims under the current key are settled by the atomic claim below; everything else billed is a refusal.
+    const otherClaims = currentClaims.filter((row) => row.claimKey !== claimKey);
+    const billedElsewhere =
+      kind === "deposit"
+        ? depositBilled({ billingClaims: otherClaims }, contract, projectInvoices, invoicesById)
+        : milestoneBilled({ billingClaims: otherClaims }, contract, scheduleIndex, projectInvoices, invoicesById);
+    if (billedElsewhere) {
+      const byClaim = currentClaims.find((row) => sameRow(row) && liveClaimInvoice(row));
+      const invoice = byClaim ? liveClaimInvoice(byClaim) : null;
+      return fail(res, 409, `This ${kind} is already billed${invoice?.invoiceNumber ? ` (invoice #${invoice.invoiceNumber})` : ""}.`, "ALREADY_BILLED", {
+        invoiceId: invoice ? String(invoice._id) : null,
+      });
+    }
+
+    /*
+     * The invoice this claim produced, if one was created but never stamped
+     * on the claim (the stamp failed or the process died). Never release a
+     * claim whose invoice exists: stamp it instead.
+     */
+    const invoiceCreatedFor = async (row) => {
+      const since = new Date(new Date(row.claimedAt || 0).getTime() - 5000);
+      return Invoice.findOne({
+        projectId: project._id,
+        isArchived: { $ne: true },
+        status: { $nin: ["Voided", "Superseded"] },
+        createdAt: { $gte: since },
+        "lineItems.description": label,
+      })
+        .select("_id invoiceNumber status")
+        .lean();
+    };
+    const stampClaim = (row, invoiceId) =>
+      Project.updateOne(
+        { _id: project._id, billingClaims: { $elemMatch: { _id: row._id, invoiceId: null } } },
+        { $set: { "billingClaims.$.invoiceId": invoiceId } }
+      );
+
     const claim = {
       claimKey,
       kind,
@@ -619,10 +682,20 @@ router.post("/:id/invoices/from-schedule", async (req, res, next) => {
       const current = await Project.findById(project._id).select("billingClaims").lean();
       const existing = (current.billingClaims || []).find((row) => row.claimKey === claimKey);
       if (!existing) continue;
-      const invoice = existing.invoiceId ? await Invoice.findById(existing.invoiceId).select("status invoiceNumber").lean() : null;
+      let invoice = existing.invoiceId ? await Invoice.findById(existing.invoiceId).select("status invoiceNumber").lean() : null;
+      const stale = !existing.invoiceId && Date.now() - new Date(existing.claimedAt).getTime() > STALE_CLAIM_MS;
+      if (stale) {
+        // A stale claim whose invoice was in fact created is billed, not abandoned.
+        const created = await invoiceCreatedFor(existing);
+        if (created) {
+          await stampClaim(existing, created._id);
+          existing.invoiceId = created._id;
+          invoice = created;
+        }
+      }
       const releasable =
-        (invoice && invoice.status === "Voided") ||
-        (!existing.invoiceId && Date.now() - new Date(existing.claimedAt).getTime() > STALE_CLAIM_MS);
+        (invoice && ["Voided", "Superseded"].includes(invoice.status)) ||
+        (!existing.invoiceId && stale);
       if (releasable && attempt === 0) {
         await Project.updateOne({ _id: project._id }, { $pull: { billingClaims: { _id: existing._id } } });
         continue;
@@ -636,7 +709,15 @@ router.post("/:id/invoices/from-schedule", async (req, res, next) => {
       });
     }
 
-    const release = () => Project.updateOne({ _id: project._id }, { $pull: { billingClaims: { claimKey, invoiceId: null } } });
+    // Release only a claim that produced no invoice; one that did is stamped instead.
+    const release = async () => {
+      const current = await Project.findById(project._id).select("billingClaims").lean();
+      const mine = (current?.billingClaims || []).find((row) => row.claimKey === claimKey && !row.invoiceId && row.idempotencyKey === idempotencyKey);
+      if (!mine) return null;
+      const created = await invoiceCreatedFor(mine);
+      if (created) return stampClaim(mine, created._id);
+      return Project.updateOne({ _id: project._id }, { $pull: { billingClaims: { _id: mine._id, invoiceId: null } } });
+    };
 
     // Hand over to the existing draft route, capturing its answer to stamp the claim.
     const originalJson = res.json.bind(res);

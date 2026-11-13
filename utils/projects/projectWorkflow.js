@@ -84,28 +84,71 @@ function depositScheduleIndex(schedule) {
   return (schedule || []).findIndex((row) => /deposit|down ?payment|upon signing|at signing/i.test(`${row.label} ${row.dueCondition}`));
 }
 
-function claimFor(project, contractId, kind, scheduleIndex = null, invoicesById = new Map()) {
+/**
+ * The live billing claim for the deposit or one schedule row of THIS PROJECT.
+ *
+ * Claims are matched per project + kind + row, whatever agreement version
+ * they were made against (review fix 2026-11-13): a revised and re-signed
+ * agreement gets a new Contract _id, and keying on it let the v1 deposit be
+ * billed a second time. `contractId` is kept in the signature for callers.
+ */
+function claimFor(project, _contractId, kind, scheduleIndex = null, invoicesById = new Map()) {
   return (project.billingClaims || []).find((claim) => {
-    if (String(claim.contractId) !== String(contractId) || claim.kind !== kind) return false;
+    if (claim.kind !== kind) return false;
     if (kind === "milestone" && Number(claim.scheduleIndex) !== Number(scheduleIndex)) return false;
     if (!claim.invoiceId) return true;
     const invoice = invoicesById.get(String(claim.invoiceId));
-    return invoice && invoice.status !== "Voided";
+    return Boolean(invoice && liveInvoices([invoice]).length);
   }) || null;
+}
+
+function normalizedLabel(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function invoiceHasLine(invoice, test) {
+  return (invoice.lineItems || []).some((line) => test(normalizedLabel(line.description)));
+}
+
+/** Invoices already accounted for by a milestone claim (they are not the deposit). */
+function milestoneClaimInvoiceIds(project) {
+  return new Set(
+    (project.billingClaims || [])
+      .filter((claim) => claim.kind === "milestone" && claim.invoiceId)
+      .map((claim) => String(claim.invoiceId))
+  );
 }
 
 /**
  * Is the deposit billed? A deposit claim made through "Create deposit
- * invoice", or - for projects billed by hand before this existed - live
- * invoices against this agreement that already cover the deposit amount.
+ * invoice", or - for projects billed by hand before this existed - a live
+ * invoice of this project with a deposit line, or live invoices (other than
+ * known milestone invoices) that already cover the deposit amount. Every
+ * agreement version of the project counts: a re-signed agreement does not
+ * reopen a deposit that was already invoiced.
  */
 function depositBilled(project, agreement, invoices, invoicesById) {
   if (claimFor(project, agreement._id, "deposit", null, invoicesById)) return true;
   const deposit = Number(agreement.depositAmountCents || 0);
-  const billed = liveInvoices(invoices)
-    .filter((invoice) => !invoice.contractId || String(invoice.contractId) === String(agreement._id))
-    .reduce((sum, invoice) => sum + Number(invoice.invoiceTotalCents || 0), 0);
+  const milestoneIds = milestoneClaimInvoiceIds(project);
+  const candidates = liveInvoices(invoices).filter((invoice) => !milestoneIds.has(String(invoice._id)));
+  if (candidates.some((invoice) => invoiceHasLine(invoice, (label) => /deposit|down ?payment/.test(label)))) return true;
+  const billed = candidates.reduce((sum, invoice) => sum + Number(invoice.invoiceTotalCents || 0), 0);
   return deposit > 0 && billed >= deposit;
+}
+
+/**
+ * Is one payment-schedule row billed? Its claim (any agreement version), or a
+ * live invoice of this project carrying a line with the row's label - which
+ * is exactly what "Bill milestone" writes, and what a hand-made invoice for
+ * that row would say.
+ */
+function milestoneBilled(project, agreement, scheduleIndex, invoices, invoicesById) {
+  if (claimFor(project, agreement._id, "milestone", scheduleIndex, invoicesById)) return true;
+  const row = (agreement.paymentSchedule || [])[scheduleIndex];
+  const label = normalizedLabel(row?.label);
+  if (!label) return false;
+  return liveInvoices(invoices).some((invoice) => invoiceHasLine(invoice, (line) => line === label));
 }
 
 /** The derived stage, from documents and closeout fields only. */
@@ -248,7 +291,7 @@ function buildNextSteps({ project, contracts, changeOrders, invoices, signatures
       const schedule = signed.paymentSchedule || [];
       const depositIndex = depositScheduleIndex(schedule);
       const nextIndex = schedule.findIndex(
-        (row, index) => index !== depositIndex && Number(row.amountCents || 0) > 0 && !claimFor(project, signed._id, "milestone", index, invoicesById)
+        (row, index) => index !== depositIndex && Number(row.amountCents || 0) > 0 && !milestoneBilled(project, signed, index, invoices, invoicesById)
       );
       if (nextIndex >= 0) {
         const row = schedule[nextIndex];
@@ -420,7 +463,7 @@ const PROJECT_SELECT =
 const CONTRACT_SELECT =
   "projectId contractNumber version current status adjustedContractPriceCents totalPriceCents depositAmountCents paymentSchedule customerSnapshot.email createdAt updatedAt";
 const CHANGE_ORDER_SELECT = "changeOrderNumber title status netAdjustmentCents sentAt updatedAt contractId sequence customerSnapshot.email";
-const INVOICE_SELECT = "projectId invoiceNumber status invoiceTotalCents payments dates sentAt contractId isArchived customerSnapshot.email createdAt";
+const INVOICE_SELECT = "projectId invoiceNumber status invoiceTotalCents payments dates sentAt contractId isArchived customerSnapshot.email lineItems.description createdAt";
 const SIGNATURE_SELECT =
   "projectId documentType documentId status signingMode sentAt createdAt completedAt declinedAt declineReason signingToken.state signingToken.openedAt signingToken.expiresAt";
 /** Project fields buildNextSteps reads, for list rows. */
@@ -597,6 +640,7 @@ module.exports = {
   buildNextSteps,
   depositScheduleIndex,
   depositBilled,
+  milestoneBilled,
   isOverdue,
   workingAgreement,
   loadProjectRecords,

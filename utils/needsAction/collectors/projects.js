@@ -43,7 +43,7 @@ async function depositItems(now) {
   if (!signed.length) return [];
   const projects = await liveProjects(signed.map((c) => c.projectId));
   const invoices = await Invoice.find({ projectId: { $in: [...projects.keys()] }, isArchived: { $ne: true } })
-    .select("projectId contractId status invoiceTotalCents isArchived")
+    .select("projectId contractId status invoiceTotalCents isArchived lineItems.description")
     .lean();
   const invoicesByProject = new Map();
   for (const invoice of invoices) {

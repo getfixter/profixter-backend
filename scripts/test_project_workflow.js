@@ -511,6 +511,106 @@ async function main() {
       assert.notStrictEqual(again.json.invoice.id, depositInvoiceId);
     });
 
+    /* Review fix 2 (2026-11-13): no double billing of a deposit or milestone. */
+    await test("review 2a: a deposit invoiced by hand is billed; from-schedule refuses and the overview agrees", async () => {
+      const p = await makeProject({ customerName: "Review Rita" });
+      await makeContract(p);
+      await makeInvoice(p, {
+        lineItems: [{ description: "Deposit", quantity: 1, unitPriceCents: 250000, totalCents: 250000, category: "Contract work" }],
+        subtotalCents: 250000,
+        invoiceTotalCents: 250000,
+        remainingBalanceCents: 250000,
+      });
+      const res = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "hand-1" });
+      assert.strictEqual(res.status, 409, JSON.stringify(res.json));
+      assert.strictEqual(res.json.code, "ALREADY_BILLED");
+      assert.strictEqual(await Invoice.countDocuments({ projectId: p._id }), 1);
+      const overview = await api("GET", `/api/admin/projects/${p._id}/overview`);
+      assert.ok(!overview.json.nextSteps.some((s) => s.key === "deposit_not_invoiced"));
+    });
+
+    await test("review 2a: a milestone invoiced by hand (same row label) is not billed again", async () => {
+      const p = await makeProject({ customerName: "Review Rita" });
+      await makeContract(p);
+      await makeInvoice(p, {
+        lineItems: [
+          { description: "Deposit", quantity: 1, unitPriceCents: 500000, totalCents: 500000, category: "Contract work" },
+          { description: "Rough-in complete", quantity: 1, unitPriceCents: 800000, totalCents: 800000, category: "Contract work" },
+        ],
+        subtotalCents: 1300000,
+        invoiceTotalCents: 1300000,
+        remainingBalanceCents: 1300000,
+      });
+      const overview = await api("GET", `/api/admin/projects/${p._id}/overview`);
+      const next = overview.json.nextSteps.find((s) => s.key === "bill_next_milestone");
+      assert.strictEqual(next?.action?.scheduleIndex, 2, "the overview skips the hand-billed row");
+      const res = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "milestone", scheduleIndex: 1, idempotencyKey: "hand-m1" });
+      assert.strictEqual(res.status, 409, JSON.stringify(res.json));
+      assert.strictEqual(res.json.code, "ALREADY_BILLED");
+      assert.strictEqual(await Invoice.countDocuments({ projectId: p._id }), 1);
+    });
+
+    await test("review 2b: a revised and re-signed agreement cannot bill the v1 deposit again", async () => {
+      const p = await makeProject({ customerName: "Review Rita" });
+      const v1 = await makeContract(p);
+      const first = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "v1-dep" });
+      assert.strictEqual(first.status, 201, JSON.stringify(first.json));
+      await Contract.updateOne({ _id: v1._id }, { $set: { status: "Superseded", current: false } });
+      await makeContract(p, { version: 2 });
+      const again = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "v2-dep" });
+      assert.strictEqual(again.status, 409, JSON.stringify(again.json));
+      assert.strictEqual(again.json.code, "ALREADY_BILLED");
+      assert.strictEqual(again.json.invoiceId, first.json.invoice.id);
+      // The original key still replays the original invoice.
+      const replay = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "v1-dep" });
+      assert.strictEqual(replay.status, 200);
+      assert.strictEqual(replay.json.invoiceId, first.json.invoice.id);
+      assert.strictEqual(await Invoice.countDocuments({ projectId: p._id }), 1);
+    });
+
+    await test("review 2b: a claim stored under the old per-agreement key still blocks a rebill", async () => {
+      const p = await makeProject({ customerName: "Review Rita" });
+      const contract = await makeContract(p);
+      const inv = await makeInvoice(p, { contractId: contract._id, lineItems: [{ description: "Rough-in complete", quantity: 1, unitPriceCents: 1, totalCents: 1, category: "Contract work" }], subtotalCents: 1, invoiceTotalCents: 1, remainingBalanceCents: 1 });
+      await Project.updateOne({ _id: p._id }, { $push: { billingClaims: { claimKey: `${contract._id}:milestone:1`, kind: "milestone", scheduleIndex: 1, contractId: contract._id, idempotencyKey: "old", invoiceId: inv._id } } });
+      await Invoice.updateOne({ _id: inv._id }, { $set: { "lineItems.0.description": "Renamed by hand" } });
+      const res = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "milestone", scheduleIndex: 1, idempotencyKey: "new" });
+      assert.strictEqual(res.status, 409, JSON.stringify(res.json));
+      assert.strictEqual(res.json.code, "ALREADY_BILLED");
+    });
+
+    await test("review 2c: a stale claim whose invoice was created is stamped, never released and rebilled", async () => {
+      const p = await makeProject({ customerName: "Review Rita" });
+      const contract = await makeContract(p);
+      const claimedAt = new Date(Date.now() - 10 * 60 * 1000);
+      // An invoice from the crashed attempt, under the CURRENT claim key, whose stamp never landed.
+      const orphan = await makeInvoice(p, {
+        contractId: contract._id,
+        status: "Draft",
+        sentAt: null,
+        lineItems: [{ description: "Deposit", quantity: 1, unitPriceCents: 500000, totalCents: 500000, category: "Contract work" }],
+        subtotalCents: 500000,
+        invoiceTotalCents: 500000,
+        remainingBalanceCents: 500000,
+      });
+      await Project.updateOne(
+        { _id: p._id },
+        { $push: { billingClaims: { claimKey: `${p._id}:deposit:`, kind: "deposit", scheduleIndex: null, contractId: contract._id, idempotencyKey: "crashed", invoiceId: null, claimedAt } } }
+      );
+      const res = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "retry" });
+      assert.strictEqual(res.status, 409, JSON.stringify(res.json));
+      assert.strictEqual(res.json.code, "ALREADY_BILLED");
+      assert.strictEqual(await Invoice.countDocuments({ projectId: p._id }), 1, "no second deposit invoice");
+      assert.strictEqual((await Project.findById(p._id).lean()).billingClaims.length, 1, "the claim was not released");
+      // Once that invoice is voided the stale, invoice-less claim may be released and the deposit billed once more.
+      await Invoice.updateOne({ _id: orphan._id }, { $set: { status: "Voided" } });
+      const rebill = await api("POST", `/api/admin/projects/${p._id}/invoices/from-schedule`, { kind: "deposit", idempotencyKey: "retry-2" });
+      assert.strictEqual(rebill.status, 201, JSON.stringify(rebill.json));
+      const claims = (await Project.findById(p._id).lean()).billingClaims;
+      assert.strictEqual(claims.length, 1);
+      assert.strictEqual(String(claims[0].invoiceId), rebill.json.invoice.id);
+    });
+
     /* ============ Visits, schedule, closeout ============ */
     console.log("\nVisits, schedule, closeout");
 
