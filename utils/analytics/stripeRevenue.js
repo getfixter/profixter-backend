@@ -70,6 +70,8 @@ function classifyCharge(charge) {
     plan = String(meta.plan || "").toLowerCase() || null;
   } else if (meta.productKind === "fixter_tip") {
     kind = "tip";
+  } else if (meta.productKind === "additional_charge") {
+    kind = "extra";
   }
 
   const cents = Number(charge.amount || 0);
@@ -161,7 +163,11 @@ async function writeState(value) {
 async function ledgerRow(charge) {
   const row = classifyCharge(charge);
   let taxCents = 0;
-  if (row.kind !== "project" && row.kind !== "tip") {
+  if (row.kind === "extra") {
+    // Charge extra: the tax is stamped on the PaymentIntent (an off-session charge has no Checkout session).
+    const pi = charge.payment_intent && typeof charge.payment_intent === "object" ? charge.payment_intent : null;
+    taxCents = Math.min(Number(pi?.metadata?.taxCents || charge.metadata?.taxCents || 0) || 0, Number(charge.amount || 0));
+  } else if (row.kind !== "project" && row.kind !== "tip") {
     taxCents =
       charge.invoice && typeof charge.invoice === "object"
         ? chargeTaxFromInvoice(charge)

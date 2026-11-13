@@ -245,6 +245,7 @@ app.use("/api/admin", require("./routes/adminBookingReservations"));
 app.use("/api/admin/projects", require("./routes/adminProjectWorkflow"));
 // The new Jobs API and Needs action (Admin redesign 2026-11-12); before the catch-all admin router.
 app.use("/api/admin", require("./routes/adminJobs"));
+app.use("/api/admin", require("./routes/adminExtraCharges"));
 app.use("/api/admin/needs-action", require("./routes/adminNeedsAction"));
 app.use("/api/admin/projects", require("./routes/projects"));
 // Leads with the homeowner answers, and lead -> project conversion.

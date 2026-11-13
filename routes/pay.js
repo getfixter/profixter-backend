@@ -36,6 +36,11 @@ async function limited(req) {
 }
 
 async function describe(link) {
+  if (link.kind === "extra_charge") {
+    // Decided by the AdditionalCharge itself: paid, processing or replaced links never open a page.
+    const extra = await require("../utils/extraCharges").describeLink(link);
+    return { status: extra.status, kind: link.kind, itemLabel: link.itemLabel, expiresAt: link.expiresAt, ...(extra.amountCents ? { amountCents: extra.amountCents } : {}) };
+  }
   let status = link.status;
   if (status === "open" && !linkIsLive(link)) status = "expired";
   if (link.booking && status === "open") {
@@ -73,6 +78,16 @@ router.post("/:token/checkout", async (req, res) => {
     if (block) return refuseBlocked(res, "pay_link", block);
 
     let url = "";
+    if (link.kind === "extra_charge") {
+      const extras = require("../utils/extraCharges");
+      try {
+        url = (await extras.openCheckoutForLink(link, token)).url;
+      } catch (error) {
+        if (!(error instanceof extras.ExtraChargeError)) throw error;
+        return res.status(error.statusCode || 409).json({ status: error.extra?.status || "unavailable", code: error.code, message: error.message });
+      }
+      return res.json({ url });
+    }
     if (link.kind === "membership") {
       const remaining = Math.floor((new Date(link.expiresAt).getTime() - Date.now()) / 1000);
       const expiresAt = Math.floor(Date.now() / 1000) + Math.max(31 * 60, Math.min(24 * 60 * 60 - 60, remaining));

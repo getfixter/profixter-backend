@@ -12,6 +12,7 @@
  * the answer is { available: false, reason } and the rest of the profile works.
  */
 const Subscription = require("../../models/Subscription");
+const AdditionalCharge = require("../../models/AdditionalCharge");
 const sm = require("../subscriptionManagement");
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -160,6 +161,34 @@ async function billingForCustomer(user, { now = Date.now(), fresh = false } = {}
       payments.push(...(charges?.data || []).map(chargeRow));
       if (next) upcoming.push(next);
     }
+    /*
+     * Charge extra payments are already among the Stripe charges above when
+     * they were made on this customer: they are LABELLED there, never added
+     * twice. Only extras paid where Stripe has no customer of this account
+     * (a link paid as a guest) are listed on their own, from our records.
+     */
+    const extraRecords = await AdditionalCharge.find({ user: user._id }).sort({ createdAt: -1 }).limit(50).lean();
+    const byIntent = new Map(extraRecords.filter((r) => r.paymentIntentId).map((r) => [r.paymentIntentId, r]));
+    for (const row of payments) {
+      const r = row.paymentIntentId ? byIntent.get(row.paymentIntentId) : null;
+      if (r) row.extraCharge = { id: String(r._id), number: r.number, bookingId: String(r.booking), bookingNumber: r.bookingNumber, description: r.description };
+    }
+    const shown = new Set(payments.map((p) => p.paymentIntentId).filter(Boolean));
+    const additionalCharges = extraRecords.map((r) => ({
+      id: String(r._id),
+      number: r.number,
+      bookingId: String(r.booking),
+      bookingNumber: r.bookingNumber,
+      description: r.description,
+      status: r.status,
+      totalCents: r.totalCents,
+      taxCents: r.taxCents,
+      refundedCents: Number(r.refundedCents || 0),
+      paidAt: r.paidAt || null,
+      createdAt: r.createdAt,
+      inPayments: Boolean(r.paymentIntentId && shown.has(r.paymentIntentId)),
+      stripeUrl: r.paymentIntentId ? dash(`payments/${r.paymentIntentId}`) : null,
+    }));
     const byNewest = (a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
     const value = {
       available: true,
@@ -169,6 +198,7 @@ async function billingForCustomer(user, { now = Date.now(), fresh = false } = {}
       invoices: invoices.sort(byNewest),
       payments: payments.sort(byNewest),
       upcoming,
+      additionalCharges,
       refundsNote: "Refunds are made in Stripe. Cancelling a membership or a visit does not refund anything.",
     };
     cache.set(key, { at: now, value });

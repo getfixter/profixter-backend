@@ -15,13 +15,18 @@ const mongoose = require("mongoose");
 const AdminPaymentLinkSchema = new mongoose.Schema(
   {
     tokenHash: { type: String, required: true, unique: true },
-    kind: { type: String, enum: ["membership", "one_time", "full_day"], required: true },
+    kind: { type: String, enum: ["membership", "one_time", "full_day", "extra_charge"], required: true },
 
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     addressId: { type: mongoose.Schema.Types.ObjectId, default: null },
     plan: { type: String, default: "" },
     billingCycle: { type: String, default: "" },
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null, index: true },
+
+    /* kind "extra_charge": the AdditionalCharge this link pays, and nothing else. */
+    additionalCharge: { type: mongoose.Schema.Types.ObjectId, ref: "AdditionalCharge", default: null, index: true },
+    /* A short lock while a Checkout page is being made, so two presses never make two pages. */
+    openingUntil: { type: Date, default: null },
 
     itemLabel: { type: String, default: "" },
     status: { type: String, enum: ["open", "paid", "expired", "canceled"], default: "open", index: true },

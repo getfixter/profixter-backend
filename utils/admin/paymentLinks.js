@@ -42,7 +42,9 @@ function firstNameOf(name) {
   return first ? first.charAt(0).toUpperCase() + first.slice(1) : "there";
 }
 
-function renderLinkEmail({ name, itemLabel, payUrl, expiresAt }) {
+function renderLinkEmail({ name, itemLabel, payUrl, expiresAt, kind = "" }) {
+  // An extra is work the customer agreed to at the visit, not a phone sale.
+  const why = kind === "extra_charge" ? "as we agreed" : "as we discussed on the phone";
   const e = mail.escapeHtml;
   const p = (t) => `<p style="margin:0 0 16px;">${t}</p>`;
   const until = new Date(expiresAt).toLocaleString("en-US", {
@@ -55,7 +57,7 @@ function renderLinkEmail({ name, itemLabel, payUrl, expiresAt }) {
   });
   const html = mail.frame(
     `${p(`Hi ${e(firstNameOf(name))},`)}
-     ${p(`Here is your secure payment link for <strong>${e(itemLabel)}</strong>, as we discussed on the phone.`)}
+     ${p(`Here is your secure payment link for <strong>${e(itemLabel)}</strong>, ${why}.`)}
      ${mail.btn(payUrl, "Pay securely")}
      ${p(`Payment is processed by Stripe. This link works until ${e(until)} (New York time).`)}
      <p style="margin:20px 0 0;">The Profixter Team<br/><a href="https://www.profixter.com">https://www.profixter.com</a></p>`,
@@ -63,7 +65,7 @@ function renderLinkEmail({ name, itemLabel, payUrl, expiresAt }) {
   );
   const text = [
     `Hi ${firstNameOf(name)},`,
-    `Here is your secure payment link for ${itemLabel}, as we discussed on the phone.`,
+    `Here is your secure payment link for ${itemLabel}, ${why}.`,
     `Pay securely: ${payUrl}`,
     `Payment is processed by Stripe. This link works until ${until} (New York time).`,
     "The Profixter Team\nhttps://www.profixter.com",
@@ -109,7 +111,7 @@ async function sendLink({ link, payUrl, contact, deps = {} }) {
   const delivery = { email: wantEmail ? "" : "not_requested", sms: wantSms ? "" : "not_requested" };
   if (wantEmail) {
     try {
-      const { subject, html, text } = renderLinkEmail({ name: contact.name, itemLabel, payUrl, expiresAt: link.expiresAt });
+      const { subject, html, text } = renderLinkEmail({ name: contact.name, itemLabel, payUrl, expiresAt: link.expiresAt, kind: link.kind });
       await sendEmail({
         to: link.sentTo.email,
         subject,

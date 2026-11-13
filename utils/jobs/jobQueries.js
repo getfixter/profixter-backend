@@ -418,6 +418,22 @@ function staffNotesOf(booking) {
   }));
 }
 
+/** Charge extra is the owner's alone, on a confirmed or completed visit. */
+function canChargeExtra(req, booking) {
+  return req?.accessRole === "admin" && [STATUS.CONFIRMED, STATUS.COMPLETED].includes(canonicalStatus(booking.status));
+}
+
+async function extraChargeSummary(bookingId) {
+  const AdditionalCharge = require("../../models/AdditionalCharge");
+  const rows = await AdditionalCharge.find({ booking: bookingId }).select("status totalCents refundedCents").lean();
+  const paidStates = ["paid", "partially_refunded", "refunded"];
+  return {
+    count: rows.length,
+    paidCents: rows.filter((r) => paidStates.includes(r.status)).reduce((sum, r) => sum + r.totalCents - Number(r.refundedCents || 0), 0),
+    open: rows.filter((r) => ["charging", "processing", "awaiting_payment", "failed"].includes(r.status)).length,
+  };
+}
+
 /** The JobDetail DTO. `allowedActions` is computed by the caller's rules. */
 async function jobDetail(req, booking, { now = new Date() } = {}) {
   const { allowedActionsFor } = require("../bookingTransitions");
@@ -455,7 +471,9 @@ async function jobDetail(req, booking, { now = new Date() } = {}) {
     cancellationReason: canonicalStatus(booking.status) === STATUS.CANCELED ? booking.cancellationReason || "" : "",
     completedAt: booking.completedAt || null,
     createdAt: booking.createdAt || null,
-    allowedActions: allowedActionsFor(req, booking),
+    allowedActions: [...allowedActionsFor(req, booking), ...(canChargeExtra(req, booking) ? ["chargeExtra"] : [])],
+    // Owner only: the extras on this visit (Charge extra), summarised; the sheet loads the full list.
+    extraCharges: req?.accessRole === "admin" ? await extraChargeSummary(booking._id) : undefined,
     history: { href: `/api/admin/bookings/${booking._id}/history` },
   };
 }

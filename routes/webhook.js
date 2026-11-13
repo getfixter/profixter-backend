@@ -19,6 +19,7 @@ const {
   isGiftSession,
 } = require("../utils/gifts/giftWebhook");
 const { markLinkPaidFromSession: markAdminPaymentLinkPaid } = require("../utils/admin/paymentLinks");
+const extraCharges = require("../utils/extraCharges");
 const {
   recordRenewal: recordLoyaltyRenewal,
   reverseFromCharge: reverseLoyaltyFromCharge,
@@ -1747,6 +1748,15 @@ async function alertIfHomeBilledTwice({ user, subscription, stripeSubscription }
 }
 
 async function handleCheckoutCompleted(session, eventId) {
+  /*
+   * A Charge extra payment page (utils/extraCharges). First, and returns: it
+   * is a one-time payment for one AdditionalCharge record and must never reach
+   * the visit, gift or subscription paths below.
+   */
+  if (extraCharges.isExtraChargeObject(session)) {
+    return extraCharges.handleCheckoutSession(session);
+  }
+
   if (isFixterTipCheckoutSession(session)) {
     return handleFixterTipCheckoutCompleted(session, eventId);
   }
@@ -2685,6 +2695,8 @@ module.exports = async (req, res) => {
         // Tip-specific and nothing else: the handler returns immediately unless
         // the charge belongs to a Tip record we already hold.
         syncResult = await handleTipChargeRefunded(event.data.object);
+        // Charge extra: keeps the AdditionalCharge refund total and status in step (refunds are made in Stripe).
+        await extraCharges.handleChargeRefunded(event.data.object);
         /*
          * Then gifts, which keep their refund totals in step with Stripe.
          * This records money only and never revokes an entitlement somebody
@@ -2717,7 +2729,9 @@ module.exports = async (req, res) => {
         break;
 
       case "checkout.session.expired":
-        if (isOneTimeCheckoutSession(event.data.object)) {
+        if (extraCharges.isExtraChargeObject(event.data.object)) {
+          syncResult = await extraCharges.handleCheckoutSession(event.data.object);
+        } else if (isOneTimeCheckoutSession(event.data.object)) {
           syncResult = await handleOneTimeCheckoutExpired(event.data.object, "expired");
         } else if (isFullDayCheckoutSession(event.data.object)) {
           syncResult = await handleFullDayCheckoutExpired(event.data.object, "expired");
@@ -2735,7 +2749,27 @@ module.exports = async (req, res) => {
         }
         break;
 
+      /*
+       * Charge extra: the PaymentIntent is the truth for an extra (the API
+       * answer, a retry, this webhook and a pull from Stripe all reconcile
+       * through the same idempotent function). Ignored for everything else.
+       */
+      case "payment_intent.succeeded":
+      case "payment_intent.processing":
+      case "payment_intent.canceled":
+        syncResult = await extraCharges.handlePaymentIntentEvent(event.data.object);
+        break;
+
+      case "checkout.session.async_payment_succeeded":
+      case "checkout.session.async_payment_failed":
+        syncResult = await extraCharges.handleCheckoutSession(event.data.object);
+        break;
+
       case "payment_intent.payment_failed": {
+        if (extraCharges.isExtraChargeObject(event.data.object)) {
+          syncResult = await extraCharges.handlePaymentIntentEvent(event.data.object);
+          break;
+        }
         const failedKind = event.data.object?.metadata?.productKind;
         const failedSession = {
           id: event.data.object?.metadata?.stripeCheckoutSessionId || null,
