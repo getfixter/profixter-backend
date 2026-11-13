@@ -1,16 +1,20 @@
 const mongoose = require("mongoose");
 
 /**
- * One "Charge extra" on a booking: agreed additional work, charged once.
+ * One "Charge customer": a single amount, charged once, as its own transaction.
+ * Made from a booking (scope "booking": booking set) or straight from the
+ * customer's profile with no booking (scope "direct": booking null, e.g. an
+ * emergency call-out). Both kinds are the same record and the same flow.
  *
  * Written BEFORE Stripe is contacted, so every PaymentIntent and every
  * Checkout page made for it carries this record's id in its metadata and can
  * be traced back - a timeout, a double tap or a replayed webhook always finds
  * the same record and never creates a second payable charge.
  *
- * Ownership is bound here once: `booking`, `user` and `stripeCustomerId` are
- * resolved on the server from the booking's stored account (never from the
- * browser) and every later step re-checks them against this record.
+ * Ownership is bound here once: `user` and `stripeCustomerId` are resolved on
+ * the server from the booking's stored owner, or from the profile's stored
+ * account id (never from the browser), and every later step re-checks them
+ * against this record.
  *
  * Money is integer cents. Nothing here changes the booking, visit
  * entitlements, loyalty or membership billing.
@@ -46,11 +50,15 @@ const AttemptSchema = new mongoose.Schema(
 
 const AdditionalChargeSchema = new mongoose.Schema(
   {
-    booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", required: true, index: true },
+    /* "booking": made on a booking. "direct": made from the customer profile, no booking. */
+    scope: { type: String, enum: ["booking", "direct"], default: "booking" },
+    /* "b:<bookingId>" or "u:<userId>": numbering is per booking, or per customer for direct charges. */
+    scopeKey: { type: String, required: true },
+    booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null, index: true },
     bookingNumber: { type: String, default: "" },
     seq: { type: Number, required: true },
     number: { type: String, required: true },
-    /* The owner's sheet makes one key per intent: the same key twice is the same charge. */
+    /* The owner's sheet makes one key per press: the same key twice is the same charge, from either entry point. */
     clientKey: { type: String, required: true },
 
     /* Ownership, resolved on the server from the booking (null for a guest visit). */
@@ -123,8 +131,10 @@ const AdditionalChargeSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-AdditionalChargeSchema.index({ booking: 1, seq: 1 }, { unique: true });
-AdditionalChargeSchema.index({ booking: 1, clientKey: 1 }, { unique: true });
+AdditionalChargeSchema.index({ scopeKey: 1, seq: 1 }, { unique: true });
+AdditionalChargeSchema.index({ clientKey: 1 }, { unique: true });
+/* The customer's charges (billing history, and the repeat guard across both entry points). */
+AdditionalChargeSchema.index({ user: 1, createdAt: -1 });
 
 AdditionalChargeSchema.statics.STATUSES = STATUSES;
 

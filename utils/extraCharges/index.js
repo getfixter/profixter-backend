@@ -1,8 +1,17 @@
 /**
  * Charge customer (Admin "Charge extra"): the owner types the final total to
- * collect on a booking and presses "Charge $X". That press is the confirmation.
+ * collect and presses "Charge $X". That press is the confirmation.
  *
- *   target   -> who pays (linkage.js): the booking's own account, its verified
+ * Two entry points, one flow:
+ *   booking  -> /jobs/:id/extra-charges: who pays is the booking's stored owner.
+ *   direct   -> /customers/:id/charges: who pays is that profile's stored
+ *               account; no booking is required or created (emergency call-outs
+ *               and other charges with no visit).
+ * Both resolve the account the same way (linkage.resolveAccountCard), share
+ * the repeat guard (per account, across both), and every record, link,
+ * reconciliation and receipt below is the same code for both.
+ *
+ *   target   -> who pays (linkage.js): the stored account, its verified
  *               Stripe customer and that customer's attached card, plus a
  *               fingerprint of them. Nothing is computed on top of the amount.
  *   create   -> the fingerprint must still match (stale or switched account
@@ -31,7 +40,8 @@ const mongoose = require("mongoose");
 const AdditionalCharge = require("../../models/AdditionalCharge");
 const AdminPaymentLink = require("../../models/AdminPaymentLink");
 const Booking = require("../../models/Booking");
-const { resolveChargeTarget, fullAddressText } = require("./linkage");
+const User = require("../../models/User");
+const { resolveChargeTarget, resolveCustomerChargeTarget, fullAddressText } = require("./linkage");
 
 const PRODUCT_KIND = "additional_charge";
 const MIN_CENTS = 50; // Stripe's minimum charge in USD
@@ -44,7 +54,8 @@ const CHARGEABLE_STATUSES = new Set(["Confirmed", "Completed"]);
 const statusOf = (booking) => require("../jobs/jobStatus").canonicalStatus(booking.status);
 const PAID_STATES = ["paid", "partially_refunded", "refunded"];
 const OPEN_STATES = ["charging", "processing"];
-const REPEAT_WINDOW_MS = 15 * 60 * 1000; // the same amount again on the same visit this soon asks first
+const REPEAT_WINDOW_MS = 15 * 60 * 1000; // the same amount to the same customer this soon asks first (either entry point)
+const START_LEASE_MS = 15 * 1000; // one charge started at a time per customer: the repeat guard cannot be raced
 
 let client = null;
 function setStripeClient(next) {
@@ -104,25 +115,50 @@ function readInput(body = {}) {
 /* Target: who pays, shown before "Charge $X"                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Where a charge is made. The scope decides only how the ACCOUNT is found
+ * (the booking's stored owner, or the profile's stored id) and how records
+ * are numbered; everything after that is shared.
+ */
+const bookingScope = (booking) => ({ kind: "booking", booking, key: `b:${booking._id}` });
+const directScope = (userId) => ({ kind: "direct", userId: String(userId), key: `u:${userId}` });
+const scopeOfRecord = (record) => (record.booking ? { kind: "booking", key: `b:${record.booking}` } : { kind: "direct", userId: String(record.user || ""), key: `u:${record.user}` });
+
 /** The account, Stripe customer and card the owner sees. Any change between showing and charging is refused. */
-function fingerprintOf(bookingId, target) {
+function fingerprintOf(scopeKey, target) {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify([String(bookingId), target.accountUserId, target.customerId, target.paymentMethodId, Boolean(target.direct.allowed)]))
+    .update(JSON.stringify([String(scopeKey), target.accountUserId, target.customerId, target.paymentMethodId, Boolean(target.direct.allowed)]))
     .digest("hex")
     .slice(0, 32);
 }
 
 async function blockedReason(target, booking) {
   const { findActiveBlock } = require("../customerBlock");
-  const block = await findActiveBlock({ userId: target.user?._id || null, email: target.contact.email || booking.email, phone: target.contact.phone || booking.phone });
+  const block = await findActiveBlock({ userId: target.user?._id || null, email: target.contact.email || booking?.email || "", phone: target.contact.phone || booking?.phone || "" });
   return block ? { code: "CUSTOMER_BLOCKED", message: "This customer is blocked. Unblock them on their profile before charging." } : null;
 }
 
-async function buildTarget(booking) {
-  const target = await resolveChargeTarget(booking, { stripe: stripe() });
+/** The same account mapping for both entry points; only the starting stored id differs. */
+async function resolveForScope(scope) {
+  if (scope.kind === "booking") return resolveChargeTarget(scope.booking, { stripe: stripe() });
+  return resolveCustomerChargeTarget(scope.userId, { stripe: stripe() });
+}
+
+/** Who pays for an existing record, re-resolved from the record's own stored ids (never the browser's). */
+async function resolveForRecord(record) {
+  if (record.booking) {
+    const booking = await Booking.findById(record.booking);
+    return booking ? resolveChargeTarget(booking, { stripe: stripe() }) : null;
+  }
+  return record.user ? resolveCustomerChargeTarget(record.user, { stripe: stripe() }) : null;
+}
+
+async function buildTarget(scope) {
+  const booking = scope.kind === "booking" ? scope.booking : null;
+  const target = await resolveForScope(scope);
   const block = await blockedReason(target, booking);
-  const statusBlock = CHARGEABLE_STATUSES.has(String(statusOf(booking) || ""))
+  const statusBlock = !booking || CHARGEABLE_STATUSES.has(String(statusOf(booking) || ""))
     ? null
     : { code: "BOOKING_NOT_CHARGEABLE", message: "Customers can be charged on confirmed or completed visits only." };
   const hard = block || statusBlock;
@@ -131,13 +167,14 @@ async function buildTarget(booking) {
   return {
     target,
     view: {
-      booking: { id: String(booking._id), number: String(booking.bookingNumber || ""), date: booking.date || null, service: booking.service || "", status: booking.status || "" },
+      scope: scope.kind,
+      booking: booking ? { id: String(booking._id), number: String(booking.bookingNumber || ""), date: booking.date || null, service: booking.service || "", status: booking.status || "" } : null,
       customer: { name: target.customerName, guest: target.guest, accountLinked: target.customerLinked, hasEmail: Boolean(target.contact.email), hasPhone: Boolean(target.contact.phone) },
       serviceAddress: { ...target.serviceAddress, full: fullAddressText(target.serviceAddress) },
       card: target.card && target.card.last4 ? { brand: target.card.brand, last4: target.card.last4, expMonth: target.card.expMonth, expYear: target.card.expYear } : null,
       direct,
       link,
-      fingerprint: fingerprintOf(booking._id, { ...target, direct }),
+      fingerprint: fingerprintOf(scope.key, { ...target, direct }),
       limits: { minCents: MIN_CENTS, maxCents: MAX_CENTS },
     },
   };
@@ -150,9 +187,19 @@ async function loadChargeableBooking(bookingId) {
   return booking;
 }
 
+async function loadDirectScope(userId) {
+  if (!mongoose.isValidObjectId(userId)) throw new ExtraChargeError("INVALID_CUSTOMER", "Invalid customer id", 400);
+  if (!(await User.exists({ _id: userId }))) throw new ExtraChargeError("CUSTOMER_NOT_FOUND", "Customer not found", 404);
+  return directScope(userId);
+}
+
 async function targetFor(bookingId) {
   const booking = await loadChargeableBooking(bookingId);
-  return (await buildTarget(booking)).view;
+  return (await buildTarget(bookingScope(booking))).view;
+}
+
+async function targetForCustomer(userId) {
+  return (await buildTarget(await loadDirectScope(userId))).view;
 }
 
 /* ------------------------------------------------------------------ */
@@ -164,7 +211,8 @@ function metadataFor(record) {
     productKind: PRODUCT_KIND,
     additionalChargeId: String(record._id),
     additionalChargeNumber: record.number,
-    bookingId: String(record.booking),
+    chargeScope: record.scope || (record.booking ? "booking" : "direct"),
+    bookingId: record.booking ? String(record.booking) : "",
     bookingNumber: String(record.bookingNumber || ""),
     userMongoId: record.user ? String(record.user) : "",
     stripeCustomerId: record.stripeCustomerId || "",
@@ -174,22 +222,28 @@ function metadataFor(record) {
   };
 }
 
-async function nextSeq(bookingId) {
-  const last = await AdditionalCharge.findOne({ booking: bookingId }).sort({ seq: -1 }).select("seq").lean();
+async function nextSeq(scopeKey) {
+  const last = await AdditionalCharge.findOne({ scopeKey }).sort({ seq: -1 }).select("seq").lean();
   return Number(last?.seq || 0) + 1;
 }
 
-async function insertRecord(fields) {
+/** "9001-E2" for the second charge on job #9001; "80000001-D1" for a customer's first direct charge. */
+function numberFor(fields, seq) {
+  if (fields.scope === "direct") return `${String(fields.accountNumber || String(fields.user).slice(-6))}-D${seq}`;
+  return `${String(fields.bookingNumber || "X").replace(/^#/, "")}-E${seq}`;
+}
+
+async function insertRecord({ accountNumber, ...fields }) {
   for (let i = 0; i < 6; i += 1) {
-    const seq = await nextSeq(fields.booking);
+    const seq = await nextSeq(fields.scopeKey);
     try {
-      return await AdditionalCharge.create({ ...fields, seq, number: `${String(fields.bookingNumber || "X").replace(/^#/, "")}-E${seq}` });
+      return await AdditionalCharge.create({ ...fields, seq, number: numberFor({ ...fields, accountNumber }, seq) });
     } catch (error) {
       if (error?.code !== 11000) throw error;
       if (String(error.message).includes("clientKey")) return null; // the same intent, created by a concurrent request
     }
   }
-  throw new ExtraChargeError("BUSY", "Too many charges at once on this job. Try again.", 409);
+  throw new ExtraChargeError("BUSY", "Too many charges at once for this customer. Try again.", 409);
 }
 
 async function setStatus(id, from, to, set = {}) {
@@ -331,9 +385,10 @@ async function applyPaymentIntent(pi, { source = "api" } = {}) {
   const record = await AdditionalCharge.findById(id);
   if (!record) return { ignored: true };
 
-  // The intent must be this record's: same booking, amount, currency, customer.
+  // The intent must be this record's: same booking (or none), account, amount, currency, customer.
   const mismatch =
-    !sameId(pi.metadata?.bookingId, record.booking) ||
+    !sameId(pi.metadata?.bookingId, record.booking || "") ||
+    !sameId(pi.metadata?.userMongoId, record.user || "") ||
     Number(pi.amount) !== Number(record.totalCents) ||
     String(pi.currency || "usd") !== record.currency ||
     (record.stripeCustomerId && idOf(pi.customer) && idOf(pi.customer) !== record.stripeCustomerId);
@@ -483,6 +538,12 @@ async function reconcile(record, { force = false } = {}) {
 /* Card                                                                */
 /* ------------------------------------------------------------------ */
 
+/** "Profixter charge (9001-E1, visit #9001)" or, with no booking, "Profixter charge (80000001-D1)". */
+function chargeLabel(record) {
+  const base = record.booking ? `Profixter charge (${record.number}, visit #${record.bookingNumber})` : `Profixter charge (${record.number})`;
+  return `${base}${record.description ? `: ${record.description}` : ""}`.slice(0, 1000);
+}
+
 function cardParams(record) {
   return {
     amount: record.totalCents,
@@ -491,7 +552,7 @@ function cardParams(record) {
     payment_method: record.paymentMethodId,
     off_session: true,
     confirm: true,
-    description: `Profixter charge (${record.number}, visit #${record.bookingNumber})${record.description ? `: ${record.description}` : ""}`.slice(0, 1000),
+    description: chargeLabel(record),
     ...(record.receiptEmail ? { receipt_email: record.receiptEmail } : {}),
     metadata: metadataFor(record),
   };
@@ -523,8 +584,7 @@ async function handleCardError(record, attempt, error) {
 
 async function runCardAttempt(record) {
   // Re-check who pays right before Stripe is asked, against what the owner confirmed.
-  const booking = await Booking.findById(record.booking);
-  const target = booking ? await resolveChargeTarget(booking, { stripe: stripe() }) : null;
+  const target = await resolveForRecord(record);
   const sameOwner =
     target &&
     target.direct.allowed &&
@@ -533,7 +593,7 @@ async function runCardAttempt(record) {
     target.paymentMethodId === record.paymentMethodId;
   if (!sameOwner) {
     return setStatus(record._id, "charging", "failed", {
-      failure: { code: "OWNERSHIP_CHANGED", declineCode: "", message: target?.direct?.message || "Who pays for this visit changed before the charge. Nothing was charged." },
+      failure: { code: "OWNERSHIP_CHANGED", declineCode: "", message: target?.direct?.message || "Who pays changed before the charge. Nothing was charged." },
     });
   }
 
@@ -574,8 +634,11 @@ async function runCardAttempt(record) {
 /* ------------------------------------------------------------------ */
 
 function linkItemLabel(record) {
-  return `your visit #${String(record.bookingNumber || "").replace(/^#/, "")}${record.description ? `: ${record.description}` : ""} (${money(record.totalCents)})`.slice(0, 200);
+  const what = record.booking ? `your visit #${String(record.bookingNumber || "").replace(/^#/, "")}` : "your Profixter service";
+  return `${what}${record.description ? `: ${record.description}` : ""} (${money(record.totalCents)})`.slice(0, 200);
 }
+
+const bookingRef = (record) => (record.booking ? { _id: record.booking, bookingNumber: record.bookingNumber } : null);
 
 async function issueLink(record, { send = false, channels = [], admin, contact, user = null, booking = null }) {
   const links = require("../admin/paymentLinks");
@@ -587,10 +650,10 @@ async function issueLink(record, { send = false, channels = [], admin, contact, 
   if (outcomes.includes("unknown")) throw new ExtraChargeError("STRIPE_UNAVAILABLE", "An earlier payment page for this extra could not be closed, so no new link was made. Try again in a moment.", 503);
   await closeLinksFor(record);
   const wanted = send ? channels.filter((c) => (c === "email" && contact.email) || (c === "sms" && contact.phone)) : [];
-  if (send && wanted.length === 0) throw new ExtraChargeError("NO_CONTACT", "There is no email or mobile number on this visit for that. Copy the link instead.", 409);
+  if (send && wanted.length === 0) throw new ExtraChargeError("NO_CONTACT", "There is no email or mobile number for this customer for that. Copy the link instead.", 409);
   const { link, token, payUrl } = await links.createLink({
     kind: "extra_charge",
-    contact: { name: contact.name, email: contact.email, phone: contact.phone, user: record.user ? { _id: record.user } : null, booking: { _id: record.booking, bookingNumber: record.bookingNumber } },
+    contact: { name: contact.name, email: contact.email, phone: contact.phone, user: record.user ? { _id: record.user } : null, booking: bookingRef(record) },
     itemLabel: linkItemLabel(record),
     channels: wanted,
     expiresAt: new Date(Date.now() + LINK_DAYS * 24 * 60 * 60 * 1000),
@@ -606,7 +669,7 @@ async function issueLink(record, { send = false, channels = [], admin, contact, 
       link,
       payUrl,
       // The real account and booking, so the existing SMS consent rules decide (guest consent lives on the booking).
-      contact: { name: contact.name, user: user || null, booking: booking || { _id: record.booking, bookingNumber: record.bookingNumber } },
+      contact: { name: contact.name, user: user || null, booking: booking || bookingRef(record) },
     });
   }
   return { link, token, payUrl, delivery };
@@ -620,9 +683,13 @@ async function openCheckoutForLink(link, token) {
   if (OPEN_STATES.includes(record.status)) throw new ExtraChargeError("PAYMENT_IN_PROGRESS", "A payment for this is already being processed. Please check back in a few minutes.", 409);
   if (record.status !== "awaiting_payment" || !sameId(record.paymentLink, link._id)) throw new ExtraChargeError("LINK_UNAVAILABLE", "This payment link has expired. Please call us for a new one.", 410, { status: "expired" });
 
-  // Still the same booking and the same account it was made for.
-  const booking = await Booking.findById(record.booking).select("user userId guestRequestId adminGuest status").lean();
-  if (!booking || !sameId(booking.user, record.user)) throw new ExtraChargeError("LINK_UNAVAILABLE", "This payment link has expired. Please call us for a new one.", 410, { status: "expired" });
+  // Still the same booking (if any) and the same account it was made for.
+  if (record.booking) {
+    const booking = await Booking.findById(record.booking).select("user userId guestRequestId adminGuest status").lean();
+    if (!booking || !sameId(booking.user, record.user)) throw new ExtraChargeError("LINK_UNAVAILABLE", "This payment link has expired. Please call us for a new one.", 410, { status: "expired" });
+  } else if (!record.user || !(await User.exists({ _id: record.user }))) {
+    throw new ExtraChargeError("LINK_UNAVAILABLE", "This payment link has expired. Please call us for a new one.", 410, { status: "expired" });
+  }
 
   // Reuse the page already open for this link, rather than making a second payable one.
   if (link.lastSessionId) {
@@ -651,7 +718,7 @@ async function openCheckoutForLink(link, token) {
     const n = record.attempts.length + 1;
     const line = (amount, name, description) => ({ quantity: 1, price_data: { currency: record.currency, unit_amount: amount, product_data: { name, ...(description ? { description } : {}) } } });
     // One line for exactly the amount the owner entered: nothing is added on top.
-    const lineItems = [line(record.totalCents, `Profixter, visit #${String(record.bookingNumber || "").replace(/^#/, "")}`, (record.description || "").slice(0, 500))];
+    const lineItems = [line(record.totalCents, record.booking ? `Profixter, visit #${String(record.bookingNumber || "").replace(/^#/, "")}` : "Profixter", (record.description || "").slice(0, 500))];
     const expiresAt = Math.floor(Math.min(now.getTime() + 23 * 60 * 60 * 1000, Math.max(new Date(link.expiresAt).getTime(), now.getTime() + 31 * 60 * 1000)) / 1000);
     const metadata = { ...metadataFor(record), adminPaymentLinkId: String(link._id) };
     const session = await stripe().checkout.sessions.create(
@@ -660,7 +727,7 @@ async function openCheckoutForLink(link, token) {
         ...(record.stripeCustomerId ? { customer: record.stripeCustomerId } : record.receiptEmail ? { customer_email: record.receiptEmail } : {}),
         line_items: lineItems,
         payment_intent_data: {
-          description: `Profixter charge (${record.number}, visit #${record.bookingNumber})${record.description ? `: ${record.description}` : ""}`.slice(0, 1000),
+          description: chargeLabel(record),
           metadata,
           ...(record.receiptEmail ? { receipt_email: record.receiptEmail } : {}),
         },
@@ -745,49 +812,122 @@ function assertOwner(req) {
   if (req?.accessRole !== "admin") throw new ExtraChargeError("OWNER_ONLY", "Only the owner can charge extras.", 403);
 }
 
+/** Charge from a booking: the account is the booking's stored owner. */
 async function create(req, bookingId, body = {}) {
+  assertOwner(req);
+  return createCharge(req, bookingScope(await loadChargeableBooking(bookingId)), body);
+}
+
+/** Charge from the customer profile: the account is that profile's stored id. No booking is read, required or made. */
+async function createDirect(req, userId, body = {}) {
+  assertOwner(req);
+  return createCharge(req, await loadDirectScope(userId), body);
+}
+
+function replayOf(existing, scope, input) {
+  // One key is one press: it can never become a charge somewhere else or for another amount.
+  if (existing.scopeKey !== scope.key || existing.totalCents !== input.totalCents) throw new ExtraChargeError("KEY_REUSED", "This request was already used for a different charge.", 409);
+}
+
+/** Take the per-customer start lock (see models/ExtraChargeLock). Returns the holder's token, or null. */
+async function takeStartLock(name) {
+  const ExtraChargeLock = require("../../models/ExtraChargeLock");
+  const token = crypto.randomBytes(12).toString("hex");
+  const now = new Date();
+  try {
+    const doc = await ExtraChargeLock.findOneAndUpdate(
+      { _id: name, until: { $lt: now } },
+      { $set: { owner: token, until: new Date(now.getTime() + START_LEASE_MS) } },
+      { upsert: true, new: true }
+    ).lean();
+    return doc?.owner === token ? token : null;
+  } catch (error) {
+    if (error?.code === 11000) return null; // held by someone else right now
+    throw error;
+  }
+}
+
+async function releaseStartLock(name, token) {
+  const ExtraChargeLock = require("../../models/ExtraChargeLock");
+  await ExtraChargeLock.updateOne({ _id: name, owner: token }, { $set: { until: new Date(0) } });
+}
+
+async function waitForStartLock(name) {
+  const until = Date.now() + 8000;
+  while (Date.now() < until) {
+    const token = await takeStartLock(name);
+    if (token) return token;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+}
+
+async function createCharge(req, scope, body = {}) {
   assertOwner(req);
   const { readIdempotencyKey } = require("../adminIdempotency");
   const clientKey = readIdempotencyKey(body.idempotencyKey);
-  const booking = await loadChargeableBooking(bookingId);
+  const booking = scope.kind === "booking" ? scope.booking : null;
   const input = readInput(body);
   const method = body.method === "link" ? "link" : body.method === "card" ? "card" : "";
   if (!method) throw new ExtraChargeError("METHOD_REQUIRED", "Choose Charge or Payment link.");
 
   // The same press again (a double tap, a retry after a timeout): the same record, resolved.
-  const existing = await AdditionalCharge.findOne({ booking: booking._id, clientKey });
+  const existing = await AdditionalCharge.findOne({ clientKey });
   if (existing) {
-    if (existing.totalCents !== input.totalCents) throw new ExtraChargeError("KEY_REUSED", "This request was already used for a different charge.", 409);
+    replayOf(existing, scope, input);
     return { record: await reconcile(existing, { force: true }), replayed: true };
   }
 
-  const { target, view } = await buildTarget(booking);
+  const { target, view } = await buildTarget(scope);
   if (String(body.targetFingerprint || "") !== view.fingerprint) {
     throw new ExtraChargeError("TARGET_CHANGED", "The customer or saved card for this visit changed since the screen opened. Check it and press Charge again.", 409, { target: view });
   }
   if (method === "card" && !view.direct.allowed) throw new ExtraChargeError(view.direct.code || "DIRECT_UNAVAILABLE", view.direct.message || "The card cannot be charged.", 409, { target: view });
   if (method === "link" && !view.link.allowed) throw new ExtraChargeError(view.link.code || "LINK_UNAVAILABLE", view.link.message || "A payment link cannot be made.", 409, { target: view });
 
-  // The same amount on the same visit a few minutes ago: ask before a second, separate charge.
-  if (body.allowRepeat !== true) {
-    const recent = await AdditionalCharge.findOne({
-      booking: booking._id,
-      totalCents: input.totalCents,
-      status: { $in: ["charging", "processing", "paid", "awaiting_payment"] },
-      createdAt: { $gte: new Date(Date.now() - REPEAT_WINDOW_MS) },
-    }).lean();
-    if (recent) {
-      throw new ExtraChargeError("POSSIBLE_DUPLICATE", `${money(input.totalCents)} was already ${recent.status === "paid" ? "charged" : "started"} on this visit at ${new Date(recent.createdAt).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })}. Charge it again?`, 409, {
-        recent: { id: String(recent._id), number: recent.number, status: recent.status },
-      });
-    }
-  }
-
+  /*
+   * One charge is started at a time per customer (from any screen), so the
+   * repeat guard below sees every earlier press, whichever entry point made it.
+   * Held only until the record exists; the Stripe call happens after.
+   */
+  const lockName = target.user ? `u:${target.user._id}` : scope.key;
+  const lockToken = await waitForStartLock(lockName);
+  if (!lockToken) throw new ExtraChargeError("BUSY", "Another charge for this customer is being started. Check their charges, then try again.", 409);
   const admin = actingAdmin(req);
-  const now = new Date();
-  const record = await insertRecord({
-    booking: booking._id,
-    bookingNumber: String(booking.bookingNumber || "").replace(/^#/, ""),
+  let record;
+  try {
+    const again = await AdditionalCharge.findOne({ clientKey });
+    if (again) {
+      replayOf(again, scope, input);
+      return { record: await reconcile(again, { force: true }), replayed: true };
+    }
+
+    // The same amount to the same customer a few minutes ago, from this screen or the other one: ask first.
+    if (body.allowRepeat !== true) {
+      const recent = await AdditionalCharge.findOne({
+        ...(target.user ? { user: target.user._id } : { booking: booking._id }),
+        totalCents: input.totalCents,
+        status: { $in: ["charging", "processing", "paid", "awaiting_payment"] },
+        createdAt: { $gte: new Date(Date.now() - REPEAT_WINDOW_MS) },
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+      if (recent) {
+        const at = new Date(recent.createdAt).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+        const where = recent.booking ? `on job #${recent.bookingNumber}` : "as a direct charge";
+        throw new ExtraChargeError("POSSIBLE_DUPLICATE", `${money(input.totalCents)} was already ${recent.status === "paid" ? "charged" : "started"} for ${target.customerName || "this customer"} at ${at}, ${where}. Charge it again?`, 409, {
+          recent: { id: String(recent._id), number: recent.number, status: recent.status, bookingNumber: recent.bookingNumber || "", direct: !recent.booking },
+        });
+      }
+    }
+
+    const now = new Date();
+    record = await insertRecord({
+    scope: scope.kind,
+    scopeKey: scope.key,
+    accountNumber: target.user?.userId || "",
+    booking: booking ? booking._id : null,
+    bookingNumber: booking ? String(booking.bookingNumber || "").replace(/^#/, "") : "",
     clientKey,
     user: target.user?._id || null,
     accountUserId: target.accountUserId,
@@ -806,9 +946,12 @@ async function create(req, bookingId, body = {}) {
     card: method === "card" && target.card ? target.card : {},
     createdBy: admin._id,
     createdByName: admin.name,
-  });
+    });
+  } finally {
+    await releaseStartLock(lockName, lockToken).catch(() => {});
+  }
   if (!record) {
-    const winner = await AdditionalCharge.findOne({ booking: booking._id, clientKey });
+    const winner = await AdditionalCharge.findOne({ clientKey });
     return { record: await reconcile(winner, { force: true }), replayed: true };
   }
 
@@ -822,23 +965,31 @@ function readChannels(value) {
   return [...new Set(list.map((v) => String(v).trim()).filter((v) => v === "email" || v === "sms"))];
 }
 
-async function loadRecord(bookingId, chargeId) {
-  if (!mongoose.isValidObjectId(bookingId) || !mongoose.isValidObjectId(chargeId)) throw new ExtraChargeError("NOT_FOUND", "Charge not found", 404);
-  const record = await AdditionalCharge.findOne({ _id: chargeId, booking: bookingId });
+/**
+ * A charge reached through a URL: a job's charge only through that job, a
+ * customer's charge (booking or direct) only through that customer. An id
+ * from somewhere else is "not found".
+ *   where = { bookingId } | { customerId }
+ */
+async function loadRecord(where, chargeId) {
+  const owner = typeof where === "string" ? { bookingId: where } : where || {};
+  const ownerId = owner.bookingId || owner.customerId;
+  if (!mongoose.isValidObjectId(ownerId) || !mongoose.isValidObjectId(chargeId)) throw new ExtraChargeError("NOT_FOUND", "Charge not found", 404);
+  const record = await AdditionalCharge.findOne({ _id: chargeId, ...(owner.bookingId ? { booking: owner.bookingId } : { user: owner.customerId }) });
   if (!record) throw new ExtraChargeError("NOT_FOUND", "Charge not found", 404);
   return record;
 }
 
 /** Try the saved card again, after a decline the customer has fixed. Never automatic. */
-async function retryCard(req, bookingId, chargeId, body = {}) {
+async function retryCard(req, where, chargeId, body = {}) {
   assertOwner(req);
-  const record = await loadRecord(bookingId, chargeId);
+  const record = await loadRecord(where, chargeId);
   if (record.status !== "failed" && record.status !== "awaiting_payment") throw new ExtraChargeError("INVALID_STATE", `This charge is ${record.status.replace(/_/g, " ")}; it cannot be charged again.`, 409);
-  const booking = await loadChargeableBooking(bookingId);
-  const target = await resolveChargeTarget(booking, { stripe: stripe() });
+  const target = await resolveForRecord(record);
+  if (!target) throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who pays changed since the charge was made. Make a new charge.", 409);
   if (!target.direct.allowed) throw new ExtraChargeError(target.direct.code, target.direct.message, 409);
   if (!sameId(target.user?._id, record.user) || (record.stripeCustomerId && target.customerId !== record.stripeCustomerId)) {
-    throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who pays for this visit changed since the charge was made. Make a new charge.", 409);
+    throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who pays changed since the charge was made. Make a new charge.", 409);
   }
   if (String(body.expectedCardLast4 || "") !== String(target.card?.last4 || "")) {
     throw new ExtraChargeError("PREVIEW_CHANGED", "The saved card changed. Review it and try again.", 409, { card: target.card });
@@ -853,21 +1004,22 @@ async function retryCard(req, bookingId, chargeId, body = {}) {
   return runCardAttempt(claimed);
 }
 
-async function paymentLink(req, bookingId, chargeId, body = {}) {
+async function paymentLink(req, where, chargeId, body = {}) {
   assertOwner(req);
-  const record = await loadRecord(bookingId, chargeId);
+  const record = await loadRecord(where, chargeId);
   if (!["failed", "awaiting_payment"].includes(record.status)) throw new ExtraChargeError("INVALID_STATE", `This charge is ${record.status.replace(/_/g, " ")}; no link is needed.`, 409);
-  const booking = await loadChargeableBooking(bookingId);
-  const target = await resolveChargeTarget(booking, { stripe: stripe() });
+  const booking = record.booking ? await Booking.findById(record.booking) : null;
+  const target = await resolveForRecord(record);
+  if (!target) throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who this charge belongs to changed since it was made. Make a new charge.", 409);
   if (!target.link.allowed) throw new ExtraChargeError(target.link.code, target.link.message, 409);
-  if (!sameId(target.user?._id, record.user)) throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who this visit belongs to changed since the charge was made. Make a new charge.", 409);
+  if (!sameId(target.user?._id, record.user)) throw new ExtraChargeError("OWNERSHIP_CHANGED", "Who this charge belongs to changed since it was made. Make a new charge.", 409);
   const sent = await issueLink(record, { send: body.send === true, channels: readChannels(body.channels), admin: actingAdmin(req), contact: target.contact, user: target.user, booking });
   return { record: await AdditionalCharge.findById(record._id), payUrl: sent.payUrl, delivery: sent.delivery };
 }
 
-async function cancelCharge(req, bookingId, chargeId) {
+async function cancelCharge(req, where, chargeId) {
   assertOwner(req);
-  const record = await loadRecord(bookingId, chargeId);
+  const record = await loadRecord(where, chargeId);
   if (!["failed", "awaiting_payment"].includes(record.status)) throw new ExtraChargeError("INVALID_STATE", "Only an unpaid charge can be closed.", 409);
   await settleCardAttempts(record);
   const outcomes = await expireOpenSessions(record);
@@ -893,6 +1045,24 @@ async function listForBooking(bookingId, { sync = true } = {}) {
   return AdditionalCharge.find({ booking: bookingId }).sort({ seq: 1 }).populate("paymentLink", "status expiresAt sentVia delivery createdAt").lean();
 }
 
+/** Every charge of this customer: made on their bookings and made directly. One record each, newest first. */
+async function listForCustomer(userId, { sync = true, limit = 100 } = {}) {
+  if (!mongoose.isValidObjectId(userId)) throw new ExtraChargeError("INVALID_CUSTOMER", "Invalid customer id", 400);
+  const query = () => AdditionalCharge.find({ user: userId }).sort({ createdAt: -1 }).limit(limit);
+  if (sync) {
+    for (const r of await query()) {
+      if (OPEN_STATES.includes(r.status) || r.status === "awaiting_payment") {
+        try {
+          await reconcile(r);
+        } catch (error) {
+          /* Stripe unreachable: show what we have */
+        }
+      }
+    }
+  }
+  return query().populate("paymentLink", "status expiresAt sentVia delivery createdAt").lean();
+}
+
 /* ------------------------------------------------------------------ */
 /* Read model                                                          */
 /* ------------------------------------------------------------------ */
@@ -915,7 +1085,7 @@ const FAILURE_TEXT = {
   insufficient_funds: "The card was declined: insufficient funds.",
   incorrect_cvc: "The card was declined (security code).",
   processing_error: "The card could not be processed. Nothing was charged.",
-  OWNERSHIP_CHANGED: "Who pays for this visit changed before the charge, so nothing was charged.",
+  OWNERSHIP_CHANGED: "Who pays changed before the charge, so nothing was charged.",
   LINK_STILL_OPEN: "A payment page for this extra could not be closed, so the card was not charged.",
 };
 
@@ -933,6 +1103,10 @@ function serialize(r) {
   return {
     id: String(x._id),
     number: x.number,
+    scope: x.booking ? "booking" : "direct",
+    bookingId: x.booking ? String(x.booking._id || x.booking) : null,
+    bookingNumber: x.booking ? String(x.bookingNumber || "") : "",
+    where: x.booking ? `Job #${x.bookingNumber}` : "Direct charge",
     note: x.description || "",
     totalCents: x.totalCents,
     taxStatus: x.tax?.status || "not_calculated",
@@ -965,15 +1139,19 @@ module.exports = {
   applyPaymentIntent,
   cancelCharge,
   create,
+  createDirect,
   describeLink,
   handleChargeRefunded,
   handleCheckoutSession,
   handlePaymentIntentEvent,
   isExtraChargeObject,
   listForBooking,
+  listForCustomer,
+  loadRecord,
   openCheckoutForLink,
   paymentLink,
   targetFor,
+  targetForCustomer,
   readAmountCents,
   reconcile,
   retryCard,

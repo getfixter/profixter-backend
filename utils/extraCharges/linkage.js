@@ -1,10 +1,13 @@
 /**
- * Who pays for an extra on this booking: resolved on the server, from the
- * booking's stored account and nothing else.
+ * Who pays for a charge: resolved on the server, from a stored account id and
+ * nothing else. Two entry points, ONE mapping:
  *
- *   booking.user (the stored account id)  ->  that User  ->  its stripeCustomerId
- *   ->  that Stripe customer  ->  ITS default card, retrieved and checked to be
- *   attached to that exact customer.
+ *   from a booking:   booking.user (the booking's stored owner)  ->  that User
+ *   from a customer:  the customer profile's stored User id      ->  that User
+ *
+ *   then, for both (resolveAccountCard):  that User's stripeCustomerId  ->  that
+ *   Stripe customer  ->  ITS default card, retrieved and checked to be attached
+ *   to that exact customer.
  *
  * Never by name, email, phone, address or whichever profile Admin has open,
  * and never from an id the browser sends. Anything missing, conflicting or
@@ -24,8 +27,9 @@ const ADMIN_EMAIL = () => String(process.env.MAIL_ADMIN || "getfixter@gmail.com"
 const MESSAGES = {
   GUEST_BOOKING: "This is a guest visit with no account, so there is no saved card to charge. Use a payment link.",
   ACCOUNT_MISSING: "The account this visit belongs to no longer exists. Use a payment link to the booking's contact.",
+  CUSTOMER_NOT_FOUND: "This customer account no longer exists. Nothing was charged.",
   OWNERSHIP_CONFLICT: "This visit's account records disagree, so it is not safe to charge a saved card. Use a payment link, or fix the visit's account first.",
-  STAFF_ACCOUNT: "This visit is on a staff account. Staff accounts are never charged here.",
+  STAFF_ACCOUNT: "This is a staff account. Staff accounts are never charged here.",
   NO_STRIPE_CUSTOMER: "This account has no Stripe customer, so there is no saved card. Use a payment link.",
   STRIPE_CUSTOMER_SHARED: "This account's Stripe customer is also linked to another account, so the card could be someone else's. Use a payment link, and fix the duplicate in Admin.",
   MULTIPLE_STRIPE_CUSTOMERS: "This account is linked to more than one Stripe customer, so the right card is not certain. Use a payment link.",
@@ -37,7 +41,7 @@ const MESSAGES = {
   NOT_A_CARD: "The saved payment method is not a card. Use a payment link.",
   CARD_EXPIRED: "The saved card has expired. Use a payment link.",
   STRIPE_UNAVAILABLE: "Stripe could not be reached to check the saved card. Nothing was charged. Try again in a moment.",
-  NO_CONTACT: "There is no email or mobile number for this visit to send a link to. Copy the link instead.",
+  NO_CONTACT: "There is no email or mobile number for this customer to send a link to. Copy the link instead.",
 };
 
 const blocker = (code, extra = {}) => ({ code, message: MESSAGES[code] || code, ...extra });
@@ -122,45 +126,40 @@ async function pickPaymentMethod(stripe, customer) {
  *   link: {allowed: boolean, code?: string, message?: string, canSend: boolean}
  * }>}
  */
-async function resolveChargeTarget(booking, { stripe }) {
-  const out = {
-    guest: isGuestBooking(booking),
+function emptyTarget(fields = {}) {
+  return {
+    guest: false,
     user: null,
     accountUserId: "",
     customerId: "",
     customerLinked: false,
-    customerName: String(booking.name || "").trim(),
-    contact: { name: String(booking.name || ""), email: String(booking.email || ""), phone: String(booking.phone || "") },
-    serviceAddress: serviceAddressFor(booking, null),
+    customerName: "",
+    contact: { name: "", email: "", phone: "" },
+    serviceAddress: { line1: "", unit: "", city: "", state: "", zip: "" },
     paymentMethodId: "",
     card: null,
     direct: { allowed: false },
     link: { allowed: true, canSend: false },
+    ...fields,
   };
-  const finish = (directBlocker, linkBlocker = null) => {
+}
+
+function finisher(out) {
+  return (directBlocker, linkBlocker = null) => {
     out.direct = directBlocker ? { allowed: false, ...directBlocker } : { allowed: true };
     if (linkBlocker) out.link = { allowed: false, canSend: false, ...linkBlocker };
     else out.link = { allowed: true, canSend: Boolean(out.contact.email || out.contact.phone) };
     return out;
   };
+}
 
-  if (out.guest) return finish(blocker("GUEST_BOOKING"));
-
-  if (!mongoose.isValidObjectId(booking.user)) return finish(blocker("ACCOUNT_MISSING"));
-  const user = await User.findById(booking.user);
-  if (!user) return finish(blocker("ACCOUNT_MISSING"));
-  if (isStaff(user)) return finish(blocker("STAFF_ACCOUNT"), blocker("STAFF_ACCOUNT"));
-
-  // The booking stores the account twice (ObjectId and the public id): they must agree.
+/**
+ * The one mapping both entry points use: this User (already chosen from a
+ * stored id) -> its own Stripe customer -> that customer's attached card.
+ * `out` already carries the user, contact and address.
+ */
+async function resolveAccountCard(user, out, finish, { stripe }) {
   const publicIds = [String(user.userId || ""), String(user._id)].filter(Boolean);
-  if (booking.userId && !publicIds.includes(String(booking.userId))) return finish(blocker("OWNERSHIP_CONFLICT"));
-
-  out.user = user;
-  out.accountUserId = String(user._id);
-  out.customerName = String(user.name || booking.name || "").trim();
-  out.contact = { name: out.customerName, email: String(user.email || ""), phone: String(user.phone || "") };
-  out.serviceAddress = serviceAddressFor(booking, user);
-
   const customerId = String(user.stripeCustomerId || "").trim();
   if (!customerId.startsWith("cus_")) return finish(blocker("NO_STRIPE_CUSTOMER"));
 
@@ -201,4 +200,73 @@ async function resolveChargeTarget(booking, { stripe }) {
   return finish(null);
 }
 
-module.exports = { MESSAGES, cardExpired, fullAddressText, isGuestBooking, resolveChargeTarget, serviceAddressFor };
+/** The account's own default address, only to read back to the owner (never used to pick who pays). */
+function accountAddress(user) {
+  const list = Array.isArray(user.addresses) ? user.addresses : [];
+  const a = list.find((x) => String(x._id) === String(user.defaultAddressId || "")) || list[0] || null;
+  if (!a) return { line1: "", unit: "", city: "", state: "", zip: "" };
+  return { line1: String(a.line1 || "").trim(), unit: String(a.unit || "").trim(), city: String(a.city || "").trim(), state: String(a.state || "").trim().toUpperCase(), zip: String(a.zip || "").slice(0, 10) };
+}
+
+/**
+ * Charge from the customer profile, with no booking: the profile's stored
+ * User id (an ObjectId from the URL of the profile page, re-read here), then
+ * exactly the same mapping as a booking's owner.
+ */
+async function resolveCustomerChargeTarget(userId, { stripe }) {
+  const out = emptyTarget();
+  const finish = finisher(out);
+  if (!mongoose.isValidObjectId(userId)) return finish(blocker("CUSTOMER_NOT_FOUND"), blocker("CUSTOMER_NOT_FOUND"));
+  const user = await User.findById(userId);
+  if (!user) return finish(blocker("CUSTOMER_NOT_FOUND"), blocker("CUSTOMER_NOT_FOUND"));
+  out.customerName = String(user.name || [user.firstName, user.lastName].filter(Boolean).join(" ")).trim();
+  if (isStaff(user)) return finish(blocker("STAFF_ACCOUNT"), blocker("STAFF_ACCOUNT"));
+  out.user = user;
+  out.accountUserId = String(user._id);
+  out.contact = { name: out.customerName, email: String(user.email || ""), phone: String(user.phone || "") };
+  out.serviceAddress = accountAddress(user);
+  return resolveAccountCard(user, out, finish, { stripe });
+}
+
+async function resolveChargeTarget(booking, { stripe }) {
+  const out = {
+    guest: isGuestBooking(booking),
+    user: null,
+    accountUserId: "",
+    customerId: "",
+    customerLinked: false,
+    customerName: String(booking.name || "").trim(),
+    contact: { name: String(booking.name || ""), email: String(booking.email || ""), phone: String(booking.phone || "") },
+    serviceAddress: serviceAddressFor(booking, null),
+    paymentMethodId: "",
+    card: null,
+    direct: { allowed: false },
+    link: { allowed: true, canSend: false },
+  };
+  const finish = (directBlocker, linkBlocker = null) => {
+    out.direct = directBlocker ? { allowed: false, ...directBlocker } : { allowed: true };
+    if (linkBlocker) out.link = { allowed: false, canSend: false, ...linkBlocker };
+    else out.link = { allowed: true, canSend: Boolean(out.contact.email || out.contact.phone) };
+    return out;
+  };
+
+  if (out.guest) return finish(blocker("GUEST_BOOKING"));
+
+  if (!mongoose.isValidObjectId(booking.user)) return finish(blocker("ACCOUNT_MISSING"));
+  const user = await User.findById(booking.user);
+  if (!user) return finish(blocker("ACCOUNT_MISSING"));
+  if (isStaff(user)) return finish(blocker("STAFF_ACCOUNT"), blocker("STAFF_ACCOUNT"));
+
+  // The booking stores the account twice (ObjectId and the public id): they must agree.
+  const publicIds = [String(user.userId || ""), String(user._id)].filter(Boolean);
+  if (booking.userId && !publicIds.includes(String(booking.userId))) return finish(blocker("OWNERSHIP_CONFLICT"));
+
+  out.user = user;
+  out.accountUserId = String(user._id);
+  out.customerName = String(user.name || booking.name || "").trim();
+  out.contact = { name: out.customerName, email: String(user.email || ""), phone: String(user.phone || "") };
+  out.serviceAddress = serviceAddressFor(booking, user);
+  return resolveAccountCard(user, out, finish, { stripe });
+}
+
+module.exports = { MESSAGES, cardExpired, fullAddressText, isGuestBooking, resolveChargeTarget, resolveCustomerChargeTarget, serviceAddressFor };

@@ -162,23 +162,25 @@ async function billingForCustomer(user, { now = Date.now(), fresh = false } = {}
       if (next) upcoming.push(next);
     }
     /*
-     * Charge extra payments are already among the Stripe charges above when
-     * they were made on this customer: they are LABELLED there, never added
-     * twice. Only extras paid where Stripe has no customer of this account
-     * (a link paid as a guest) are listed on their own, from our records.
+     * Charge customer payments (made on a booking or directly from the
+     * profile) are already among the Stripe charges above when they were made
+     * on this customer: they are LABELLED there with their record ("Extra on
+     * job #..." or "Direct charge"), never added twice. The records themselves
+     * are listed once, by GET /customers/:id/charges.
      */
     const extraRecords = await AdditionalCharge.find({ user: user._id }).sort({ createdAt: -1 }).limit(50).lean();
     const byIntent = new Map(extraRecords.filter((r) => r.paymentIntentId).map((r) => [r.paymentIntentId, r]));
     for (const row of payments) {
       const r = row.paymentIntentId ? byIntent.get(row.paymentIntentId) : null;
-      if (r) row.extraCharge = { id: String(r._id), number: r.number, bookingId: String(r.booking), bookingNumber: r.bookingNumber, description: r.description };
+      if (r) row.extraCharge = { id: String(r._id), number: r.number, direct: !r.booking, bookingId: r.booking ? String(r.booking) : null, bookingNumber: r.bookingNumber || "", description: r.description };
     }
     const shown = new Set(payments.map((p) => p.paymentIntentId).filter(Boolean));
     const additionalCharges = extraRecords.map((r) => ({
       id: String(r._id),
       number: r.number,
-      bookingId: String(r.booking),
-      bookingNumber: r.bookingNumber,
+      direct: !r.booking,
+      bookingId: r.booking ? String(r.booking) : null,
+      bookingNumber: r.bookingNumber || "",
       description: r.description,
       status: r.status,
       totalCents: r.totalCents,

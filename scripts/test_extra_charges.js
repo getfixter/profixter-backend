@@ -311,6 +311,7 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), webho
 app.use(express.json());
 app.use("/api/admin", require("../routes/adminJobs"));
 app.use("/api/admin", require("../routes/adminExtraCharges"));
+app.use("/api/admin", require("../routes/adminCustomerDirectory"));
 app.use("/api/pay", require("../routes/pay"));
 
 let base;
@@ -392,6 +393,18 @@ async function charge(owner, booking, input, extra = {}) {
   return { preview: p, res: r, body };
 }
 const piCreates = () => F.calls.filter((c) => c[0] === "paymentIntents.create").length;
+/* The customer-profile entry point: no booking anywhere. */
+const custBase = (u) => `/api/admin/customers/${u._id || u}/charges`;
+async function customerTarget(who, u) {
+  return call("GET", `${custBase(u)}/target`, who);
+}
+async function chargeDirect(who, u, amount, extra = {}) {
+  const t = await customerTarget(who, u);
+  assert.strictEqual(t.status, 200, JSON.stringify(t.body));
+  const body = { amount, note: "", idempotencyKey: key(), targetFingerprint: t.body.target.fingerprint, method: "card", ...extra };
+  const res = await call("POST", custBase(u), who, body);
+  return { target: t.body.target, res, body };
+}
 // Old test inputs carried a tax treatment; the server now ignores any such field (nothing is added on top).
 const TAXABLE = "Taxable Repair / Maintenance";
 const CAPITAL = "Capital Improvement - No Sales Tax";
@@ -1090,6 +1103,286 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual((await AdditionalCharge.findById(chargeId).lean()).attempts[0].cancelPending, false);
     });
 
+    /* ---------------- the customer profile: charges with no booking ---------------- */
+    await check("customer profile: only the owner may see who pays, charge, list or act; the profile offers it to the owner only", async () => {
+      const charges0 = await AdditionalCharge.countDocuments();
+      for (const who of [general, manager, field, alice]) {
+        for (const [m, p] of [["GET", custBase(alice)], ["GET", `${custBase(alice)}/target`], ["POST", custBase(alice)], ["POST", `${custBase(alice)}/${aliceCharge.id}/refresh`]]) {
+          const r = await call(m, p, who, { amount: "40", idempotencyKey: key(), method: "card" });
+          assert.strictEqual(r.status, 403, `${who.name} ${m} ${p} -> ${r.status}`);
+        }
+      }
+      assert.strictEqual((await call("GET", custBase(alice))).status, 401);
+      assert.strictEqual(await AdditionalCharge.countDocuments(), charges0);
+      const mine = await call("GET", `/api/admin/customers/${alice._id}`, owner);
+      assert.strictEqual(mine.status, 200, JSON.stringify(mine.body));
+      assert.strictEqual(mine.body.allowedActions.chargeCustomer, true);
+      const theirs = await call("GET", `/api/admin/customers/${alice._id}`, manager);
+      assert.strictEqual(theirs.body.allowedActions.chargeCustomer, false);
+    });
+
+    let directCharge;
+    await check("both entry points resolve the SAME account, Stripe customer and card; a direct charge needs and makes no booking", async () => {
+      const { resolveChargeTarget, resolveCustomerChargeTarget } = require("../utils/extraCharges/linkage");
+      const viaBooking = await resolveChargeTarget(await Booking.findById(aliceJob._id), { stripe: fakeStripe });
+      const viaProfile = await resolveCustomerChargeTarget(alice._id, { stripe: fakeStripe });
+      const pick = (t) => ({ account: t.accountUserId, customer: t.customerId, pm: t.paymentMethodId, last4: t.card?.last4, direct: t.direct.allowed });
+      assert.deepStrictEqual(pick(viaProfile), pick(viaBooking));
+      assert.deepStrictEqual(pick(viaProfile), { account: String(alice._id), customer: "cus_alice", pm: "pm_alice", last4: "1111", direct: true });
+
+      const shown = (await customerTarget(owner, alice)).body.target;
+      assert.strictEqual(shown.scope, "direct");
+      assert.strictEqual(shown.booking, null);
+      assert.strictEqual(shown.customer.name, "Alice Able");
+      assert.deepStrictEqual({ brand: shown.card.brand, last4: shown.card.last4 }, { brand: "visa", last4: "1111" });
+      assert.ok(!JSON.stringify(shown).includes("pm_alice") && !JSON.stringify(shown).includes("cus_alice"), "no Stripe ids reach the browser");
+
+      const bookings = await Booking.countDocuments();
+      const { res } = await chargeDirect(owner, alice, "211.11", { note: "Emergency call-out, burst pipe" });
+      assert.strictEqual(res.status, 201, JSON.stringify(res.body));
+      directCharge = res.body.charge;
+      assert.strictEqual(directCharge.status, "paid");
+      assert.strictEqual(directCharge.scope, "direct");
+      assert.strictEqual(directCharge.where, "Direct charge");
+      assert.strictEqual(directCharge.bookingId, null);
+      assert.ok(/^80000001-D1$/.test(directCharge.number), directCharge.number);
+      assert.strictEqual(await Booking.countDocuments(), bookings, "no booking is created");
+      const rec = await AdditionalCharge.findById(directCharge.id).lean();
+      assert.strictEqual(rec.booking, null);
+      assert.strictEqual(String(rec.user), String(alice._id));
+      const bookingRec = await AdditionalCharge.findById(aliceCharge.id).lean();
+      assert.deepStrictEqual([rec.stripeCustomerId, rec.paymentMethodId], [bookingRec.stripeCustomerId, bookingRec.paymentMethodId], "the same Stripe customer and card as from her booking");
+      const pi = F.pis.get(rec.paymentIntentId);
+      assert.deepStrictEqual([pi.customer, pi.payment_method, pi.amount], ["cus_alice", "pm_alice", 21111], "exactly the entered total, nothing added");
+      assert.deepStrictEqual(
+        { s: pi.metadata.chargeScope, b: pi.metadata.bookingId, u: pi.metadata.userMongoId, t: pi.metadata.taxStatus },
+        { s: "direct", b: "", u: String(alice._id), t: "not_calculated" }
+      );
+      assert.strictEqual(rec.consent.statement, 'The owner pressed "Charge $211.11".');
+      assert.ok(await AdminActivityLog.findOne({ action: "Direct Charge (Saved Card)", entityType: "user", entityId: String(alice._id) }));
+    });
+
+    await check("one record, two places: a booking charge shows under its job AND the customer; a direct charge only under the customer", async () => {
+      const cust = await call("GET", custBase(alice), owner);
+      assert.strictEqual(cust.status, 200);
+      const all = cust.body.charges;
+      assert.strictEqual(all.length, await AdditionalCharge.countDocuments({ user: alice._id }), "every one of hers, once");
+      assert.strictEqual(new Set(all.map((c) => c.id)).size, all.length, "no duplicates");
+      const direct = all.find((c) => c.id === directCharge.id);
+      assert.deepStrictEqual(
+        { where: direct.where, note: direct.note, by: direct.confirmedByName, status: direct.status, receipt: Boolean(direct.receiptUrl), at: Boolean(direct.confirmedAt) },
+        { where: "Direct charge", note: "Emergency call-out, burst pipe", by: "Owner Person", status: "paid", receipt: true, at: true }
+      );
+      const onJob = (await call("GET", `/api/admin/jobs/${aliceJob._id}/extra-charges`, owner)).body.charges;
+      const fromJob = onJob.find((c) => c.id === aliceCharge.id);
+      const fromCustomer = all.find((c) => c.id === aliceCharge.id);
+      assert.deepStrictEqual(fromCustomer, fromJob, "the same record, serialized the same, from both");
+      assert.strictEqual(fromCustomer.where, `Job #${aliceJob.bookingNumber}`);
+      assert.ok(!onJob.some((c) => c.id === directCharge.id), "a direct charge is on no job");
+      assert.strictEqual(await AdditionalCharge.countDocuments({ _id: aliceCharge.id }), 1);
+    });
+
+    await check("tampered customer-profile requests: browser ids, someone else's screen, key or charge id never reach another account", async () => {
+      const aliceShown = (await customerTarget(owner, alice)).body.target;
+      const bobShown = (await customerTarget(owner, bob)).body.target;
+      const creates = piCreates();
+      // Bob's URL with every Alice id a confused or tampered browser could send: Bob pays, only Bob.
+      const r = await call("POST", custBase(bob), owner, {
+        amount: "33.30", idempotencyKey: key(), targetFingerprint: bobShown.fingerprint, method: "card",
+        userId: String(alice._id), customerId: String(alice._id), stripeCustomerId: "cus_alice", paymentMethodId: "pm_alice", payment_method: "pm_alice", bookingId: String(aliceJob._id), email: "shared@example.test",
+      });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      const rec = await AdditionalCharge.findById(r.body.charge.id).lean();
+      assert.strictEqual(String(rec.user), String(bob._id));
+      assert.deepStrictEqual([F.pis.get(rec.paymentIntentId).customer, F.pis.get(rec.paymentIntentId).payment_method], ["cus_bob", "pm_bob"]);
+      assert.strictEqual(r.body.charge.card.last4, "2222");
+      // Alice's screen (fingerprint) sent to Bob's URL, and Alice's booking screen sent to her profile URL: refused, nothing charged.
+      for (const [url, fp] of [[custBase(bob), aliceShown.fingerprint], [custBase(alice), (await previewFor(owner, aliceJob)).fingerprint]]) {
+        const bad = await call("POST", url, owner, { amount: "33.31", idempotencyKey: key(), targetFingerprint: fp, method: "card" });
+        assert.strictEqual(bad.status, 409);
+        assert.strictEqual(bad.body.code, "TARGET_CHANGED");
+      }
+      assert.strictEqual(piCreates() - creates, 1, "only Bob's one charge");
+      // One press's key cannot be replayed into another customer, or onto a job.
+      const used = r.body.charge && (await AdditionalCharge.findById(r.body.charge.id).lean()).clientKey;
+      for (const url of [custBase(alice), `/api/admin/jobs/${aliceJob._id}/extra-charges`]) {
+        const replay = await call("POST", url, owner, { amount: "33.30", idempotencyKey: used, targetFingerprint: aliceShown.fingerprint, method: "card" });
+        assert.strictEqual(replay.status, 409, url);
+        assert.strictEqual(replay.body.code, "KEY_REUSED");
+      }
+      // A charge id only works under its own customer, or its own job.
+      for (const [m, p, body] of [
+        ["POST", `${custBase(bob)}/${directCharge.id}/refresh`, {}],
+        ["POST", `${custBase(bob)}/${directCharge.id}/retry-card`, { idempotencyKey: key(), expectedCardLast4: "2222" }],
+        ["POST", `${custBase(bob)}/${directCharge.id}/payment-link`, { idempotencyKey: key() }],
+        ["POST", `${custBase(bob)}/${aliceCharge.id}/close`, {}],
+        ["POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/${directCharge.id}/refresh`, {}],
+        ["POST", `/api/admin/jobs/${bobJob._id}/extra-charges/${directCharge.id}/retry-card`, { idempotencyKey: key(), expectedCardLast4: "1111" }],
+      ]) {
+        assert.strictEqual((await call(m, p, owner, body)).status, 404, p);
+      }
+      assert.strictEqual((await call("GET", `${custBase("not-an-id")}/target`, owner)).status, 400);
+      assert.strictEqual((await call("GET", `${custBase(new mongoose.Types.ObjectId())}/target`, owner)).status, 404);
+      const staff = (await customerTarget(owner, general)).body.target;
+      assert.deepStrictEqual([staff.direct.allowed, staff.direct.code, staff.link.allowed], [false, "STAFF_ACCOUNT", false], "a staff account is never charged");
+      const staffPost = await call("POST", custBase(general), owner, { amount: "10", idempotencyKey: key(), targetFingerprint: staff.fingerprint, method: "card" });
+      assert.strictEqual(staffPost.status, 409);
+      assert.ok(![...F.pis.values()].some((x) => x.customer === "cus_alice" && x.amount === 3330), "Alice was never charged Bob's amount");
+    });
+
+    await check("ambiguous or missing mappings block the profile entry point exactly as they block the booking one", async () => {
+      const kit = await makeUser({ stripeCustomerId: "cus_kit_shared" });
+      await makeUser({ stripeCustomerId: "cus_kit_shared" });
+      addCustomer("cus_kit_shared", { pm: "pm_kit" });
+      const lia = await makeUser({ stripeCustomerId: "cus_lia" });
+      addCustomer("cus_lia", { pm: "pm_lia", metadata: { userMongoId: String(bob._id) } });
+      const max = await makeUser({ email: "max@example.test" });
+      const nia = await makeUser({ stripeCustomerId: "cus_nia" });
+      addCustomer("cus_nia", { pm: null });
+      F.customers.get("cus_nia").invoice_settings.default_payment_method = "pm_bob"; // another customer's card
+      for (const [u, code] of [[kit, "STRIPE_CUSTOMER_SHARED"], [lia, "STRIPE_CUSTOMER_MISMATCH"], [max, "NO_STRIPE_CUSTOMER"], [nia, "PM_NOT_OWNED"]]) {
+        const fromProfile = (await customerTarget(owner, u)).body.target;
+        const fromBooking = await previewFor(owner, await makeBooking(u));
+        assert.deepStrictEqual([fromProfile.direct.allowed, fromProfile.direct.code], [false, code], code + " got " + JSON.stringify(fromProfile.direct));
+        assert.strictEqual(fromBooking.direct.code, fromProfile.direct.code, "the same answer from both");
+        assert.strictEqual(fromProfile.card, null, `${code}: no card shown`);
+        const creates = piCreates();
+        const r = await call("POST", custBase(u), owner, { amount: "20", idempotencyKey: key(), targetFingerprint: fromProfile.fingerprint, method: "card" });
+        assert.strictEqual(r.body.code, code);
+        assert.strictEqual(piCreates(), creates);
+      }
+    });
+
+    await check("accidental repeats are caught across the two entry points, in either order and when pressed at the same moment", async () => {
+      const quinn = await makeUser({ name: "Quinn Quill", stripeCustomerId: "cus_quinn" });
+      addCustomer("cus_quinn", { pm: "pm_quinn", last4: "5151" });
+      const qJob = await makeBooking(quinn);
+      // Booking first, then the profile.
+      const p = await previewFor(owner, qJob);
+      const first = await call("POST", `/api/admin/jobs/${qJob._id}/extra-charges`, owner, { amount: "150", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card" });
+      assert.strictEqual(first.body.charge.status, "paid");
+      const creates = piCreates();
+      const fromProfile = await chargeDirect(owner, quinn, "150");
+      assert.strictEqual(fromProfile.res.status, 409);
+      assert.strictEqual(fromProfile.res.body.code, "POSSIBLE_DUPLICATE");
+      assert.ok(/already charged for Quinn Quill .*on job #/.test(fromProfile.res.body.message), fromProfile.res.body.message);
+      assert.strictEqual(piCreates(), creates);
+      const meant = await call("POST", custBase(quinn), owner, { ...fromProfile.body, idempotencyKey: key(), allowRepeat: true });
+      assert.strictEqual(meant.status, 201, "a deliberate second charge, confirmed");
+      // Profile first, then the booking.
+      const d = await chargeDirect(owner, quinn, "61");
+      assert.strictEqual(d.res.body.charge.status, "paid");
+      const viaJob = await call("POST", `/api/admin/jobs/${qJob._id}/extra-charges`, owner, { amount: "61", idempotencyKey: key(), targetFingerprint: (await previewFor(owner, qJob)).fingerprint, method: "card" });
+      assert.strictEqual(viaJob.body.code, "POSSIBLE_DUPLICATE");
+      assert.ok(/as a direct charge/.test(viaJob.body.message), viaJob.body.message);
+      // Two screens pressed at the same moment, different keys: one charge, one question.
+      const t = (await customerTarget(owner, quinn)).body.target;
+      const jp = await previewFor(owner, qJob);
+      const before = piCreates();
+      const [a, b] = await Promise.all([
+        call("POST", custBase(quinn), owner, { amount: "77", idempotencyKey: key(), targetFingerprint: t.fingerprint, method: "card" }),
+        call("POST", `/api/admin/jobs/${qJob._id}/extra-charges`, owner, { amount: "77", idempotencyKey: key(), targetFingerprint: jp.fingerprint, method: "card" }),
+      ]);
+      assert.deepStrictEqual([a.status, b.status].sort(), [201, 409], JSON.stringify([a.body, b.body]));
+      assert.strictEqual([a, b].find((x) => x.status === 409).body.code, "POSSIBLE_DUPLICATE");
+      assert.strictEqual(piCreates() - before, 1);
+      assert.strictEqual(await AdditionalCharge.countDocuments({ user: quinn._id, totalCents: 7700 }), 1);
+      // Another customer's same amount is not a repeat.
+      const other = await chargeDirect(owner, bob, "77");
+      assert.strictEqual(other.res.status, 201);
+    });
+
+    await check("direct charge, double tap and stale card: one key is one charge; a card changed since the screen opened is refused and shown", async () => {
+      const rory = await makeUser({ stripeCustomerId: "cus_rory" });
+      addCustomer("cus_rory", { pm: "pm_rory", last4: "4444" });
+      const t = (await customerTarget(owner, rory)).body.target;
+      const body = { amount: "45", idempotencyKey: key(), targetFingerprint: t.fingerprint, method: "card" };
+      const creates = piCreates();
+      const [a, b] = await Promise.all([call("POST", custBase(rory), owner, body), call("POST", custBase(rory), owner, body)]);
+      const c = await call("POST", custBase(rory), owner, body);
+      assert.strictEqual(await AdditionalCharge.countDocuments({ user: rory._id }), 1);
+      assert.strictEqual(piCreates() - creates, 1);
+      for (const r of [a, b, c].filter((r) => r.status < 300)) assert.strictEqual(r.body.charge.id, c.body.charge.id);
+      assert.strictEqual(c.body.replayed, true);
+      // The customer's default card changes while the owner's screen is open.
+      const t2 = (await customerTarget(owner, rory)).body.target;
+      F.pms.set("pm_rory2", { id: "pm_rory2", type: "card", customer: "cus_rory", card: { brand: "amex", last4: "0005", exp_month: 4, exp_year: 2031 } });
+      F.customers.get("cus_rory").invoice_settings.default_payment_method = "pm_rory2";
+      const stale = await call("POST", custBase(rory), owner, { amount: "12", idempotencyKey: key(), targetFingerprint: t2.fingerprint, method: "card" });
+      assert.strictEqual(stale.status, 409);
+      assert.strictEqual(stale.body.code, "TARGET_CHANGED");
+      assert.strictEqual(stale.body.target.card.last4, "0005", "the new card comes back to show");
+      assert.strictEqual(piCreates() - creates, 1);
+    });
+
+    await check("direct charge declined, then a payment link that belongs only to that charge: paid once, closes, cannot pay twice", async () => {
+      const sky = await makeUser({ stripeCustomerId: "cus_sky" });
+      addCustomer("cus_sky", { pm: "pm_sky", behavior: "auth", last4: "3184" });
+      const { res } = await chargeDirect(owner, sky, "88", { note: "After-hours lockout" });
+      assert.strictEqual(res.body.charge.status, "failed");
+      assert.strictEqual(res.body.charge.failure.code, "authentication_required");
+      assert.ok(res.body.charge.actions.includes("paymentLink"));
+      const id = res.body.charge.id;
+      assert.strictEqual(F.pis.get((await AdditionalCharge.findById(id).lean()).attempts[0].paymentIntentId).status, "canceled", "the old intent cannot be completed");
+      const l = await call("POST", `${custBase(sky)}/${id}/payment-link`, owner, { idempotencyKey: key(), send: false });
+      assert.strictEqual(l.status, 200, JSON.stringify(l.body));
+      const token = l.body.payUrl.split("/pay/")[1];
+      const link = await AdminPaymentLink.findOne({ tokenHash: hashToken(token) }).lean();
+      assert.strictEqual(String(link.additionalCharge), id, "the link belongs to this one charge");
+      assert.strictEqual(link.booking || null, null);
+      assert.ok(/your Profixter service: After-hours lockout/.test(link.itemLabel), link.itemLabel);
+      const open = await call("POST", `/api/pay/${token}/checkout`);
+      assert.strictEqual(open.status, 200, JSON.stringify(open.body));
+      const sess = [...F.sessions.values()].find((x) => x.metadata.additionalChargeId === id);
+      assert.strictEqual(sess.customer, "cus_sky");
+      assert.strictEqual(sess.metadata.chargeScope, "direct");
+      assert.deepStrictEqual(sess.line_items_param.map((x) => [x.price_data.unit_amount, x.price_data.product_data.name]), [[8800, "Profixter"]]);
+      const { session } = completeSession(sess.id);
+      assert.strictEqual(await sendEvent("checkout.session.completed", session, "evt_direct_link_1"), 200);
+      const rec = await AdditionalCharge.findById(id).lean();
+      assert.strictEqual(rec.status, "paid");
+      assert.strictEqual(rec.extraPayments.length, 0);
+      assert.strictEqual((await call("POST", `/api/pay/${token}/checkout`)).status, 410);
+      assert.strictEqual((await call("POST", `${custBase(sky)}/${id}/payment-link`, owner, { idempotencyKey: key() })).status, 409);
+      assert.strictEqual(await AdditionalCharge.countDocuments({ user: sky._id }), 1, "one charge, one transaction");
+    });
+
+    await check("direct charges reconcile with nobody looking: processing becomes Paid by the sweep; a refund in Stripe follows", async () => {
+      const tia = await makeUser({ stripeCustomerId: "cus_tia" });
+      addCustomer("cus_tia", { pm: "pm_tia", behavior: "processing" });
+      const { res } = await chargeDirect(owner, tia, "52");
+      assert.strictEqual(res.body.charge.status, "processing");
+      const rec = await AdditionalCharge.findById(res.body.charge.id).lean();
+      const pi = F.pis.get(rec.paymentIntentId);
+      pi.status = "succeeded";
+      const ch = { id: nid("ch"), amount: pi.amount, amount_refunded: 0, receipt_url: "https://pay.stripe.test/d", payment_intent: pi.id, payment_method_details: { card: { brand: "visa", last4: "4242" } } };
+      F.charges.set(ch.id, ch);
+      pi.latest_charge = ch.id;
+      const r = await sweepOpen({ now: new Date(Date.now() + 5 * 60 * 1000) });
+      assert.strictEqual(r.errors, 0, JSON.stringify(r));
+      const paid = await AdditionalCharge.findById(rec._id).lean();
+      assert.deepStrictEqual([paid.status, paid.receiptUrl], ["paid", "https://pay.stripe.test/d"]);
+      ch.amount_refunded = 2000;
+      await sweepRefunds({ now: new Date(Date.now() + 60 * 60 * 1000) });
+      assert.deepStrictEqual([(await AdditionalCharge.findById(rec._id).lean()).status, (await AdditionalCharge.findById(rec._id).lean()).refundedCents], ["partially_refunded", 2000]);
+    });
+
+    await check("customer billing: direct and booking charges are labelled on their Stripe payment, each counted once", async () => {
+      const recs = await AdditionalCharge.find({ user: alice._id, paymentIntentId: { $ne: "" } }).lean();
+      customerBilling.setStripeClient({
+        customers: { retrieve: async (id) => ({ id, invoice_settings: {} }) },
+        subscriptions: { list: async () => list([]) },
+        invoices: { list: async () => list([]), createPreview: async () => { throw Object.assign(new Error("none"), { code: "invoice_upcoming_none" }); } },
+        charges: { list: async () => list(recs.map((r) => ({ id: r.chargeId, payment_intent: r.paymentIntentId, amount: r.totalCents, created: now(), status: "succeeded", paid: true }))) },
+      });
+      const b = await customerBilling.billingForCustomer(alice, { fresh: true });
+      const directRow = b.payments.find((p) => p.extraCharge?.id === directCharge.id);
+      assert.deepStrictEqual({ direct: directRow.extraCharge.direct, bookingId: directRow.extraCharge.bookingId }, { direct: true, bookingId: null });
+      const jobRow = b.payments.find((p) => p.extraCharge?.id === aliceCharge.id);
+      assert.deepStrictEqual({ direct: jobRow.extraCharge.direct, n: jobRow.extraCharge.bookingNumber }, { direct: false, n: aliceJob.bookingNumber });
+      assert.strictEqual(b.payments.length, recs.length, "one Stripe payment per charge, none added from our records");
+    });
+
     await check("billing history labels extras inside the Stripe charges and does not list them twice", async () => {
       const recs = await AdditionalCharge.find({ user: alice._id, paymentIntentId: { $ne: "" } }).lean();
       customerBilling.setStripeClient({
@@ -1101,7 +1394,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       const b = await customerBilling.billingForCustomer(alice, { fresh: true });
       assert.strictEqual(b.available, true);
       assert.strictEqual(b.payments.length, recs.length);
-      assert.ok(b.payments.every((p) => p.extraCharge && p.extraCharge.bookingNumber));
+      assert.ok(b.payments.every((p) => p.extraCharge && (p.extraCharge.bookingNumber || p.extraCharge.direct)));
       assert.ok(b.additionalCharges.filter((a) => a.paidAt).every((a) => a.inPayments));
       const total = b.payments.reduce((s, p) => s + p.amountCents, 0);
       assert.strictEqual(total, recs.reduce((s, r) => s + r.totalCents, 0), "counted once");
