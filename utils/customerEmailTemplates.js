@@ -423,6 +423,44 @@ function createCustomerEmailTemplates({
     },
 
     /*
+     * The appointment moved (Admin reschedule, 2026-11-12).
+     *
+     * Before this there was only a text, so a customer who cannot be texted
+     * learned of the new time from the reminder, if at all. The new time is
+     * the point of the email and gets its own line; the old one is shown only
+     * when the caller knows it. Nothing here says the visit is confirmed: a
+     * request still awaiting confirmation can be moved too, and it says so.
+     */
+    booking_rescheduled: (vars = {}) => {
+      const { name = "there", bookingNumber, date, previousDate, service, address } = vars;
+      const awaiting = /pending/i.test(String(vars.status || ""));
+      const exact = date ? formatNYCTime(date) : "";
+      const rows = [
+        { label: "Booking", value: bookingNumber ? `#${bookingNumber}` : "" },
+        { label: "Service", value: service || "" },
+        { label: "Previous time", value: previousDate ? formatNYCTime(previousDate) : "" },
+        { label: "Address", value: address || "" },
+      ];
+      const statusLine = awaiting
+        ? "Your request is still waiting for confirmation. We will email you again when it is confirmed."
+        : "Your Fixter is scheduled to arrive at this time. We will send a reminder before the visit.";
+      return email({
+        subject: `Your ${visitNoun(vars)} has a new time${bookingNumber ? ` — #${bookingNumber}` : ""}`,
+        preheader: exact ? `New time: ${exact}.` : "Your Profixter appointment time changed.",
+        content: `
+          <h1 style="margin:0 0 16px;font-size:26px;line-height:33px;">Your appointment time changed</h1>
+          <p style="margin:0 0 16px;">${greeting(name)}</p>
+          <p style="margin:0 0 8px;">Your ${visitNoun(vars)} is now scheduled for</p>
+          <p style="margin:0 0 20px;font-size:22px;line-height:30px;font-weight:700;color:#172033;">${safe(exact)}</p>
+          ${detailCard(rows)}
+          <p style="margin:0 0 12px;">${statusLine}</p>
+          <p class="email-muted" style="margin:0;color:#64748b;font-size:14px;">If this time does not work for you, reply to this email or call ${ONE_TIME_PHONE}.</p>
+          ${button(urls.schedule, "View your appointment")}`,
+        text: `${greeting(name)}\n\nYour ${visitNoun(vars)} is now scheduled for ${exact}.\n\n${textDetails(rows)}\n\n${statusLine}\n\nIf this time does not work for you, reply to this email or call ${ONE_TIME_PHONE}.\n\nView your appointment: ${urls.schedule}\n\n${SUPPORT_EMAIL}`,
+      });
+    },
+
+    /*
      * The upcoming-visit reminder, internally the "24h" one.
      *
      * Nothing here says "tomorrow" or "24 hours". The reminder is durable and

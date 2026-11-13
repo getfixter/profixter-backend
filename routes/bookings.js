@@ -155,8 +155,7 @@ const {
   consumeLoyaltyFullDay,
   includedFullDayState,
   loyaltyFullDayState,
-  restoreLoyaltyFullDay,
-  restoreIncludedFullDay,
+  restoreFullDayBenefit,
 } = require("../utils/fullDayEntitlements");
 const { effectivePlanForSubscription } = require("../utils/loyalty/effectivePlan");
 const { checkoutMetadataFrom } = require("../utils/metaBrowserIds");
@@ -651,10 +650,7 @@ async function cancelOrDelete(req, res) {
          * day goes back to `paid`, because there the record IS the benefit and
          * cancelling it would destroy what the member earned.
          */
-        fullDayRestore = await restoreIncludedFullDay({ booking });
-        if (!fullDayRestore?.restored) {
-          fullDayRestore = await restoreLoyaltyFullDay({ booking });
-        }
+        fullDayRestore = await restoreFullDayBenefit({ booking });
       } catch (error) {
         console.error("Full Day entitlement restore failed:", error.message);
       }
@@ -768,6 +764,7 @@ async function cancelOrDelete(req, res) {
           phone: me?.phone || booking.phone || "-",
           address: addressLine || "-",
           userId: me?.userId || booking.userId || "-",
+          bookingId: String(booking._id),
           bookingNumber: booking.bookingNumber || booking._id,
           service: booking.service || "-",
           date: isoDate,
@@ -1454,6 +1451,7 @@ async function sendFullDayConfirmationEmails({
         phone: booking.phone || user.phone || "-",
         address: addressLine || "-",
         userId: booking.userId || user.userId || "-",
+        bookingId: String(booking._id),
         bookingNumber: booking.bookingNumber,
         date: booking.date,
         fixter: booking.assignedFixterName || "",

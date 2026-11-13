@@ -575,7 +575,7 @@ const TEMPLATES = {
    * different subjects: collapsing them would hide whether money has arrived.
    */
   admin_full_day_booked: ({
-    name, phone, address, userId, bookingNumber, date, startTime, endTime, fixter, paymentSummary, note,
+    name, phone, address, userId, bookingId, bookingNumber, date, startTime, endTime, fixter, paymentSummary, note,
   }) =>
     renderOperationalEmail({
       subject: adminSubjects.booking("Full Day Booked", { name, date, withTime: false }),
@@ -590,7 +590,7 @@ const TEMPLATES = {
         ["Payment", paymentSummary || ""],
       ],
       note: note || "",
-      action: { label: "View Booking", url: adminLink.bookings() },
+      action: { label: "View Booking", url: adminLink.booking(bookingId) || adminLink.bookings() },
       footer: `Member ID ${userId || "-"}${bookingNumber ? ` - booking #${bookingNumber}` : ""}`,
     }),
 
@@ -739,7 +739,7 @@ const TEMPLATES = {
    * An ordinary booking event. The date is in the subject so this normally does
    * not need opening at all, which is the whole reason the subject carries it.
    */
-  admin_booking_canceled: ({ name, phone, address, userId, bookingNumber, date, service }) =>
+  admin_booking_canceled: ({ name, phone, address, userId, bookingId, bookingNumber, date, service }) =>
     renderOperationalEmail({
       subject: adminSubjects.booking("Booking Canceled", { name, date, withTime: false }),
       event: "Booking canceled",
@@ -750,7 +750,7 @@ const TEMPLATES = {
         ["Address", address || ""],
         ["Phone", phone || ""],
       ],
-      action: { label: "View Booking", url: adminLink.bookings() },
+      action: { label: "View Booking", url: adminLink.booking(bookingId) || adminLink.bookings() },
       footer: `Member ID ${userId || "-"}${bookingNumber ? ` - booking #${bookingNumber}` : ""}`,
     }),
 
@@ -1216,6 +1216,7 @@ const SERVICE_EMAIL_KEYS = new Set([
   "booking_confirmed",
   "booking_completed",
   "booking_canceled",
+  "booking_rescheduled",
   "booking_reminder_24h",
   "booking_reminder_60m",
   "booking_review_request",

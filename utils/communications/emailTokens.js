@@ -138,6 +138,11 @@ const EMAIL_DEFINITIONS = {
   booking_created: { label: "Booking received", preheader: "We received your request.", tokens: bookingTokens },
   booking_confirmed: { label: "Booking confirmed", preheader: "Your visit is confirmed.", tokens: bookingTokens },
   booking_canceled: { label: "Booking cancelled", preheader: "Your visit was cancelled.", tokens: bookingTokens },
+  booking_rescheduled: {
+    label: "Booking rescheduled",
+    preheader: "Your visit has a new time.",
+    tokens: (v) => ({ ...bookingTokens(v), previousWhen: when(v.previousDate) }),
+  },
   booking_completed: {
     label: "Visit completed",
     preheader: "Your visit is complete.",
