@@ -12,6 +12,7 @@ const { configSnapshot } = require("../utils/sms/smsConfig");
 const { toE164 } = require("../utils/sms/smsPhone");
 const { clearUndeliverable } = require("../utils/sms/smsPhoneStatus");
 const { SMS_TYPES } = require("../utils/sms/smsTypes");
+const { bodySearchInput } = require("../utils/searchInput");
 
 /**
  * Admin visibility into the SMS system.
@@ -71,10 +72,10 @@ router.get("/config", auth, ...onlyAdmin, async (_req, res) => {
 });
 
 /** The message log. Filterable the same way the email log is. */
-router.get("/messages", auth, ...onlyAdmin, async (req, res) => {
+async function listSmsMessages(req, res, input) {
   try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const page = Math.max(1, Number(input.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const query = {};
 
     for (const field of [
@@ -85,27 +86,27 @@ router.get("/messages", auth, ...onlyAdmin, async (req, res) => {
       "campaignId",
       "userId",
     ]) {
-      if (req.query[field]) query[field] = String(req.query[field]).trim();
+      if (input[field]) query[field] = String(input[field]).trim();
     }
 
     // Accept a phone in any format an operator might paste and normalise it,
     // so searching "(631) 599-1363" finds messages stored as +16315991363.
-    if (req.query.phone) {
-      query.toPhone = toE164(req.query.phone) || String(req.query.phone).trim();
+    if (input.phone) {
+      query.toPhone = toE164(input.phone) || String(input.phone).trim();
     }
-    if (req.query.user && mongoose.Types.ObjectId.isValid(String(req.query.user))) {
-      query.user = new mongoose.Types.ObjectId(String(req.query.user));
+    if (input.user && mongoose.Types.ObjectId.isValid(String(input.user))) {
+      query.user = new mongoose.Types.ObjectId(String(input.user));
     }
 
-    const dateFrom = asDate(req.query.dateFrom);
-    const dateTo = asDate(req.query.dateTo, true);
+    const dateFrom = asDate(input.dateFrom);
+    const dateTo = asDate(input.dateTo, true);
     if (dateFrom || dateTo) {
       query.createdAt = {};
       if (dateFrom) query.createdAt.$gte = dateFrom;
       if (dateTo) query.createdAt.$lte = dateTo;
     }
 
-    const search = String(req.query.search || "").trim();
+    const search = String(input.search || "").trim();
     if (search) {
       const regex = new RegExp(escapeRegex(search), "i");
       query.$or = [
@@ -138,7 +139,11 @@ router.get("/messages", auth, ...onlyAdmin, async (req, res) => {
     console.error("SMS message list failed:", error);
     return res.status(500).json({ message: "Failed to load SMS messages" });
   }
-});
+}
+
+router.get("/messages", auth, ...onlyAdmin, (req, res) => listSmsMessages(req, res, req.query || {}));
+// POST /api/admin/sms/messages/search: the same filters in a JSON body, so free text stays out of URLs.
+router.post("/messages/search", auth, ...onlyAdmin, (req, res) => listSmsMessages(req, res, bodySearchInput(req.body)));
 
 router.get("/messages/:id", auth, ...onlyAdmin, async (req, res) => {
   try {
@@ -262,14 +267,14 @@ router.get("/failures", auth, ...onlyAdmin, async (req, res) => {
  * undeliverable number is a carrier's verdict. Filterable by status so an
  * operator can also see which numbers are merely unproven.
  */
-router.get("/phone-status", auth, ...onlyAdmin, async (req, res) => {
+async function listSmsPhoneStatus(req, res, input) {
   try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const page = Math.max(1, Number(input.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const query = {};
 
-    if (req.query.status) query.status = String(req.query.status).trim();
-    if (req.query.phone) query.phone = toE164(req.query.phone) || String(req.query.phone).trim();
+    if (input.status) query.status = String(input.status).trim();
+    if (input.phone) query.phone = toE164(input.phone) || String(input.phone).trim();
 
     const [items, total, counts] = await Promise.all([
       SmsPhoneStatus.find(query)
@@ -286,13 +291,18 @@ router.get("/phone-status", auth, ...onlyAdmin, async (req, res) => {
       total,
       page,
       limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
       counts: counts.reduce((acc, row) => ({ ...acc, [row._id]: row.count }), {}),
     });
   } catch (error) {
     console.error("SMS phone status list failed:", error);
     return res.status(500).json({ message: "Failed to load SMS phone statuses" });
   }
-});
+}
+
+router.get("/phone-status", auth, ...onlyAdmin, (req, res) => listSmsPhoneStatus(req, res, req.query || {}));
+// POST /api/admin/sms/phone-status/search: the same filters in a JSON body, so free text stays out of URLs.
+router.post("/phone-status/search", auth, ...onlyAdmin, (req, res) => listSmsPhoneStatus(req, res, bodySearchInput(req.body)));
 
 /**
  * Put a number back into play by hand.
@@ -324,24 +334,28 @@ router.post("/phone-status/:phone/clear", auth, ...onlyAdmin, async (req, res) =
 });
 
 /** Who has opted out, and how. */
-router.get("/opt-outs", auth, ...onlyAdmin, async (req, res) => {
+async function listSmsOptOuts(req, res, input) {
   try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const page = Math.max(1, Number(input.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const query = {};
-    if (req.query.scope) query.scope = String(req.query.scope);
-    if (req.query.phone) query.phone = toE164(req.query.phone) || String(req.query.phone);
+    if (input.scope) query.scope = String(input.scope);
+    if (input.phone) query.phone = toE164(input.phone) || String(input.phone);
 
     const [items, total] = await Promise.all([
       SmsOptOut.find(query).sort({ optedOutAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       SmsOptOut.countDocuments(query),
     ]);
-    return res.json({ items, total, page, limit });
+    return res.json({ items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (error) {
     console.error("SMS opt-out list failed:", error);
     return res.status(500).json({ message: "Failed to load SMS opt-outs" });
   }
-});
+}
+
+router.get("/opt-outs", auth, ...onlyAdmin, (req, res) => listSmsOptOuts(req, res, req.query || {}));
+// POST /api/admin/sms/opt-outs/search: the same filters in a JSON body, so free text stays out of URLs.
+router.post("/opt-outs/search", auth, ...onlyAdmin, (req, res) => listSmsOptOuts(req, res, bodySearchInput(req.body)));
 
 /* -------------------------------------------------------------------------- */
 /* Campaigns                                                                   */

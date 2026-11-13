@@ -21,6 +21,7 @@ const SlotCounter = require("../models/SlotCounter");
 const BookingHistory = require("../models/BookingHistory");
 const EmailLog = require("../models/EmailLog");
 const AdminActivityLog = require("../models/AdminActivityLog");
+const { bodySearchInput } = require("../utils/searchInput");
 const {
   createAdminActivityLog,
   markAdminActivityLog,
@@ -1293,26 +1294,26 @@ router.get(
 );
 
 // GET /api/admin/activity-log
-router.get("/activity-log", auth, ...activityRead, async (req, res) => {
+async function listActivityLog(req, res, input) {
   try {
-    const page = Math.max(Number.parseInt(String(req.query.page || "1"), 10) || 1, 1);
+    const page = Math.max(Number.parseInt(String(input.page || "1"), 10) || 1, 1);
     const limit = Math.min(
-      Math.max(Number.parseInt(String(req.query.limit || "50"), 10) || 50, 1),
+      Math.max(Number.parseInt(String(input.limit || "50"), 10) || 50, 1),
       200
     );
     const query = {};
 
-    if (req.query.actorUserId) query.actorUserId = req.query.actorUserId;
-    if (req.query.action) query.action = { $regex: escapeRegex(req.query.action), $options: "i" };
-    if (req.query.entityType) query.entityType = String(req.query.entityType);
+    if (input.actorUserId) query.actorUserId = input.actorUserId;
+    if (input.action) query.action = { $regex: escapeRegex(input.action), $options: "i" };
+    if (input.entityType) query.entityType = String(input.entityType);
 
-    if (req.query.dateFrom || req.query.dateTo) {
+    if (input.dateFrom || input.dateTo) {
       query.createdAt = {};
-      if (req.query.dateFrom) query.createdAt.$gte = new Date(String(req.query.dateFrom));
-      if (req.query.dateTo) query.createdAt.$lte = new Date(String(req.query.dateTo));
+      if (input.dateFrom) query.createdAt.$gte = new Date(String(input.dateFrom));
+      if (input.dateTo) query.createdAt.$lte = new Date(String(input.dateTo));
     }
 
-    const search = String(req.query.search || "").trim();
+    const search = String(input.search || "").trim();
     if (search) {
       const safe = escapeRegex(search);
       query.$or = [
@@ -1352,7 +1353,11 @@ router.get("/activity-log", auth, ...activityRead, async (req, res) => {
     console.error("Fetch admin activity log failed:", error);
     return res.status(500).json({ message: "Failed to load activity log" });
   }
-});
+}
+
+router.get("/activity-log", auth, ...activityRead, (req, res) => listActivityLog(req, res, req.query || {}));
+// POST /api/admin/activity-log/search: the same filters in a JSON body, so free text stays out of URLs.
+router.post("/activity-log/search", auth, ...activityRead, (req, res) => listActivityLog(req, res, bodySearchInput(req.body)));
 
 // GET /api/admin/activity-log/summary
 router.get("/activity-log/summary", auth, ...activityRead, async (_req, res) => {

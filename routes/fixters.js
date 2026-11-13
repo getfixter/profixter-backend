@@ -512,6 +512,20 @@ router.post("/:id/reassign-future-jobs", async (req, res) => {
     const { findEligibleTechnicians, moveReservationForBooking, reservationEngineEnabled } = require("../utils/slotReservationService");
     const { resolveAssignmentFields } = require("../utils/jobs/assignment");
     const { notifyAssignment } = require("../utils/jobs/jobNotifications");
+    const { IdempotencyError, readIdempotencyKey, runIdempotent } = require("../utils/adminIdempotency");
+    /*
+     * Optional idempotencyKey (JSON body; the Idempotency-Key header is a
+     * fallback). A replay returns the first answer with replayed:true and
+     * moves and notifies nothing. Without a key it behaves as before.
+     */
+    const rawKey = req.body?.idempotencyKey || req.get?.("Idempotency-Key") || "";
+    let key = null;
+    try {
+      key = rawKey ? readIdempotencyKey(rawKey) : null;
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ code: error.code, message: error.message });
+    }
+    const reassign = async () => {
     const jobs = await futureJobsFor(req.params.id);
     const moved = [];
     const failed = [];
@@ -542,7 +556,19 @@ router.post("/:id/reassign-future-jobs", async (req, res) => {
       entityName: jobs[0]?.assignedFixterName || "",
       details: { toFixterId, moved: moved.length, failed: failed.length, bookingNumbers: moved.map((m) => m.bookingNumber) },
     }).catch(() => {});
-    return res.json({ total: jobs.length, moved, failed });
+    return { httpStatus: 200, body: { total: jobs.length, moved, failed } };
+    };
+    if (!key) {
+      const result = await reassign();
+      return res.status(result.httpStatus).json(result.body);
+    }
+    try {
+      const result = await runIdempotent({ req, action: "fixter.reassign_future_jobs", key, entityId: req.params.id }, reassign);
+      return res.status(result.httpStatus).json({ ...result.body, replayed: result.replayed });
+    } catch (error) {
+      if (error instanceof IdempotencyError) return res.status(error.statusCode).json({ code: error.code, message: error.message });
+      throw error;
+    }
   } catch (error) {
     console.error("Reassign future jobs failed:", error);
     return res.status(500).json({ message: "Failed to reassign the jobs" });

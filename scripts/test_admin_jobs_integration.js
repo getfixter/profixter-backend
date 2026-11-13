@@ -743,6 +743,32 @@ async function main() {
       assert.strictEqual(String((await Booking.findById(job._id)).assignedFixterId), String(fixB._id));
       assert.strictEqual((await call(general, "POST", `/api/admin/fixters/${leaving._id}/reassign-future-jobs`, { toFixterId: "auto" })).status, 403, "owner only");
     });
+    await check("reassign future jobs: the same idempotencyKey replays the answer and moves or notifies nothing again", async () => {
+      const leaving = await makeStaff("Rae Replay");
+      const job = await reserved(other, leaving, openDay(20), "10:00", { status: "Confirmed" });
+      await call(owner, "PATCH", `/api/admin/fixters/${leaving._id}/status`, { isActive: false });
+      const k = key();
+      const first = await call(owner, "POST", `/api/admin/fixters/${leaving._id}/reassign-future-jobs`, { toFixterId: String(fixB._id), idempotencyKey: k });
+      assert.strictEqual(first.status, 200, JSON.stringify(first.body));
+      assert.strictEqual(first.body.moved.length, 1, JSON.stringify(first.body.failed));
+      assert.strictEqual(first.body.replayed, false);
+      const mailsAfterFirst = sentEmails.length;
+      const smsAfterFirst = await SmsMessage.countDocuments({});
+      const logsAfterFirst = await AdminActivityLog.countDocuments({ action: "Fixter Jobs Reassigned" });
+      // Move it back by hand, so a second real run would visibly move it again.
+      await Booking.updateOne({ _id: job._id }, { $set: { assignedFixterId: leaving._id, assignedFixterName: leaving.name } });
+      const replay = await call(owner, "POST", `/api/admin/fixters/${leaving._id}/reassign-future-jobs`, { toFixterId: String(fixB._id), idempotencyKey: k });
+      assert.strictEqual(replay.status, 200, JSON.stringify(replay.body));
+      assert.strictEqual(replay.body.replayed, true);
+      assert.deepStrictEqual(replay.body.moved.map((m) => m.id), first.body.moved.map((m) => m.id));
+      assert.strictEqual(String((await Booking.findById(job._id)).assignedFixterId), String(leaving._id), "nothing moved on replay");
+      assert.strictEqual(sentEmails.length, mailsAfterFirst);
+      assert.strictEqual(await SmsMessage.countDocuments({}), smsAfterFirst);
+      assert.strictEqual(await AdminActivityLog.countDocuments({ action: "Fixter Jobs Reassigned" }), logsAfterFirst);
+      const bad = await call(owner, "POST", `/api/admin/fixters/${leaving._id}/reassign-future-jobs`, { toFixterId: String(fixB._id), idempotencyKey: "bad" });
+      assert.strictEqual(bad.body.code, "IDEMPOTENCY_KEY_INVALID");
+      await Booking.updateOne({ _id: job._id }, { $set: { assignedFixterId: fixB._id, assignedFixterName: fixB.name } });
+    });
   } finally {
     server?.close();
     await mongoose.disconnect();

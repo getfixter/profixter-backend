@@ -514,6 +514,76 @@ async function findCampaign(idOrNumber) {
 }
 
 /** Progress of one campaign, by id or campaign number (EML-YYYY-NNNNN). */
+/**
+ * Recent email campaigns, newest first, paged.
+ *
+ * GET /api/admin/campaigns?page&limit (communications.manage)
+ *   -> { items: [{ id, campaignNumber, subject, segment, status,
+ *                  totals: { queued, sent, failed, skipped, total },
+ *                  createdAt, completedAt, createdBy: { id, name } }],
+ *        total, page, limit, totalPages }
+ *
+ * Totals come from the per-recipient queue in one aggregate for the page
+ * (queued = pending + sending; skipped includes audience exclusions). A
+ * campaign sent before the queue existed has no recipient rows, so its stored
+ * counters are used. No body, recipient list or e-mail address is returned.
+ */
+router.get("/campaigns", auth, ...sectionAccess, async (req, res) => {
+  try {
+    const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25));
+    const [campaigns, total] = await Promise.all([
+      EmailCampaign.find({})
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .select("campaignNumber subject selectedSegment status sentCount failedCount skippedCount excludedCount totalRecipients actorUserId actorName actorEmail createdAt completedAt")
+        .lean(),
+      EmailCampaign.countDocuments({}),
+    ]);
+    const rows = campaigns.length
+      ? await EmailCampaignRecipient.aggregate([
+          { $match: { campaignId: { $in: campaigns.map((c) => c._id) } } },
+          { $group: { _id: { campaignId: "$campaignId", status: "$status" }, n: { $sum: 1 } } },
+        ])
+      : [];
+    const byCampaign = new Map();
+    for (const row of rows) {
+      const key = String(row._id.campaignId);
+      if (!byCampaign.has(key)) byCampaign.set(key, {});
+      byCampaign.get(key)[row._id.status] = row.n;
+    }
+    const items = campaigns.map((c) => {
+      const queue = byCampaign.get(String(c._id));
+      const excluded = Number(c.excludedCount || 0);
+      const totals = queue
+        ? {
+            queued: (queue.pending || 0) + (queue.sending || 0),
+            sent: queue.sent || 0,
+            failed: queue.failed || 0,
+            skipped: (queue.skipped || 0) + excluded,
+          }
+        : { queued: 0, sent: Number(c.sentCount || 0), failed: Number(c.failedCount || 0), skipped: Number(c.skippedCount || 0) };
+      totals.total = Number(c.totalRecipients || 0) || totals.queued + totals.sent + totals.failed + totals.skipped;
+      return {
+        id: String(c._id),
+        campaignNumber: c.campaignNumber,
+        subject: c.subject,
+        segment: c.selectedSegment,
+        status: c.status,
+        totals,
+        createdAt: c.createdAt,
+        completedAt: c.completedAt || null,
+        createdBy: { id: c.actorUserId ? String(c.actorUserId) : null, name: c.actorName || c.actorEmail || "" },
+      };
+    });
+    return res.json({ items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
+  } catch (error) {
+    console.error("List campaigns failed:", error);
+    return res.status(500).json({ message: "Failed to load campaigns", code: "CAMPAIGN_LIST_FAILED" });
+  }
+});
+
 router.get("/campaigns/:campaignId", auth, ...sectionAccess, async (req, res) => {
   try {
     const campaign = await findCampaign(req.params.campaignId);

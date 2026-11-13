@@ -5,6 +5,7 @@ const router = express.Router();
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const EmailLog = require("../models/EmailLog");
+const { bodySearchInput } = require("../utils/searchInput");
 
 const sectionAccess = requirePermission(PERMISSIONS.COMMUNICATIONS_MANAGE);
 
@@ -20,32 +21,32 @@ function asDate(value, endOfDay = false) {
   return date;
 }
 
-router.get("/", auth, ...sectionAccess, async (req, res) => {
+async function listEmailLogs(req, res, input) {
   try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const page = Math.max(1, Number(input.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(input.limit || 25)));
     const query = {};
 
     for (const field of ["templateKey", "bookingNumber", "status", "emailType"]) {
-      if (req.query[field]) {
-        query[field] = String(req.query[field]).trim();
+      if (input[field]) {
+        query[field] = String(input[field]).trim();
       }
     }
     for (const field of ["customerEmail", "recipientEmail"]) {
-      if (req.query[field]) {
-        query[field] = String(req.query[field]).trim().toLowerCase();
+      if (input[field]) {
+        query[field] = String(input[field]).trim().toLowerCase();
       }
     }
 
-    const dateFrom = asDate(req.query.dateFrom);
-    const dateTo = asDate(req.query.dateTo, true);
+    const dateFrom = asDate(input.dateFrom);
+    const dateTo = asDate(input.dateTo, true);
     if (dateFrom || dateTo) {
       query.createdAt = {};
       if (dateFrom) query.createdAt.$gte = dateFrom;
       if (dateTo) query.createdAt.$lte = dateTo;
     }
 
-    const search = String(req.query.search || "").trim();
+    const search = String(input.search || "").trim();
     if (search) {
       const regex = new RegExp(escapeRegex(search), "i");
       query.$or = [
@@ -81,7 +82,11 @@ router.get("/", auth, ...sectionAccess, async (req, res) => {
     console.error("Email log list failed:", error);
     return res.status(500).json({ message: "Failed to load email logs" });
   }
-});
+}
+
+router.get("/", auth, ...sectionAccess, (req, res) => listEmailLogs(req, res, req.query || {}));
+// POST /api/admin/email-logs/search: the same filters in a JSON body, so free text stays out of URLs.
+router.post("/search", auth, ...sectionAccess, (req, res) => listEmailLogs(req, res, bodySearchInput(req.body)));
 
 router.get("/:id", auth, ...sectionAccess, async (req, res) => {
   try {
