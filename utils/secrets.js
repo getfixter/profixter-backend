@@ -24,8 +24,8 @@ const ALLOWED = new Set([
   "DATAFORSEO_LOGIN",
   "DATAFORSEO_PASSWORD",
   "GHL_API_TOKEN",
-  // Google Business Profile posting only (utils/ghl/socialPlanner.js) - separate from GHL_API_TOKEN on purpose
-  "GHL_SOCIAL_TOKEN",
+  // GHL_SOCIAL_TOKEN (Google Business Profile posting through the GHL Social
+  // Planner) is no longer loaded: that path was removed on 2026-11-12.
 ]);
 const REFRESH_MS = 30 * 60 * 1000;
 

@@ -158,7 +158,6 @@ defineAction({
   riskTier: "medium",
   defaultMode: "supervised",
   maxMode: "autonomous",
-  promoteAfter: 5,
   limits: { perDay: 15 },
   approvalTtlMs: 3 * 24 * 60 * 60 * 1000,
   verifyAfterMs: 5 * 60 * 1000,

@@ -1,11 +1,12 @@
 /**
- * The GoHighLevel API, narrowed to what the Conversation agent needs.
+ * The GoHighLevel API, READ-ONLY.
  *
- * Reads: search conversations, read messages, read one contact.
- * Writes: send ONE reply into an existing conversation, add a tag, add a note.
- * Deliberately absent: bulk sends, workflow enrollment, campaign creation,
- * contact import/deletion, DND changes, calendar or appointment endpoints -
- * the agents never book, never mass-message, never manage the list.
+ * Reads: one contact, and a contact search (the postal-mail audience in
+ * utils/outreach/audience.js). The conversation poller that searched and read
+ * conversations was removed on 2026-11-12.
+ * Writes: none. Sending replies, tagging and notes were removed on 2026-11-12
+ * when the GoHighLevel reply agent was retired (owner decision Q-6). Nothing
+ * in this file can send a message or change a contact.
  *
  * Credentials: GHL_API_TOKEN (a Private Integration token with only the
  * conversations / conversations-message / contacts scopes) from the secret
@@ -57,15 +58,6 @@ async function call(method, path, { query, body, env = process.env, fetchImpl = 
 
 const ghl = {
   config,
-  /** Conversations whose last message is inbound, newest first. */
-  searchInbound: ({ startAfterDate, limit = 50, env, fetchImpl } = {}) =>
-    call("GET", "/conversations/search", {
-      query: { locationId: config(env).locationId, lastMessageDirection: "inbound", sort: "desc", sortBy: "last_message_date", limit, startAfterDate },
-      env,
-      fetchImpl,
-    }),
-  getMessages: (conversationId, { limit = 20, env, fetchImpl } = {}) =>
-    call("GET", `/conversations/${encodeURIComponent(conversationId)}/messages`, { query: { limit }, env, fetchImpl }),
   getContact: (contactId, { env, fetchImpl } = {}) => call("GET", `/contacts/${encodeURIComponent(contactId)}`, { env, fetchImpl }),
   /** Read-only contact search (one page). Used to build the postal-mail audience. */
   searchContacts: ({ filters = [], pageLimit = 100, searchAfter, env, fetchImpl } = {}) =>
@@ -74,21 +66,6 @@ const ghl = {
       env,
       fetchImpl,
     }),
-  /** One reply in an existing conversation. type: "SMS" | "Email". */
-  sendReply: ({ type, contactId, message, subject, html, replyMessageId, env, fetchImpl }) =>
-    call("POST", "/conversations/messages", {
-      body: {
-        type,
-        contactId,
-        ...(type === "SMS" ? { message } : { subject: subject || "Re: Profixter", html: html || message, message, ...(replyMessageId ? { replyMessageId } : {}) }),
-      },
-      env,
-      fetchImpl,
-    }),
-  addTag: (contactId, tag, { env, fetchImpl } = {}) =>
-    call("POST", `/contacts/${encodeURIComponent(contactId)}/tags`, { body: { tags: [tag] }, env, fetchImpl }),
-  addNote: (contactId, body, { env, fetchImpl } = {}) =>
-    call("POST", `/contacts/${encodeURIComponent(contactId)}/notes`, { body: { body: String(body).slice(0, 4000) }, env, fetchImpl }),
 };
 
 module.exports = { BASE, GhlError, ghl };

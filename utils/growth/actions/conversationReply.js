@@ -1,19 +1,19 @@
 const mongoose = require("mongoose");
 const moment = require("moment-timezone");
-const ConversationThread = require("../../../models/ConversationThread");
-const { ghl } = require("../../ghl/client");
 const { BOOKING_CLAIM_RE } = require("../../conversation/responder");
 const { defineAction } = require("../actionRegistry");
 
 /**
- * Send ONE agent-drafted reply into a homeowner's existing GHL conversation.
+ * Replies to homeowners in GoHighLevel conversations - RETIRED (2026-11-12,
+ * owner decision Q-6).
  *
- * Only ever a reply: the homeowner wrote first, and this answers that message.
- * Re-checked when it runs: the thread still exists and is not opted out, the
- * homeowner has not written again (a newer message gets a fresh decision),
- * nobody from the team already answered, no booking language, and only
- * between 8am and 9pm New York time (deferred otherwise). Supervised by
- * default; earns autonomy after 10 clean sends, max 40 a day.
+ * The agent used to draft a reply and, once approved, send it into the
+ * homeowner's GHL conversation. The GHL inbound webhook, the 10-minute poller
+ * and the send call are removed, so nothing reaches GoHighLevel from here:
+ * the type is capped at "shadow", and an old record that is approved or still
+ * queued is closed as skipped with reason "ghl_retired" (see the engine's
+ * retired-type handling). validate/windowWait stay for the historical records
+ * and the conversation tests.
  */
 const TYPE = "conversation_reply";
 
@@ -32,47 +32,22 @@ function windowWait(now) {
   return (local.hour() >= 21 ? start.add(1, "day") : start).toDate();
 }
 
-async function execute(payload, { now }) {
-  const wait = windowWait(now);
-  if (wait) return { outcome: "defer", until: wait };
-  const thread = await ConversationThread.findById(payload.threadId);
-  if (!thread) return { outcome: "skip", reason: "thread_gone" };
-  if (thread.optedOut) return { outcome: "skip", reason: "opted_out" };
-  const inbound = thread.messages.filter((m) => m.direction === "inbound").length;
-  if (inbound !== payload.inboundCount) return { outcome: "skip", reason: "homeowner_wrote_again" };
-  const last = thread.messages[thread.messages.length - 1];
-  if (last && last.direction === "outbound") return { outcome: "skip", reason: "already_answered" };
-  if (thread.agentReplies >= 1) return { outcome: "skip", reason: "one_reply_per_message" };
-  // They may have signed up since the reply was proposed: Profixter customers are never messaged through GoHighLevel.
-  const { profixterCustomerCheck } = require("../../conversation/service");
-  if ((await profixterCustomerCheck(thread)).customer !== false) return { outcome: "skip", reason: "profixter_customer" };
+const RETIRED_REASON = "ghl_retired: replies are no longer sent through GoHighLevel. Answer the homeowner from Profixter's own channels.";
 
-  const sent = await ghl.sendReply({
-    type: payload.channel === "Email" ? "Email" : "SMS",
-    contactId: thread.ghlContactId,
-    message: payload.reply,
-    subject: "Re: Profixter",
-    html: payload.reply.replace(/\n/g, "<br>"),
-  });
-  const messageId = String(sent?.messageId || sent?.id || "") || null;
-  thread.messages.push({ direction: "outbound", channel: thread.channel, body: payload.reply, at: new Date(), ghlMessageId: messageId, by: "agent" });
-  thread.lastOutboundAt = new Date();
-  thread.agentReplies += 1;
-  if (thread.status !== "escalated") thread.status = "replied";
-  await thread.save();
-  await ghl.addTag(thread.ghlContactId, "ai_replied").catch(() => {});
-  return { outcome: "done", result: { messageId, channel: payload.channel } };
+/** Never sends. */
+async function execute() {
+  return { outcome: "skip", reason: RETIRED_REASON };
 }
 
 defineAction({
   type: TYPE,
   label: "Reply to a homeowner",
   description:
-    "One agent-drafted reply to a homeowner who wrote to Profixter, in the same GHL conversation. Never books anything; links to the website. 8am-9pm only, one reply per homeowner message, never after an opt-out.",
+    "Retired 2026-11-12 with GoHighLevel: agent-drafted replies are never sent. Kept so past replies keep their history.",
   riskTier: "medium",
-  defaultMode: "supervised",
-  maxMode: "autonomous",
-  promoteAfter: 10,
+  defaultMode: "shadow",
+  maxMode: "shadow",
+  retiredReason: RETIRED_REASON,
   limits: { perDay: 40 },
   approvalTtlMs: 2 * 24 * 60 * 60 * 1000,
   verifyAfterMs: 2 * 60 * 1000,
@@ -81,7 +56,7 @@ defineAction({
   describe: (p) => `Reply to a homeowner (${p.channel}, ${p.intent || "message"})`,
   subjectOf: (p) => ({ entityType: "conversation", entityId: p.threadId }),
   execute,
-  verify: async (a) => (a.result?.messageId ? { passed: true, detail: "accepted by GoHighLevel" } : { passed: false, detail: "no message id returned" }),
+  verify: null,
 });
 
-module.exports = { TYPE, execute, validate, windowWait };
+module.exports = { RETIRED_REASON, TYPE, execute, validate, windowWait };

@@ -394,7 +394,7 @@ const NON_REGISTRY_EMAILS = {
     channelClass: "marketing",
     trigger:
       "A membership checkout expired unpaid. Sent only through the growth engine (Admin > Growth), " +
-      "under its trust policy: watch-only until automations are switched on, then approval until trusted.",
+      "under its trust policy: watch-only until automations are switched on, then each email needs the owner's approval unless the owner sets it to run on its own.",
     source: "utils/growth/actions/checkoutRecoveryEmail.js",
     protectedNote:
       "Marketing rules apply: marketable account, not unsubscribed, one-click unsubscribe, at most one " +

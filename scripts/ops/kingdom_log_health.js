@@ -36,6 +36,8 @@ const KEEP = {
   automation_audit_failed: ["error"],
   consent_audit: null, // counts only, by construction (utils/consent/audit.js) - kept whole
   consent_audit_failed: ["error"],
+  agent_jobs_ready: ["enabled", "actionEngine", "enabledTypes"],
+  // logged until 2026-11-12, when Google posting through GoHighLevel was retired
   ghl_social_check: ["tokenLoaded", "auth", "accounts", "googleBusinessProfile", "postingUser", "postableByKingdom", "actionEngine", "enabledTypes", "error"],
   growth_action_failed: ["type", "reason"],
   growth_action_suspended: ["type", "failures7d", "reason"],

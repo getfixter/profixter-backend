@@ -50,7 +50,6 @@ const SMS_SETTINGS = {
     schedule: "Immediately, on the booking event.",
     eligibility:
       "Deduped per booking, so re-saving or re-applying a status cannot produce a second confirmation.",
-    ghlOverlap: "GHL workflows may also message on booking creation. Verify before enabling SMS.",
   },
   FREE_VISIT_CONFIRMED: {
     trigger: "A Free First Visit is booked.",
@@ -96,7 +95,6 @@ const SMS_SETTINGS = {
       "the abandonment sweep reaches back 6 hours past the appointment so nothing sits undecided.",
     eligibility:
       "Dedupe key embeds the appointment instant, so a rescheduled booking earns a genuinely new reminder.",
-    ghlOverlap: "GHL reminder_24h tag may duplicate this. Verify before enabling SMS.",
   },
   BOOKING_REMINDER_60M: {
     trigger: "The hour-before reminder sweep finds a booking due.",
@@ -107,7 +105,6 @@ const SMS_SETTINGS = {
     recovery:
       "Still sent up to 15 minutes after the appointment start, because 'we are on the way' is " +
       "true then. Abandoned after that. A worker that dies mid-send releases its claim after 10 minutes.",
-    ghlOverlap: "GHL reminder_60m tag may duplicate this. Verify before enabling SMS.",
   },
 
   BOOKING_RESCHEDULED: {
@@ -544,7 +541,8 @@ function smsSettingsFor(notificationType) {
     timeCritical: Boolean(spec.timeCritical),
     consent: SMS_COMMON.consent,
     flags: info.flags || `Requires ${FLAGS.sms}.`,
-    ghlOverlap: info.ghlOverlap || "None known.",
+    // GoHighLevel sends nothing to Profixter customers (scripts/test_ghl_separation.js); the field stays for older clients
+    ghlOverlap: "None: Profixter customers are never messaged through GoHighLevel.",
     reserved: Boolean(info.reserved),
     notes: info.notes || "",
     description: spec.description || "",

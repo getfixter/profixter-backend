@@ -46,16 +46,17 @@ const ALLOWED = new Set([
   /* Mounts the inbound route and allows its shared-secret header. */
   "server.js",
   /*
-   * LEAD WORK (2026-10). Strangers in GHL, never Profixter customers:
-   * - the narrow GHL client: read conversations/contacts, one reply into an
-   *   existing conversation, tag/note. No contact create/update, no sync.
-   * - the reply responder and its action: answers homeowners who wrote to the
-   *   GHL numbers. Before any reply (and again before sending) it checks
-   *   whether the person is a Profixter user and, if so - or if it cannot
-   *   tell - hands the thread to a person instead of using GHL.
+   * LEAD WORK, READ-ONLY since 2026-11-12 (owner decision Q-6). Strangers in
+   * GHL, never Profixter customers:
+   * - the narrow GHL client: read one contact and search contacts. Its send,
+   *   tag and note calls were removed with the reply agent.
+   * - the old reply agent's service and (retired, never-sending) action, kept
+   *   so stored threads and past actions stay readable;
    * - the postal-mail audience: READS the cold list to build mailing waves;
    *   writes nothing to GHL; existing customers are excluded by hash.
    * - their models, which only hold GHL ids for our own records.
+   * The Google Business Profile Social Planner client (utils/ghl/socialPlanner.js)
+   * was deleted on 2026-11-12: nothing may publish through GoHighLevel.
    */
   path.join("utils", "ghl", "client.js"),
   path.join("utils", "conversation", "service.js"),
@@ -63,13 +64,6 @@ const ALLOWED = new Set([
   path.join("utils", "outreach", "audience.js"),
   path.join("models", "ConversationThread.js"),
   path.join("models", "Outreach.js"),
-  /*
-   * ORGANIC GOOGLE BUSINESS PROFILE POSTS (owner-authorized 2026-10-12):
-   * publishes one public business post to the Google Business Profile
-   * connected in the Social Planner, refusing every other connected account.
-   * Sends no contact, customer or ProFixter data - only the post text.
-   */
-  path.join("utils", "ghl", "socialPlanner.js"),
   /* This file. */
   path.join("scripts", "test_ghl_separation.js"),
 ]);
@@ -87,6 +81,11 @@ const FORBIDDEN = [
   "ghlContact",
   "ghlSync",
   "syncGhlConversion",
+  // the retired send paths (2026-11-12): replies, notes and Social Planner posts
+  "sendReply",
+  "addNote",
+  "socialPlanner",
+  "/social-media-posting",
 ];
 
 let passed = 0;
@@ -259,6 +258,33 @@ function main() {
     for (const field of ["commissionAmount", "commissionRate"]) {
       assert.ok(src.includes(field), `${field} is rep attribution data and must not be removed`);
     }
+  });
+
+  /* ==================================================================== */
+  section("Retired 2026-11-12: the GHL reply agent and Google posting through GHL");
+
+  test("the GHL client is read-only: no POST to conversations, tags or notes", () => {
+    const code = codeOf(path.join("utils", "ghl", "client.js"));
+    for (const gone of ["sendReply", "addTag", "addNote", "/conversations/messages", "/tags", "/notes"]) {
+      assert.ok(!code.includes(gone), `utils/ghl/client.js still contains ${gone}`);
+    }
+  });
+
+  test("the Social Planner client is deleted and no secret for it is loaded", () => {
+    assert.ok(!fs.existsSync(path.join(ROOT, "utils", "ghl", "socialPlanner.js")));
+    assert.ok(!codeOf(path.join("utils", "secrets.js")).includes("GHL_SOCIAL_TOKEN"));
+  });
+
+  test("the inbound-message webhook and the conversation poller are gone", () => {
+    assert.ok(!codeOf(path.join("routes", "ghl.js")).includes("/inbound-message"));
+    const jobs = codeOf(path.join("jobs", "conversations.js"));
+    assert.ok(!jobs.includes("pollOnce") && !jobs.includes("*/10 * * * *"), "no 10-minute GHL poller");
+    assert.ok(!jobs.includes("processWaiting"), "the poller no longer asks the reply agent to decide");
+  });
+
+  test("the communication settings no longer warn about GHL workflows overlapping native messages", () => {
+    const code = codeOf(path.join("utils", "communications", "communicationSettings.js"));
+    assert.ok(!/GHL (workflows|reminder_24h|reminder_60m)/.test(code));
   });
 
   /* ==================================================================== */

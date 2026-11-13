@@ -104,10 +104,12 @@ async function main() {
     const it = items[0];
     assert.strictEqual(it.robot, "conversation");
     assert.match(it.simple.say, /homeowner in Lindenhurst/);
-    assert.match(it.simple.ask, /Can I send this reply\?/);
+    // GoHighLevel replies are retired (2026-11-12): the card says nothing is sent
+    assert.match(it.simple.ask, /Nothing is sent/);
+    assert.match(it.simple.say, /retired/);
     const all = JSON.stringify(it);
     for (const bad of ["Patricia", "631-555-0199", "pat@example.com"]) assert.ok(!all.includes(bad), `${bad} leaked`);
-    assert.match(it.chatgpt, /cannot be unsent/);
+    assert.match(it.chatgpt, /never sent any more/);
   });
 
   await test("a playbook approval quotes the exact email and its audience", async () => {

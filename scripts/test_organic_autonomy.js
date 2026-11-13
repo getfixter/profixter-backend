@@ -4,16 +4,16 @@
  *   - 100% organic: paid marketing is refused everywhere an agent's words
  *     become work (tasks, focus, guidance, findings, drafts, Arthur's records,
  *     action types, posts) - while normal organic wording passes
- *   - Google Business Profile posts: validated copy and link; only the one
- *     connected Google account can ever be posted to (never Facebook or
- *     Instagram); not connected = skipped, not pretended; once per 3 days;
- *     never the same text; verified by reading the post back; rollback deletes
+ *   - Google Business Profile posts: RETIRED as an automatic action on
+ *     2026-11-12 (GoHighLevel Social Planner removed). The copy rules still
+ *     check a draft; the type is capped at shadow, an old approved or pending
+ *     post is closed as skipped, rollback is refused, nothing reaches GHL
  *   - suspension: a second failure in 7 days stops an action type (shadow)
  *   - Marcus's follow-ups run on their own (approved wording only), with 7-day / 3-per-90-day caps
  *   - the action log carries agent, platform, action, time, outcome, cost
  *     and verification
  *
- * In-memory MongoDB; GoHighLevel is a scripted fake - nothing is posted.
+ * In-memory MongoDB; no network call is allowed - nothing is posted.
  *   node scripts/test_organic_autonomy.js
  */
 process.env.NODE_ENV = "test";
@@ -63,38 +63,8 @@ async function main() {
   const arthur = require("../utils/council/arthur");
   const { TOOL_DEFS } = require("../utils/agents/tools");
   const { AGENTS } = require("../utils/agents/definitions");
-  const social = require("../utils/ghl/socialPlanner");
   const gbp = require("../utils/growth/actions/gbpPost");
   const { actionLog } = require("../utils/growth/actionLog");
-
-  /* A scripted Social Planner. */
-  let accounts = [];
-  let posts = {};
-  let calls = [];
-  social.setFetchForTests(async (url, opts = {}) => {
-    const u = new URL(url);
-    calls.push({ method: opts.method, path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
-    const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
-    if (opts.method === "GET" && /\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts } });
-    if (opts.method === "GET" && u.pathname === "/users/") return reply(200, { users: [{ id: "user-admin", roles: { role: "admin" } }] });
-    if (opts.method === "POST" && /\/posts\/list$/.test(u.pathname)) return reply(201, { results: { posts: Object.entries(posts).map(([id, p]) => ({ _id: id, ...p })) } });
-    if (opts.method === "POST" && /\/posts$/.test(u.pathname)) {
-      const id = `post-${Object.keys(posts).length + 1}`;
-      posts[id] = { _id: id, status: "scheduled" };
-      return reply(201, { results: { post: { _id: id } } });
-    }
-    const m = u.pathname.match(/\/posts\/([^/]+)$/);
-    if (m && opts.method === "GET") return reply(200, { results: { post: posts[m[1]] || { status: "deleted" } } });
-    if (m && opts.method === "DELETE") {
-      delete posts[m[1]];
-      return reply(200, { success: true });
-    }
-    return reply(404, { message: "unknown" });
-  });
-  const GOOGLE = { id: "acc-google", platform: "google", name: "ProFixter Handyman", active: true, isExpired: false };
-  const FACEBOOK = { id: "acc-fb", platform: "facebook", name: "Mr.Fixter", active: true, isExpired: false };
-  const INSTAGRAM = { id: "acc-ig", platform: "instagram", name: "mrfixter.ny", active: true, isExpired: false };
-  const ctxFor = () => ({ action: { _id: new mongoose.Types.ObjectId() }, now: new Date() });
 
   console.log("100% organic");
 
@@ -156,120 +126,75 @@ async function main() {
     bad({ summary: "Too short." }, /80-1400/);
   });
 
-  await test("not connected = skipped and said so - never pretended", async () => {
-    delete process.env.GHL_SOCIAL_TOKEN;
-    assert.deepStrictEqual(await gbp.execute(GOOD, ctxFor()), { outcome: "skip", reason: "not_connected" });
+  await test("retired 2026-11-12: Odysseus can no longer propose a Google post; he drafts it for the owner", () => {
+    for (const a of Object.values(AGENTS)) assert.ok(!a.allowedActions.includes("gbp_post"), a.name);
+    assert.match(AGENTS.visibility.instructions, /Google Business Profile posts are DRAFTS for the owner, never published/);
+    assert.doesNotMatch(AGENTS.visibility.instructions, /EVERY SHIFT, if no post went out/);
+    assert.ok(TOOL_DEFS.save_content_draft.input_schema.properties.page_type.enum.includes("gbp_post"), "a Google post can still be saved as a draft");
   });
 
-  await test("only the one connected Google account can be posted to - Facebook and Instagram never", async () => {
-    process.env.GHL_SOCIAL_TOKEN = "test-token";
-    accounts = [FACEBOOK, INSTAGRAM];
-    await assert.rejects(gbp.execute(GOOD, ctxFor()), /No active Google Business Profile/);
-    accounts = [FACEBOOK, INSTAGRAM, GOOGLE, { ...GOOGLE, id: "acc-google-2" }];
-    await assert.rejects(gbp.execute(GOOD, ctxFor()), /More than one Google Business Profile/);
-    accounts = [FACEBOOK, INSTAGRAM, { ...GOOGLE, isExpired: true }];
-    await assert.rejects(gbp.execute(GOOD, ctxFor()), /No active Google Business Profile/);
-    accounts = [FACEBOOK, GOOGLE, INSTAGRAM];
-    calls = [];
-    const r = await gbp.execute(GOOD, ctxFor());
-    assert.strictEqual(r.outcome, "done");
-    const post = calls.find((c) => c.method === "POST");
-    assert.deepStrictEqual(post.body.accountIds, ["acc-google"], "only the Google account is in the request");
-    assert.strictEqual(post.body.gmbPostDetails.url, GOOD.url);
-    assert.strictEqual(post.body.gmbPostDetails.actionType, "book");
-    assert.strictEqual(r.result.platform, "google_business_profile");
-    assert.strictEqual(r.result.estimatedCostCents, 0);
-  });
-
-  await test("once per 3 days and never the same text twice", async () => {
-    await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-old", status: "succeeded", riskTier: "medium", modeAtProposal: "supervised", executedAt: new Date(Date.now() - 864e5), result: { fingerprint: "x" } });
-    assert.deepStrictEqual(await gbp.execute({ ...GOOD, summary: `${GOOD.summary} New.` }, ctxFor()), { outcome: "skip", reason: "posted_recently" });
-    await GrowthAction.updateOne({ idempotencyKey: "gbp-old" }, { $set: { executedAt: new Date(Date.now() - 10 * 864e5) } });
-    const first = await gbp.execute(GOOD, ctxFor());
-    await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-same", status: "succeeded", riskTier: "medium", modeAtProposal: "supervised", executedAt: new Date(Date.now() - 5 * 864e5), result: { fingerprint: first.result.fingerprint } });
-    await GrowthAction.deleteOne({ idempotencyKey: "gbp-old" });
-    assert.deepStrictEqual(await gbp.execute(GOOD, ctxFor()), { outcome: "skip", reason: "duplicate_text" });
-    await GrowthAction.deleteMany({});
-  });
-
-  await test("verified only when the Social Planner says published; failed = failed; rollback deletes the post", async () => {
-    const r = await gbp.execute(GOOD, ctxFor());
-    const action = { result: r.result };
-    assert.strictEqual((await gbp.verify(action)).passed, null, "still scheduled: not yet a success");
-    posts[r.result.postId] = { status: "published", postUrl: "https://g.page/r/profixter/post/123" };
-    assert.deepStrictEqual(await gbp.verify(action), { passed: true, detail: "published at https://g.page/r/profixter/post/123" });
-    posts[r.result.postId] = { status: "failed", error: "Google rejected the post" };
-    assert.strictEqual((await gbp.verify(action)).passed, false);
-    const def = registry.getDefinition("gbp_post");
-    await def.rollback({ result: r.result });
-    assert.ok(!posts[r.result.postId], "deleted");
-  });
-
-  await test("a post the Social Planner replaced when publishing is followed to its live copy (2026-10-27): verified, linked, and rollback deletes the live one", async () => {
-    posts = {};
-    const r = await gbp.execute({ ...GOOD, summary: `${GOOD.summary} Replaced.` }, ctxFor());
-    const ours = r.result.postId;
-    posts[ours] = { status: "scheduled", deleted: true, scheduleDate: new Date().toISOString() };
-    assert.strictEqual((await gbp.verify({ result: r.result })).passed, false, "deleted with no replacement = really deleted");
-    posts.live = { parentPostId: ours, status: "published", deleted: false, previewLink: "https://local.google.com/place?id=1&use=posts" };
-    const v = await gbp.verify({ result: r.result });
-    assert.deepStrictEqual(v, { passed: true, detail: "published at https://local.google.com/place?id=1&use=posts" });
-    assert.strictEqual((await social.postStatus(ours)).publishedPostId, "live");
-    await registry.getDefinition("gbp_post").rollback({ result: r.result });
-    assert.ok(!posts.live, "rollback removes the post people can see");
-  });
-
-  await test("Odysseus may propose Google Business Profile posts; standing approval = autonomous, first failure suspends", () => {
-    assert.ok(AGENTS.visibility.allowedActions.includes("gbp_post"));
-    for (const a of ["outreach", "conversion"]) assert.ok(!AGENTS[a].allowedActions.includes("gbp_post"));
-    const def = registry.getDefinition("gbp_post");
-    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.suspendAfterFailures, def.overLimit, def.limits.perDay], ["autonomous", "autonomous", 1, "record", 1]);
-    assert.match(AGENTS.visibility.instructions, /EVERY SHIFT, if no post went out in the last 3 days, propose exactly one strong post/);
-  });
-
-  await test("only Google Business Profile posting can be switched on by itself; customer messages and website changes stay shadow", async () => {
+  await test("gbp_post is capped at shadow in code: no stored policy, switch or owner button can make it publish", async () => {
     await GrowthAction.deleteMany({});
     await GrowthPolicy.deleteMany({});
-    delete process.env.GROWTH_ACTIONS_ENABLED;
+    const def = registry.getDefinition("gbp_post");
+    assert.deepStrictEqual([def.defaultMode, def.maxMode, def.verify, def.rollback], ["shadow", "shadow", null, null]);
+    assert.match(def.retiredReason, /^ghl_retired/);
+    // the live database still says "autonomous" for gbp_post: the code ceiling wins
+    await GrowthPolicy.create({ type: "gbp_post", mode: "autonomous" });
+    assert.strictEqual(await engine.resolveMode(def), "shadow");
+    await assert.rejects(engine.setPolicyMode("gbp_post", "autonomous", { kind: "owner" }), /cannot be set above shadow/);
+    await assert.rejects(engine.setPolicyMode("gbp_post", "supervised", { kind: "owner" }), /cannot be set above shadow/);
+    // a "gbp_post" left in the per-type switch is ignored, and the global switch does not help either
     process.env.GROWTH_ACTIONS_ENABLED_TYPES = "gbp_post, playbook_email, seo_page_update, post_free_visit_sms";
-    assert.deepStrictEqual(engine.enabledTypes(), ["gbp_post", "playbook_email"], "texts and website changes can never be switched on by the list");
-    assert.strictEqual(engine.typeEnabled("post_free_visit_sms"), false, "marketing SMS stays off");
-    process.env.GROWTH_ACTIONS_ENABLED_TYPES = "gbp_post, seo_page_update, post_free_visit_sms";
-    assert.deepStrictEqual(engine.enabledTypes(), ["gbp_post"], "the list cannot switch on anything else");
-    assert.strictEqual(engine.typeEnabled("playbook_email"), false);
-    assert.strictEqual(engine.typeEnabled("seo_page_update"), false);
+    assert.deepStrictEqual(engine.enabledTypes(), ["playbook_email"], "only follow-up emails can be switched on by the list");
+    assert.strictEqual(engine.typeEnabled("gbp_post"), false);
+    process.env.GROWTH_ACTIONS_ENABLED = "true";
     const post = await engine.propose("gbp_post", GOOD, { idempotencyKey: "gbp-1", rationale: "x", proposedBy: { kind: "agent", name: "Odysseus" } });
-    assert.strictEqual(post.action.status, "approved", "pre-approved: no approval item");
-    const seo = await engine.propose("seo_page_update", { path: "/services/drywall-repair", changes: { metaTitle: "Drywall Repair on Long Island | Profixter" }, targetQueries: ["drywall repair"], reason: "x" }, { idempotencyKey: "seo-1", rationale: "x" }).catch((e) => ({ error: e.message }));
-    if (seo.action) assert.strictEqual(seo.action.status, "shadow", "website changes stay recorded only");
-    // the sweep executes only the enabled type
-    accounts = [GOOGLE, FACEBOOK, INSTAGRAM];
-    posts = {};
-    await GrowthAction.create({ type: "playbook_email", idempotencyKey: "pb-approved", status: "approved", riskTier: "medium", modeAtProposal: "supervised", payload: { userId: String(new mongoose.Types.ObjectId()), playbookKey: "x" } });
-    const r = await engine.executionSweep({ now: new Date() });
-    assert.strictEqual(r.executed, 1);
-    assert.strictEqual((await GrowthAction.findOne({ idempotencyKey: "gbp-1" }).lean()).status, "succeeded");
-    assert.strictEqual((await GrowthAction.findOne({ idempotencyKey: "pb-approved" }).lean()).status, "approved", "an email is never executed by this switch");
-    // over the daily limit: recorded, never parked in the owner's approvals
-    const extra = await engine.propose("gbp_post", { ...GOOD, summary: `${GOOD.summary} Second.` }, { idempotencyKey: "gbp-2", rationale: "x" });
-    assert.deepStrictEqual([extra.action.status, extra.action.heldReason], ["shadow", "daily_limit"]);
+    assert.strictEqual(post.action.status, "shadow", "recorded only");
+    delete process.env.GROWTH_ACTIONS_ENABLED;
     delete process.env.GROWTH_ACTIONS_ENABLED_TYPES;
-    const off = await engine.propose("gbp_post", { ...GOOD, summary: `${GOOD.summary} Third.` }, { idempotencyKey: "gbp-3", rationale: "x" });
-    assert.strictEqual(off.action.status, "shadow", "switched off = recorded only");
+    await GrowthPolicy.deleteMany({});
   });
 
-  await test("verification: the first failure suspends posting completely; unpublished after 6 hours is a failure", async () => {
-    await GrowthPolicy.deleteMany({});
+  await test("an old approved or pending Google post is closed as skipped with the reason, never published, and nothing reaches GoHighLevel", async () => {
     await GrowthAction.deleteMany({});
-    const def = registry.getDefinition("gbp_post");
-    posts = { "post-late": { _id: "post-late", status: "scheduled" } };
-    const late = await gbp.verify({ executedAt: new Date(Date.now() - 7 * 3600e3), result: { postId: "post-late" } });
-    assert.strictEqual(late.passed, false);
-    assert.match(late.detail, /not published within 6 hours/);
-    await GrowthAction.create({ type: "gbp_post", idempotencyKey: "fail-1", status: "succeeded", riskTier: "medium", modeAtProposal: "autonomous", verification: { status: "failed" } });
-    await engine._internal.recordFailure(def, "verification failed: not published");
-    const p = await GrowthPolicy.findOne({ type: "gbp_post" }).lean();
-    assert.deepStrictEqual([p.mode, p.setBy.kind], ["shadow", "auto_suspension"], "one failure stops posting");
+    const fetched = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      fetched.push(String(url));
+      throw new Error("no network in this test");
+    };
+    try {
+      process.env.GROWTH_ACTIONS_ENABLED = "true";
+      const queued = await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-old-queued", status: "approved", riskTier: "medium", modeAtProposal: "autonomous", payload: { ...GOOD } });
+      const ran = await engine.execute(queued._id);
+      assert.strictEqual(ran.status, "skipped");
+      assert.match(ran.result.reason, /^ghl_retired: Google Business Profile posts are no longer published automatically/);
+      assert.ok(!ran.executedAt);
+      const pending = await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-old-pending", status: "awaiting_approval", riskTier: "medium", modeAtProposal: "supervised", payload: { ...GOOD } });
+      const approved = await engine.approve(pending._id, { kind: "owner", name: "Owner" });
+      assert.strictEqual(approved.status, "skipped");
+      assert.match(approved.result.reason, /^ghl_retired/);
+      // the sweep closes any left in a queue, even with every switch off
+      delete process.env.GROWTH_ACTIONS_ENABLED;
+      const left = await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-old-left", status: "approved", riskTier: "medium", modeAtProposal: "autonomous", payload: { ...GOOD } });
+      const swept = await engine.runSweeps();
+      assert.ok(swept.retiredClosed >= 1);
+      assert.strictEqual((await GrowthAction.findById(left._id).lean()).status, "skipped");
+      // the execute function itself never publishes
+      assert.deepStrictEqual(await gbp.execute(GOOD, { action: {}, now: new Date() }), { outcome: "skip", reason: gbp.RETIRED_REASON });
+      assert.deepStrictEqual(fetched, [], "no network call at all");
+      assert.ok(!require("fs").existsSync(require("path").join(__dirname, "..", "utils", "ghl", "socialPlanner.js")), "the Social Planner client is gone");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.GROWTH_ACTIONS_ENABLED;
+    }
+  });
+
+  await test("rolling back a past Google post is refused (GHL_RETIRED) and touches nothing: the live posts are the owner's to manage in Google", async () => {
+    const done = await GrowthAction.create({ type: "gbp_post", idempotencyKey: "gbp-done", status: "succeeded", riskTier: "medium", modeAtProposal: "autonomous", payload: { ...GOOD }, result: { postId: "post-1" }, executedAt: new Date() });
+    await assert.rejects(engine.rollback(done._id, { kind: "owner" }), (e) => e.code === "GHL_RETIRED" && e.status === 400);
+    assert.strictEqual((await GrowthAction.findById(done._id).lean()).status, "succeeded", "unchanged");
   });
 
   await test("the Growth tab shows each post's text and, once verified, its public link", () => {
@@ -279,101 +204,6 @@ async function main() {
     assert.strictEqual(publicAction({ ...base, verification: { status: "passed", detail: "published at https://g.page/r/x/post/1" } }).result.to, "Google Business Profile - https://g.page/r/x/post/1");
     assert.match(publicAction({ ...base, verification: { status: "failed", detail: "not published within 6 hours" } }).result.to, /NOT published/);
     assert.match(publicAction(base).preview, /Get your home ready for fall[\s\S]*Book button: https:\/\/www\.profixter\.com\/book\/free\?utm_source=google/);
-  });
-
-  await test("the read-only connection check: token, auth, accounts - no post, no token in the output", async () => {
-    delete process.env.GHL_SOCIAL_TOKEN;
-    assert.deepStrictEqual((await social.connectionCheck()).auth, "no_token");
-    process.env.GHL_SOCIAL_TOKEN = "pit-secret-test-token";
-    accounts = [GOOGLE, FACEBOOK, INSTAGRAM];
-    calls = [];
-    const c = await social.connectionCheck();
-    assert.strictEqual(c.tokenLoaded, true);
-    assert.strictEqual(c.auth, "ok");
-    assert.strictEqual(c.googleBusinessProfile, "ready");
-    assert.deepStrictEqual(c.postableByKingdom, ["google"], "Facebook and Instagram are listed as connected but never postable");
-    assert.deepStrictEqual(c.accounts.map((a) => a.platform).sort(), ["facebook", "google", "instagram"]);
-    assert.ok(calls.every((x) => x.method === "GET"), "read-only");
-    assert.doesNotMatch(JSON.stringify(c), /pit-secret/);
-    social.setFetchForTests(async () => ({ ok: false, status: 401, statusText: "", text: async () => JSON.stringify({ message: "Invalid token pit-secret-test-token" }) }));
-    const bad = await social.connectionCheck();
-    assert.strictEqual(bad.auth, "error");
-    assert.doesNotMatch(JSON.stringify(bad), /pit-secret/, "a token echoed in an error is redacted");
-    process.env.GHL_SOCIAL_TOKEN = "test-token";
-  });
-
-  await test("'ready' includes the user posts are made as: a failing user lookup is not ready, and a set GHL_SOCIAL_USER_ID needs no lookup", async () => {
-    const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
-    const seen = [];
-    social.setFetchForTests(async (url, opts = {}) => {
-      const u = new URL(url);
-      seen.push(`${opts.method} ${u.pathname}`);
-      if (/\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts: [GOOGLE, FACEBOOK] } });
-      return reply(404, { message: "Not found" });
-    });
-    const c = await social.connectionCheck();
-    assert.strictEqual(c.auth, "ok");
-    assert.strictEqual(c.postingUser, "error");
-    assert.strictEqual(c.googleBusinessProfile, "no_posting_user");
-    assert.deepStrictEqual(c.postableByKingdom, []);
-    assert.match(c.error, /GHL_SOCIAL_USER_ID/, "says how to fix it");
-    await assert.rejects(social.createGbpPost({ summary: "x".repeat(90), url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic" }), (e) => e.permanent === true && /users to post as/.test(e.message));
-    assert.ok(!seen.some((s) => s.startsWith("POST")), "nothing was posted");
-    process.env.GHL_SOCIAL_USER_ID = "user-fixed";
-    seen.length = 0;
-    const fixed = await social.connectionCheck();
-    assert.strictEqual(fixed.postingUser, "ok");
-    assert.deepStrictEqual(fixed.postableByKingdom, ["google"]);
-    assert.ok(!seen.some((s) => s.includes("/users/")), "a configured user id is not looked up");
-    delete process.env.GHL_SOCIAL_USER_ID;
-    social.setFetchForTests(null);
-  });
-
-  await test("the Create Post body matches GoHighLevel's schema: media is an array, scheduleDate is future UTC ISO from the real clock (the 2026-10-15 422)", async () => {
-    const reply = (status, data) => ({ ok: status < 300, status, statusText: "", text: async () => JSON.stringify(data) });
-    let sent = null;
-    social.setFetchForTests(async (url, opts = {}) => {
-      const u = new URL(url);
-      if (/\/accounts$/.test(u.pathname)) return reply(200, { results: { accounts: [GOOGLE, FACEBOOK] } });
-      if (u.pathname === "/users/") return reply(200, { users: [{ id: "user-admin", roles: { role: "admin" } }] });
-      if (opts.method === "POST") {
-        sent = { body: JSON.parse(opts.body), at: Date.now(), headers: opts.headers };
-        return reply(201, { results: { post: { _id: "post-x" } } });
-      }
-      return reply(404, { message: "unknown" });
-    });
-    // the run's "now" is an hour old: the date must still come out in the future
-    const stale = new Date(Date.now() - 60 * 60 * 1000);
-    const r = await social.createGbpPost({ summary: "Leaves are falling - a good time to have the gutters looked at before the first freeze.", title: "Fall gutter check", url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic", now: stale });
-    const b = sent.body;
-    assert.deepStrictEqual(b.media, [], "media is sent, as an empty array");
-    assert.match(b.scheduleDate, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "UTC ISO like the documented 2024-01-15T10:00:00Z");
-    assert.ok(Date.parse(b.scheduleDate) - sent.at >= 14 * 60 * 1000, "at least ~15 minutes ahead of the real clock");
-    assert.ok(Date.parse(b.scheduleDate) - sent.at <= 16 * 60 * 1000, "but not far ahead");
-    assert.strictEqual(r.scheduledFor, b.scheduleDate);
-    assert.deepStrictEqual(b.accountIds, ["acc-google"], "only the Google account");
-    assert.strictEqual(b.type, "post");
-    assert.strictEqual(b.status, "scheduled");
-    assert.strictEqual(b.userId, "user-admin");
-    assert.deepStrictEqual(b.gmbPostDetails, { gmbEventType: "STANDARD", actionType: "book", url: "https://www.profixter.com/book/free?utm_source=google&utm_medium=organic", title: "Fall gutter check" });
-    assert.strictEqual(sent.headers.Version, "2021-07-28");
-    assert.strictEqual(sent.headers["Content-Type"], "application/json");
-
-    // the body that failed on Oct 15 is caught here, before it is sent
-    const old = { ...b, scheduleDate: new Date(Date.now() - 1000).toISOString() };
-    delete old.media;
-    const bad = social.gbpPostBodyProblems(old);
-    assert.ok(bad.some((p) => /media must be an array/.test(p)));
-    assert.ok(bad.some((p) => /scheduleDate/.test(p)));
-    assert.ok(social.gbpPostBodyProblems({ ...b, media: "x" }).length, "a string is not an array");
-    assert.ok(social.gbpPostBodyProblems({ ...b, media: [{ url: "https://x.com/a.jpg" }] }).length, "a media object needs its type");
-    assert.deepStrictEqual(social.gbpPostBodyProblems({ ...b, media: [{ url: "https://x.com/a.jpg", type: "image/jpeg" }] }), []);
-    assert.deepStrictEqual(social.gbpPostBodyProblems(b), []);
-
-    // rounding: always a whole minute, never in the past
-    const fixedClock = () => Date.parse("2026-10-27T14:03:27.512Z");
-    assert.strictEqual(social.scheduleDateFrom(new Date("2026-10-27T13:00:00Z"), fixedClock), "2026-10-27T14:19:00Z");
-    social.setFetchForTests(null);
   });
 
   console.log("suspension, follow-up limits, action log");
@@ -438,7 +268,6 @@ async function main() {
     assert.doesNotMatch(AGENTS.outreach.instructions, /Prepare 2-4 ready-to-publish posts/);
   });
 
-  social.setFetchForTests(null);
   await CouncilTask.deleteMany({});
   await AgentFinding.deleteMany({});
   await mongoose.disconnect();

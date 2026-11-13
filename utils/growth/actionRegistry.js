@@ -17,9 +17,11 @@
  * `defaultMode` is where a type starts. `maxMode` is the highest rung it may
  * ever reach, by promotion or by the owner: a high-risk type is capped at
  * supervised in code, so no button and no streak of successes can make it run
- * unattended. `promoteAfter` is the run of consecutive verified successes that
- * moves a supervised type to autonomous by itself (null = only the owner can).
- * Any failure drops an autonomous type back to supervised.
+ * unattended. Only the owner moves a type up the ladder: there is no automatic
+ * promotion from supervised to autonomous, however many verified successes a
+ * type collects (the old `promoteAfter` streak was removed 2026-11-12, owner
+ * decision Q-7). A definition that still asks for one is refused at
+ * registration. Any failure drops an autonomous type back to supervised.
  */
 
 const MODES = ["off", "shadow", "supervised", "autonomous"];
@@ -90,6 +92,11 @@ function defineAction(def) {
   // High-risk actions are never unattended, whatever a definition asks for.
   if (def.riskTier === "high" && rank(def.maxMode) > rank("supervised")) {
     throw new Error(`${def.type}: a high-risk action cannot have maxMode above supervised`);
+  }
+  if (def.promoteAfter !== undefined && def.promoteAfter !== null) {
+    throw new Error(
+      `${def.type}: promoteAfter is not supported. Only the owner may move a type from supervised to autonomous.`
+    );
   }
   assertNotAdvertising(def);
   if (definitions.has(def.type)) throw new Error(`Growth action ${def.type} is defined twice`);
