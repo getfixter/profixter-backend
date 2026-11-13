@@ -166,6 +166,100 @@ router.get("/jobs/:id/assignment-options", auth, ...bookingsAssign, async (req, 
   }
 });
 
+/*
+ * Times the owner (or a General Fixter / Jobs section) may move this job to on
+ * one New York day. Admin rules: the customer lead time and booking horizon
+ * are NOT applied (a job may be moved to short notice), but past times,
+ * closed days and slots, company capacity and each Fixter's availability and
+ * reservations are. The job's own seat and reservation are excluded, so its
+ * current time reads as available ("current": true).
+ *
+ * GET /jobs/:id/reschedule-options?date=YYYY-MM-DD
+ *   -> { bookingId, date, fullDay, closed, note, currentStart, leadTimeApplied: false,
+ *        slots: [{ time, endTime, slotStart, available, reason?, current,
+ *                  remainingCapacity, technicians: [{ id, name, available, reason? }] }] }
+ * reason: "past" | "full" | "no_fixter" | "closed"
+ */
+router.get("/jobs/:id/reschedule-options", auth, ...bookingsAssign, async (req, res) => {
+  try {
+    const date = String(req.query.date || "");
+    if (!moment.tz(date, "YYYY-MM-DD", true, TIMEZONE).isValid()) throw badRequest("INVALID_DATE", "date must be YYYY-MM-DD");
+    const booking = await loadJob(req);
+    const { calculateDayAvailability } = require("../utils/availabilityService");
+    const BookingSlotReservation = require("../models/BookingSlotReservation");
+    const { blockingReservationFilter, reservationWindow } = require("../utils/slotReservationService");
+    const now = new Date();
+    const day = await calculateDayAvailability({ date, scope: "company", now });
+    const dayStart = moment.tz(date, "YYYY-MM-DD", TIMEZONE).startOf("day");
+    const reservations = await BookingSlotReservation.find({
+      ...blockingReservationFilter(now),
+      bookingId: { $ne: booking._id },
+      technicianId: { $ne: null },
+      slotStart: { $lt: dayStart.clone().add(1, "day").toDate() },
+      slotEnd: { $gt: dayStart.toDate() },
+    })
+      .select("technicianId slotStart slotEnd")
+      .lean();
+    const ownId = String(booking._id);
+    const currentStart = booking.date ? new Date(booking.date) : null;
+    const slots = (day.slots || []).map((slot) => {
+      const window = reservationWindow(moment.tz(`${date} ${slot.time}`, "YYYY-MM-DD HH:mm", TIMEZONE).toDate());
+      const start = window.slotStart;
+      const end = window.slotEnd;
+      const technicians = (slot.technicians || []).map((tech) => {
+        const otherFullDay = (tech.fullDayBookingIds || []).some((id) => String(id) !== ownId);
+        const overlap = reservations.some(
+          (r) => String(r.technicianId) === String(tech.id) && new Date(r.slotStart) < end && new Date(r.slotEnd) > start
+        );
+        const available = Boolean(tech.available) && !otherFullDay && !overlap;
+        const reason = available
+          ? undefined
+          : otherFullDay
+            ? "Booked for a Full Day"
+            : overlap
+              ? "Conflicts with another 90-minute reservation"
+              : tech.unavailableReason || "Unavailable";
+        return { id: tech.id, name: tech.name, available, ...(reason ? { reason } : {}) };
+      });
+      const used = (slot.occupantBookingIds || []).filter((id) => String(id) !== ownId).length;
+      const remainingCapacity = Math.max(0, Number(slot.totalCapacity || 0) - used);
+      const past = start.getTime() < now.getTime();
+      const anyFixter = technicians.some((t) => t.available);
+      const reason = past
+        ? "past"
+        : Number(slot.configuredCapacity || 0) <= 0
+          ? "closed"
+          : !anyFixter
+            ? "no_fixter"
+            : remainingCapacity <= 0
+              ? "full"
+              : null;
+      return {
+        time: slot.time,
+        endTime: slot.endTime,
+        slotStart: start.toISOString(),
+        available: !reason,
+        ...(reason ? { reason } : {}),
+        current: Boolean(currentStart && currentStart.getTime() === start.getTime()),
+        remainingCapacity,
+        technicians,
+      };
+    });
+    return res.json({
+      bookingId: ownId,
+      date,
+      fullDay: booking.bookingType === "full_day_visit",
+      closed: slots.length === 0 || slots.every((s) => s.reason === "closed"),
+      note: day.note || "",
+      currentStart: currentStart ? currentStart.toISOString() : null,
+      leadTimeApplied: false,
+      slots,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to load reschedule options");
+  }
+});
+
 router.get("/schedule", auth, ...bookingsRead, async (req, res) => {
   try {
     const today = moment.tz(TIMEZONE).format("YYYY-MM-DD");
@@ -212,7 +306,8 @@ router.post("/jobs/:id/transition", auth, ...bookingsWrite, express.json(), asyn
           booking: await detailFor(req, outcome.booking._id),
           transition: outcome.transition,
           notifications: outcome.notifications || [],
-          ...(outcome.payment ? { payment: outcome.payment } : {}),
+          // Payment facts are for callers who see every job (K.1: no money for a field Fixter).
+          ...(outcome.payment && canSeeAllJobs(req) ? { payment: outcome.payment } : {}),
           ...(outcome.fullDayRestore ? { fullDayRestore: outcome.fullDayRestore } : {}),
           ...(outcome.routedTo ? { routedTo: outcome.routedTo } : {}),
         },

@@ -481,6 +481,120 @@ async function main() {
       assert.strictEqual((await Booking.findById(paid._id)).paymentState, "paid", "money untouched");
     });
 
+    /* ======================= gap fixes (FE-JOBS) ======================== */
+    console.log("\nGap fixes: field Fixter money, reschedule options, schedule conflicts");
+    await check("a field Fixter's job detail carries no amounts, tips, dates or Stripe references", async () => {
+      const ent = await VisitEntitlement.create({
+        user: customer._id,
+        userId: customer.userId,
+        addressId: customer.addresses[0]._id,
+        status: "paid",
+        priceCents: 12345,
+        stripePaymentIntentId: "pi_test_fixter_hidden_1",
+        purchasedAt: new Date(),
+      });
+      const job = await reserved(customer, fixA, openDay(30), "13:00", { status: "Confirmed", accessType: "one_time", bookingType: "one_time_handyman_visit", paymentState: "paid", entitlementId: ent._id });
+      const asOwner = await call(owner, "GET", `/api/admin/jobs/${job._id}`);
+      assert.strictEqual(asOwner.status, 200, JSON.stringify(asOwner.body));
+      assert.strictEqual(asOwner.body.job.money.amountCents, 12345);
+      assert.ok(/pi_test_fixter_hidden_1/.test(asOwner.body.job.money.stripeUrl));
+      const asFixter = await call(fixA, "GET", `/api/admin/jobs/${job._id}`);
+      assert.strictEqual(asFixter.status, 200, JSON.stringify(asFixter.body));
+      assert.deepStrictEqual(asFixter.body.job.money, { kind: "paid", label: "Paid online" });
+      const text = JSON.stringify(asFixter.body);
+      for (const leak of ["12345", "123.45", "pi_test_fixter_hidden_1", "dashboard.stripe.com", "stripeUrl", "amountCents", "tipCents", "paidAt", "paidCents", "checkout"]) {
+        assert.ok(!text.includes(leak), `${leak} leaked to a field Fixter`);
+      }
+    });
+
+    await check("reschedule options: Admin rules skip the customer lead time, but keep past, capacity and Fixter overlap", async () => {
+      const dayA = openDay(30);
+      const dayB = openDay(33);
+      const job = await reserved(customer, fixA, dayA, "08:00", { status: "Confirmed" });
+      const blocker = await reserved(other, fixB, dayB, "13:00", { status: "Confirmed" });
+      // A customer may book no sooner than 60 days out from now.
+      await CompanyAvailabilityTemplate.updateOne({ active: true }, { $set: { minLeadMinutes: 60 * 24 * 60 } });
+      try {
+        const { calculateDayAvailability } = require("../utils/availabilityService");
+        const customerView = await calculateDayAvailability({ date: dayB });
+        assert.ok(customerView.slots.length && customerView.slots.every((s) => !s.open), "customers cannot book inside the lead time");
+
+        const options = await call(owner, "GET", `/api/admin/jobs/${job._id}/reschedule-options?date=${dayB}`);
+        assert.strictEqual(options.status, 200, JSON.stringify(options.body));
+        assert.strictEqual(options.body.leadTimeApplied, false);
+        assert.deepStrictEqual(options.body.slots.map((s) => s.time), ["08:00", "10:00", "13:00"]);
+        assert.ok(options.body.slots.every((s) => s.available), JSON.stringify(options.body.slots));
+        const one = options.body.slots.find((s) => s.time === "13:00");
+        const bea = one.technicians.find((t) => t.id === String(fixB._id));
+        assert.strictEqual(bea.available, false, "Bea already has a visit at 13:00");
+        assert.ok(/overlapping|Conflicts/i.test(bea.reason), bea.reason);
+        assert.strictEqual(one.technicians.find((t) => t.id === String(fixA._id)).available, true);
+        assert.ok(one.remainingCapacity >= 1);
+
+        const own = await call(owner, "GET", `/api/admin/jobs/${job._id}/reschedule-options?date=${dayA}`);
+        const current = own.body.slots.find((s) => s.time === "08:00");
+        assert.strictEqual(current.current, true);
+        assert.strictEqual(current.available, true, "its own seat does not block it");
+        assert.strictEqual(current.technicians.find((t) => t.id === String(fixA._id)).available, true, "its own reservation does not block Andy");
+
+        // The reschedule endpoint accepts a time inside the customer lead time.
+        const moved = await call(owner, "POST", `/api/admin/jobs/${job._id}/reschedule`, {
+          date: dayB,
+          time: "10:00",
+          expectedUpdatedAt: job.updatedAt.toISOString(),
+          idempotencyKey: key(),
+          notifyCustomer: false,
+        });
+        assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+        assert.strictEqual(new Date((await Booking.findById(job._id)).date).getTime(), at(dayB, "10:00").getTime());
+        // Bea is taken at 13:00, so moving Andy's job there with Bea is refused.
+        const fresh = await Booking.findById(job._id);
+        const clash = await call(owner, "POST", `/api/admin/jobs/${job._id}/reschedule`, {
+          date: dayB,
+          time: "13:00",
+          assignedFixterId: String(fixB._id),
+          expectedUpdatedAt: fresh.updatedAt.toISOString(),
+          idempotencyKey: key(),
+          notifyCustomer: false,
+        });
+        assert.notStrictEqual(clash.status, 200, JSON.stringify(clash.body));
+        assert.strictEqual(String((await Booking.findById(blocker._id)).assignedFixterId), String(fixB._id));
+      } finally {
+        await CompanyAvailabilityTemplate.updateOne({ active: true }, { $set: { minLeadMinutes: 0 } });
+      }
+
+      const past = await call(owner, "GET", `/api/admin/jobs/${job._id}/reschedule-options?date=${moment.tz(TZ).subtract(3, "days").format("YYYY-MM-DD")}`);
+      assert.strictEqual(past.status, 200, JSON.stringify(past.body));
+      assert.ok(past.body.slots.every((s) => !s.available && (s.reason === "past" || s.reason === "closed")), JSON.stringify(past.body.slots));
+      assert.strictEqual((await call(owner, "GET", `/api/admin/jobs/${job._id}/reschedule-options?date=tomorrow`)).body.code, "INVALID_DATE");
+      assert.strictEqual((await call(fixA, "GET", `/api/admin/jobs/${job._id}/reschedule-options?date=${dayB}`)).status, 403);
+    });
+
+    await check("schedule rows mark a Fixter's overlapping reservations as a conflict", async () => {
+      const dayC = openDay(36);
+      const job = await reserved(customer, fixA, dayC, "08:00", { status: "Confirmed" });
+      const calm = await reserved(other, fixB, dayC, "08:00", { status: "Confirmed" });
+      // A reservation the engine would never write (legacy data): overlaps Andy's 08:00.
+      await BookingSlotReservation.collection.insertOne({
+        bookingId: new mongoose.Types.ObjectId(),
+        technicianId: fixA._id,
+        slotStart: at(dayC, "08:30"),
+        slotEnd: at(dayC, "10:00"),
+        status: "reserved",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      const res = await call(owner, "GET", `/api/admin/schedule?from=${dayC}&to=${dayC}`);
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      const rows = res.body.lanes.flatMap((lane) => lane.rows);
+      const mine = rows.find((r) => r.id === String(job._id));
+      assert.strictEqual(mine.conflict, true);
+      assert.ok(/Overlaps/.test(mine.conflictReason));
+      const theirs = rows.find((r) => r.id === String(calm._id));
+      assert.strictEqual(theirs.conflict, false);
+      assert.strictEqual(theirs.conflictReason, undefined);
+    });
+
     /* =============================== edits ============================== */
     console.log("\nEdits (J-06, J-07)");
     await check("a note-only PATCH changes the note, never the Fixter, and texts nobody", async () => {

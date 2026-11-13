@@ -29,6 +29,28 @@ const {
 } = require("./jobStatus");
 const { moneyBlockFor } = require("./jobMoney");
 
+/*
+ * What a scoped field Fixter (Q-1, K.1) may know about a job's money: what
+ * kind of visit it is, never an amount, a tip, a payment date or a Stripe
+ * reference. Labels are neutral and amount-free.
+ */
+const FIELD_MONEY_LABELS = {
+  paid: "Paid online",
+  payment_pending: "Awaiting payment",
+  payment_failed: "Payment problem: the office will follow up",
+  refunded: "Refunded",
+  membership_included: "Membership visit",
+  free: "Free Visit",
+  admin_free: "Complimentary visit",
+  full_day_included: "Full Day (membership)",
+  full_day_loyalty: "Full Day (loyalty)",
+};
+
+function moneyForCaller(req, money) {
+  if (!money || canSeeAllJobs(req)) return money;
+  return { kind: money.kind, label: FIELD_MONEY_LABELS[money.kind] || "Visit" };
+}
+
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
 const MAX_RANGE_DAYS = 62;
@@ -387,7 +409,8 @@ function staffNotesOf(booking) {
 async function jobDetail(req, booking, { now = new Date() } = {}) {
   const { allowedActionsFor } = require("../bookingTransitions");
   const row = toJobRow(booking, now);
-  const [customer, money] = await Promise.all([customerSummary(req, booking), moneyBlockFor(booking)]);
+  const [customer, fullMoney] = await Promise.all([customerSummary(req, booking), moneyBlockFor(booking)]);
+  const money = moneyForCaller(req, fullMoney);
   return {
     ...row,
     customer,
@@ -455,6 +478,57 @@ async function capacityForRange({ from, to, tech, now }) {
 }
 
 /**
+ * Jobs whose technician holds another blocking reservation overlapping
+ * theirs: the engine's own overlap rule (slotStart < otherEnd && slotEnd >
+ * otherStart, reserved or unexpired held), read for the whole window in one
+ * query instead of one technicianOverlap call per job.
+ * @returns Map<bookingIdString, reason>
+ */
+async function technicianConflicts(docs, win, now) {
+  const out = new Map();
+  const techIds = [...new Set(docs.map((d) => d.assignedFixterId).filter(Boolean).map(String))];
+  if (!techIds.length) return out;
+  const BookingSlotReservation = require("../../models/BookingSlotReservation");
+  const { blockingReservationFilter } = require("../slotReservationService");
+  // Reach a little past the window so an overlap across midnight is still seen.
+  const reservations = await BookingSlotReservation.find({
+    technicianId: { $in: techIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    ...blockingReservationFilter(now),
+    slotStart: { $lt: new Date(win.end.getTime() + 24 * 3600 * 1000) },
+    slotEnd: { $gt: new Date(win.start.getTime() - 24 * 3600 * 1000) },
+  })
+    .select("bookingId technicianId slotStart slotEnd")
+    .lean();
+  const byTech = new Map();
+  for (const r of reservations) {
+    const key = String(r.technicianId);
+    if (!byTech.has(key)) byTech.set(key, []);
+    byTech.get(key).push(r);
+  }
+  const numberOf = new Map(docs.map((d) => [String(d._id), d.bookingNumber || ""]));
+  for (const list of byTech.values()) {
+    list.sort((a, b) => new Date(a.slotStart) - new Date(b.slotStart));
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const a = list[i];
+        const b = list[j];
+        if (new Date(b.slotStart) >= new Date(a.slotEnd)) break;
+        if (String(a.bookingId) === String(b.bookingId)) continue;
+        const mark = (self, other) => {
+          const id = String(self.bookingId);
+          if (out.has(id) || !numberOf.has(id)) return;
+          const otherNumber = numberOf.get(String(other.bookingId));
+          out.set(id, `Overlaps another visit for this Fixter${otherNumber ? ` (#${otherNumber})` : ""}.`);
+        };
+        mark(a, b);
+        mark(b, a);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Day/week schedule: jobs grouped by technician, plus capacity and closed
  * slots from the availability engine (the same reader the calendar uses).
  * Capacity is shown to callers with schedule or assignment rights only.
@@ -471,13 +545,19 @@ async function scheduleView(req, { from, to, tech, now = new Date() } = {}) {
     ...jobScopeFilter(req),
   };
   const docs = await Booking.find(filter).sort({ date: 1, _id: 1 }).limit(1000).select(ROW_FIELDS).lean();
+  const conflicts = await technicianConflicts(docs, win, now);
   const lanes = new Map();
   for (const doc of docs) {
     const key = doc.assignedFixterId ? String(doc.assignedFixterId) : "";
     if (!lanes.has(key)) {
       lanes.set(key, { technician: key ? { id: key, name: doc.assignedFixterName || "" } : null, rows: [] });
     }
-    lanes.get(key).rows.push(toJobRow(doc, now));
+    const conflict = conflicts.get(String(doc._id));
+    lanes.get(key).rows.push({
+      ...toJobRow(doc, now),
+      conflict: Boolean(conflict),
+      ...(conflict ? { conflictReason: conflict } : {}),
+    });
   }
   const ordered = [...lanes.values()].sort((a, b) => {
     if (!a.technician) return 1;
