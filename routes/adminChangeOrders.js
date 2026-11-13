@@ -617,6 +617,11 @@ router.post("/:id/generate", async (req, res) => {
     changeOrder.addAuditEvent("PDF generated", req, { fileName, size: pdfBuffer.length });
     await changeOrder.save();
 
+    // Review fix 5 (2026-11-13): an outstanding signing link points at the
+    // previous frozen PDF. Close it, as agreement regeneration does; the owner
+    // sends the regenerated document again.
+    await revokeSignaturesForDocument("CHANGE_ORDER", changeOrder._id, "change_order_regenerated", signatureContext(req));
+
     await markAdminActivityLog(audit, {
       action: "Change Order PDF Generated",
       details: {

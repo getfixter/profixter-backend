@@ -289,6 +289,28 @@ async function main() {
       assert.ok(activity.some((entry) => entry.action === "Change Order Voided"), "void is in the activity log");
     });
 
+    await test("review 5: regenerating a sent change order revokes its link; the old PDF can no longer be signed", async () => {
+      const project = await makeProject();
+      const contract = await makeContract(project);
+      const co = await makeChangeOrder(contract);
+      const req = await sendRemote(co._id, "CHANGE_ORDER");
+      const regenerated = await api("POST", `/api/admin/change-orders/${co._id}/generate`);
+      assert.strictEqual(regenerated.status, 200, JSON.stringify(regenerated.json));
+      const sig = await ESignature.findById(req.signature.id);
+      assert.strictEqual(sig.signingToken.state, "revoked", "the old link is closed");
+      emails.length = 0;
+      const signed = await sign(req.token);
+      assert.notStrictEqual(signed.status, 500);
+      assert.notStrictEqual(signed.json.state, "completed");
+      const stored = await ChangeOrder.findById(co._id);
+      assert.strictEqual(stored.status, "Ready to Send", "not executed by the stale link");
+      assert.strictEqual(await contractValue(contract._id), 2000000);
+      assert.strictEqual(emails.length, 0);
+      // The regenerated document can be sent again.
+      const again = await sendRemote(co._id, "CHANGE_ORDER");
+      assert.ok(again.token && again.token !== req.token);
+    });
+
     await test("a live link on a change order voided outside the void route is still refused by the document check", async () => {
       const project = await makeProject();
       const contract = await makeContract(project);
