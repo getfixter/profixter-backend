@@ -3,6 +3,7 @@
 // Saves estimate builder submissions to MongoDB and notifies admin by email.
 const express = require("express");
 const router = express.Router();
+const { publicLeadLimiter } = require("../utils/http/serverHardening");
 const EstimateLead = require("../models/EstimateLead");
 const {
   sendAdminLeadNotification,
@@ -48,7 +49,7 @@ function serviceLabel(service) {
 
 // ── POST /api/estimates ───────────────────────────────────────────────────────
 
-router.post("/", async (req, res) => {
+router.post("/", publicLeadLimiter("estimate_lead_ip"), async (req, res) => {
   try {
     const b = req.body;
 

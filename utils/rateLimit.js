@@ -79,7 +79,7 @@ function rateLimit({ limit, windowMs, keyResolver, message = "Too many requests.
     if (result.allowed) return next();
 
     res.set("Retry-After", String(result.retryAfterSeconds));
-    return res.status(429).json({ message });
+    return res.status(429).json({ message, code: "RATE_LIMITED" });
   };
 }
 

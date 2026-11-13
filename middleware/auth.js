@@ -2,8 +2,10 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const temporaryPassword = require("../utils/auth/temporaryPassword");
+const sessions = require("../utils/auth/sessions");
 
-const PASSWORD_CHANGE_PATHS = new Set(["/api/auth/me", "/api/auth/change-password"]);
+// Signing out must stay possible from a temporary-password session too.
+const PASSWORD_CHANGE_PATHS = new Set(["/api/auth/me", "/api/auth/change-password", "/api/auth/logout", "/api/auth/logout-all"]);
 const TEMP_EXPIRED_MESSAGE =
   "Your temporary password has expired. Use \"Forgot password\" or sign in with a code, or call us for a new one.";
 
@@ -30,6 +32,11 @@ module.exports = async function (req, res, next) {
     if (Number(decoded.tv || 0) !== Number(user.tokenVersion || 0)) {
       return res.status(401).json({ message: "Session ended. Please sign in again." });
     }
+    // Signed out (this session, or a pre-session token on the denylist).
+    const ended = await sessions.checkToken(decoded, token);
+    if (ended) return res.status(ended.status).json({ message: ended.message, code: ended.code });
+    if (decoded.sid) sessions.touch(decoded.sid);
+    req.auth = { token, decoded, sid: decoded.sid || null };
     if (user.role === "employee" && user.isActive === false) {
       return res.status(403).json({ message: "Employee account is inactive" });
     }

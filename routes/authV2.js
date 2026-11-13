@@ -7,6 +7,7 @@ const { OtpError, startChallenge, verifyChallenge } = require("../utils/auth/otp
 const { OtpDeliveryError } = require("../utils/auth/otpDelivery");
 const { ProviderTokenError, verifyAppleIdToken } = require("../utils/auth/providerTokens");
 const accounts = require("../utils/auth/accounts");
+const sessions = require("../utils/auth/sessions");
 const temporaryPassword = require("../utils/auth/temporaryPassword");
 const { clientIp } = require("../utils/auth/clientIp");
 
@@ -98,17 +99,19 @@ async function requireSignedInUser(req) {
   const user = await User.findById(payload?.id);
   if (!user || user.role === "employee") throw new AuthFlowError("SIGN_IN_REQUIRED");
   if (!accounts.sessionIsCurrent(payload, user)) throw new AuthFlowError("SIGN_IN_REQUIRED");
+  // A signed-out session (single sign-out) is refused here as in middleware/auth.js.
+  if (await sessions.checkToken(payload, token)) throw new AuthFlowError("SIGN_IN_REQUIRED");
   return user;
 }
 
-async function sessionResponse(user, { created = false, extra = {} } = {}) {
+async function sessionResponse(user, { created = false, extra = {}, req = null } = {}) {
   // An earlier callback request with this proved phone or email joins the account.
   await linkGuestFreeVisitsQuietly(user);
   // A code or Apple just proved the account: an Admin-issued temporary password is no longer needed.
   await temporaryPassword.retireAfterOtherSignIn(user);
   const { authUserDTO, buildPerAddressCoverage } = require("./auth");
   const coverage = await buildPerAddressCoverage(user);
-  return { status: "signed_in", token: accounts.issueSession(user), user: authUserDTO(user, coverage), created, ...extra };
+  return { status: "signed_in", token: await accounts.issueSession(user, req), user: authUserDTO(user, coverage), created, ...extra };
 }
 
 async function userDTO(user) {
@@ -395,7 +398,7 @@ router.post("/otp/phone/verify", async (req, res) => {
     if (verified.length === 1) {
       accounts.addProvider(verified[0], "phone");
       await verified[0].save();
-      return res.json(await sessionResponse(verified[0]));
+      return res.json(await sessionResponse(verified[0], { req }));
     }
     if (verified.length > 1) return res.json(chooseAccountResponse(phone, verified));
 
@@ -445,7 +448,7 @@ async function createPhoneCustomer(req, phone, consent = {}) {
     ...trackingFrom(req),
     consents: { transactional: Boolean(consent.transactional), marketing: Boolean(consent.marketing), source: "signup_phone_code" },
   });
-  return sessionResponse(user, { created: true });
+  return sessionResponse(user, { req, created: true });
 }
 
 /**
@@ -473,7 +476,7 @@ router.post("/otp/phone/choose", async (req, res) => {
     if (!user) throw new AuthFlowError("LINK_EXPIRED");
     accounts.addProvider(user, "phone");
     await user.save();
-    return res.json(await sessionResponse(user));
+    return res.json(await sessionResponse(user, { req }));
   } catch (error) {
     return sendError(res, error);
   }
@@ -539,7 +542,7 @@ router.post("/otp/email/verify", async (req, res) => {
       await existing.save();
       let linkedPhone = false;
       if (link) linkedPhone = (await accounts.attachVerifiedPhone(existing, link.phone)).ok;
-      return res.json(await sessionResponse(existing, { extra: { linkedPhone } }));
+      return res.json(await sessionResponse(existing, { req, extra: { linkedPhone } }));
     }
 
     let user;
@@ -554,12 +557,12 @@ router.post("/otp/email/verify", async (req, res) => {
       if (!accounts.isDuplicateKey(error)) throw error;
       const winner = await accounts.findCustomerByEmail(email);
       if (!winner) throw error;
-      return res.json(await sessionResponse(winner));
+      return res.json(await sessionResponse(winner, { req }));
     }
     let linkedPhone = false;
     if (link) linkedPhone = (await accounts.attachVerifiedPhone(user, link.phone)).ok;
     await accounts.afterAccountCreated(user, { ...trackingFrom(req) });
-    return res.json(await sessionResponse(user, { created: true, extra: { linkedPhone } }));
+    return res.json(await sessionResponse(user, { req, created: true, extra: { linkedPhone } }));
   } catch (error) {
     return sendError(res, error);
   }
@@ -593,7 +596,7 @@ router.post("/apple", async (req, res) => {
       }
       accounts.addProvider(user, "apple");
       await user.save();
-      return res.json(await sessionResponse(user));
+      return res.json(await sessionResponse(user, { req }));
     }
 
     let created;
@@ -612,10 +615,10 @@ router.post("/apple", async (req, res) => {
       if (!accounts.isDuplicateKey(error)) throw error;
       const winner = await User.findOne({ appleId: identity.sub });
       if (!winner) throw error;
-      return res.json(await sessionResponse(winner));
+      return res.json(await sessionResponse(winner, { req }));
     }
     await accounts.afterAccountCreated(created, { ...trackingFrom(req) });
-    return res.json(await sessionResponse(created, { created: true }));
+    return res.json(await sessionResponse(created, { req, created: true }));
   } catch (error) {
     if (error instanceof ProviderTokenError) return sendError(res, error);
     return sendError(res, error);

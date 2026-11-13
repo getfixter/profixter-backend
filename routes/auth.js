@@ -620,7 +620,7 @@ router.post("/register", async (req, res) => {
     }
 
     await linkGuestFreeVisitsQuietly(user);
-    const token = authAccounts.issueSession(user);
+    const token = await authAccounts.issueSession(user, req);
 
     const coverageMap = await buildPerAddressCoverage(user);
 
@@ -723,7 +723,7 @@ router.post("/login", async (req, res) => {
       await user.save();
     }
     await linkGuestFreeVisitsQuietly(user);
-    const token = authAccounts.issueSession(user);
+    const token = await authAccounts.issueSession(user, req);
     const coverageMap = await buildPerAddressCoverage(user);
     return res.json({
       token,
@@ -895,13 +895,54 @@ router.post("/google", async (req, res) => {
 
     await linkGuestFreeVisitsQuietly(user);
     await temporaryPassword.retireAfterOtherSignIn(user);
-    const token = authAccounts.issueSession(user);
+    const token = await authAccounts.issueSession(user, req);
     await ensurePrimaryFromLegacy(user);
     const coverageMap = await buildPerAddressCoverage(user);
     return res.json({ token, user: authUserDTO(user, coverageMap), created });
   } catch (error) {
     console.error("❌ Google OAuth Error:", error.stack || error.message);
     return res.status(500).json({ message: "Google authentication failed" });
+  }
+});
+
+/* ───────── Sign out ───────── */
+/*
+ * POST /api/auth/logout ends THIS token on the server, at once: its Session
+ * row is revoked, or - for a token issued before sessions existed - its hash is
+ * denylisted until it would have expired anyway. Other devices stay signed in.
+ * POST /api/auth/logout-all ends every session of the account (tokenVersion is
+ * bumped, which also ends every pre-session token).
+ */
+const sessionStore = require("../utils/auth/sessions");
+
+router.post("/logout", require("../middleware/auth"), async (req, res) => {
+  try {
+    const result = await sessionStore.revokeToken(req.auth.decoded, req.auth.token, "logout");
+    return res.json({ ok: true, revoked: result.kind });
+  } catch (err) {
+    console.error("Logout failed:", err.message);
+    return res.status(500).json({ message: "Sign-out failed. Please try again.", code: "LOGOUT_FAILED" });
+  }
+});
+
+router.post("/logout-all", require("../middleware/auth"), async (req, res) => {
+  try {
+    const result = await sessionStore.revokeAllForUser(req.user.id, "logout_all");
+    return res.json({ ok: true, revokedSessions: result.revoked });
+  } catch (err) {
+    console.error("Logout-all failed:", err.message);
+    return res.status(500).json({ message: "Sign-out failed. Please try again.", code: "LOGOUT_FAILED" });
+  }
+});
+
+/* The signed-in account's own active sessions (device summary only). */
+router.get("/sessions", require("../middleware/auth"), async (req, res) => {
+  try {
+    const sessions = await sessionStore.listActiveSessions(req.user.id, req.auth.sid);
+    return res.json({ sessions, currentIsLegacy: !req.auth.sid });
+  } catch (err) {
+    console.error("Session list failed:", err.message);
+    return res.status(500).json({ message: "Could not load sessions.", code: "SESSIONS_FAILED" });
   }
 });
 
