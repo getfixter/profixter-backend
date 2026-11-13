@@ -125,6 +125,12 @@ const SUITES = [
   "test_admin_marketing_consent.js",
   // Post-visit review requests: the 60-minute delay, one per booking, the per-customer cooldown, locks.
   "test_booking_review_requests.js",
+  // Admin redesign (BE-CUST): confirmed plan changes, cancellation, complimentary, legacy refusals, no N+1 (in-memory Mongo, Stripe faked).
+  "test_admin_customer_membership.js",
+  // Block enforced at every booking/request/checkout entry point by account, email and phone; unblock keeps history.
+  "test_customer_block_enforcement.js",
+  // Customer list/search/profile, lean DTOs, billing proxy (Stripe faked), notes, archive, consent, comms history.
+  "test_admin_customer_directory.js",
 ];
 
 /**
