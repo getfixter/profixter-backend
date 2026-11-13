@@ -63,6 +63,9 @@ const { buildUserSearchFields } = require("../utils/userSearchFields");
 const { completedBookingCountsForUsers, completedBookingCountForUser } = require("../utils/customerBookingCounts");
 const { adminLoyaltyForUsers, programActive: loyaltyProgramActive } = require("../utils/loyalty/adminLoyalty");
 const { effectiveAt: loyaltyEffectiveAt } = require("../utils/loyalty/loyaltyConfig");
+const { loadAddressPlans } = require("../utils/admin/planStatus");
+const { findActiveBlockForUser } = require("../utils/customerBlock");
+const { formatAddressLine } = require("../utils/formatAddress");
 
 const mail = require("../utils/emailService");
 const Request = require("../models/Request");
@@ -197,61 +200,50 @@ router.put("/one-time-visit-settings", auth, ...onlyAdmin, async (req, res) => {
   }
 });
 
-async function getAddressPlansForUser(user) {
-  const candidates = await Subscription.find({ user: user._id }).sort({
-    currentPeriodEnd: -1,
-    nextPaymentDate: -1,
-    createdAt: -1,
-    updatedAt: -1,
+/*
+ * Per-address plan rows for the Admin lists (addressesDetailed).
+ *
+ * The response shape is the one the current Admin screens read, unchanged:
+ * `plan` is set only while the membership grants access, exactly as before.
+ * Added alongside, for the redesigned screens: unit, planStatus (active,
+ * trialing, payment_issue, ending, ended, none), currentPeriodEnd, cancelAt.
+ *
+ * Loaded for many customers with ONE Subscription query (utils/admin/planStatus)
+ * instead of one query per customer in a serial loop.
+ */
+function addressRowsFor(user, perAddress) {
+  return (user.addresses || []).map((a) => {
+    const summary = perAddress?.get(String(a._id)) || null;
+    const granting = Boolean(summary?.grantsAccess);
+    return {
+      _id: String(a._id),
+      label: a.label,
+      line1: a.line1,
+      unit: a.unit || "",
+      city: a.city,
+      state: a.state,
+      zip: a.zip,
+      county: a.county || "",
+      isDefault: String(user.defaultAddressId || "") === String(a._id),
+      plan: granting ? summary.lastPlan : null,
+      scheduledCancellationDate:
+        granting && summary.cancellationDate ? summary.cancellationDate.toISOString().split("T")[0] : null,
+      planStatus: summary?.planStatus || "none",
+      currentPeriodEnd: summary?.currentPeriodEnd || null,
+      cancelAt: summary?.cancelAt || null,
+    };
   });
+}
 
-  const byAddressId = new Map();
-  const cancellationByAddressId = new Map();
-  const hasAnyAddressSubs = candidates.some((subscription) => subscription.addressId);
+async function getAddressPlansForUsers(users) {
+  const plans = await loadAddressPlans(users);
+  const out = new Map();
+  for (const user of users) out.set(String(user._id), addressRowsFor(user, plans.get(String(user._id))));
+  return out;
+}
 
-  // 1) Map address-bound subs
-  for (const address of user.addresses || []) {
-    const addressSubs = candidates.filter(
-      (subscription) => String(subscription.addressId || "") === String(address._id)
-    );
-    const selected = selectCurrentSubscription(addressSubs);
-    if (selected && subscriptionGrantsAccess(selected)) {
-      byAddressId.set(String(address._id), selected.subscriptionType);
-      if (selected.cancellationDate) {
-        cancellationByAddressId.set(
-          String(address._id),
-          selected.cancellationDate.toISOString().split("T")[0]
-        );
-      }
-    }
-  }
-
-  // 2) Addressless active sub → default address
-  const addrless = !hasAnyAddressSubs
-    ? selectCurrentSubscription(candidates.filter((subscription) => !subscription.addressId))
-    : null;
-  if (addrless && subscriptionGrantsAccess(addrless) && user.defaultAddressId) {
-    byAddressId.set(String(user.defaultAddressId), addrless.subscriptionType);
-    if (addrless.cancellationDate) {
-      cancellationByAddressId.set(
-        String(user.defaultAddressId),
-        addrless.cancellationDate.toISOString().split("T")[0]
-      );
-    }
-  }
-
-  return (user.addresses || []).map((a) => ({
-    _id: String(a._id),
-    label: a.label,
-    line1: a.line1,
-    city: a.city,
-    state: a.state,
-    zip: a.zip,
-    county: a.county || "",
-    isDefault: String(user.defaultAddressId || "") === String(a._id),
-    plan: byAddressId.get(String(a._id)) || null,
-    scheduledCancellationDate: cancellationByAddressId.get(String(a._id)) || null,
-  }));
+async function getAddressPlansForUser(user) {
+  return (await getAddressPlansForUsers([user])).get(String(user._id)) || [];
 }
 
 function maskExternalId(value) {
@@ -638,13 +630,15 @@ router.get("/users", auth, ...customersManage, async (req, res) => {
       .select("-password")
       .sort({ createdAt: -1 })
       .lean();
-    const completedBookings = await completedBookingCountsForUsers(users);
-    const out = [];
-
-    for (const u of users) {
-      const addressesDetailed = await getAddressPlansForUser(u);
-      out.push({ ...u, addressesDetailed, completedBookings: completedBookings.get(String(u._id)) || 0 });
-    }
+    const [completedBookings, plansByUser] = await Promise.all([
+      completedBookingCountsForUsers(users),
+      getAddressPlansForUsers(users),
+    ]);
+    const out = users.map((u) => ({
+      ...u,
+      addressesDetailed: plansByUser.get(String(u._id)) || [],
+      completedBookings: completedBookings.get(String(u._id)) || 0,
+    }));
 
     res.json(out);
   } catch (err) {
@@ -663,20 +657,20 @@ router.get(
         .select("userId name email phone addresses defaultAddressId createdAt")
         .sort({ createdAt: -1 })
         .lean();
-      const completedBookings = await completedBookingCountsForUsers(users);
-      const out = [];
-      for (const user of users) {
-        out.push({
-          _id: String(user._id),
-          userId: user.userId,
-          name: user.name,
-          email: user.email,
-          phone: user.phone || "",
-          createdAt: user.createdAt,
-          addressesDetailed: await getAddressPlansForUser(user),
-          completedBookings: completedBookings.get(String(user._id)) || 0,
-        });
-      }
+      const [completedBookings, plansByUser] = await Promise.all([
+        completedBookingCountsForUsers(users),
+        getAddressPlansForUsers(users),
+      ]);
+      const out = users.map((user) => ({
+        _id: String(user._id),
+        userId: user.userId,
+        name: user.name,
+        email: user.email,
+        phone: user.phone || "",
+        createdAt: user.createdAt,
+        addressesDetailed: plansByUser.get(String(user._id)) || [],
+        completedBookings: completedBookings.get(String(user._id)) || 0,
+      }));
       return res.json(out);
     } catch (error) {
       console.error("Fetch members failed:", error);
@@ -1049,7 +1043,8 @@ router.get(
             ...(email ? [{ email }] : []),
           ],
         })
-          .select("user userId name email reason createdAt")
+          .select("user userId name email reason createdAt blockedByName liftedAt liftedByName liftReason")
+          .setOptions({ includeLifted: true })
           .sort({ createdAt: -1 })
           .lean(),
       ]);
@@ -1232,11 +1227,26 @@ router.get(
             description: entry.reason ? `Reason: ${entry.reason}` : "Customer was added to the blacklist.",
             timestamp: entry.createdAt,
             source: "blacklist",
-            actorName: "Admin",
+            actorName: entry.blockedByName || "Admin",
             actorRole: "admin",
             status: "blocked",
           })
         );
+        if (entry.liftedAt) {
+          items.push(
+            timelineItem({
+              id: `blacklist-lifted-${entry._id}`,
+              type: "blacklist_lifted",
+              title: "Customer unblocked",
+              description: entry.liftReason ? `Reason: ${entry.liftReason}` : "The block was lifted.",
+              timestamp: entry.liftedAt,
+              source: "blacklist",
+              actorName: entry.liftedByName || "Admin",
+              actorRole: "admin",
+              status: "unblocked",
+            })
+          );
+        }
       }
 
       const sorted = items
@@ -1256,7 +1266,7 @@ router.get(
         unavailableSources: [
           "Historical admin customer/account action audit is only shown when it exists in booking history or current blacklist records.",
           "Historical plan-change actor details are not stored separately yet; subscription records show current purchase/cancellation/pending-change state.",
-          "Removed blacklist entries are not retained after unblock.",
+          "Blocks lifted before this release were deleted at the time and are not shown.",
         ],
       });
     } catch (err) {
@@ -1354,10 +1364,21 @@ router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
     const user = await User.findById(req.params.id).lean();
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const expectedConfirmation = `DELETE ${String(user.email || "").trim()}`;
-    if (String(req.body?.confirmation || "") !== expectedConfirmation) {
+    /*
+     * The confirmation names the account: its email, or - for an account with
+     * no email (phone sign-in) - its public user id, which is what the Admin
+     * dialog shows. It used to demand "DELETE " + an empty email for those, so
+     * a phone-only account could never be deleted.
+     */
+    const email = String(user.email || "").trim();
+    const accepted = email
+      ? [`DELETE ${email}`]
+      : [`DELETE ${String(user.userId || "").trim()}`, `DELETE ${String(user._id)}`].filter((v) => v !== "DELETE ");
+    const expectedConfirmation = accepted[0];
+    if (!accepted.includes(String(req.body?.confirmation || "").trim())) {
       return res.status(400).json({
         message: `Type ${expectedConfirmation} to delete this user.`,
+        code: "CONFIRMATION_MISMATCH",
       });
     }
 
@@ -1430,6 +1451,8 @@ router.delete("/users/:id", auth, onlyAdmin, async (req, res) => {
 router.use(require("./adminCustomerProfile")({ getAddressPlansForUser }));
 router.use(require("./adminCustomers"));
 router.use(require("./adminSales"));
+/* The redesigned customer list, search, profile and confirmed membership actions. */
+router.use(require("./adminCustomerDirectory"));
 
 // ✅ UPDATE User Info (name, phone, legacy subscription)
 router.put("/users/:id", auth, ...customersManage, customerTargetsOnly(), async (req, res) => {
@@ -1608,397 +1631,103 @@ router.put("/users/:id/subscription", auth, ...customersManage, customerTargetsO
   }
 });
 
-// ✅ NEW: Set/Clear subscription for a specific address
+/*
+ * LEGACY plan and cancellation writes from the old customer list.
+ *
+ * These used to act on one tap: a higher plan charged the card at once, "Cancel"
+ * scheduled a Stripe cancellation, a date input wrote Stripe on every change,
+ * and a home without an active subscription (a past-due one included) was
+ * handed a free, open-ended DB-only "admin-panel" membership. None of it asked
+ * first, showed the amount, or was protected against a double tap, and the
+ * cancellation date was not audited.
+ *
+ * They now refuse every change with 428 { code: "CONFIRMATION_REQUIRED" } and
+ * do nothing; the change is made through the confirmed flow instead:
+ *   POST /customers/:id/addresses/:addressId/plan-change/preview + /confirm
+ *   POST /customers/:id/addresses/:addressId/cancellation
+ *   POST /customers/:id/addresses/:addressId/complimentary   (owner)
+ * Re-sending the current state (the same plan, or clearing when nothing is
+ * scheduled) is not a change and still answers 200 with addressesDetailed.
+ *
+ * The current Admin screen shows its own "Failed to update subscription plan" /
+ * "Failed to save cancellation date" toast and keeps the row as it was.
+ */
+function confirmationRequired(res, what) {
+  return res.status(428).json({
+    code: "CONFIRMATION_REQUIRED",
+    message: `${what} now needs a confirmed preview. Open the customer and use Change plan or Cancellation, which show the amount first.`,
+    next: {
+      planChangePreview: "POST /api/admin/customers/:id/addresses/:addressId/plan-change/preview",
+      planChangeConfirm: "POST /api/admin/customers/:id/addresses/:addressId/plan-change/confirm",
+      cancellation: "POST /api/admin/customers/:id/addresses/:addressId/cancellation",
+    },
+  });
+}
+
+async function legacyAddressContext(req, res) {
+  const { id, addressId } = req.params;
+  if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(addressId)) {
+    res.status(400).json({ message: "Invalid id", code: "INVALID_ID" });
+    return null;
+  }
+  const user = await User.findById(id).lean();
+  if (!user) {
+    res.status(404).json({ message: "User not found" });
+    return null;
+  }
+  const addr = (user.addresses || []).find((a) => String(a._id) === String(addressId));
+  if (!addr) {
+    res.status(404).json({ message: "Address not found" });
+    return null;
+  }
+  const rows = await getAddressPlansForUser(user);
+  return { user, addr, row: rows.find((r) => r._id === String(addressId)) || null, rows };
+}
+
 // PUT /api/admin/users/:id/address/:addressId/subscription
 router.put(
   "/users/:id/address/:addressId/subscription",
   auth,
   ...customersManage,
+  customerTargetsOnly(),
   async (req, res) => {
     try {
-      const { id, addressId } = req.params;
-      const planRaw = String(req.body.plan || "").toLowerCase();
-      const addrObjId = new mongoose.Types.ObjectId(addressId);
-
-      const user = await User.findById(id);
-      if (!user) return res.status(404).json({ message: "User not found" });
-
-      const addr = user.addresses.id(addressId);
-      if (!addr) return res.status(404).json({ message: "Address not found" });
-
-      const respond = async (message, activityDetails = null) => {
-        if (activityDetails) {
-          await createAdminActivityLog(req, activityDetails);
-        }
-        const uLean = await User.findById(user._id).lean();
-        const addressesDetailed = await getAddressPlansForUser(uLean);
-        return res.json({ message, addressesDetailed });
-      };
-
-      const activeSub = await Subscription.findOne({
-        user: user._id,
-        addressId: addrObjId,
-        status: { $in: ["active", "trialing"] },
-      }).sort({ updatedAt: -1 });
-      const previousAddressPlan = activeSub?.subscriptionType || "";
-
-      const stripeSubscription = activeSub
-        ? await resolveStripeSubscriptionForRecord({ subscription: activeSub, user })
-        : null;
-
-      const shouldRequireStripeSync = !!(
-        activeSub &&
-        (activeSub.stripeSubscriptionId ||
-          activeSub.stripeCustomerId ||
-          activeSub.stripeSubscriptionItemId ||
-          activeSub.stripePriceId ||
-          user.stripeCustomerId)
-      );
-
-      // 1) CANCEL
-      if (planRaw === "cancel") {
-        if (stripeSubscription && activeSub) {
-          const activeStripeSubscription = await clearStripeSubscriptionSchedule(stripeSubscription);
-          const cancellationTarget = activeStripeSubscription || stripeSubscription;
-          const canceledStripeSubscription = await stripe.subscriptions.update(
-            cancellationTarget.id,
-            {
-              cancel_at_period_end: true,
-              metadata: {
-                ...(cancellationTarget.metadata || {}),
-                addressId: String(addrObjId),
-                userId: String(user.userId || user._id),
-                localSubscriptionId: String(activeSub._id),
-              },
-              expand: ["items.data.price", "schedule"],
-            }
-          );
-
-          await upsertSubscriptionFromStripe({
-            stripeSubscription: canceledStripeSubscription,
-            user,
-            addressIdHint: String(addrObjId),
-          });
-
-          return respond("Address cancellation scheduled in Stripe", {
-            action: "Subscription Canceled",
-            entityType: "Subscription",
-            entityId: activeSub._id,
-            entityName: `${user.name} - ${addr.line1}`,
-            details: {
-              customerName: user.name,
-              email: user.email,
-              addressId,
-              address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
-              previousPlan: previousAddressPlan,
-              source: "admin_panel_stripe",
-            },
-          });
-        }
-
-        if (shouldRequireStripeSync) {
-          return res.status(409).json({
-            message:
-              "This subscription could not be safely linked to Stripe. Admin DB-only cancellation was blocked.",
-          });
-        }
-
-        await Subscription.updateMany(
-          {
-            user: user._id,
-            addressId: addrObjId,
-            status: { $in: ["active", "trialing"] },
-          },
-          {
-            $set: {
-              status: "canceled",
-              cancellationDate: new Date(),
-              cancellationReason: "admin_panel",
-            },
-          }
-        );
-
-        if (
-          String(user.defaultAddressId || "") === String(addrObjId) &&
-          user.subscription
-        ) {
-          await User.collection.updateOne({ _id: user._id }, { $set: { subscription: null } });
-        }
-
-        try {
-          const stillHasAnyActiveSubscription = await Subscription.findOne({
-            user: user._id,
-            status: { $in: ["active", "trialing"] },
-          }).lean();
-
-          void stillHasAnyActiveSubscription;
-        } catch (e) {
-          console.log("Subscription cancel post-processing error:", e.message);
-        }
-
-        return respond("Address plan canceled", {
-          action: "Subscription Canceled",
-          entityType: "Subscription",
-          entityId: activeSub?._id || addressId,
-          entityName: `${user.name} - ${addr.line1}`,
-          details: {
-            customerName: user.name,
-            email: user.email,
-            addressId,
-            address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
-            previousPlan: previousAddressPlan,
-            source: "admin_panel_db",
-          },
-        });
+      const ctx = await legacyAddressContext(req, res);
+      if (!ctx) return undefined;
+      const planRaw = String(req.body?.plan || "").toLowerCase();
+      if (planRaw !== "cancel" && !["basic", "plus", "premium", "elite"].includes(planRaw)) {
+        return res.status(400).json({ message: "Invalid plan", code: "INVALID_PLAN" });
       }
-
-      // 2) VALIDATE PLAN
-      if (!["basic", "plus", "premium", "elite"].includes(planRaw)) {
-        return res.status(400).json({ message: "Invalid plan" });
-      }
-
-      if (stripeSubscription && activeSub) {
-        if (activeSub.cancelAtPeriodEnd) {
-          return res.status(409).json({
-            message:
-              "Cancellation is already scheduled for this subscription. Admin plan changes are blocked until that is removed.",
-          });
-        }
-
-        const targetPlan = normalizePlanType(planRaw);
-        const targetCycle = activeSub.billingCycle || "monthly";
-        const priceResolution = await resolveStripePriceId({
-          plan: targetPlan,
-          billingCycle: targetCycle,
-        });
-        const nextPriceId = priceResolution.priceId;
-        const item = getStripeSubscriptionItemForRecord({
-          subscription: activeSub,
-          stripeSubscription,
-        });
-
-        if (!targetPlan || !nextPriceId || !item?.id) {
-          return res.status(409).json({
-            message: "Unable to map this Stripe subscription for an admin plan change.",
-          });
-        }
-
-        const changeType = classifyPlanChange({
-          currentPlan: activeSub.subscriptionType,
-          currentBillingCycle: activeSub.billingCycle,
-          targetPlan,
-          targetBillingCycle: targetCycle,
-        });
-
-        let updatedStripeSubscription;
-        if (changeType === "upgrade") {
-          updatedStripeSubscription = await applyStripeSubscriptionUpgrade({
-            stripeSubscription,
-            subscription: activeSub,
-            user,
-            addressId: String(addrObjId),
-            nextPriceId,
-          });
-        } else {
-          updatedStripeSubscription = await scheduleStripeSubscriptionDowngrade({
-            stripeSubscription,
-            subscription: activeSub,
-            user,
-            addressId: String(addrObjId),
-            nextPriceId,
-          });
-        }
-
-        await upsertSubscriptionFromStripe({
-          stripeSubscription: updatedStripeSubscription,
-          user,
-          addressIdHint: String(addrObjId),
-        });
-
-        return respond(
-          changeType === "upgrade"
-            ? "Address plan updated in Stripe"
-            : "Address downgrade scheduled in Stripe",
-          {
-            action: "Plan Changed",
-            entityType: "Subscription",
-            entityId: activeSub._id,
-            entityName: `${user.name} - ${addr.line1}`,
-            details: {
-              customerName: user.name,
-              email: user.email,
-              addressId,
-              address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
-              previousPlan: previousAddressPlan,
-              newPlan: planRaw,
-              changeType,
-              source: "admin_panel_stripe",
-            },
-          }
-        );
-      }
-
-      if (shouldRequireStripeSync) {
-        return res.status(409).json({
-          message:
-            "This subscription could not be safely linked to Stripe. Admin DB-only plan update was blocked.",
-        });
-      }
-
-      // 3) UPSERT active subscription
-      let sub = activeSub;
-
-      const now = new Date();
-      const next = new Date(now);
-      next.setMonth(now.getMonth() + 1);
-
-      if (!sub) {
-        sub = new Subscription({
-          user: user._id,
-          userId: user.userId,
-          subscriptionType: planRaw,
-          addressId: addrObjId,
-          addressSnapshot: {
-            line1: addr.line1,
-            city: addr.city,
-            state: addr.state,
-            zip: addr.zip,
-            county: addr.county || "",
-          },
-          startDate: now,
-          latestPaymentDate: now,
-          nextPaymentDate: next,
-          status: "active",
-          planPrice: null,
-          paymentMethod: "admin-panel",
-        });
-      } else {
-        sub.subscriptionType = planRaw;
-        sub.status = "active";
-        sub.latestPaymentDate = now;
-        sub.nextPaymentDate = sub.nextPaymentDate || next;
-      }
-
-      await sub.save();
-
-      if (String(user.defaultAddressId || "") === String(addrObjId)) {
-        await User.collection.updateOne(
-          { _id: user._id },
-          { $set: { subscription: planRaw, subscriptionStart: now } }
-        );
-      }
-
-      return respond("Address plan updated", {
-        action: "Plan Changed",
-        entityType: "Subscription",
-        entityId: sub._id,
-        entityName: `${user.name} - ${addr.line1}`,
-        details: {
-          customerName: user.name,
-          email: user.email,
-          addressId,
-          address: `${addr.line1}, ${addr.city}, ${addr.state} ${addr.zip}`,
-          previousPlan: previousAddressPlan,
-          newPlan: planRaw,
-          source: "admin_panel_db",
-        },
-      });
+      const current = ctx.row?.plan || null;
+      const unchanged = planRaw === "cancel" ? !current && ctx.row?.planStatus !== "payment_issue" : current === planRaw;
+      if (unchanged) return res.json({ message: "No change", addressesDetailed: ctx.rows });
+      return confirmationRequired(res, planRaw === "cancel" ? "Cancelling a membership" : "Changing a plan");
     } catch (err) {
       console.error("❌ Per-address plan update error:", err.message);
-      res.status(err?.statusCode || 500).json({ message: "Server error", error: err.message });
+      return res.status(500).json({ message: "Server error" });
     }
   }
 );
 
-// ✅ NEW: Schedule or clear a specific cancellation date for an address subscription
 // PUT /api/admin/users/:id/address/:addressId/cancellation-date
 router.put(
   "/users/:id/address/:addressId/cancellation-date",
   auth,
   ...customersManage,
+  customerTargetsOnly(),
   async (req, res) => {
     try {
-      const { id, addressId } = req.params;
-      const { cancelOnDate } = req.body; // "YYYY-MM-DD" or null to clear
-      const addrObjId = new mongoose.Types.ObjectId(addressId);
-
-      const user = await User.findById(id);
-      if (!user) return res.status(404).json({ message: "User not found" });
-
-      const addr = user.addresses.id(addressId);
-      if (!addr) return res.status(404).json({ message: "Address not found" });
-
-      const activeSub = await Subscription.findOne({
-        user: user._id,
-        addressId: addrObjId,
-        status: { $in: ["active", "trialing"] },
-      }).sort({ updatedAt: -1 });
-
-      if (!activeSub) {
-        return res.status(404).json({ message: "No active subscription for this address" });
+      const ctx = await legacyAddressContext(req, res);
+      if (!ctx) return undefined;
+      const requested = req.body?.cancelOnDate ? String(req.body.cancelOnDate) : null;
+      const scheduled = ctx.row?.scheduledCancellationDate || null;
+      if (requested === scheduled || (!requested && !ctx.row?.cancelAt)) {
+        return res.json({ message: "No change", addressesDetailed: ctx.rows });
       }
-
-      const respond = async (message) => {
-        const uLean = await User.findById(user._id).lean();
-        const addressesDetailed = await getAddressPlansForUser(uLean);
-        return res.json({ message, addressesDetailed });
-      };
-
-      const stripeSubscription = activeSub.stripeSubscriptionId
-        ? await resolveStripeSubscriptionForRecord({ subscription: activeSub, user })
-        : null;
-
-      // CLEAR cancellation date
-      if (!cancelOnDate) {
-        if (stripeSubscription) {
-          const clearedSub = await stripe.subscriptions.update(stripeSubscription.id, {
-            cancel_at: "",
-            cancel_at_period_end: false,
-            expand: ["items.data.price", "schedule"],
-          });
-          await upsertSubscriptionFromStripe({
-            stripeSubscription: clearedSub,
-            user,
-            addressIdHint: String(addrObjId),
-          });
-        } else {
-          activeSub.cancellationDate = null;
-          activeSub.cancelAtPeriodEnd = false;
-          await activeSub.save();
-        }
-        return respond("Cancellation date cleared");
-      }
-
-      // SET cancellation date — convert YYYY-MM-DD to end-of-day UTC timestamp
-      // Use 05:00 UTC of D+1 which equals midnight/1am Eastern (covers both EST and EDT)
-      const [year, month, day] = String(cancelOnDate).split("-").map(Number);
-      if (!year || !month || !day) {
-        return res.status(400).json({ message: "Invalid cancelOnDate format, expected YYYY-MM-DD" });
-      }
-      const cancelAtDate = new Date(Date.UTC(year, month - 1, day + 1, 5, 0, 0));
-      const cancelAtTimestamp = Math.floor(cancelAtDate.getTime() / 1000);
-
-      if (stripeSubscription) {
-        const updatedSub = await stripe.subscriptions.update(stripeSubscription.id, {
-          cancel_at: cancelAtTimestamp,
-          cancel_at_period_end: false,
-          expand: ["items.data.price", "schedule"],
-        });
-        await upsertSubscriptionFromStripe({
-          stripeSubscription: updatedSub,
-          user,
-          addressIdHint: String(addrObjId),
-        });
-      } else {
-        activeSub.cancellationDate = cancelAtDate;
-        activeSub.cancelAtPeriodEnd = true;
-        await activeSub.save();
-      }
-
-      return respond("Cancellation date set");
+      return confirmationRequired(res, "Scheduling or clearing a cancellation");
     } catch (err) {
       console.error("❌ Per-address cancellation-date update error:", err.message);
-      res.status(err?.statusCode || 500).json({ message: "Server error", error: err.message });
+      return res.status(500).json({ message: "Server error" });
     }
   }
 );
@@ -2881,24 +2610,27 @@ router.post("/blacklist/:id", auth, ...blacklistManage, customerTargetsOnly(), a
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const exists = await Blacklist.findOne({
-      $or: [{ user: user._id }, { email: user.email }],
-    });
+    const exists = await findActiveBlockForUser(user);
 
     if (exists) return res.json({ message: "Already blacklisted", id: exists._id });
 
+    // The home on the entry is the customer's default saved address (the legacy top-level fields are usually empty).
+    const home = (user.addresses || []).find((a) => String(a._id) === String(user.defaultAddressId || "")) || (user.addresses || [])[0] || null;
+    const blocker = req.accessUser || {};
     const entry = await Blacklist.create({
       user: user._id,
       userId: user.userId,
       name: user.name,
-      email: user.email,
+      email: user.email || undefined,
       phone: user.phone,
-      address: user.address,
-      city: user.city,
-      county: user.county,
-      state: user.state,
-      zip: user.zip,
+      address: home ? formatAddressLine(home) : user.address,
+      city: home?.city || user.city,
+      county: home?.county || user.county,
+      state: home?.state || user.state,
+      zip: home?.zip || user.zip,
       reason: req.body.reason || "",
+      blockedBy: blocker._id || req.user?.id || null,
+      blockedByName: blocker.name || blocker.email || "",
     });
 
     await createAdminActivityLog(req, {
@@ -2951,8 +2683,23 @@ router.delete("/blacklist/:id", auth, ...blacklistManage, async (req, res) => {
       },
     });
 
-    const removed = await Blacklist.findByIdAndDelete(target._id);
-    if (!removed) {
+    /*
+     * Lifted, not deleted: the entry stays as history (who blocked, why, who
+     * lifted it, when). Every reader ignores lifted entries.
+     */
+    const blocker = req.accessUser || {};
+    const lifted = await Blacklist.updateOne(
+      { _id: target._id, liftedAt: null },
+      {
+        $set: {
+          liftedAt: new Date(),
+          liftedBy: blocker._id || req.user?.id || null,
+          liftedByName: blocker.name || blocker.email || "",
+          liftReason: String(req.body?.reason || "").trim().slice(0, 500),
+        },
+      }
+    );
+    if (!lifted.modifiedCount) {
       return res.status(404).json({ message: "Blacklist entry not found" });
     }
 
