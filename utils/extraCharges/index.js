@@ -283,12 +283,83 @@ function failureOf(source) {
   };
 }
 
-async function cancelQuietly(paymentIntentId) {
-  if (!paymentIntentId) return;
+/**
+ * Cancel a card intent that can no longer be completed by us. Returns Stripe's
+ * answer: "canceled", "succeeded"/"processing" (too late: it is reconciled
+ * instead), or "unknown" when Stripe could not be reached. A cancel that did
+ * not happen is remembered on the attempt (cancelPending) and retried by
+ * settleCardAttempts before anything else payable is made for the record.
+ */
+async function cancelIntent(paymentIntentId, recordId = null) {
+  if (!paymentIntentId) return "none";
+  let status = "unknown";
   try {
-    await stripe().paymentIntents.cancel(paymentIntentId);
+    const pi = await stripe().paymentIntents.cancel(paymentIntentId);
+    status = String(pi?.status || "unknown");
   } catch (error) {
-    /* already canceled or succeeded: the reconcile reads the truth */
+    try {
+      status = String((await stripe().paymentIntents.retrieve(paymentIntentId))?.status || "unknown");
+    } catch (inner) {
+      status = "unknown";
+    }
+  }
+  if (recordId) await updateAttempt(recordId, { paymentIntentId }, { cancelPending: status !== "canceled" && status !== "succeeded" });
+  return status;
+}
+
+/**
+ * Before any payable thing is made for a record (a link, a Checkout page, a
+ * new card attempt), every earlier card intent must be finished: canceled,
+ * or - if it succeeded after all (the customer completed a bank check) -
+ * applied as the payment. Throws when that cannot be established, so a
+ * second way to pay is never created next to a first one that might still
+ * succeed.
+ */
+async function settleCardAttempts(record, depth = 0) {
+  const ids = [...new Set(record.attempts.filter((a) => a.kind === "card" && a.paymentIntentId).map((a) => a.paymentIntentId))];
+  for (const id of ids) {
+    let pi;
+    try {
+      pi = await stripe().paymentIntents.retrieve(id);
+    } catch (error) {
+      throw new ExtraChargeError("STRIPE_UNAVAILABLE", "Stripe could not be reached to close the earlier card attempt, so nothing new was made. Try again in a moment.", 503);
+    }
+    if (pi.status === "canceled") {
+      await updateAttempt(record._id, { paymentIntentId: id }, { cancelPending: false });
+      continue;
+    }
+    if (pi.status === "succeeded") {
+      await applyPaymentIntent(pi, { source: "settle" });
+      throw new ExtraChargeError("ALREADY_PAID", "The earlier card payment for this extra went through after all. It is now Paid; nothing new was made.", 409);
+    }
+    if (pi.status === "processing") {
+      await applyPaymentIntent(pi, { source: "settle" });
+      throw new ExtraChargeError("PAYMENT_IN_PROGRESS", "The earlier card payment is still processing at Stripe. Wait for it; nothing new was made.", 409);
+    }
+    const after = await cancelIntent(id, record._id);
+    if (after === "succeeded") {
+      await applyPaymentIntent(await stripe().paymentIntents.retrieve(id), { source: "settle" });
+      throw new ExtraChargeError("ALREADY_PAID", "The earlier card payment for this extra went through after all. It is now Paid; nothing new was made.", 409);
+    }
+    if (after !== "canceled") {
+      throw new ExtraChargeError("STRIPE_UNAVAILABLE", "The earlier card attempt could not be closed at Stripe, so nothing new was made. Try again in a moment.", 503);
+    }
+  }
+  // An attempt whose request may have reached Stripe without an answer is not settled.
+  if (record.attempts.some((a) => a.kind === "card" && !a.paymentIntentId && ["requested", "unknown"].includes(a.status))) {
+    const found = await stripe().paymentIntents.search({ query: `metadata['additionalChargeId']:'${record._id}'`, limit: 10 });
+    const known = new Set(ids);
+    const unseen = (found?.data || []).filter((pi) => !known.has(pi.id) && !pi.metadata?.adminPaymentLinkId);
+    if (unseen.length) {
+      if (depth > 0) throw new ExtraChargeError("STRIPE_UNAVAILABLE", "An earlier card attempt could not be matched at Stripe, so nothing new was made.", 503);
+      for (const pi of unseen) {
+        await AdditionalCharge.updateOne(
+          { _id: record._id, attempts: { $elemMatch: { kind: "card", paymentIntentId: "" } } },
+          { $set: { "attempts.$.paymentIntentId": pi.id } }
+        );
+      }
+      return settleCardAttempts(await AdditionalCharge.findById(record._id), depth + 1);
+    }
   }
 }
 
@@ -355,7 +426,7 @@ async function applyPaymentIntent(pi, { source = "api" } = {}) {
 
   // Off-session card attempts never wait for the customer: anything short of success ends them.
   if (isCardAttempt && ["requires_action", "requires_payment_method", "requires_confirmation", "canceled"].includes(pi.status)) {
-    if (pi.status !== "canceled") await cancelQuietly(pi.id);
+    if (pi.status !== "canceled") await cancelIntent(pi.id, record._id);
     const failure = pi.status === "requires_action" ? { code: "authentication_required", declineCode: "", message: "The bank wants the customer to approve this payment themselves." } : failureOf(pi);
     const r = await setStatus(record._id, ["charging", "processing"], "failed", { failure, lastStripeSyncAt: new Date() });
     if (attemptMatch) await updateAttempt(record._id, attemptMatch, { status: pi.status === "requires_action" ? "authentication_required" : "failed", errorCode: failure.code, declineCode: failure.declineCode, message: failure.message });
@@ -473,7 +544,7 @@ async function handleCardError(record, attempt, error) {
   const pi = error?.payment_intent || error?.raw?.payment_intent || null;
   if (pi?.id) await updateAttempt(record._id, { n: attempt.n }, { paymentIntentId: pi.id });
   if (type === "StripeCardError" || type === "card_error") {
-    if (pi?.id) await cancelQuietly(pi.id);
+    if (pi?.id) await cancelIntent(pi.id, record._id);
     const failure = { code: String(error.code || "card_declined"), declineCode: String(error.decline_code || error.raw?.decline_code || ""), message: String(error.message || "").slice(0, 300) };
     await updateAttempt(record._id, { n: attempt.n }, { status: failure.code === "authentication_required" ? "authentication_required" : "declined", errorCode: failure.code, declineCode: failure.declineCode, message: failure.message });
     return setStatus(record._id, ["charging", "processing"], "failed", { failure });
@@ -506,7 +577,14 @@ async function runCardAttempt(record) {
     });
   }
 
-  // A Checkout page still open for this extra would be a second way to pay: close it first.
+  // Earlier card intents finished, and any Checkout page still open closed, before a new attempt.
+  try {
+    await settleCardAttempts(record);
+  } catch (error) {
+    if (!(error instanceof ExtraChargeError)) throw error;
+    if (error.code === "ALREADY_PAID" || error.code === "PAYMENT_IN_PROGRESS") return AdditionalCharge.findById(record._id);
+    return setStatus(record._id, "charging", "failed", { failure: { code: "EARLIER_ATTEMPT_OPEN", declineCode: "", message: error.message } });
+  }
   const outcomes = await expireOpenSessions(record);
   if (outcomes.includes("complete")) return AdditionalCharge.findById(record._id);
   if (outcomes.includes("unknown")) {
@@ -541,9 +619,12 @@ function linkItemLabel(record) {
 
 async function issueLink(record, { send = false, channels = [], admin, contact, user = null, booking = null }) {
   const links = require("../admin/paymentLinks");
+  // Every earlier card intent is canceled (or found paid) before a second way to pay exists.
+  await settleCardAttempts(record);
   // One live link per extra: older links stop working and their Stripe pages close.
   const outcomes = await expireOpenSessions(record);
   if (outcomes.includes("complete")) throw new ExtraChargeError("ALREADY_PAID", "This extra was just paid. No new link was made.", 409);
+  if (outcomes.includes("unknown")) throw new ExtraChargeError("STRIPE_UNAVAILABLE", "An earlier payment page for this extra could not be closed, so no new link was made. Try again in a moment.", 503);
   await closeLinksFor(record);
   const wanted = send ? channels.filter((c) => (c === "email" && contact.email) || (c === "sms" && contact.phone)) : [];
   if (send && wanted.length === 0) throw new ExtraChargeError("NO_CONTACT", "There is no email or mobile number on this visit for that. Copy the link instead.", 409);
@@ -598,6 +679,7 @@ async function openCheckoutForLink(link, token) {
       throw new ExtraChargeError("STRIPE_UNAVAILABLE", "Secure checkout could not be opened. Please try again.", 503);
     }
   }
+  await settleCardAttempts(record);
   const now = new Date();
   const locked = await AdminPaymentLink.findOneAndUpdate(
     { _id: link._id, status: "open", $or: [{ openingUntil: null }, { openingUntil: { $lt: now } }] },
@@ -850,6 +932,7 @@ async function cancelCharge(req, bookingId, chargeId) {
   assertOwner(req);
   const record = await loadRecord(bookingId, chargeId);
   if (!["failed", "awaiting_payment"].includes(record.status)) throw new ExtraChargeError("INVALID_STATE", "Only an unpaid charge can be closed.", 409);
+  await settleCardAttempts(record);
   const outcomes = await expireOpenSessions(record);
   if (outcomes.includes("complete")) return AdditionalCharge.findById(record._id);
   if (outcomes.includes("unknown")) throw new ExtraChargeError("STRIPE_UNAVAILABLE", "A payment page could not be closed. Nothing was changed; try again.", 503);
@@ -960,4 +1043,5 @@ module.exports = {
   retryCard,
   serialize,
   setStripeClient,
+  settleCardAttempts,
 };

@@ -18,6 +18,8 @@ Object.assign(process.env, {
   S3_BUCKET: "test-bucket",
   AWS_REGION: "us-east-1",
   MAIL_ADMIN: "owner@example.test",
+  // A well-formed placeholder: the real code is the accountant's decision (config/taxCodes.js).
+  STRIPE_TAX_CODE_ADDITIONAL_WORK: "txcd_99999999",
 });
 
 const assert = require("assert");
@@ -59,6 +61,7 @@ const AdminPaymentLink = require("../models/AdminPaymentLink");
 const AdminActivityLog = require("../models/AdminActivityLog");
 const VisitEntitlement = require("../models/VisitEntitlement");
 const extras = require("../utils/extraCharges");
+const { sweepOpen, sweepRefunds } = require("../utils/extraCharges/sweep");
 const customerBilling = require("../utils/admin/customerBilling");
 const { classifyCharge } = require("../utils/analytics/stripeRevenue");
 const { hashToken } = require("../utils/admin/paymentLinks");
@@ -90,6 +93,8 @@ const F = {
   seq: 0,
   timeoutOnce: new Set(), // payment methods whose first create "times out" after reaching Stripe
   lostOnce: new Set(), // payment methods whose first create never reaches Stripe
+  cancelFails: new Set(), // PaymentIntents whose cancel Stripe does not confirm (network)
+  expireFails: new Set(), // Checkout sessions whose expire call fails
   taxReason: "standard_rated",
   taxRate: 8.625,
 };
@@ -198,9 +203,21 @@ const fakeStripe = {
     },
     async cancel(id) {
       F.calls.push(["paymentIntents.cancel", id]);
+      if (F.cancelFails.has(id)) throw new Stripe.errors.StripeConnectionError({ message: "socket hang up" });
       const pi = F.pis.get(id);
-      if (pi && pi.status !== "succeeded") pi.status = "canceled";
-      return pi;
+      if (pi.status === "succeeded" || pi.status === "canceled") throw new Stripe.errors.StripeInvalidRequestError({ message: `You cannot cancel this PaymentIntent because it has a status of ${pi.status}.`, code: "payment_intent_unexpected_state" });
+      pi.status = "canceled";
+      return { ...pi };
+    },
+    /* The customer finishing a bank check on an old intent (what Stripe does when they confirm it). */
+    async customerCompletes(id) {
+      const pi = F.pis.get(id);
+      if (pi.status !== "requires_action") throw new Stripe.errors.StripeInvalidRequestError({ message: `This PaymentIntent's status is ${pi.status}; it cannot be confirmed.`, code: "payment_intent_unexpected_state" });
+      pi.status = "succeeded";
+      const ch = { id: nid("ch"), amount: pi.amount, amount_refunded: 0, receipt_url: "https://pay.stripe.test/r3ds", payment_intent: pi.id, payment_method_details: { card: { brand: "visa", last4: "3155" } } };
+      F.charges.set(ch.id, ch);
+      pi.latest_charge = ch.id;
+      return { ...pi };
     },
     async search({ query }) {
       const m = query.match(/'([a-f0-9]{24})'/);
@@ -227,6 +244,7 @@ const fakeStripe = {
       },
       async expire(id) {
         F.calls.push(["checkout.sessions.expire", id]);
+        if (F.expireFails.has(id)) throw new Stripe.errors.StripeConnectionError({ message: "socket hang up" });
         const s = F.sessions.get(id);
         if (s.status !== "open") throw new Stripe.errors.StripeInvalidRequestError({ message: "Only open sessions can be expired" });
         s.status = "expired";
@@ -247,7 +265,7 @@ const fakeStripe = {
           tax_amount_exclusive: tax,
           expires_at: now() + 90 * 86400,
           tax_breakdown: [{ amount: tax, taxability_reason: F.taxReason, tax_rate_details: { percentage_decimal: taxed ? String(F.taxRate) : "0.0" } }],
-          line_items: list([{ amount, tax_code: params.line_items[0].tax_code || "txcd_account_default" }]),
+          line_items: list([{ amount, tax_code: params.line_items[0].tax_code }]),
         };
       },
     },
@@ -436,7 +454,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(p.taxCents, Math.round((12345 * 8.625) / 100));
       assert.strictEqual(p.totalCents, 12345 + p.taxCents);
       assert.strictEqual(p.tax.source, "stripe_tax");
-      assert.strictEqual(p.tax.taxCode, "txcd_account_default");
+      assert.strictEqual(p.tax.taxCode, "txcd_99999999", "the configured code is sent, never an account default");
       assert.ok(p.direct.allowed && p.link.allowed);
       assert.ok(p.consentStatement.includes(`$${(p.totalCents / 100).toFixed(2)}`));
       assert.ok(!JSON.stringify(p).includes("pm_alice") && !JSON.stringify(p).includes("cus_alice"), "no Stripe ids reach the browser");
@@ -912,6 +930,177 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual((await call("POST", `/api/pay/${token}/checkout`)).status, 410);
       const paidClose = await call("POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/${aliceCharge.id}/close`, owner, {});
       assert.strictEqual(paidClose.status, 409);
+    });
+
+    await check("tax code not configured: taxable work is refused with TAX_CODE_NOT_CONFIGURED; exempt work still allowed", async () => {
+      const saved = process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK;
+      delete process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK;
+      try {
+        const calcs = F.calls.filter((c) => c[0] === "tax.calculations.create").length;
+        const p = await previewFor(owner, aliceJob, { description: "Fix faucet", amount: "100", taxTreatment: TAXABLE });
+        assert.strictEqual(p.tax.code, "TAX_CODE_NOT_CONFIGURED");
+        assert.strictEqual(p.direct.allowed, false);
+        assert.strictEqual(p.link.allowed, false);
+        assert.strictEqual(F.calls.filter((c) => c[0] === "tax.calculations.create").length, calcs, "Stripe Tax not even asked with a guessed code");
+        const ok = await previewFor(owner, aliceJob, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL });
+        assert.strictEqual(ok.direct.allowed, true);
+      } finally {
+        process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK = saved;
+      }
+    });
+
+    /* ------------------- recovery: one collectible payment ------------------- */
+    async function authFailed(name, { cancelFails = false } = {}) {
+      const u = await makeUser({ stripeCustomerId: `cus_${name}` });
+      addCustomer(`cus_${name}`, { pm: `pm_${name}`, behavior: "auth", last4: "3155" });
+      const job = await makeBooking(u);
+      const before = new Set(F.pis.keys());
+      // The bank check leaves the intent in requires_action; whether our cancel lands is the test.
+      const origCreate = fakeStripe.paymentIntents.create;
+      fakeStripe.paymentIntents.create = async (params, options) => {
+        try {
+          return await origCreate(params, options);
+        } catch (error) {
+          const pi = error.payment_intent && F.pis.get(error.payment_intent.id);
+          if (pi && cancelFails) F.cancelFails.add(pi.id);
+          throw error;
+        }
+      };
+      try {
+        const { res } = await charge(owner, job, { description: "Extra", amount: "90", taxTreatment: CAPITAL });
+        const piId = [...F.pis.keys()].find((k) => !before.has(k));
+        return { job, chargeId: res.body.charge.id, res, piId };
+      } finally {
+        fakeStripe.paymentIntents.create = origCreate;
+      }
+    }
+
+    await check("auth required, our cancel failed: the record remembers it, and a link is made only after the old intent is really canceled", async () => {
+      const { job, chargeId, res, piId } = await authFailed("rec1", { cancelFails: true });
+      assert.strictEqual(res.body.charge.status, "failed");
+      assert.strictEqual(F.pis.get(piId).status, "requires_action", "Stripe did not confirm the cancel");
+      let rec = await AdditionalCharge.findById(chargeId).lean();
+      assert.strictEqual(rec.attempts[0].cancelPending, true);
+      // While Stripe still cannot cancel it, no second way to pay is made.
+      const refused = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      assert.strictEqual(refused.status, 503, JSON.stringify(refused.body));
+      assert.strictEqual(await AdminPaymentLink.countDocuments({ additionalCharge: chargeId }), 0);
+      // Stripe recovers: now the link is made, and the old intent is canceled first.
+      F.cancelFails.delete(piId);
+      const ok = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+      assert.strictEqual(F.pis.get(piId).status, "canceled");
+      rec = await AdditionalCharge.findById(chargeId).lean();
+      assert.strictEqual(rec.attempts[0].cancelPending, false);
+      // The customer finishing the OLD bank check now fails at Stripe: it was canceled.
+      await assert.rejects(() => fakeStripe.paymentIntents.customerCompletes(piId), /status is canceled/);
+      // Paying the link collects exactly once.
+      const token = ok.body.payUrl.split("/pay/")[1];
+      await call("POST", `/api/pay/${token}/checkout`);
+      const sess = [...F.sessions.values()].find((x) => x.metadata.additionalChargeId === chargeId);
+      const { session } = completeSession(sess.id);
+      await sendEvent("checkout.session.completed", session);
+      rec = await AdditionalCharge.findById(chargeId).lean();
+      assert.strictEqual(rec.status, "paid");
+      const collected = [...F.pis.values()].filter((p) => p.metadata.additionalChargeId === chargeId && p.status === "succeeded");
+      assert.strictEqual(collected.length, 1, "exactly one successful payment for the extra");
+    });
+
+    await check("auth completed by the customer before we could cancel: found Paid, no link and no page are made", async () => {
+      const { job, chargeId, piId } = await authFailed("rec2", { cancelFails: true });
+      await fakeStripe.paymentIntents.customerCompletes(piId);
+      F.cancelFails.delete(piId);
+      const sessions = F.sessions.size;
+      const r = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      assert.strictEqual(r.status, 409);
+      assert.strictEqual(r.body.code, "ALREADY_PAID");
+      const rec = await AdditionalCharge.findById(chargeId).lean();
+      assert.strictEqual(rec.status, "paid");
+      assert.strictEqual(rec.paymentIntentId, piId);
+      assert.strictEqual(await AdminPaymentLink.countDocuments({ additionalCharge: chargeId }), 0);
+      assert.strictEqual(F.sessions.size, sessions);
+    });
+
+    await check("an old link page that Stripe cannot expire blocks a new link (never two open pages)", async () => {
+      const { job, chargeId } = await authFailed("rec3");
+      const first = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      await call("POST", `/api/pay/${first.body.payUrl.split("/pay/")[1]}/checkout`);
+      const s1 = [...F.sessions.values()].find((x) => x.metadata.additionalChargeId === chargeId);
+      F.expireFails.add(s1.id);
+      const second = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      assert.strictEqual(second.status, 503);
+      assert.strictEqual(F.sessions.get(s1.id).status, "open");
+      assert.strictEqual(await AdminPaymentLink.countDocuments({ additionalCharge: chargeId }), 1);
+      // The first link still works; the old page is still the only one.
+      assert.strictEqual((await call("POST", `/api/pay/${first.body.payUrl.split("/pay/")[1]}/checkout`)).status, 200);
+      assert.strictEqual([...F.sessions.values()].filter((x) => x.metadata.additionalChargeId === chargeId).length, 1);
+      F.expireFails.delete(s1.id);
+    });
+
+    await check("the pay page itself re-checks: an old card intent still open blocks opening Stripe", async () => {
+      const { job, chargeId, piId } = await authFailed("rec4");
+      const link = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${chargeId}/payment-link`, owner, { idempotencyKey: key() });
+      // Simulate an intent that came back to life between link and payment (should never happen; must still be safe).
+      F.pis.get(piId).status = "requires_action";
+      F.cancelFails.add(piId);
+      const sessions = F.sessions.size;
+      const open = await call("POST", `/api/pay/${link.body.payUrl.split("/pay/")[1]}/checkout`);
+      assert.strictEqual(open.status, 503);
+      assert.strictEqual(F.sessions.size, sessions, "no Stripe page while the old intent could still succeed");
+      F.cancelFails.delete(piId);
+      const again = await call("POST", `/api/pay/${link.body.payUrl.split("/pay/")[1]}/checkout`);
+      assert.strictEqual(again.status, 200);
+      assert.strictEqual(F.pis.get(piId).status, "canceled");
+    });
+
+    /* ------------------- reconciliation with nobody looking ------------------- */
+    await check("background sweep: a processing card payment becomes Paid without anyone opening the job", async () => {
+      const tom = await makeUser({ stripeCustomerId: "cus_tom" });
+      addCustomer("cus_tom", { pm: "pm_tom", behavior: "processing" });
+      const job = await makeBooking(tom);
+      const { res } = await charge(owner, job, { description: "Extra", amount: "44", taxTreatment: CAPITAL });
+      assert.strictEqual(res.body.charge.status, "processing");
+      const rec = await AdditionalCharge.findById(res.body.charge.id).lean();
+      const pi = F.pis.get(rec.paymentIntentId);
+      pi.status = "succeeded";
+      const ch = { id: nid("ch"), amount: pi.amount, amount_refunded: 0, receipt_url: "https://pay.stripe.test/s", payment_intent: pi.id, payment_method_details: { card: { brand: "visa", last4: "4242" } } };
+      F.charges.set(ch.id, ch);
+      pi.latest_charge = ch.id;
+      const r = await sweepOpen({ now: new Date(Date.now() + 5 * 60 * 1000) });
+      assert.ok(r.checked >= 1 && r.errors === 0, JSON.stringify(r));
+      assert.strictEqual((await AdditionalCharge.findById(rec._id).lean()).status, "paid");
+    });
+
+    await check("background sweep: a link paid while the webhook was lost becomes Paid; a lost refund is picked up nightly", async () => {
+      const una = await makeUser({ stripeCustomerId: "cus_una" });
+      addCustomer("cus_una", { pm: "pm_una", behavior: "decline" });
+      const job = await makeBooking(una);
+      const { res } = await charge(owner, job, { description: "Extra", amount: "66", taxTreatment: TAXABLE });
+      const l = await call("POST", `/api/admin/jobs/${job._id}/extra-charges/${res.body.charge.id}/payment-link`, owner, { idempotencyKey: key() });
+      await call("POST", `/api/pay/${l.body.payUrl.split("/pay/")[1]}/checkout`);
+      const sess = [...F.sessions.values()].find((x) => x.metadata.additionalChargeId === res.body.charge.id);
+      completeSession(sess.id); // paid at Stripe, NO webhook sent
+      await sweepOpen({ now: new Date(Date.now() + 5 * 60 * 1000) });
+      let rec = await AdditionalCharge.findById(res.body.charge.id).lean();
+      assert.strictEqual(rec.status, "paid");
+      assert.ok(rec.tax.transactionId, "Stripe Tax recorded by the sweep path too");
+      F.charges.get(rec.chargeId).amount_refunded = rec.totalCents; // refunded in Stripe, NO webhook
+      await AdditionalCharge.updateOne({ _id: rec._id }, { $set: { lastStripeSyncAt: null } });
+      await sweepRefunds();
+      rec = await AdditionalCharge.findById(rec._id).lean();
+      assert.strictEqual(rec.status, "refunded");
+      assert.strictEqual(F.reversals.filter((x) => x.original_transaction === rec.tax.transactionId).length, 1);
+      await sweepRefunds();
+      assert.strictEqual(F.reversals.filter((x) => x.original_transaction === rec.tax.transactionId).length, 1, "a second sweep changes nothing");
+    });
+
+    await check("background sweep: a card cancel Stripe did not confirm is retried until it is canceled", async () => {
+      const { chargeId, piId } = await authFailed("rec5", { cancelFails: true });
+      assert.strictEqual(F.pis.get(piId).status, "requires_action");
+      F.cancelFails.delete(piId);
+      await sweepOpen({ now: new Date(Date.now() + 5 * 60 * 1000) });
+      assert.strictEqual(F.pis.get(piId).status, "canceled");
+      assert.strictEqual((await AdditionalCharge.findById(chargeId).lean()).attempts[0].cancelPending, false);
     });
 
     await check("billing history labels extras inside the Stripe charges and does not list them twice", async () => {

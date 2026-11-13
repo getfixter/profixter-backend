@@ -12,8 +12,10 @@
  *
  * Taxable work that Stripe returns no tax for (not registered there, product
  * exempt, address it cannot place) is a BLOCKER with Stripe's reason, never a
- * silent $0. The tax code is the account's default unless
- * STRIPE_TAX_CODE_ADDITIONAL_WORK names one; whichever Stripe used is shown.
+ * silent $0. The tax code must be named explicitly (config/taxCodes.js or
+ * STRIPE_TAX_CODE_ADDITIONAL_WORK): the account default was set up for
+ * memberships, and using it for labor would be a guess. Until a code is
+ * confirmed, taxable extras are refused with TAX_CODE_NOT_CONFIGURED.
  */
 const { TAX_TREATMENTS, TAXABLE_TREATMENT } = require("../invoiceValidation");
 
@@ -39,7 +41,7 @@ const REASONS = {
 };
 
 function taxCodeSetting() {
-  return String(process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK || "").trim();
+  return String(process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK || require("../../config/taxCodes").ADDITIONAL_WORK || "").trim();
 }
 
 function readTreatment(value) {
@@ -65,12 +67,18 @@ async function quoteTax({ stripe, subtotalCents, treatment, address, reference }
     throw new TaxBlocker("TAX_ADDRESS_MISSING", "This visit has no complete service address (street, state and ZIP), so Stripe cannot work out the tax. Add the address to the visit first.");
   }
   const code = taxCodeSetting();
+  if (!/^txcd_\d{8}$/.test(code)) {
+    throw new TaxBlocker(
+      "TAX_CODE_NOT_CONFIGURED",
+      "Taxable extras need the Stripe tax code your accountant confirms for this work, and it is not set yet. Nothing was charged. If the work is truly a capital improvement or tax exempt, choose that; otherwise bill it on a project invoice for now."
+    );
+  }
   let calc;
   try {
     calc = await stripe.tax.calculations.create(
       {
         currency: "usd",
-        line_items: [{ amount: subtotalCents, reference: String(reference || "additional_work").slice(0, 200), tax_behavior: "exclusive", ...(code ? { tax_code: code } : {}) }],
+        line_items: [{ amount: subtotalCents, reference: String(reference || "additional_work").slice(0, 200), tax_behavior: "exclusive", tax_code: code }],
         customer_details: {
           address: { line1: address.line1, ...(address.unit ? { line2: address.unit } : {}), city: address.city || undefined, state: address.state, postal_code: String(address.zip).slice(0, 5), country: "US" },
           address_source: "shipping",

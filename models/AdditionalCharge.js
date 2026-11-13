@@ -37,6 +37,8 @@ const AttemptSchema = new mongoose.Schema(
     errorCode: { type: String, default: "" },
     declineCode: { type: String, default: "" },
     message: { type: String, default: "" },
+    /* A cancel that Stripe did not confirm: retried before anything else payable is made. */
+    cancelPending: { type: Boolean, default: false },
     at: { type: Date, default: Date.now },
   },
   { _id: false }

@@ -487,6 +487,8 @@ startMembershipNotices();
 require("./jobs/signatureExpiry").startSignatureExpiry();
 /* Email campaigns queued in Admin are sent here, durably (resumes after a restart, never resends). */
 require("./jobs/campaignSender").startCampaignSender();
+/* Charge extra: open payments every 10 minutes, refunds nightly, from Stripe (never charges or messages). */
+require("./jobs/extraCharges").startExtraChargeJobs();
 
 /*
  * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
