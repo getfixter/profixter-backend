@@ -411,9 +411,16 @@ router.patch("/:id/status", async (req, res) => {
         details: { title: user.employeeTitle || user.employeePosition || "" },
       }).catch((e) => console.warn("Employee audit log failed:", e.message));
     }
+    /*
+     * J-21: disabling does not touch their jobs, but the owner is told how many
+     * upcoming jobs still name this person, so they can reassign them in one
+     * step (POST /:id/reassign-future-jobs).
+     */
+    const futureAssignedJobs = user.isActive ? 0 : (await futureJobsFor(user._id)).length;
     return res.json({
       fixter: fixterDTO(user),
       templateReady: true,
+      futureAssignedJobs,
     });
   } catch (error) {
     console.error("Update Fixter active status failed:", error);
@@ -459,6 +466,86 @@ router.patch("/:id/default", async (req, res) => {
   } catch (error) {
     console.error("Set default Fixter failed:", error);
     return res.status(500).json({ message: "Failed to update default Fixter" });
+  }
+});
+
+/* Upcoming, not-closed jobs still assigned to this employee. */
+async function futureJobsFor(fixterId) {
+  const rows = await Booking.find({ assignedFixterId: fixterId, date: { $gte: new Date() } })
+    .select("_id bookingNumber date status name assignedFixterName")
+    .sort({ date: 1 })
+    .lean();
+  return rows.filter(bookingBlocksFixterDeletion);
+}
+
+router.get("/:id/future-jobs", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Fixter not found" });
+    const jobs = await futureJobsFor(req.params.id);
+    return res.json({
+      count: jobs.length,
+      jobs: jobs.map((b) => ({ id: String(b._id), bookingNumber: b.bookingNumber, date: b.date, status: b.status, customerName: b.name || "" })),
+    });
+  } catch (error) {
+    console.error("Load future jobs failed:", error);
+    return res.status(500).json({ message: "Failed to load the jobs" });
+  }
+});
+
+/*
+ * Move every upcoming job of one employee to another (or to the best free
+ * Fixter per job with toFixterId "auto") through the reservation engine, so
+ * availability and double-booking rules are the usual ones. A job that cannot
+ * move is reported, never forced. Confirmed customers get the usual "your
+ * Fixter is now ..." text where texting is allowed. Owner only (router guard).
+ */
+router.post("/:id/reassign-future-jobs", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Fixter not found" });
+    const toFixterId = String(req.body?.toFixterId || "");
+    if (toFixterId !== "auto" && !mongoose.isValidObjectId(toFixterId)) {
+      return res.status(400).json({ code: "TARGET_REQUIRED", message: "Choose who takes the jobs (a Fixter, or auto)." });
+    }
+    if (toFixterId === req.params.id) {
+      return res.status(400).json({ code: "SAME_FIXTER", message: "Choose a different Fixter." });
+    }
+    const { findEligibleTechnicians, moveReservationForBooking, reservationEngineEnabled } = require("../utils/slotReservationService");
+    const { resolveAssignmentFields } = require("../utils/jobs/assignment");
+    const { notifyAssignment } = require("../utils/jobs/jobNotifications");
+    const jobs = await futureJobsFor(req.params.id);
+    const moved = [];
+    const failed = [];
+    for (const job of jobs) {
+      try {
+        let target = toFixterId;
+        if (target === "auto") {
+          const options = await findEligibleTechnicians({ slotStart: job.date, excludeBookingId: job._id });
+          target = options.available.find((t) => String(t.id) !== req.params.id)?.id || null;
+          if (!target) throw Object.assign(new Error("No other Fixter is free at this time"), { code: "SLOT_UNAVAILABLE" });
+        }
+        if (reservationEngineEnabled()) {
+          await moveReservationForBooking({ bookingId: job._id, technicianId: target, slotStart: job.date, actorUser: req.accessUser || null, createdByType: "admin", assignmentSource: "admin" });
+        } else {
+          await Booking.updateOne({ _id: job._id }, { $set: await resolveAssignmentFields(target) });
+        }
+        const after = await Booking.findById(job._id);
+        const notice = await notifyAssignment(after, { previousFixterId: req.params.id, source: "adminFixterReassign" });
+        moved.push({ id: String(job._id), bookingNumber: job.bookingNumber, date: job.date, toFixterName: after.assignedFixterName || "", notification: notice });
+      } catch (error) {
+        failed.push({ id: String(job._id), bookingNumber: job.bookingNumber, date: job.date, code: error?.code || "MOVE_FAILED", message: error?.message || "Could not move this job" });
+      }
+    }
+    await createAdminActivityLog(req, {
+      action: "Fixter Jobs Reassigned",
+      entityType: "employee",
+      entityId: req.params.id,
+      entityName: jobs[0]?.assignedFixterName || "",
+      details: { toFixterId, moved: moved.length, failed: failed.length, bookingNumbers: moved.map((m) => m.bookingNumber) },
+    }).catch(() => {});
+    return res.json({ total: jobs.length, moved, failed });
+  } catch (error) {
+    console.error("Reassign future jobs failed:", error);
+    return res.status(500).json({ message: "Failed to reassign the jobs" });
   }
 });
 
