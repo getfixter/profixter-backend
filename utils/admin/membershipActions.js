@@ -289,13 +289,24 @@ async function previewPlanChange({ userId, addressId, plan, cycle, now = new Dat
  * A refusal raised before anything was done (MembershipActionError) frees the
  * key again, so the same key can be retried after, say, a fresh preview.
  */
-async function withReceipt({ scope, key, req, targetUserId }, fn) {
+async function withReceipt({ scope, key, req, targetUserId, targetAddressId = null }, fn) {
+  /*
+   * Review fix 9 (2026-11-13): the stored key is bound to the action, the
+   * customer AND the home. The same client key sent for another customer or
+   * another home never replays the first answer: it gets 409 KEY_REUSED and
+   * nothing is done (a client sends a fresh UUID per action).
+   */
   const fullKey = `${scope}:${key}`;
+  const target = `${String(targetUserId || "")}:${String(targetAddressId || "")}`;
   try {
-    await CustomerActionReceipt.create({ key: fullKey, scope, actorUserId: actorOf(req).id, targetUserId });
+    await CustomerActionReceipt.create({ key: fullKey, scope, actorUserId: actorOf(req).id, targetUserId, target });
   } catch (error) {
     if (error?.code !== 11000) throw error;
     const existing = await CustomerActionReceipt.findOne({ key: fullKey }).lean();
+    const sameTarget = existing && (existing.target ? existing.target === target : String(existing.targetUserId || "") === String(targetUserId || ""));
+    if (existing && !sameTarget) {
+      return { status: 409, body: { code: "KEY_REUSED", message: "This idempotency key was already used for a different customer or home. Nothing was changed." } };
+    }
     if (existing?.status === "done") return { status: existing.httpStatus || 200, body: { ...(existing.body || {}), replayed: true } };
     return { status: 409, body: { code: "IN_PROGRESS", message: "This action is already being processed." } };
   }
@@ -340,7 +351,7 @@ function readPreviewToken(token, { userId, addressId }) {
 
 async function confirmPlanChange({ userId, addressId, previewToken, idempotencyKey, req }) {
   const key = readIdempotencyKey(idempotencyKey);
-  return withReceipt({ scope: "plan_change", key, req, targetUserId: userId }, async () => {
+  return withReceipt({ scope: "plan_change", key, req, targetUserId: userId, targetAddressId: addressId }, async () => {
     const payload = readPreviewToken(previewToken, { userId, addressId });
     let state;
     try {
@@ -398,12 +409,12 @@ function nyToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 }
 
-async function setCancellation({ userId, addressId, mode, date, confirm, idempotencyKey, req }) {
+async function setCancellation({ userId, addressId, mode, date, confirm, idempotencyKey, releasePendingPlanChange = false, req }) {
   if (confirm !== true) fail(428, "CONFIRMATION_REQUIRED", "Confirm the cancellation change (confirm: true).");
   if (!["period_end", "date", "clear"].includes(mode)) fail(400, "INVALID_MODE", "mode must be period_end, date or clear.");
   const key = readIdempotencyKey(idempotencyKey);
 
-  return withReceipt({ scope: "cancellation", key, req, targetUserId: userId }, async () => {
+  return withReceipt({ scope: "cancellation", key, req, targetUserId: userId, targetAddressId: addressId }, async () => {
     const { user, address, current } = await loadHome({ userId, addressId });
     if (!current) fail(409, "NO_MEMBERSHIP", "This home has no membership.");
     const before = { cancelAt: toIso(cancelAtFor(current)), cancelAtPeriodEnd: Boolean(current.cancelAtPeriodEnd) };
@@ -438,10 +449,33 @@ async function setCancellation({ userId, addressId, mode, date, confirm, idempot
           cancel_at_period_end: true,
           metadata: { ...(target.metadata || {}), addressId: String(address._id), userId: String(user.userId || user._id), localSubscriptionId: String(current._id) },
         };
-      } else if (mode === "date") {
-        params = { cancel_at: Math.floor(cancelAtDate.getTime() / 1000), cancel_at_period_end: false };
       } else {
-        params = { cancel_at: "", cancel_at_period_end: false };
+        /*
+         * Review fix 7 (2026-11-13). Stripe refuses cancel_at on a
+         * subscription a schedule (a pending plan change) manages, and that
+         * refusal used to be stored as a "done" 502. Refuse before touching
+         * Stripe and say why; with releasePendingPlanChange the schedule is
+         * released first, exactly as the period-end path does, under the
+         * same derived idempotency key.
+         */
+        if (sm.getStripeScheduleId(stripeSubscription)) {
+          if (releasePendingPlanChange !== true) {
+            const pending = sm.getPendingPlanChange(stripeSubscription) || {};
+            const when = pending.pendingChangeEffectiveDate ? toIso(pending.pendingChangeEffectiveDate) : null;
+            fail(
+              409,
+              "PENDING_PLAN_CHANGE",
+              `This membership has a plan change scheduled${pending.pendingPlan ? ` (to ${pending.pendingPlan}${when ? ` on ${when.slice(0, 10)}` : ""})` : ""}. ` +
+                "Setting or clearing a cancellation date cancels that plan change. Confirm with releasePendingPlanChange: true, or keep it and change nothing.",
+              { pendingPlanChange: { plan: pending.pendingPlan || null, billingCycle: pending.pendingBillingCycle || null, effectiveDate: when } }
+            );
+          }
+          target = (await sm.clearStripeSubscriptionSchedule(stripeSubscription, { idempotencyKey: stripeKey })) || stripeSubscription;
+        }
+        params =
+          mode === "date"
+            ? { cancel_at: Math.floor(cancelAtDate.getTime() / 1000), cancel_at_period_end: false }
+            : { cancel_at: "", cancel_at_period_end: false };
       }
       const updated = await sm.stripe.subscriptions.update(
         target.id,

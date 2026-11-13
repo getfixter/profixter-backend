@@ -628,6 +628,7 @@ router.post(homeRoute("cancellation"), auth, ...customersManage, async (req, res
       date: req.body?.date,
       confirm: req.body?.confirm,
       idempotencyKey: req.body?.idempotencyKey,
+      releasePendingPlanChange: req.body?.releasePendingPlanChange === true,
       req,
     });
     return res.status(outcome.status).json(outcome.body);

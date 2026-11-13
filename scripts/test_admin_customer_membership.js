@@ -53,6 +53,10 @@ stripe.subscriptions.retrieve = async (id) => {
 stripe.subscriptions.update = async (id, params, options) => {
   record("subscriptions.update", [id, params, options]);
   const s = fake.subs.get(id);
+  // As Stripe does: a subscription a schedule manages refuses a cancel_at change.
+  if (s.schedule && "cancel_at" in params) {
+    throw Object.assign(new Error("The subscription is managed by the subscription schedule"), { statusCode: 400, type: "StripeInvalidRequestError" });
+  }
   if (params.items) s.items.data[0].price = priceObj(params.items[0].price);
   if ("cancel_at_period_end" in params) s.cancel_at_period_end = params.cancel_at_period_end;
   if ("cancel_at" in params) s.cancel_at = params.cancel_at === "" ? null : params.cancel_at;
@@ -83,8 +87,8 @@ stripe.subscriptionSchedules.update = async (id, params, options) => {
   Object.assign(fake.schedules.get(id), { phases: params.phases, metadata: params.metadata });
   return copy(fake.schedules.get(id));
 };
-stripe.subscriptionSchedules.release = async (id) => {
-  record("subscriptionSchedules.release", [id]);
+stripe.subscriptionSchedules.release = async (id, params, options) => {
+  record("subscriptionSchedules.release", [id, params, options]);
   for (const s of fake.subs.values()) if (s.schedule === id) s.schedule = null;
   return {};
 };
@@ -430,6 +434,69 @@ async function run() {
   });
 
   console.log("\nComplimentary");
+
+  /* Review fix 7 (2026-11-13): a cancellation date or clear while a plan change is scheduled. */
+  const withPendingDowngrade = () => {
+    fake.schedules.set("sub_sched_pending", { id: "sub_sched_pending", status: "active", metadata: {}, phases: [] });
+    fake.subs.get("sub_casey").schedule = "sub_sched_pending";
+  };
+  await test("review 7: a cancellation date with a pending plan change is refused before Stripe, clearly, and the key stays usable", async () => {
+    const boss = await owner();
+    const user = await customer();
+    await stripeMember(user);
+    withPendingDowngrade();
+    const key = uuid();
+    const res = await call("POST", `${home(user)}/cancellation`, boss, { mode: "date", date: "2030-03-10", confirm: true, idempotencyKey: key });
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, "PENDING_PLAN_CHANGE");
+    assert.ok(/plan change/i.test(res.body.message));
+    assert.deepEqual(stripeWrites(), [], "nothing was sent to Stripe");
+    assert.equal(fake.subs.get("sub_casey").schedule, "sub_sched_pending", "the plan change is kept");
+    // The same key, now confirming the release, goes through: release once, then the date.
+    const ok = await call("POST", `${home(user)}/cancellation`, boss, { mode: "date", date: "2030-03-10", confirm: true, idempotencyKey: key, releasePendingPlanChange: true });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.ok(fake.subs.get("sub_casey").cancel_at);
+    const releases = fake.calls.filter((c) => c.name === "subscriptionSchedules.release");
+    assert.equal(releases.length, 1);
+    assert.equal(releases[0].args[2].idempotencyKey, `pfx_cancel_${key}:schedule-release`, "the release carries a derived Stripe idempotency key");
+    const replay = await call("POST", `${home(user)}/cancellation`, boss, { mode: "date", date: "2030-03-10", confirm: true, idempotencyKey: key, releasePendingPlanChange: true });
+    assert.equal(replay.body.replayed, true);
+    assert.equal(fake.calls.filter((c) => c.name === "subscriptionSchedules.release").length, 1, "not released twice");
+  });
+
+  await test("review 7: clearing a cancellation with a pending plan change releases the schedule first when confirmed", async () => {
+    const boss = await owner();
+    const user = await customer();
+    await stripeMember(user);
+    const set = await call("POST", `${home(user)}/cancellation`, boss, { mode: "date", date: "2030-03-10", confirm: true, idempotencyKey: uuid() });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    withPendingDowngrade();
+    const refused = await call("POST", `${home(user)}/cancellation`, boss, { mode: "clear", confirm: true, idempotencyKey: uuid() });
+    assert.equal(refused.body.code, "PENDING_PLAN_CHANGE");
+    const cleared = await call("POST", `${home(user)}/cancellation`, boss, { mode: "clear", confirm: true, idempotencyKey: uuid(), releasePendingPlanChange: true });
+    assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+    assert.equal(fake.subs.get("sub_casey").cancel_at, null);
+    assert.equal(fake.subs.get("sub_casey").schedule, null);
+  });
+
+  /* Review fix 9 (2026-11-13): an idempotency key replays only for its own customer and home. */
+  await test("review 9: the same key for another customer is refused with KEY_REUSED, never replayed", async () => {
+    const boss = await owner();
+    const first = await customer();
+    await stripeMember(first);
+    const key = uuid();
+    const one = await call("POST", `${home(first)}/cancellation`, boss, { mode: "period_end", confirm: true, idempotencyKey: key });
+    assert.equal(one.status, 200, JSON.stringify(one.body));
+    const second = await customer({ name: "Second Person", stripeCustomerId: "cus_second", phone: "+16315550102" });
+    const two = await call("POST", `${home(second)}/cancellation`, boss, { mode: "period_end", confirm: true, idempotencyKey: key });
+    assert.equal(two.status, 409, JSON.stringify(two.body));
+    assert.equal(two.body.code, "KEY_REUSED");
+    assert.notEqual(two.body.replayed, true);
+    assert.equal(fake.calls.filter((c) => c.name === "subscriptions.update").length, 1, "nothing more happened at Stripe");
+    // Its own customer still replays.
+    const replay = await call("POST", `${home(first)}/cancellation`, boss, { mode: "period_end", confirm: true, idempotencyKey: key });
+    assert.equal(replay.body.replayed, true);
+  });
 
   await test("complimentary is owner only, needs a reason and confirm", async () => {
     const boss = await owner();

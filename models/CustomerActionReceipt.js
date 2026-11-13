@@ -17,6 +17,8 @@ const CustomerActionReceiptSchema = new mongoose.Schema(
     scope: { type: String, required: true },
     actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     targetUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    /* "<userId>:<addressId>": a key replays only for the customer and home it was first used for. */
+    target: { type: String, default: "" },
     status: { type: String, enum: ["pending", "done"], default: "pending" },
     httpStatus: { type: Number, default: null },
     body: { type: mongoose.Schema.Types.Mixed, default: null },
