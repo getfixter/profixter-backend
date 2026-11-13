@@ -72,23 +72,16 @@ app.get(["/uploads/*", "/api/uploads/*"], (req, res) => {
  * Production leaves it unset, so the allowlist below is unchanged there - this
  * widens nothing by default and never uses a wildcard.
  */
-const EXTRA_CORS_ORIGINS = String(process.env.EXTRA_CORS_ORIGINS || "")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
+/*
+ * The dead plain-HTTP origins (the retired S3 website bucket, the raw EB host,
+ * http://profixter.com) were removed 2026-11-12: the site is HTTPS-only and a
+ * released bucket name must never become a trusted origin.
+ */
+const serverHardening = require("./utils/http/serverHardening");
 
 app.use(
   cors({
-    origin: [
-  ...EXTRA_CORS_ORIGINS,
-  "http://localhost:3000",
-  "http://handyman-frontend-v1.s3-website-us-east-1.amazonaws.com",
-  "http://handyman-v2-env.eba-fq3ppgr4.us-east-1.elasticbeanstalk.com",
-  "http://profixter.com",
-  "https://profixter.com",
-  "http://www.profixter.com",
-  "https://www.profixter.com",
-],
+    origin: serverHardening.corsOrigins(process.env),
 
     credentials: true,
 methods: "GET,POST,PUT,PATCH,DELETE",
@@ -113,26 +106,10 @@ app.post(
 // ⛔ MUST come BEFORE json body parser
 app.use("/api/bookings", (req, res, next) => next());
 
-// ✅ body parser for everything except bookings
-app.use(express.json({
-  limit: "500mb",
-  verify: (req, res, buf) => {
-    if (req.originalUrl.includes("/api/stripe/webhook")) {
-      req.rawBody = buf;
-    }
-  }
-}));
-
-app.use(express.urlencoded({ extended: true, limit: "500mb" }));
-
-function isJsonBodyParseError(err) {
-  return (
-    err?.type === "entity.parse.failed" ||
-    (err instanceof SyntaxError &&
-      err.status === 400 &&
-      Object.prototype.hasOwnProperty.call(err, "body"))
-  );
-}
+// ✅ Body parsers: 2 MB JSON/form globally (was 500 MB); uploads are multipart
+// (multer, with their own limits). Only the signing ceremony gets a larger
+// JSON limit, for the drawn-signature image. See utils/http/serverHardening.
+serverHardening.applyBodyParsers(app);
 
 
 /* Secrets from AWS Parameter Store via the instance role (see utils/secrets.js). */
@@ -230,6 +207,7 @@ app.use("/api/auth", require("./routes/auth"));
 // Sign-in 2.0: phone code, email code, Apple. Same sessions as above.
 app.use("/api/auth", require("./routes/authV2"));
 app.use("/api/stripe/checkout", require("./routes/stripe"));
+// GoHighLevel: only the inbound rep-attribution webhook (/lead-assigned) remains; the reply-agent webhook was removed 2026-11-12.
 app.use("/api/ghl", require("./routes/ghl"));
 
 app.use("/api/password-reset", require("./routes/passwordReset"));
@@ -250,7 +228,7 @@ app.use("/api/recent-work", require("./routes/recentWork"));
 app.use("/api/service-area", require("./routes/serviceArea"));
 /* Public, read-only: live search wording overrides (written only by the growth engine). */
 app.use("/api/seo", require("./routes/seo"));
-app.use("/api/test", require("./routes/test"));
+// /api/test/ping (a public database ping) is no longer mounted (2026-11-12).
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api", require("./routes/promotionPopup"));
@@ -369,31 +347,8 @@ if (process.env.STRIPE_RECONCILIATION_ENABLED !== "false") {
     { timezone: "UTC" }
   );
 }
-app.use((err, req, res, next) => {
-  const status = Number(err?.statusCode || err?.status || 500);
-  const safeStatus = status >= 400 && status < 600 ? status : 500;
-
-  console.error("Server Error:", {
-    method: req.method,
-    path: req.originalUrl,
-    statusCode: safeStatus,
-    type: err?.type || null,
-    message: err?.message || String(err),
-    stack: err?.stack || null,
-  });
-
-  if (isJsonBodyParseError(err)) {
-    return res.status(400).json({
-      message: "Invalid JSON request body",
-      error: err.message,
-    });
-  }
-
-  return res.status(safeStatus).json({
-    message: safeStatus === 500 ? "Internal Server Error" : err.message,
-    error: err.message,
-  });
-});
+// Error handler: 4xx keep their message; 5xx are logged and answered generically.
+app.use(serverHardening.errorHandler);
 
 /* ============================================================================ */
 
@@ -429,11 +384,8 @@ cron.schedule(
 );
 /* ============================================================================ */
 
-// ✅ 8. Global error handler
-app.use((err, req, res, next) => {
-  console.error("❌ Server Error:", err.stack || err.message);
-  res.status(500).json({ message: "Internal Server Error", error: err.message });
-});
+// ✅ 8. Global error handler (same handler; never echoes an internal message)
+app.use(serverHardening.errorHandler);
 
 // ✅ 9. Start server
 const PORT = process.env.PORT || 5000;
@@ -499,7 +451,7 @@ startVisibilityJobs();
 
 /* The three growth agents. Inert until AGENTS_ENABLED=true and ANTHROPIC_API_KEY are set; see utils/agents. */
 startAgentJobs();
-/* Conversation agent poller (inert unless CONVERSATIONS_ENABLED and a GHL token). */
+/* Read-only postal-mail audience sync (inert unless OUTREACH_SYNC_ENABLED and a GHL token). The GHL conversation poller was removed 2026-11-12. */
 startConversationJobs();
 
 /*
@@ -523,6 +475,8 @@ startOverrideRefresh();
  */
 startGiftLifecycle();
 startMembershipNotices();
+/* Email campaigns queued in Admin are sent here, durably (resumes after a restart, never resends). */
+require("./jobs/campaignSender").startCampaignSender();
 
 /*
  * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
