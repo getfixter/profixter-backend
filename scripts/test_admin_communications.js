@@ -496,6 +496,46 @@ async function main() {
     assert.match(sms.destination, /^\+1\*+\d{2}$/, "phone is masked in history");
   });
 
+  await test("review 6: past emails widen history for the owner only, never to an address another customer now owns", async () => {
+    const AdminActivityLog = require("../models/AdminActivityLog");
+    const stamp = Date.now();
+    const dana = await User.create({
+      userId: "C6", name: "Dana Moved", email: `dana.new.${stamp}@x.com`, password: "h",
+      phone: "+16315550006", role: "customer", address: "1 A", city: "C", state: "NY", zip: "11111", county: "Suffolk",
+    });
+    const reused = `reused.${stamp}@x.com`;
+    const old = `dana.old.${stamp}@x.com`;
+    await User.create({
+      userId: "C7", name: "Rae Other", email: reused, password: "h",
+      phone: "+16315550007", role: "customer", address: "1 A", city: "C", state: "NY", zip: "11111", county: "Suffolk",
+    });
+    await AdminActivityLog.create({
+      action: "Customer Profile Updated", entityType: "User", entityId: String(dana._id), entityName: "Dana Moved",
+      details: { ownerOnly: { changes: [{ field: "email", from: reused, to: old }, { field: "email", from: old, to: dana.email }] } },
+    });
+    const mail = (to, subject) => EmailLog.create({ templateKey: "welcome", subject, recipientEmail: to, customerEmail: to, status: "sent", sentAt: new Date() });
+    await mail(dana.email, "current-address mail");
+    await mail(old, "old-address mail");
+    await mail(reused, "mail for the address another customer now has");
+
+    const subjects = (body) => body.records.filter((r) => r.channel === "email").map((r) => r.subject);
+    const ownerView = await (await api(`/api/admin/communications/customers/${dana._id}/history`)).json();
+    assert.ok(subjects(ownerView).includes("current-address mail"));
+    assert.ok(subjects(ownerView).includes("old-address mail"), "the owner sees mail to a past address");
+    assert.ok(!subjects(ownerView).includes("mail for the address another customer now has"), "never another customer's address");
+
+    const clerk = await User.create({
+      userId: "E6", name: "Clerk", email: `clerk.${stamp}@x.com`, password: "h", phone: "+16315550008",
+      role: "employee", adminSections: ["customers"], address: "1 A", city: "C", state: "NY", zip: "11111", county: "Suffolk",
+    });
+    const clerkToken = jwt.sign({ id: String(clerk._id) }, process.env.JWT_SECRET);
+    const res = await api(`/api/admin/communications/customers/${dana._id}/history`, {}, clerkToken);
+    assert.strictEqual(res.status, 200);
+    const clerkView = await res.json();
+    assert.deepStrictEqual(subjects(clerkView), ["current-address mail"], "a non-owner sees only the current address");
+    assert.ok(!JSON.stringify(clerkView).includes(old), "the owner-only past address never reaches a non-owner");
+  });
+
   /* ------------------------------------------------------------------ */
   section("Preview never sends");
 

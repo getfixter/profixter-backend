@@ -832,8 +832,23 @@ router.get("/customers/:userId/history", auth, ...customerHistoryAccess, async (
      * Admin is recorded (full values, owner-only part) in the profile history,
      * and mail sent to the old address is still this customer's history.
      */
-    const pastEmails = user ? await pastEmailsFor(user._id) : [];
-    const emails = [...new Set([user?.email, ...pastEmails].filter(Boolean).map((e) => String(e).toLowerCase()))];
+    /*
+     * Review fix 6 (2026-11-13): past addresses are owner-only (they live
+     * under details.ownerOnly), so only the owner's view matches mail by
+     * them. Everybody else sees mail to the current address and mail logged
+     * against the account id. And an old address that now belongs to another
+     * customer is never used: that mail is the other customer's.
+     */
+    const ownerView = req.accessRole === "admin";
+    const pastEmails = user && ownerView ? await pastEmailsFor(user._id) : [];
+    const currentEmail = user?.email ? String(user.email).trim().toLowerCase() : "";
+    let priorEmails = [...new Set(pastEmails.map((e) => String(e).trim().toLowerCase()))].filter((e) => e && e !== currentEmail);
+    if (priorEmails.length) {
+      const takenBy = await User.find({ email: { $in: priorEmails }, _id: { $ne: user._id } }).select("email").lean();
+      const taken = new Set(takenBy.map((row) => String(row.email || "").trim().toLowerCase()));
+      priorEmails = priorEmails.filter((e) => !taken.has(e));
+    }
+    const emails = [...new Set([currentEmail, ...priorEmails].filter(Boolean))];
     const idValues = [rawId, ...(objectId ? [objectId] : []), ...(user?.userId ? [String(user.userId)] : [])];
 
     const smsMatch = objectId ? { $or: [{ user: objectId }, { userId: rawId }] } : { userId: rawId };
