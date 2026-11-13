@@ -127,6 +127,22 @@ const blacklistManage = requirePermission(PERMISSIONS.BLACKLIST_MANAGE);
 const leadsManage = requirePermission(PERMISSIONS.LEADS_MANAGE);
 const activityRead = requirePermission(PERMISSIONS.ACTIVITY_READ);
 
+const { canAccessJob, canSeeAllJobs, jobScopeFilter, sendForbiddenRecord } = require("../utils/jobs/jobAccess");
+const { legacyActionFor, performTransition } = require("../utils/bookingTransitions");
+const { notifyRescheduled } = require("../utils/jobs/jobNotifications");
+const { canonicalStatus: canonicalBookingStatus, STATUS: JOB_STATUS } = require("../utils/jobs/jobStatus");
+/* Never sent by the legacy booking list or status reply; no Admin screen reads them. */
+const LEGACY_HIDDEN_BOOKING_FIELDS = "-freeVisitIdentity -guestContactConsent.ip -checkoutClientKey -freeVisitClientKey";
+function legacyBookingView(booking) {
+  const out = booking?.toObject ? booking.toObject() : { ...(booking || {}) };
+  delete out.freeVisitIdentity;
+  delete out.checkoutClientKey;
+  delete out.freeVisitClientKey;
+  delete out.staffNotes;
+  if (out.guestContactConsent) out.guestContactConsent = { ...out.guestContactConsent, ip: undefined };
+  return out;
+}
+
 const isOwnerAccount = (user) =>
   String(user?.email || "").toLowerCase() === String(ADMIN_EMAIL).toLowerCase() || user?.role === "admin";
 const isStaffAccount = (user) => isOwnerAccount(user) || user?.role === "employee";
@@ -2006,16 +2022,23 @@ router.put(
 /* ───────────────── BOOKINGS ───────────────── */
 
 // ✅ GET All Bookings
+/*
+ * The legacy list (kept for the current Admin). Record scope is the server's
+ * decision (Q-1): a field Fixter gets their own jobs whatever ?assigned says;
+ * ?assigned=me can only narrow a wider caller's list. Fields no Admin screen
+ * reads and that should not leave the server (free-visit identity keys, the
+ * consent IP, browser retry keys, staff notes) are left out.
+ */
 router.get("/bookings", auth, ...requirePermission(PERMISSIONS.BOOKINGS_READ), async (req, res) => {
   try {
-    const query =
-      String(req.query.assigned || "").toLowerCase() === "me"
+    const query = canSeeAllJobs(req)
+      ? String(req.query.assigned || "").toLowerCase() === "me"
         ? { assignedFixterId: req.accessUser._id }
-        : {};
-    const bookings = await Booking.find(query).populate(
-      "user",
-      "userId name email phone subscription"
-    );
+        : {}
+      : jobScopeFilter(req);
+    const bookings = await Booking.find(query)
+      .select(LEGACY_HIDDEN_BOOKING_FIELDS)
+      .populate("user", "userId name email phone subscription");
     res.json(bookings);
   } catch (err) {
     console.error("❌ Fetch bookings error:", err);
@@ -2319,12 +2342,16 @@ router.get(
   ...requirePermission(PERMISSIONS.BOOKINGS_READ),
   async (req, res) => {
     try {
+      if (!mongoose.isValidObjectId(req.params.bookingId)) {
+        return res.status(400).json({ message: "Invalid booking id", code: "INVALID_BOOKING" });
+      }
       const booking = await Booking.findById(req.params.bookingId)
-        .select("_id name email user")
+        .select("_id name email user assignedFixterId")
         .lean();
       if (!booking) {
         return res.status(404).json({ message: "Booking not found" });
       }
+      if (!canAccessJob(req, booking)) return sendForbiddenRecord(res);
       const history = await BookingHistory.find({ bookingId: booking._id })
         .sort({ createdAt: -1 })
         .populate("actorUserId", "name email role employeePosition")
@@ -2366,8 +2393,21 @@ router.get(
 );
 
 // ✅ UPDATE Booking Status (admin)
+/*
+ * The legacy status route, kept for the current Admin. Since 2026-11-12 it is
+ * a thin adapter over utils/bookingTransitions: the requested status is mapped
+ * to an allow-listed action from the job's current status, and the change is
+ * made atomically there, with the same side effects as before, exactly once.
+ *
+ * The old screen sends no expectedStatus, so there is no stale check beyond
+ * the atomic claim on the status it read; but what the allow-list forbids is
+ * refused: Canceled/Completed -> anything answers 409 INVALID_TRANSITION and
+ * tells the user to use Reinstate. Setting the status a job already has is a
+ * no-op (no second email or text). A pending free visit still confirms only
+ * through its review, and Cancel on it is still the decline.
+ */
 router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
-  const { status } = req.body;
+  const { status } = req.body || {};
   const validStatuses = ["Pending", "Confirmed", "Completed", "Canceled"];
 
   if (!validStatuses.includes(status)) {
@@ -2375,294 +2415,39 @@ router.put("/bookings/:id/status", auth, ...bookingsWrite, async (req, res) => {
   }
 
   try {
-    let booking = await Booking.findById(req.params.id);
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid booking id", code: "INVALID_BOOKING" });
+    }
+    const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
-    /*
-     * A homepage request awaiting confirmation is confirmed only through its
-     * review (address required, lifetime rule re-checked, one notification);
-     * see routes/adminFreeVisits. Cancel here means decline, done the same way.
-     */
-    if (isPendingFreeVisit(booking)) {
-      if (String(status).toLowerCase() !== "canceled") {
-        return res.status(409).json({
-          code: "USE_FREE_VISIT_REVIEW",
-          message: booking.guestRequestId
-            ? "Open this free-visit request and use Confirm Visit: it needs the service address first."
-            : "Open this online free visit and use Approve: the free-visit rules are checked there.",
-        });
-      }
-      const declined = await declineGuestVisit({ bookingId: booking._id, actorUser: req.accessUser, kind: "declined" });
-      return res.json({ message: "Status updated", booking: declined.booking });
+    if (!canAccessJob(req, booking)) return sendForbiddenRecord(res);
+
+    const action = legacyActionFor(canonicalBookingStatus(booking.status), status);
+    if (action === "noop") {
+      return res.json({ message: "Status unchanged", booking: legacyBookingView(booking) });
     }
-    const before = bookingSnapshot(booking);
-    const useReservationEngine = reservationEngineEnabled();
-    const assignmentRequested = Object.prototype.hasOwnProperty.call(
-      req.body,
-      "assignedFixterId"
-    );
-    if (assignmentRequested) {
-      if (req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
-        return res.status(403).json({ message: "Assignment access denied" });
-      }
-      if (useReservationEngine) {
-        if (!req.body.assignedFixterId) {
-          return res.status(400).json({
-            code: "TECHNICIAN_REQUIRED",
-            message: "A reserved booking cannot be unassigned",
-          });
-        }
-        await moveReservationForBooking({
-          bookingId: booking._id,
-          technicianId: req.body.assignedFixterId,
-          slotStart: booking.date,
-          actorUser: req.accessUser,
-          createdByType: "admin",
-          assignmentSource:
-            req.accessRole === "admin" ? "admin" : "general_fixter",
-        });
-        booking = await Booking.findById(booking._id);
-      } else {
-        Object.assign(booking, await resolveAssignment(req.body.assignedFixterId));
-      }
+    const assignmentRequested = Object.prototype.hasOwnProperty.call(req.body, "assignedFixterId");
+    if (assignmentRequested && req.accessRole !== "admin" && !req.permissions.includes(PERMISSIONS.BOOKINGS_ASSIGN)) {
+      return res.status(403).json({ message: "Assignment access denied" });
     }
-    if (
-      useReservationEngine &&
-      status.toLowerCase() === "confirmed" &&
-      !booking.slotReservationId &&
-      !assignmentRequested
-    ) {
-      const options = await findEligibleTechnicians({
-        slotStart: booking.date,
-        excludeBookingId: booking._id,
-      });
-      if (!options.recommended?.id) {
-        return res.status(409).json({
-          code: "SLOT_UNAVAILABLE",
-          message: "No eligible technician is available for this booking",
-        });
-      }
-      await moveReservationForBooking({
-        bookingId: booking._id,
-        technicianId: options.recommended.id,
-        slotStart: booking.date,
-        actorUser: req.accessUser,
-        createdByType: "admin",
-        assignmentSource: "automatic",
-      });
-      booking = await Booking.findById(booking._id);
-    }
-
-    const prev = String(booking.status || "");
-    const normalizedNextStatus = String(status || "").toLowerCase();
-    const transitionedToCompleted = isCompletionTransition(prev, status);
-
-    if (
-      useReservationEngine &&
-      status.toLowerCase() === "canceled"
-    ) {
-      const result = await cancelBookingWithReservation({
-        bookingId: booking._id,
-        actorUser: req.accessUser,
-        createdByType: "admin",
-        reason: "Canceled by Admin",
-      });
-      booking = result.booking;
-    } else if (
-      useReservationEngine &&
-      status.toLowerCase() === "completed" &&
-      prev.toLowerCase() !== "completed"
-    ) {
-      const result = await transitionBookingWithReservation({
-        bookingId: booking._id,
-        actorUser: req.accessUser,
-        createdByType: "admin",
-        reason: "Booking completed",
-        status: "Completed",
-        clearAssignment: false,
-      });
-      booking = result.booking;
-    } else {
-      booking.statusHistory = (booking.statusHistory || []).concat({
-        status: booking.status,
-        date: new Date(),
-      });
-      booking.status = status;
-
-      if (
-        prev.toLowerCase() !== "confirmed" &&
-        String(status).toLowerCase() === "confirmed"
-      ) {
-        booking.reminder24hQueuedAt = undefined;
-        booking.reminder24hSentAt = undefined;
-        booking.reminder24hSkippedAt = undefined;
-        booking.reminder24hSkipReason = "";
-        booking.reminder60mQueuedAt = undefined;
-        booking.reminder60mSentAt = undefined;
-      }
-
-      await booking.save();
-      await logBookingChanges({
-        bookingId: booking._id,
-        before,
-        after: bookingSnapshot(booking),
-        req,
-      });
-    }
-
-    if (transitionedToCompleted) {
-      await Booking.updateOne(
-        { _id: booking._id, status: /^completed$/i },
-        {
-          $set: { completedAt: new Date() },
-          $unset: {
-            reviewRequestQueuedAt: 1,
-            reviewRequestLockExpiresAt: 1,
-            reviewRequestSkippedAt: 1,
-          },
-        }
-      );
-      // a one-step visit still without an account joins the one account that proved its phone/email
-      if (booking.guestRequestId && !booking.user) {
-        await require("../utils/freeVisit/guestLink").linkCompletedGuestVisitQuietly(booking);
-      }
-      booking = await Booking.findById(booking._id);
-    } else if (normalizedNextStatus !== "completed") {
-      await Booking.updateOne(
-        { _id: booking._id },
-        {
-          $unset: {
-            reviewRequestQueuedAt: 1,
-            reviewRequestLockExpiresAt: 1,
-          },
-        }
-      );
-    }
-
-    // Free capacity if newly canceled
-    if (
-      !useReservationEngine &&
-      prev.toLowerCase() !== "canceled" &&
-      status.toLowerCase() === "canceled"
-    ) {
-      try {
-        const cfg = await CalendarConfig.findOne().lean();
-        const tz = cfg?.timezone || "America/New_York";
-        const ymd = ymdInTZ(new Date(booking.date), tz);
-        const hh = hhmmInTZ(new Date(booking.date), tz);
-
-        await SlotCounter.updateOne({ ymd, time: hh }, { $inc: { count: -1 } });
-      } catch (e) {
-        console.log("Slot free (admin cancel) error:", e.message);
-      }
-    }
-
-    // Optional: notify user
-    try {
-      const u = (await User.findOne({ userId: booking.userId })) || {};
-      const address = [booking.address, booking.city, booking.state, booking.zip]
-        .filter(Boolean)
-        .join(", ");
-
-      const key =
-        {
-          confirmed: "booking_confirmed",
-          completed: "booking_completed",
-          canceled: "booking_canceled",
-        }[(status || "").toLowerCase()];
-
-      const shouldSendStatusEmail =
-        key &&
-        (key !== "booking_completed" || transitionedToCompleted);
-
-      if (shouldSendStatusEmail && (booking.email || u.email)) {
-        await mail.sendTx(
-          key,
-          booking.email || u.email,
-          {
-            name: booking.name || u.name || (u.email || "").split("@")[0],
-            bookingNumber: booking.bookingNumber,
-            date: booking.date,
-            service: booking.service,
-            selectedTask: booking.selectedTask,
-            bookingType: booking.bookingType,
-            accessType: booking.accessType,
-            freeVisitPurpose: booking.freeVisitPurpose || "",
-            address,
-            // Only the completion email uses this. It carries the token that
-            // makes a tip attributable to the Fixter who did this visit; every
-            // other template ignores it.
-            tipUrl: key === "booking_completed" ? tipUrlForBooking(booking) : undefined,
-          },
-          {
-            bccAdmin: false,
-            logContext: {
-              bookingId: booking._id,
-              bookingNumber: booking.bookingNumber,
-              customerName: booking.name || u.name || "",
-              customerEmail: booking.email || u.email || "",
-              recipientName: booking.name || u.name || "",
-              recipientEmail: booking.email || u.email || "",
-              emailType: "transactional",
-              source: "adminBookingStatus",
-            },
-          }
-        );
-      }
-    } catch (e) {
-      console.log("Mail status-change error:", e.message);
-    }
-
-    /*
-     * The status-change texts.
-     *
-     * Gated on transitionedToCompleted for the same reason the completion
-     * email is: re-saving a booking that is already Completed is not a
-     * second completion, and a customer told twice that their visit is
-     * finished has been told something odd. The dedupe key would catch a
-     * repeat anyway, but relying on it for something the caller already
-     * knows would put a suppressed row in the audit for every save.
-     */
-    try {
-      const smsUser = await User.findOne({ userId: booking.userId }).lean();
-      const normalized = String(status || "").toLowerCase();
-      if (normalized === "confirmed") {
-        await smsNotify.notifyBookingConfirmed(booking, smsUser, "adminBookingStatus");
-      } else if (normalized === "completed" && transitionedToCompleted) {
-        await smsNotify.notifyBookingCompleted(booking, smsUser, "adminBookingStatus");
-      } else if (normalized === "canceled") {
-        await smsNotify.notifyBookingCancelled(booking, smsUser, "adminBookingStatus");
-      }
-    } catch (e) {
-      console.log("SMS status-change error:", e.message);
-    }
-
-    // A homepage visit's lead says what its visit says: confirmed, done, canceled.
-    if (booking.guestRequestId) {
-      await syncLeadFromBooking(booking.toObject ? booking.toObject() : booking).catch((e) =>
-        console.error("free visit lead sync (admin status) failed:", e.message)
-      );
-    }
-
-    if (prev.toLowerCase() !== "canceled" && status.toLowerCase() === "canceled") {
-      await createAdminActivityLog(req, {
-        action: "Booking Manually Canceled",
-        entityType: "Booking",
-        entityId: booking._id,
-        entityName: booking.bookingNumber || booking.name,
-        details: {
-          bookingNumber: booking.bookingNumber,
-          customerName: booking.name,
-          customerEmail: booking.email,
-          service: booking.service,
-          date: booking.date,
-          previousStatus: prev,
-          newStatus: status,
-        },
-      });
-    }
-
-    res.json({ message: "Status updated", booking });
+    const outcome = await performTransition({
+      req,
+      bookingId: booking._id,
+      action,
+      // Only Confirm takes an assignee; the old screen sends one only with Confirm.
+      assignedFixterId: action === "confirm" && assignmentRequested ? req.body.assignedFixterId ?? "" : undefined,
+      reason: action === "cancel" ? "Canceled by Admin" : undefined,
+      source: "adminBookingStatus",
+    });
+    return res.json({
+      message: "Status updated",
+      booking: legacyBookingView(outcome.booking),
+      ...(outcome.payment ? { payment: outcome.payment } : {}),
+    });
   } catch (err) {
+    if (err?.statusCode && err.statusCode < 500) {
+      return res.status(err.statusCode).json({ message: err.message, code: err.code, ...(err.extra || {}) });
+    }
     console.error("❌ Update booking status error:", err);
     res.status(err?.statusCode || 500).json({ message: err.message || "Server error" });
   }
@@ -2675,14 +2460,69 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
     const { id } = req.params;
     const { note, adminNote, date } = req.body || {};
 
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid booking id", code: "INVALID_BOOKING" });
+    }
     let booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (!canAccessJob(req, booking)) return sendForbiddenRecord(res);
+    /* Optional precondition; the new Admin sends it, the old one does not. */
+    if (req.body?.expectedUpdatedAt) {
+      const expectedMs = new Date(req.body.expectedUpdatedAt).getTime();
+      if (!Number.isFinite(expectedMs) || expectedMs !== new Date(booking.updatedAt).getTime()) {
+        return res.status(409).json({ code: "STALE", message: "This job changed since you opened it. Reload and try again.", updatedAt: booking.updatedAt });
+      }
+    }
     const before = bookingSnapshot(booking);
     const useReservationEngine = reservationEngineEnabled();
-    const assignmentRequested = Object.prototype.hasOwnProperty.call(
+    let assignmentRequested = Object.prototype.hasOwnProperty.call(
       req.body || {},
       "assignedFixterId"
     );
+    /*
+     * J-06. The old Edit form starts its Fixter picker at
+     * "booking.assignedFixterId || the default Fixter" and always sends it, so
+     * saving a note on an unassigned job used to assign the default Fixter,
+     * move the reservation and text the customer. Rule: an assignment counts
+     * only when it differs from what is stored, and "the default Fixter" sent
+     * for a job with nobody assigned is read as the form's pre-fill, not as a
+     * choice (to assign the default deliberately, use Confirm's picker, the
+     * reassign action or PATCH /api/admin/jobs/:id).
+     */
+    if (assignmentRequested) {
+      const requested = req.body.assignedFixterId ? String(req.body.assignedFixterId) : "";
+      const stored = booking.assignedFixterId ? String(booking.assignedFixterId) : "";
+      if (requested === stored) {
+        assignmentRequested = false;
+      } else if (!stored && requested) {
+        const isDefault = await User.exists({ _id: mongoose.isValidObjectId(requested) ? requested : null, isDefaultFixter: true });
+        if (isDefault) assignmentRequested = false;
+      }
+    }
+    const noteChanged = note !== undefined && String(note) !== String(booking.note || "");
+    /*
+     * J-07. The customer can append to the description (bookingContentUpdates).
+     * Without a precondition the old form would save its stale copy over that
+     * text, so a save that drops something the customer added is refused.
+     */
+    if (noteChanged && !req.body?.expectedUpdatedAt) {
+      const customerAdded = (booking.contentUpdates || [])
+        .filter((u) => u.source === "customer" && String(u.noteAdded || "").trim())
+        .map((u) => String(u.noteAdded).trim());
+      if (customerAdded.some((text) => String(booking.note || "").includes(text) && !String(note).includes(text))) {
+        return res.status(409).json({
+          code: "STALE",
+          message: "The customer added to the description since you opened it. Reload, then make your change again.",
+        });
+      }
+    }
+    const requestedDateChange = date !== undefined && !isNaN(new Date(String(date)).getTime()) && new Date(String(date)).getTime() !== new Date(booking.date).getTime();
+    if (!canSeeAllJobs(req) && (noteChanged || requestedDateChange || assignmentRequested)) {
+      return res.status(403).json({ code: "FORBIDDEN_ACTION", message: "You can add notes and photos to your jobs; ask the office to change the time, description or Fixter." });
+    }
+    if ((requestedDateChange || assignmentRequested) && [JOB_STATUS.CANCELED, JOB_STATUS.COMPLETED].includes(canonicalBookingStatus(booking.status))) {
+      return res.status(409).json({ code: "INVALID_TRANSITION", message: `This job is ${canonicalBookingStatus(booking.status)}. Use Reinstate to reopen it before changing its time or Fixter.` });
+    }
     let parsedDate = null;
     let dateChanged = false;
     let assignmentChanged = false;
@@ -2751,8 +2591,8 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
       booking = await Booking.findById(booking._id);
     }
 
-    if (note !== undefined) booking.note = String(note);
-    if (adminNote !== undefined) booking.adminNote = String(adminNote);
+    if (noteChanged) booking.note = String(note);
+    if (adminNote !== undefined && String(adminNote) !== String(booking.adminNote || "")) booking.adminNote = String(adminNote);
 
     const imageUpload = await storeAppointmentImages({
       files: req.files || [],
@@ -2796,9 +2636,10 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
      */
     try {
       if (/^confirmed$/i.test(String(booking.status || ""))) {
-        const smsUser = await User.findOne({ userId: booking.userId }).lean();
+        const smsUser = booking.user ? await User.findById(booking.user).lean() : null;
         if (dateChanged) {
-          await smsNotify.notifyBookingRescheduled(booking, smsUser, "adminBookingUpdate");
+          // Email as well as the text (J-09): customers who cannot be texted heard nothing before.
+          await notifyRescheduled(booking, { previousDate: before.date, source: "adminBookingUpdate" });
         }
         if (assignmentChanged && booking.assignedFixterId) {
           await smsNotify.notifyFixterAssignment(booking, {
@@ -2818,7 +2659,7 @@ router.put("/bookings/:id", auth, ...bookingsWrite, uploadAppointmentPhotos, asy
       console.log("SMS booking-update error:", e.message);
     }
 
-    return res.json({ message: "Booking updated", booking });
+    return res.json({ message: "Booking updated", booking: legacyBookingView(booking) });
   } catch (err) {
     console.error("❌ Admin booking update error:", err.message);
     res.status(err?.statusCode || 500).json({
