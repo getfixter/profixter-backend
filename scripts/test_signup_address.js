@@ -156,6 +156,14 @@ test("no unit leaves the street line untouched", () => {
   assert.strictEqual(buildSignupAddress({ ...BABYLON, unit: "   " }).address.line1, "125 Main St");
 });
 
+test("the unit is also kept on its own, and an edit that resends it is not folded twice", () => {
+  const first = buildSignupAddress({ ...BABYLON, unit: "Apt 4B" }).address;
+  assert.strictEqual(first.unit, "Apt 4B");
+  const again = buildSignupAddress({ ...BABYLON, line1: first.line1, unit: "Apt 4B" }).address;
+  assert.strictEqual(again.line1, "125 Main St Apt 4B");
+  assert.strictEqual(buildSignupAddress({ ...BABYLON }).address.unit, "");
+});
+
 console.log("\nOut of area: reported, never refused");
 
 test("a Queens address still produces a valid account address", () => {

@@ -23,6 +23,8 @@ const BookingSchema = new mongoose.Schema({
 
   // A guest visit gets its address from the owner's call; Confirm Visit requires it.
   address: { type: String, required: function () { return !isGuestBooking.call(this); }, default: "" },
+  /* Apartment / unit on its own; `address` still carries it (utils/formatAddress). */
+  unit:    { type: String, default: "" },
   city:    { type: String, default: "" },
   state:   { type: String, default: "" },
   zip:     { type: String, default: "" },

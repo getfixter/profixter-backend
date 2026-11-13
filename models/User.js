@@ -5,6 +5,13 @@ const AddressSchema = new mongoose.Schema(
   {
     label: { type: String, default: "Address" },
     line1: { type: String, required: true },
+    /*
+     * Apartment / unit, on its own. Since signup asked for it the unit has been
+     * folded into line1 (the address key: "Apt 1" and "Apt 2" are two homes),
+     * and it still is; this copy only lets a screen show and edit it as a field.
+     * Absent on addresses saved before it existed. See utils/formatAddress.
+     */
+    unit: { type: String, default: "", trim: true, maxlength: 40 },
     city: { type: String, required: true },
     state: { type: String, required: true, default: "NY" },
     zip: { type: String, required: true },
@@ -436,6 +443,34 @@ const UserSchema = new mongoose.Schema(
       by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
       byName: { type: String, default: "" },
     },
+
+    /*
+     * Staff-only notes about the customer (Admin profile). Never shown to the
+     * customer and never sent anywhere. Each note is written once and audited.
+     */
+    adminNotes: {
+      type: [
+        new mongoose.Schema(
+          {
+            text: { type: String, required: true, trim: true, maxlength: 2000 },
+            authorId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+            authorName: { type: String, default: "" },
+            at: { type: Date, default: Date.now },
+          },
+          { _id: true }
+        ),
+      ],
+      default: undefined,
+    },
+    /*
+     * Archived in Admin: hidden from the default customer lists, nothing else.
+     * The account, its sign-in, bookings, memberships and history are untouched,
+     * and unarchiving puts it back. Admin never hard-deletes from the new screens.
+     */
+    archivedAt: { type: Date, default: null },
+    archivedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    archivedByName: { type: String, default: "" },
+    archiveReason: { type: String, default: "" },
 
     // Non-subscriber nurture sequence tracking
     nurture: {

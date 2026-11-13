@@ -114,6 +114,8 @@ function profileDTO(user, { locked, livePlans }) {
       _id: String(a._id),
       label: a.label || "",
       line1: a.line1 || "",
+      /* Apartment / unit on its own; line1 still carries it (see utils/formatAddress). */
+      unit: a.unit || "",
       city: a.city || "",
       state: a.state || "",
       zip: a.zip || "",
