@@ -65,6 +65,8 @@ stripe.subscriptions.update = async (id, params, options) => {
 };
 stripe.subscriptions.list = async () => ({ data: [] });
 stripe.prices.retrieve = async (id) => priceObj(id);
+/* Price metadata lookup: answer locally so the suite never reaches api.stripe.com (it falls back to the legacy price map). */
+stripe.prices.list = async () => ({ object: "list", data: [], has_more: false });
 stripe.invoices.createPreview = async (params) => {
   record("invoices.createPreview", [params]);
   if (fake.down) throw Object.assign(new Error("down"), { statusCode: 503 });
