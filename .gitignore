@@ -42,3 +42,12 @@ __MACOSX/
 
 # Manufacturer price files (owner uploads them in Admin; never committed)
 catalog-imports/
+
+# Local workspace settings and credentials (added 2026-11-12)
+*.code-workspace
+*.pem
+*.key
+*.p12
+*.pfx
+.env.*
+!.env.example
