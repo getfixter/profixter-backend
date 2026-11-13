@@ -312,7 +312,7 @@ async function main() {
     await check("on their own job a Fixter sees the detail, adds a note and completes it", async () => {
       const detail = await call(fixA, "GET", `/api/admin/jobs/${aConfirmed._id}`);
       assert.strictEqual(detail.status, 200);
-      assert.deepStrictEqual(detail.body.job.allowedActions.sort(), ["addNote", "addPhotos", "complete"].sort());
+      assert.deepStrictEqual(detail.body.job.allowedActions.sort(), ["addInternalNote", "addPhotos", "complete"].sort());
       assert.strictEqual(detail.body.job.customer.plan, undefined, "no membership details for a field Fixter");
       const note = await call(fixA, "POST", `/api/admin/jobs/${aConfirmed._id}/notes`, { text: "Gate code 4411" });
       assert.strictEqual(note.status, 201, JSON.stringify(note.body));

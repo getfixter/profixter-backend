@@ -144,7 +144,7 @@ function allowedActionsFor(req, booking) {
   const current = canonicalStatus(booking.status);
   const out = [];
   if (write) {
-    out.push("addNote", "addPhotos");
+    out.push("addInternalNote", "addPhotos");
     if (current === STATUS.CONFIRMED) out.push("complete");
   }
   if (all && write) {

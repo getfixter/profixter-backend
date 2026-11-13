@@ -158,7 +158,7 @@ function allowedActionsFor(req, user, { blocked }) {
     grantComplimentary: owner,
     sellMembership: manage,
     createVisit: hasPermission(req, PERMISSIONS.BOOKINGS_WRITE),
-    addNote: manage,
+    addInternalNote: manage,
     block: hasPermission(req, PERMISSIONS.BLACKLIST_MANAGE) && !blocked,
     unblock: hasPermission(req, PERMISSIONS.BLACKLIST_MANAGE) && blocked,
     archive: owner && !archived,
