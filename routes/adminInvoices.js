@@ -626,6 +626,22 @@ router.get("/project/:projectId", async (req, res) => {
   }
 });
 
+/**
+ * Where an invoice lives: lets old Admin email links (?tab=invoices&invoiceId=)
+ * open the right project. Ids only; no customer details.
+ */
+router.get("/:id", async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Invoice not found", code: "NOT_FOUND" });
+  try {
+    const invoice = await Invoice.findById(req.params.id).select("projectId invoiceNumber status").lean();
+    if (!invoice) return res.status(404).json({ message: "Invoice not found", code: "NOT_FOUND" });
+    return res.json({ invoiceId: String(invoice._id), projectId: invoice.projectId ? String(invoice.projectId) : null, invoiceNumber: invoice.invoiceNumber || "", status: invoice.status });
+  } catch (error) {
+    console.error("GET /admin/invoices/:id failed:", error);
+    return res.status(500).json({ message: "Failed to load invoice" });
+  }
+});
+
 const { logProjectActivity } = require("../utils/projectActivity");
 
 /** Totals an edit is judged by, kept in the history before and after. */

@@ -155,6 +155,8 @@ const SUITES = [
   "test_premium_island_invoices.js",
   "test_project_soft_delete.js",
   "test_project_customer_selection.js",
+  // Old invoice email links find their project (ids only, projects.manage).
+  "test_invoice_locate.js",
 ];
 
 /**
