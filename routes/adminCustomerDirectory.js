@@ -2,7 +2,7 @@
  * Admin customers, redesigned: list, search, profile, membership actions,
  * block, notes, archive. Mounted under /api/admin by routes/admin.js.
  *
- *   GET    /customers?filter&cursor&limit           lean rows, cursor paging
+ *   GET    /customers?filter&plan&cursor&limit      lean rows, cursor paging; counts on the first page
  *   POST   /customers/search  {q, filter, limit}    search (text in the body)
  *   POST   /search            {q}                   customers + jobs + projects
  *   GET    /customers/:id                           profile summary + allowedActions
@@ -10,6 +10,7 @@
  *   GET    /customers/:id/billing                   read-only Stripe proxy
  *   GET    /customers/:id/gifts
  *   GET    /customers/:id/payment-links
+ *   GET    /customers/:id/projects                  projects by customerId (money with projects.manage)
  *   GET    /customers/:id/notes     POST /customers/:id/notes {text}
  *   GET    /customers/:id/consent                   read only
  *   POST   /customers/:id/addresses/:addressId/plan-change/preview {plan, cycle?}
@@ -44,6 +45,11 @@ const { findActiveBlockForUser } = require("../utils/customerBlock");
 const { loadAddressPlans } = require("../utils/admin/planStatus");
 const { billingForCustomer } = require("../utils/admin/customerBilling");
 const directory = require("../utils/admin/customerDirectory");
+const Project = require("../models/Project");
+const Contract = require("../models/Contract");
+const temporaryPassword = require("../utils/auth/temporaryPassword");
+const { getProjectFinancialSummary } = require("../utils/projectFinancialsService");
+const { buildDerivedStage } = require("../utils/projects/projectWorkflow");
 const membership = require("../utils/admin/membershipActions");
 
 const router = express.Router();
@@ -51,6 +57,7 @@ const customersManage = requirePermission(PERMISSIONS.CUSTOMERS_MANAGE);
 const customersOrMembers = requireAnyPermission(PERMISSIONS.CUSTOMERS_MANAGE, PERMISSIONS.MEMBERS_READ);
 const blacklistManage = requirePermission(PERMISSIONS.BLACKLIST_MANAGE);
 const ownerOnly = requirePermission(PERMISSIONS.ADMIN);
+const customersOrProjects = requireAnyPermission(PERMISSIONS.CUSTOMERS_MANAGE, PERMISSIONS.PROJECTS_MANAGE);
 const anySearch = requireAnyPermission(
   PERMISSIONS.CUSTOMERS_MANAGE,
   PERMISSIONS.MEMBERS_READ,
@@ -146,7 +153,19 @@ function noteDto(note) {
   return { id: String(note._id), text: note.text, authorName: note.authorName || "", at: note.at };
 }
 
-function allowedActionsFor(req, user, { blocked }) {
+/**
+ * Would POST /customers/:id/resend-access accept this account? Same rule as
+ * utils/admin/customerAccess.resendAccess: an email on file and still waiting
+ * on a first password (a temporary one issued, or created by staff with none).
+ */
+async function resendAccessEligible(user) {
+  if (!user?.email) return false;
+  const access = await User.findById(user._id).select("password temporaryPassword.issuedAt signupMethod").lean();
+  if (!access) return false;
+  return temporaryPassword.isIssued(access) || (access.signupMethod === "admin" && !access.password);
+}
+
+function allowedActionsFor(req, user, { blocked, resendEligible = false }) {
   const owner = req.accessRole === "admin";
   const manage = hasPermission(req, PERMISSIONS.CUSTOMERS_MANAGE);
   const archived = Boolean(user.archivedAt);
@@ -165,6 +184,7 @@ function allowedActionsFor(req, user, { blocked }) {
     unarchive: owner && archived,
     viewBilling: true,
     changeCommunication: manage,
+    resendAccess: manage && !archived && resendEligible,
   };
 }
 
@@ -172,7 +192,15 @@ function allowedActionsFor(req, user, { blocked }) {
 
 router.get("/customers", auth, ...customersOrMembers, async (req, res) => {
   try {
-    const result = await directory.listCustomers({ filter: req.query.filter, cursor: req.query.cursor, limit: req.query.limit });
+    const result = await directory.listCustomers({
+      filter: req.query.filter,
+      plan: req.query.plan,
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+      // Totals only with the first page; the archived total only for the owner.
+      includeCounts: !req.query.cursor,
+      includeArchivedCount: req.accessRole === "admin",
+    });
     if (result.error) return res.status(result.error.status).json({ message: result.error.message, code: result.error.code });
     return res.json(result);
   } catch (error) {
@@ -228,7 +256,7 @@ router.get("/customers/:id", auth, ...customersOrMembers, async (req, res) => {
     if (!user) return undefined;
     const now = new Date();
     const showLoyalty = hasPermission(req, PERMISSIONS.MEMBERS_READ);
-    const [plans, block, blockHistory, visitsCompleted, nextVisit, lastVisit, comms, loyaltyRows] = await Promise.all([
+    const [plans, block, blockHistory, visitsCompleted, nextVisit, lastVisit, comms, loyaltyRows, resendEligible] = await Promise.all([
       loadAddressPlans([user], { now }),
       findActiveBlockForUser(user),
       blockHistoryFor(user),
@@ -237,6 +265,7 @@ router.get("/customers/:id", auth, ...customersOrMembers, async (req, res) => {
       Booking.findOne({ ...visitMatch(user), date: { $lt: now }, status: { $not: /^\s*cancel+ed\s*$/i } }).select(VISIT_SELECT).sort({ date: -1 }).lean(),
       communicationState(user).catch(() => null),
       showLoyalty ? adminLoyaltyForUsers([user], { allAddresses: true, now }).catch(() => []) : Promise.resolve([]),
+      hasPermission(req, PERMISSIONS.CUSTOMERS_MANAGE) ? resendAccessEligible(user) : Promise.resolve(false),
     ]);
     const perAddress = plans.get(String(user._id)) || new Map();
     const loyaltyByAddress = new Map(loyaltyRows.map((row) => [String(row.addressId), row.loyalty]));
@@ -293,7 +322,7 @@ router.get("/customers/:id", auth, ...customersOrMembers, async (req, res) => {
       },
       blockHistory: hasPermission(req, PERMISSIONS.BLACKLIST_MANAGE) ? blockHistory : undefined,
       notesCount: (user.adminNotes || []).length,
-      allowedActions: allowedActionsFor(req, user, { blocked: Boolean(block) }),
+      allowedActions: allowedActionsFor(req, user, { blocked: Boolean(block), resendEligible }),
     });
   } catch (error) {
     return sendError(res, error, "GET /admin/customers/:id");
@@ -418,6 +447,53 @@ router.get("/customers/:id/payment-links", auth, ...customersOrMembers, async (r
 });
 
 /* ------------------------------------------------------------------ notes */
+
+/*
+ * The customer's renovation projects, matched by Project.customerId only (no
+ * name/phone guessing; a project not linked to the account is not listed).
+ * Money columns need the Projects section; others get them as null.
+ */
+router.get("/customers/:id/projects", auth, ...customersOrProjects, async (req, res) => {
+  try {
+    const user = await loadCustomer(req, res, "_id");
+    if (!user) return undefined;
+    const showMoney = hasPermission(req, PERMISSIONS.PROJECTS_MANAGE);
+    const projects = await Project.find({ customerId: user._id, isDeleted: { $ne: true } })
+      .select("projectNumber projectType address status scheduledStart substantialCompletionAt warrantyEndsAt createdAt")
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    const contracts = projects.length
+      ? await Contract.find({ projectId: { $in: projects.map((p) => p._id) } })
+          .select("projectId version current status depositAmountCents")
+          .lean()
+      : [];
+    const now = new Date();
+    const items = await Promise.all(
+      projects.map(async (project) => {
+        const financials = await getProjectFinancialSummary(project._id);
+        const own = contracts.filter((c) => String(c.projectId) === String(project._id));
+        const valuation = financials.valuation || {};
+        return {
+          id: String(project._id),
+          projectNumber: project.projectNumber,
+          title: [project.projectType, project.address].filter(Boolean).join(" - "),
+          projectType: project.projectType || "",
+          status: project.status,
+          derivedStage: buildDerivedStage({ project, contracts: own, financials, now }),
+          executedValueCents: showMoney ? Number(valuation.executedValueCents || 0) : null,
+          paidCents: showMoney ? Number(valuation.paidCents || 0) : null,
+          outstandingCents: showMoney ? Number(valuation.outstandingCents || 0) : null,
+          createdAt: project.createdAt,
+          href: `/admin/projects/${project._id}`,
+        };
+      })
+    );
+    return res.json({ items, moneyVisible: showMoney });
+  } catch (error) {
+    return sendError(res, error, "GET /admin/customers/:id/projects");
+  }
+});
 
 router.get("/customers/:id/notes", auth, ...customersOrMembers, async (req, res) => {
   try {

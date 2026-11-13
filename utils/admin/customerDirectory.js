@@ -29,6 +29,9 @@ const { NON_ENDED_STATUSES, loadAddressPlans } = require("./planStatus");
 const ADMIN_EMAIL = () => String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
 const FILTERS = ["all", "members", "payment_issue", "ending", "blocked", "archived"];
 const MEMBER_STATUSES = new Set(["active", "trialing", "payment_issue", "ending"]);
+const PLANS = ["basic", "plus", "premium", "elite"];
+/** The filters `counts` reports; `archived` only for the owner. */
+const COUNT_FILTERS = ["all", "members", "payment_issue", "ending", "blocked", "archived"];
 
 /** Fields a list row may be built from. Nothing else is ever loaded for a list. */
 const LIST_SELECT = "userId name firstName lastName email phone city addresses defaultAddressId createdAt archivedAt";
@@ -108,16 +111,30 @@ async function buildRows(users) {
 
 /* --------------------------------------------------------------- filters */
 
-/** Users whose homes are in one of these plan states. One Subscription query, one User query. */
-async function userIdsWithPlanStatus(statuses) {
+/**
+ * Every customer with a not-ended subscription, with the plan summary of each
+ * home. One Subscription query, one User query, one more Subscription query;
+ * computed once per request and shared by the filter and all the counts.
+ */
+async function loadPlanIndex() {
   const candidateIds = await Subscription.distinct("user", { status: { $in: NON_ENDED_STATUSES } });
   if (!candidateIds.length) return [];
   const users = await User.find({ _id: { $in: candidateIds } }).select("_id addresses defaultAddressId").lean();
   const plans = await loadAddressPlans(users);
+  return users.map((u) => ({ id: u._id, homes: [...(plans.get(String(u._id)) || new Map()).values()] }));
+}
+
+/** Users with a home in one of these plan states (and on this plan, when given: the same home). */
+function idsMatching(index, statuses, plan = null) {
   const wanted = new Set(statuses);
-  return users
-    .filter((u) => [...(plans.get(String(u._id)) || new Map()).values()].some((s) => wanted.has(s.planStatus)))
-    .map((u) => u._id);
+  return index
+    .filter((u) => u.homes.some((home) => wanted.has(home.planStatus) && (!plan || home.plan === plan)))
+    .map((u) => u.id);
+}
+
+/** Users whose homes are in one of these plan states. */
+async function userIdsWithPlanStatus(statuses) {
+  return idsMatching(await loadPlanIndex(), statuses);
 }
 
 async function blockedClause() {
@@ -136,9 +153,52 @@ async function filterClause(filter) {
   return null;
 }
 
+/**
+ * The clauses for one filter, optionally narrowed to a plan. `plan` means a
+ * home on that plan that is still a membership (active, trialing, payment
+ * issue or ending); with payment_issue / ending it must be the same home.
+ * `ctx` caches the plan index and the block clause across filters.
+ */
+async function filterClauses(filter, plan, ctx) {
+  const clauses = [];
+  const needsIndex = plan || ["members", "payment_issue", "ending"].includes(filter);
+  if (needsIndex && !ctx.index) ctx.index = await loadPlanIndex();
+  if (filter === "members") clauses.push({ _id: { $in: idsMatching(ctx.index, [...MEMBER_STATUSES], plan) } });
+  else if (filter === "payment_issue") clauses.push({ _id: { $in: idsMatching(ctx.index, ["payment_issue"], plan) } });
+  else if (filter === "ending") clauses.push({ _id: { $in: idsMatching(ctx.index, ["ending"], plan) } });
+  else if (plan) clauses.push({ _id: { $in: idsMatching(ctx.index, [...MEMBER_STATUSES], plan) } });
+  if (filter === "blocked") {
+    if (!ctx.blocked) ctx.blocked = await blockedClause();
+    clauses.push(ctx.blocked);
+  }
+  return clauses;
+}
+
 function readFilter(value) {
   const filter = String(value || "all").toLowerCase();
   return FILTERS.includes(filter) ? filter : null;
+}
+
+/** "" for no plan filter, the plan key, or null when it is not a plan. */
+function readPlan(value) {
+  const plan = String(value || "").trim().toLowerCase();
+  if (!plan) return "";
+  return PLANS.includes(plan) ? plan : null;
+}
+
+/**
+ * Per-filter totals with the same clauses the list uses (and the same plan
+ * narrowing): one countDocuments each, in parallel, sharing one plan index.
+ */
+async function countCustomers({ plan = "", includeArchived = false, ctx = {} } = {}) {
+  const filters = COUNT_FILTERS.filter((f) => f !== "archived" || includeArchived);
+  const totals = await Promise.all(
+    filters.map(async (filter) => {
+      const and = [customerBaseQuery({ archivedOnly: filter === "archived" }), ...(await filterClauses(filter, plan, ctx))];
+      return User.countDocuments({ $and: and });
+    })
+  );
+  return Object.fromEntries(filters.map((filter, i) => [filter, totals[i]]));
 }
 
 /* ---------------------------------------------------------------- cursor */
@@ -164,24 +224,37 @@ function readLimit(value, fallback, max) {
   return Number.isFinite(n) ? Math.max(1, Math.min(n, max)) : fallback;
 }
 
-/** GET /api/admin/customers */
-async function listCustomers({ filter: rawFilter, cursor, limit: rawLimit }) {
+/**
+ * GET /api/admin/customers
+ *
+ * `plan` (basic|plus|premium|elite) narrows any filter. `includeCounts` adds
+ * `counts` (the first page only, by the route); `includeArchivedCount` adds
+ * the archived total (owner only, by the route).
+ */
+async function listCustomers({ filter: rawFilter, plan: rawPlan, cursor, limit: rawLimit, includeCounts = false, includeArchivedCount = false }) {
   const filter = readFilter(rawFilter);
   if (!filter) return { error: { status: 400, code: "INVALID_FILTER", message: `filter must be one of ${FILTERS.join(", ")}` } };
+  const plan = readPlan(rawPlan);
+  if (plan === null) return { error: { status: 400, code: "INVALID_PLAN", message: `plan must be one of ${PLANS.join(", ")}` } };
   const limit = readLimit(rawLimit, 50, 100);
-  const and = [customerBaseQuery({ archivedOnly: filter === "archived" })];
-  const extra = await filterClause(filter);
-  if (extra) and.push(extra);
+  const ctx = {};
+  const and = [customerBaseQuery({ archivedOnly: filter === "archived" }), ...(await filterClauses(filter, plan, ctx))];
   const after = decodeCursor(cursor);
   if (cursor && !after) return { error: { status: 400, code: "INVALID_CURSOR", message: "Invalid cursor." } };
   if (after) and.push({ $or: [{ createdAt: { $lt: after.date } }, { createdAt: after.date, _id: { $lt: after.id } }] });
 
   const users = await User.find({ $and: and }).select(LIST_SELECT).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
   const page = users.slice(0, limit);
+  const [items, counts] = await Promise.all([
+    buildRows(page),
+    includeCounts ? countCustomers({ plan, includeArchived: includeArchivedCount, ctx }) : Promise.resolve(null),
+  ]);
   return {
     filter,
-    items: await buildRows(page),
+    plan: plan || null,
+    items,
     nextCursor: users.length > limit ? encodeCursor(page[page.length - 1]) : null,
+    counts,
   };
 }
 

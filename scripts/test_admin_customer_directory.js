@@ -28,6 +28,9 @@ const Booking = require("../models/Booking");
 const Subscription = require("../models/Subscription");
 const AdminActivityLog = require("../models/AdminActivityLog");
 const EmailLog = require("../models/EmailLog");
+const Blacklist = require("../models/Blacklist");
+const Project = require("../models/Project");
+const Contract = require("../models/Contract");
 const { SECTIONS_VERSION } = require("../utils/adminAccess");
 const billing = require("../utils/admin/customerBilling");
 const { formatAddressLine, formatPhone } = require("../utils/formatAddress");
@@ -180,6 +183,116 @@ async function run() {
     const all = [...ids(first), ...ids(second)];
     assert.equal(new Set(all).size, 5);
     assert.equal((await call("GET", "/api/admin/customers?filter=nope", boss)).body.code, "INVALID_FILTER");
+  });
+
+  await test("list counts per filter use the list's own filters; plan narrows both; archived total is owner-only", async () => {
+    await Promise.all([Blacklist.deleteMany({}).setOptions({ includeLifted: true })]);
+    const boss = await owner();
+    const now = Date.now();
+    const home = (n) => [{ label: "Home", line1: `${n} Main St`, city: "Babylon", state: "NY", zip: "11702" }];
+    const sub = (user, over) =>
+      Subscription.create({ user: user._id, userId: user.userId, subscriptionType: "basic", addressId: user.addresses[0]._id, startDate: new Date(), latestPaymentDate: new Date(), nextPaymentDate: new Date(now + 864e5 * 20), currentPeriodEnd: new Date(now + 864e5 * 20), status: "active", accessStatus: "active", ...over });
+    const basic = await mk({ addresses: home(1) });
+    await sub(basic, {});
+    const plus = await mk({ addresses: home(2) });
+    await sub(plus, { subscriptionType: "plus" });
+    const plusIssue = await mk({ addresses: home(3) });
+    await sub(plusIssue, { subscriptionType: "plus", status: "past_due", accessStatus: "inactive", latestInvoiceStatus: "open" });
+    const ending = await mk({ addresses: home(4) });
+    await sub(ending, { subscriptionType: "premium", cancelAtPeriodEnd: true });
+    const blocked = await mk({ email: "blocked@example.com" });
+    await Blacklist.create({ user: blocked._id, email: "blocked@example.com", reason: "test" });
+    await mk({ archivedAt: new Date(), archiveReason: "dup" });
+    await mk({});
+
+    const list = await call("GET", "/api/admin/customers", boss);
+    assert.equal(list.status, 200, JSON.stringify(list.body));
+    const counts = list.body.counts;
+    assert.ok(counts, "counts on the first page");
+    for (const filter of ["all", "members", "payment_issue", "ending", "blocked", "archived"]) {
+      const rows = await call("GET", `/api/admin/customers?filter=${filter}&limit=100`, boss);
+      assert.equal(rows.status, 200, JSON.stringify(rows.body));
+      assert.equal(counts[filter], rows.body.items.length, `count for ${filter}`);
+    }
+    assert.equal(counts.all, 6);
+    assert.equal(counts.archived, 1);
+    assert.ok(counts.payment_issue >= 1, JSON.stringify(counts));
+    assert.ok(counts.ending >= 1, JSON.stringify(counts));
+    assert.equal(counts.blocked, 1);
+
+    const plusOnly = await call("GET", "/api/admin/customers?plan=plus", boss);
+    assert.deepEqual(new Set(ids(plusOnly)), new Set([String(plus._id), String(plusIssue._id)]));
+    assert.equal(plusOnly.body.plan, "plus");
+    assert.equal(plusOnly.body.counts.all, 2);
+    const plusIssues = await call("GET", "/api/admin/customers?plan=plus&filter=payment_issue", boss);
+    assert.equal(plusIssues.body.counts.payment_issue, plusIssues.body.items.length);
+    assert.ok(!ids(plusIssues).includes(String(basic._id)));
+    const basicIssues = await call("GET", "/api/admin/customers?plan=basic&filter=payment_issue", boss);
+    assert.deepEqual(ids(basicIssues), []);
+    assert.equal((await call("GET", "/api/admin/customers?plan=gold", boss)).body.code, "INVALID_PLAN");
+
+    const next = await call("GET", "/api/admin/customers?limit=2", boss);
+    const page2 = await call("GET", `/api/admin/customers?limit=2&cursor=${next.body.nextCursor}`, boss);
+    assert.equal(page2.body.counts, null, "counts only with the first page");
+
+    const clerk = await staff(["customers"]);
+    const asClerk = await call("GET", "/api/admin/customers", clerk);
+    assert.equal(asClerk.status, 200, JSON.stringify(asClerk.body));
+    assert.equal(asClerk.body.counts.archived, undefined, "archived total is owner-only");
+    assert.equal(asClerk.body.counts.all, 6);
+  });
+
+  await test("customer projects: matched by customerId only, money only with the Projects section", async () => {
+    const boss = await owner();
+    const { smith, other } = await people();
+    const mine = await Project.create({ projectNumber: "CP-0001", customerName: "John Smith", email: smith.email, phone: "6315550100", address: "44 Elm Street", projectType: "Bathroom", customerId: smith._id });
+    await Project.create({ projectNumber: "CP-0002", customerName: "John Smith", email: smith.email, phone: "6315550100", address: "44 Elm Street", projectType: "Kitchen" });
+    await Project.create({ projectNumber: "CP-0003", customerName: "Gone", email: smith.email, phone: "6315550100", address: "44 Elm Street", projectType: "Kitchen", customerId: smith._id, isDeleted: true, deletedAt: new Date() });
+    await Contract.create({
+      contractNumber: "CP00001", version: 1, current: true, projectId: mine._id, status: "Signed",
+      customerSnapshot: { fullName: "John Smith", email: smith.email }, propertySnapshot: { address: "44 Elm Street" },
+      workType: "Bathroom", projectDescription: "Remodel", scopeText: "Scope",
+      originalContractPriceCents: 2000000, totalPriceCents: 2000000, adjustedContractPriceCents: 2000000,
+      depositAmountCents: 500000, remainingBalanceCents: 1500000, paymentSchedule: [],
+      dates: { contractDate: new Date("2026-10-01") }, generatedPdf: { key: "a.pdf" }, signedPdf: { key: "s.pdf" }, createdBy: boss._id,
+    });
+    const res = await call("GET", `/api/admin/customers/${smith._id}/projects`, boss);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(res.body.items.map((p) => p.projectNumber), ["CP-0001"]);
+    const row = res.body.items[0];
+    assert.equal(row.derivedStage.key, "signed");
+    assert.equal(row.executedValueCents, 2000000);
+    assert.equal(row.paidCents, 0);
+    assert.equal(row.href, `/admin/projects/${mine._id}`);
+    assert.deepEqual(Object.keys(row).sort(), ["createdAt", "derivedStage", "executedValueCents", "href", "id", "outstandingCents", "paidCents", "projectNumber", "projectType", "status", "title"].sort());
+    assert.deepEqual((await call("GET", `/api/admin/customers/${other._id}/projects`, boss)).body.items, []);
+
+    const clerk = await staff(["customers"]);
+    const asClerk = await call("GET", `/api/admin/customers/${smith._id}/projects`, clerk);
+    assert.equal(asClerk.status, 200, JSON.stringify(asClerk.body));
+    assert.equal(asClerk.body.moneyVisible, false);
+    assert.equal(asClerk.body.items[0].executedValueCents, null);
+    const fixter = await mk({ name: "Field", role: "employee", employeePosition: "Fixter" });
+    assert.equal((await call("GET", `/api/admin/customers/${smith._id}/projects`, fixter)).status, 403);
+  });
+
+  await test("allowedActions.resendAccess: only while the account waits on a first password, and only with customers.manage", async () => {
+    const boss = await owner();
+    const { smith, other } = await people();
+    const waiting = await call("GET", `/api/admin/customers/${smith._id}`, boss);
+    assert.equal(waiting.body.allowedActions.resendAccess, true, "temporary password issued");
+    await User.updateOne({ _id: other._id }, { $set: { password: "hashed-own-password" } });
+    const own = await call("GET", `/api/admin/customers/${other._id}`, boss);
+    assert.equal(own.body.allowedActions.resendAccess, false, "chose their own password");
+    assert.ok(!JSON.stringify(own.body).includes("hashed-own-password"));
+    const staffCreated = await mk({ signupMethod: "admin" });
+    assert.equal((await call("GET", `/api/admin/customers/${staffCreated._id}`, boss)).body.allowedActions.resendAccess, true);
+    const noEmail = await User.create({ userId: "69999999", name: "No Email", role: "customer", signupMethod: "admin", phone: "+16315550199" });
+    assert.equal((await call("GET", `/api/admin/customers/${noEmail._id}`, boss)).body.allowedActions.resendAccess, false);
+    const membersOnly = await staff(["members"]);
+    const asMembers = await call("GET", `/api/admin/customers/${smith._id}`, membersOnly);
+    assert.equal(asMembers.status, 200, JSON.stringify(asMembers.body));
+    assert.equal(asMembers.body.allowedActions.resendAccess, false);
   });
 
   await test("global search: a field Fixter gets only their own jobs and no customers; a customer is refused", async () => {
