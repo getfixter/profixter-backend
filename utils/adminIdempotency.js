@@ -39,7 +39,7 @@ function scopeFor(req, action) {
   return `${action}:${String(req?.accessUser?._id || req?.user?.id || "anonymous")}`;
 }
 
-async function runIdempotent({ req, action, key, entityId = "" }, work) {
+async function runIdempotent({ req, action, key, entityId = "", storeBody = null }, work) {
   const scope = scopeFor(req, action);
   const existing = await AdminIdempotencyRecord.findOne({ scope, key }).lean();
   if (existing) {
@@ -82,8 +82,11 @@ async function runIdempotent({ req, action, key, entityId = "" }, work) {
   const httpStatus = Number(result?.httpStatus || 200);
   if (httpStatus >= 200 && httpStatus < 300) {
     // Stored as plain JSON so a replay is byte-for-byte the same answer.
+    // `storeBody` may strip one-time secrets (a raw signing link) that must
+    // never be written to the database; the live caller still gets them.
     const body = JSON.parse(JSON.stringify(result.body ?? null));
-    await AdminIdempotencyRecord.updateOne({ _id: claim._id }, { $set: { status: "completed", httpStatus, response: body } });
+    const stored = typeof storeBody === "function" ? storeBody(JSON.parse(JSON.stringify(body))) : body;
+    await AdminIdempotencyRecord.updateOne({ _id: claim._id }, { $set: { status: "completed", httpStatus, response: stored } });
     return { httpStatus, body, replayed: false };
   }
   await AdminIdempotencyRecord.deleteOne({ _id: claim._id }).catch(() => {});

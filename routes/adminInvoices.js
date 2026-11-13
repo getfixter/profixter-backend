@@ -1,4 +1,5 @@
 const express = require("express");
+const { runDocumentSend, sendGuardError } = require("../utils/documentSendGuard");
 const mongoose = require("mongoose");
 const auth = require("../middleware/auth");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
@@ -963,6 +964,9 @@ router.post("/:id/email", async (req, res) => {
     if (!subject) return res.status(400).json({ message: "Email subject is required" });
     if (!message) return res.status(400).json({ message: "Email message is required" });
 
+    const outcome = await runDocumentSend(
+      { req, action: "invoice.email", entityId: invoice._id, recipient },
+      async () => {
     /*
      * Provision the payment destination BEFORE sending. If Stripe cannot give
      * us a page, the email must not go out carrying a Pay button that leads
@@ -983,11 +987,14 @@ router.post("/:id/email", async (req, res) => {
          * online payment. Never silently.
          */
         if (req.body?.allowWithoutOnlinePayment !== true) {
-          return res.status(502).json({
-            message: `The invoice was not sent because the online payment page could not be created: ${paymentError.message}`,
-            code,
-            canSendWithoutOnlinePayment: true,
-          });
+          return {
+            httpStatus: 502,
+            body: {
+              message: `The invoice was not sent because the online payment page could not be created: ${paymentError.message}`,
+              code,
+              canSendWithoutOnlinePayment: true,
+            },
+          };
         }
         invoice.addEvent("Sent without online payment", req, { reason: paymentError.message });
       }
@@ -1033,8 +1040,15 @@ router.post("/:id/email", async (req, res) => {
     });
     await invoice.save();
 
-    return res.json({ invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) });
+    return {
+      httpStatus: 200,
+      body: { invoice: serializeInvoice(invoice, { parentProject: invoice.$locals.parentProject }) },
+    };
+      }
+    );
+    return res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
+    if (sendGuardError(res, error)) return null;
     console.error("POST /admin/invoices/:id/email failed:", error);
     return res.status(500).json({
       message: error?.message ? `Failed to email invoice: ${error.message}` : "Failed to email invoice",

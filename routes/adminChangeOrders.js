@@ -7,6 +7,7 @@
  */
 
 const express = require("express");
+const { runDocumentSend, sendGuardError } = require("../utils/documentSendGuard");
 const mongoose = require("mongoose");
 const multer = require("multer");
 
@@ -712,6 +713,9 @@ router.post("/:id/email", async (req, res) => {
     if (!subject) return res.status(400).json({ message: "Email subject is required" });
     if (!message) return res.status(400).json({ message: "Email message is required" });
 
+    const outcome = await runDocumentSend(
+      { req, action: "change_order.email", entityId: changeOrder._id, recipient },
+      async () => {
     const pdfBuffer = await getObjectBuffer({ Key: changeOrder.generatedPdf.key });
     const info = await sendRaw({
       to: recipient,
@@ -747,8 +751,12 @@ router.post("/:id/email", async (req, res) => {
     changeOrder.updatedBy = req.user.id;
     await changeOrder.save();
 
-    return res.json({ changeOrder: serializeChangeOrder(changeOrder) });
+    return { httpStatus: 200, body: { changeOrder: serializeChangeOrder(changeOrder) } };
+      }
+    );
+    return res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
+    if (sendGuardError(res, error)) return null;
     console.error("POST /admin/change-orders/:id/email failed:", error);
     return res.status(500).json({
       message: error?.message

@@ -1,4 +1,5 @@
 const express = require("express");
+const { runDocumentSend, sendGuardError } = require("../utils/documentSendGuard");
 const mongoose = require("mongoose");
 const multer = require("multer");
 const auth = require("../middleware/auth");
@@ -653,6 +654,9 @@ router.post("/:id/email", async (req, res) => {
     if (!subject) return res.status(400).json({ message: "Email subject is required" });
     if (!message) return res.status(400).json({ message: "Email message is required" });
 
+    const outcome = await runDocumentSend(
+      { req, action: "contract.email", entityId: contract._id, recipient },
+      async () => {
     const pdfBuffer = await getObjectBuffer({ Key: contract.generatedPdf.key });
     const info = await sendRaw({
       to: recipient,
@@ -699,8 +703,15 @@ router.post("/:id/email", async (req, res) => {
       details: { recipient, version: contract.version },
     });
 
-    return res.json({ contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) });
+    return {
+      httpStatus: 200,
+      body: { contract: serializeContract(contract, { parentProject: contract.$locals.parentProject }) },
+    };
+      }
+    );
+    return res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
+    if (sendGuardError(res, error)) return null;
     console.error("POST /admin/contracts/:id/email failed:", error);
     return res.status(500).json({
       message: error?.message ? `Failed to email contract: ${error.message}` : "Failed to email contract",

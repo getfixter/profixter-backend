@@ -152,6 +152,8 @@ const SUITES = [
   "test_document_integrity.js",
   // Lead -> project, next steps, overview, deposit/milestone billing once, closeout, needs-action collectors.
   "test_project_workflow.js",
+  // Document sends: idempotencyKey replay, 60s duplicate guard, raw signing link never stored.
+  "test_document_send_idempotency.js",
   // Project suites that existed but were never registered.
   "test_premium_island_contracts.js",
   "test_premium_island_invoices.js",

@@ -11,6 +11,7 @@
  */
 
 const express = require("express");
+const { runDocumentSend, sendGuardError } = require("../utils/documentSendGuard");
 const mongoose = require("mongoose");
 
 const auth = require("../middleware/auth");
@@ -301,6 +302,16 @@ function signingLinkFor(rawToken) {
  * email; for IN_PERSON it is handed straight back so the device can open the
  * signing ceremony without any email at all.
  */
+/**
+ * A replayed or duplicate send answers without the raw signing link: the link
+ * is a mailbox credential and is never written to the database, so only the
+ * first response carries it. `signingUrlWithheld` tells the UI why.
+ */
+function withoutSigningUrl(body) {
+  if (!body || typeof body !== "object") return body;
+  return { ...body, signingUrl: null, signingUrlWithheld: true };
+}
+
 router.post("/native/send", async (req, res) => {
   let audit = null;
   try {
@@ -315,6 +326,7 @@ router.post("/native/send", async (req, res) => {
       return res.status(400).json({ message: "Invalid document ID" });
     }
 
+    const startRequest = async () => {
     audit = await createAdminActivityLog(req, {
       action: mode === "IN_PERSON" ? "In-Person Signing Started" : "Signature Request Sent",
       entityType: documentType === "CONTRACT" ? "Contract" : "ChangeOrder",
@@ -358,14 +370,36 @@ router.post("/native/send", async (req, res) => {
       details: { documentNumber: target.number, signatureId: String(signature._id), emailed },
     });
 
-    return res.status(201).json({
-      signature: serializeSignature(signature),
-      // The link is returned once. It is not stored in this form anywhere.
-      signingUrl,
-      mode,
-      emailed,
-    });
+    return {
+      httpStatus: 201,
+      body: {
+        signature: serializeSignature(signature),
+        // The link is returned once. It is not stored in this form anywhere.
+        signingUrl,
+        mode,
+        emailed,
+      },
+    };
+    };
+
+    // In-person signing sends nothing to the customer and its link is needed
+    // on this device, so only the emailed (REMOTE) request is guarded.
+    const outcome =
+      mode === "REMOTE"
+        ? await runDocumentSend(
+            {
+              req,
+              action: "signature.native_send",
+              entityId: documentId,
+              recipient: `${documentType}:REMOTE`,
+              storeBody: withoutSigningUrl,
+            },
+            startRequest
+          )
+        : await startRequest();
+    return res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
+    if (sendGuardError(res, error)) return null;
     console.error("POST /admin/signatures/native/send failed:", error?.message);
     await markAdminActivityLog(audit, {
       action: "Signature Request Failed",
@@ -398,6 +432,15 @@ router.post("/native/:id/resend", async (req, res) => {
       return res.status(409).json({ message: `This request is ${rejection} and cannot be resent.` });
     }
 
+    const outcome = await runDocumentSend(
+      {
+        req,
+        action: "signature.native_resend",
+        entityId: signature._id,
+        recipient: "REMOTE",
+        storeBody: withoutSigningUrl,
+      },
+      async () => {
     // The stored hash cannot be reversed, so re-delivery issues a new token
     // against the unchanged frozen document.
     const rawToken = native.generateToken();
@@ -416,8 +459,12 @@ router.post("/native/:id/resend", async (req, res) => {
     );
     await signature.save();
 
-    return res.json({ signature: serializeSignature(signature), signingUrl });
+    return { httpStatus: 200, body: { signature: serializeSignature(signature), signingUrl } };
+      }
+    );
+    return res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
+    if (sendGuardError(res, error)) return null;
     console.error("POST /admin/signatures/native/:id/resend failed:", error?.message);
     return res.status(400).json({ message: error?.message || "Failed to resend the request" });
   }
