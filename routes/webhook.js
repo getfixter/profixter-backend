@@ -782,14 +782,36 @@ function guestContactFromBooking(booking) {
   return { _id: null, userId: "", name: booking.name || "", email: booking.email || "", phone: booking.phone || "", addresses: [], isGuest: true };
 }
 
+/*
+ * Owner decision Q-2 (2026-11-12): a paid visit the owner booked in Admin
+ * (createdByAdmin) waits in its payment-pending state until Stripe confirms
+ * the payment - this handler - and is then Confirmed, provided the reservation
+ * was promoted cleanly and a technician is assigned. A visit the customer
+ * booked themselves keeps owner review (Pending), exactly as before. Status,
+ * the customer's email and text, and the reminders (which select Confirmed
+ * bookings) therefore agree.
+ */
+function confirmAdminPaidVisit(booking, reservationIssue) {
+  if (!booking?.createdByAdmin?.at || reservationIssue) return false;
+  if (!reservationEngineEnabled() || !booking.slotReservationId || !booking.assignedFixterId) return false;
+  booking.status = "Confirmed";
+  for (const field of ["reminder24hQueuedAt", "reminder24hSentAt", "reminder24hSkippedAt", "reminder60mQueuedAt", "reminder60mSentAt"]) {
+    booking[field] = undefined;
+  }
+  booking.reminder24hSkipReason = "";
+  return true;
+}
+
 async function sendOneTimePaymentEmails({ booking, user, entitlement, session }) {
+  const confirmedNow = /^confirmed$/i.test(String(booking.status || ""));
   const address = [booking.address, booking.city, booking.state, booking.zip]
     .filter(Boolean)
     .join(", ");
 
   try {
     await mail.sendTx(
-      "one_time_visit_payment_received",
+      // An Admin-booked visit confirmed on payment gets the confirmation, not "awaiting review".
+      confirmedNow ? "booking_confirmed" : "one_time_visit_payment_received",
       booking.email || user.email,
       {
         name: booking.name || user.name || "there",
@@ -798,7 +820,9 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
         service: booking.service,
         selectedTask: booking.selectedTask,
         address,
-        price: `$${((entitlement?.priceCents || 9900) / 100).toFixed(0)}`,
+        bookingType: booking.bookingType,
+        accessType: booking.accessType,
+        price: `${((entitlement?.priceCents || 9900) / 100).toFixed(0)}`,
         durationMinutes: entitlement?.durationMinutes || 90,
       },
       {
@@ -1132,6 +1156,7 @@ async function handleOneTimeCheckoutCompleted(session) {
   }
 
   applyOneTimePaymentSuccessToBooking(booking, { session, reservationIssue });
+  confirmAdminPaidVisit(booking, reservationIssue);
   await booking.save();
 
   if (entitlement) {
@@ -1410,6 +1435,7 @@ async function handleFullDayCheckoutCompleted(session) {
   // right for its own caller and wrong here. Put the Full Day back.
   booking.bookingType = "full_day_visit";
   booking.accessType = "one_time";
+  confirmAdminPaidVisit(booking, reservationIssue);
   await booking.save();
 
   if (entitlement) {

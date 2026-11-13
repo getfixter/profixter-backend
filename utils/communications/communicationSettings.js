@@ -394,6 +394,7 @@ const EMAIL_SETTINGS = {
   booking_created: { label: "Booking received", trigger: "A booking is created.", appliesTo: "All visit kinds" },
   booking_confirmed: { label: "Booking confirmed", trigger: "A booking is confirmed.", appliesTo: "All visit kinds" },
   booking_canceled: { label: "Booking cancelled", trigger: "A booking is cancelled.", appliesTo: "All visit kinds" },
+  booking_rescheduled: { label: "Booking rescheduled", trigger: "Admin moves a booking to a new time.", appliesTo: "All visit kinds" },
   booking_completed: { label: "Visit completed", trigger: "An admin marks a visit complete.", appliesTo: "All visit kinds" },
   booking_reminder_24h: {
     label: "24-hour reminder",

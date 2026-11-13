@@ -34,8 +34,10 @@ const PERMISSIONS = Object.freeze({
   /* The Growth tab: automations, agents, capacity and approvals (read only). */
   GROWTH_READ: "growth.read",
 
+  /* Read / change bookings. Without BOOKINGS_ASSIGN both are limited to the caller's own jobs. */
   BOOKINGS_READ: "bookings.read",
   BOOKINGS_WRITE: "bookings.write",
+  /* Every booking, plus assigning, confirming, cancelling, rescheduling, free-visit review and creating visits. */
   BOOKINGS_ASSIGN: "bookings.assign",
 
   /* Read the membership list and a customer's activity timeline. */
@@ -65,6 +67,17 @@ const PERMISSIONS = Object.freeze({
 /*
  * Field work: the two positions that existed before custom access. Their
  * permission lists are copied unchanged from the old permissionsForUser().
+ *
+ * RECORD SCOPE (owner decision Q-1, 2026-11-12). Permissions say which kind of
+ * thing a person may touch; utils/jobs/jobAccess.js says which bookings. A
+ * caller WITHOUT bookings.assign (a field "Fixter" who has not been given the
+ * Jobs section) is limited, on the server, to bookings assigned to them: list,
+ * detail, history, photos, export data and every mutation. On their own jobs
+ * they may add notes and photos and complete a Confirmed job; they may not
+ * confirm, cancel, reschedule, reassign or reinstate, review free-visit
+ * requests, or create visits and payment links - those routes require
+ * bookings.assign. A General Fixter and anyone with the Jobs section hold
+ * bookings.assign and keep the wider rights they had.
  */
 const POSITIONS = Object.freeze({
   Fixter: Object.freeze([PERMISSIONS.BOOKINGS_READ, PERMISSIONS.BOOKINGS_WRITE, PERMISSIONS.TIPS_READ]),

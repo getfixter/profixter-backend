@@ -36,7 +36,8 @@ const { getFullDayVisitSettings } = require("../utils/fullDayVisitSettings");
 const router = express.Router();
 const customersManage = requirePermission(PERMISSIONS.CUSTOMERS_MANAGE);
 const customersOrMembers = requireAnyPermission(PERMISSIONS.CUSTOMERS_MANAGE, PERMISSIONS.MEMBERS_READ);
-const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
+/* Creating a visit (and its payment link) needs the Jobs section, not field work (Q-1). */
+const jobsManage = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 
 const PLAN_LABELS = { basic: "Basic", plus: "Plus", premium: "Premium", elite: "Elite" };
 const ADMIN_EMAIL = () => String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -207,7 +208,7 @@ router.post("/customers/:id/membership-sale", auth, ...customersManage, async (r
 });
 
 /* Create a visit: multipart, with optional photos in "images". */
-router.post("/visits", auth, ...bookingsWrite, uploadAppointmentPhotos, async (req, res) => {
+router.post("/visits", auth, ...jobsManage, uploadAppointmentPhotos, async (req, res) => {
   try {
     const admin = actingAdmin(req);
     const { booking, payment } = await createAdminVisit({ body: req.body || {}, files: req.files || [], admin, clientUrl: CLIENT_URL });

@@ -263,7 +263,8 @@ function renderAdminLeadEmail(input) {
         ["Email", clean(input.email, "")],
         ["Address", clean(input.address, "")],
       ],
-      action: { label: "View Customer", url: adminLink.lead() },
+      // For a registration leadId is the new account id (routes/auth.js, utils/auth/accounts.js).
+      action: { label: "View Customer", url: adminLink.customer(input.leadId) || adminLink.customers() },
       footer: "Account created. No action needed.",
     });
   }
@@ -283,7 +284,7 @@ function renderAdminLeadEmail(input) {
       ["Budget", clean(input.budgetRange, "")],
     ],
     note: clean(input.message || input.notes, ""),
-    action: { label: "View Lead", url: adminLink.lead() },
+    action: { label: "View Lead", url: adminLink.lead(input.leadId) },
   });
 }
 

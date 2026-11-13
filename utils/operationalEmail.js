@@ -142,14 +142,21 @@ function renderOperationalEmail({
   return { subject, html, text };
 }
 
-/* Deep links into Admin, in one place so a route rename is one edit. */
+/*
+ * Deep links into Admin, in one place so a route rename is one edit.
+ * Since 2026-11-12 these are the redesigned Admin's own pages (J-17); the
+ * frontend keeps redirects for the old /admin?tab=... links already sent.
+ * Invoices live inside their project, so an invoice link opens Projects with
+ * the invoice selected.
+ */
 const adminLink = {
-  booking: (id) => (id ? `/admin?tab=bookings&bookingId=${encodeURIComponent(id)}` : ""),
-  customer: (id) => (id ? `/admin?tab=customers&userId=${encodeURIComponent(id)}` : ""),
-  invoice: (id) => (id ? `/admin?tab=invoices&invoiceId=${encodeURIComponent(id)}` : ""),
-  bookings: () => "/admin?tab=bookings",
-  lead: () => "/admin?tab=leads",
-  tips: () => "/admin?tab=tips",
+  booking: (id) => (id ? `/admin/jobs/${encodeURIComponent(id)}` : ""),
+  customer: (id) => (id ? `/admin/customers/${encodeURIComponent(id)}` : ""),
+  invoice: (id) => (id ? `/admin/projects?invoiceId=${encodeURIComponent(id)}` : ""),
+  bookings: () => "/admin/jobs",
+  lead: (id) => (id ? `/admin/leads/${encodeURIComponent(id)}` : "/admin/leads"),
+  customers: () => "/admin/customers",
+  tips: () => "/admin/tips",
 };
 
 module.exports = {

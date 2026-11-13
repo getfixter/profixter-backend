@@ -183,6 +183,27 @@ const BookingSchema = new mongoose.Schema({
     },
   ],
 
+  /*
+   * Internal staff notes (2026-11-12): append-only, never shown to the
+   * customer, never edited or removed through the API. Separate from
+   * adminNote, the single free-text field the old Admin edits in place.
+   * select:false so no existing query (customer routes included) can return
+   * them by accident; the Admin job detail asks for them explicitly.
+   */
+  staffNotes: {
+    type: [
+      {
+        text: { type: String, required: true, maxlength: 2000 },
+        authorId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        authorName: { type: String, default: "" },
+        authorRole: { type: String, default: "" },
+        at: { type: Date, default: Date.now },
+      },
+    ],
+    select: false,
+    default: undefined,
+  },
+
   status: { type: String, default: "Pending" }, // Pending | Confirmed | Completed | Canceled | ...
   statusHistory: [{ status: String, date: Date }],
   cancellationReason: { type: String },

@@ -247,15 +247,31 @@ async function createSlotBooking({ bookingData, start, admin, reservationStatus 
   }
 }
 
-/** The customer, Admin and crew are told about a visit that needs no payment. */
+/**
+ * The customer, Admin and crew are told about a visit that needs no payment.
+ *
+ * The customer's email follows the status (J-11): "confirmed" only when the
+ * visit really is Confirmed, otherwise the "we received it, we will confirm"
+ * email. The text picks its wording from the status the same way.
+ */
 async function notifyUnpaidVisit({ booking, who }) {
   const addressLine = [booking.address, booking.city, booking.state, booking.zip].filter(Boolean).join(", ");
   const when = moment.tz(booking.date, TZ).format("dddd, MMMM D, YYYY [at] h:mm A");
+  const confirmed = /^confirmed$/i.test(String(booking.status || ""));
   try {
     await mail.sendTx(
-      "booking_created",
+      confirmed ? "booking_confirmed" : "booking_created",
       booking.email,
-      { name: booking.name || "there", bookingNumber: booking.bookingNumber, date: booking.date, service: booking.service, address: addressLine },
+      {
+        name: booking.name || "there",
+        bookingNumber: booking.bookingNumber,
+        date: booking.date,
+        service: booking.service,
+        selectedTask: booking.selectedTask,
+        bookingType: booking.bookingType,
+        accessType: booking.accessType,
+        address: addressLine,
+      },
       {
         bccAdmin: false,
         logContext: {
@@ -430,7 +446,20 @@ async function createAdminVisit({ body = {}, files = [], admin, clientUrl }) {
           ? { subscription: activeSub.subscriptionType, accessType: "membership", bookingType: "membership_visit", paymentState: "not_required" }
           : { subscription: ADMIN_FREE_LABEL, accessType: "admin", bookingType: "membership_visit", paymentState: "not_required" }
       );
+      /*
+       * Q-2: the owner booked it, so it starts Confirmed when every normal
+       * requirement is met - the reservation engine reserved the slot and
+       * assigned a technician, and nothing is owed. Without the engine there is
+       * no technician assignment, so it stays Pending for the owner to confirm.
+       * Reminders select Confirmed bookings, so they now go out without an
+       * extra step.
+       */
+      const engine = reservationEngineEnabled();
+      if (engine) bookingData.status = "Confirmed";
       ({ booking } = await createSlotBooking({ bookingData, start, admin }));
+      if (engine && !(booking.slotReservationId && booking.assignedFixterId)) {
+        booking = await Booking.findOneAndUpdate({ _id: booking._id }, { $set: { status: "Pending" } }, { new: true });
+      }
       await notifyUnpaidVisit({ booking, who });
       return { booking, payment: null };
     }

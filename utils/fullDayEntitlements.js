@@ -466,8 +466,26 @@ async function restoreIncludedFullDay({ booking, now = new Date() }) {
   return { restored: true, reason: "", entitlement };
 }
 
+/**
+ * Give back whichever free Full Day this booking spent: the Elite included day
+ * or a Loyalty day. Each helper refuses a booking that is not its own, so
+ * calling both is safe and neither can return the wrong benefit. Shared by the
+ * customer's own cancel and Admin's cancel (J-10), so both follow one rule.
+ * Call it before the booking's schedule is cleared: two of the conditions are
+ * read off the booking's scheduled date.
+ */
+async function restoreFullDayBenefit({ booking, now = new Date() }) {
+  if (booking?.bookingType !== "full_day_visit") return { restored: false, reason: "not_full_day" };
+  const included = await restoreIncludedFullDay({ booking, now });
+  if (included?.restored) return { ...included, kind: "included" };
+  const loyalty = await restoreLoyaltyFullDay({ booking, now });
+  if (loyalty?.restored) return { ...loyalty, kind: "loyalty" };
+  return { restored: false, reason: loyalty?.reason || included?.reason || "" };
+}
+
 module.exports = {
   INCLUDED_ELITE_FULL_DAYS_PER_PERIOD,
+  restoreFullDayBenefit,
   LIVE_STATUSES,
   activeEliteSubscription,
   availableLoyaltyFullDays,

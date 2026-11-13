@@ -263,6 +263,9 @@ app.use(
 );
 app.use("/api/admin/calendar", adminCalendar);
 app.use("/api/admin", require("./routes/adminBookingReservations"));
+// The new Jobs API and Needs action (Admin redesign 2026-11-12); before the catch-all admin router.
+app.use("/api/admin", require("./routes/adminJobs"));
+app.use("/api/admin/needs-action", require("./routes/adminNeedsAction"));
 app.use("/api/admin/projects", require("./routes/projects"));
 app.use("/api/admin/estimates", require("./routes/adminEstimates"));
 app.use("/api/admin/contracts", require("./routes/adminContracts"));

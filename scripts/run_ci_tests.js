@@ -125,6 +125,10 @@ const SUITES = [
   "test_admin_marketing_consent.js",
   // Post-visit review requests: the 60-minute delay, one per booking, the per-customer cooldown, locks.
   "test_booking_review_requests.js",
+  // Jobs allow-list, labels, record scope and Admin email links (no database).
+  "test_booking_transitions.js",
+  // Jobs API: Fixter record scope, atomic transitions, edits, reschedule, cancel, Needs action (in-memory replica set).
+  "test_admin_jobs_integration.js",
 ];
 
 /**

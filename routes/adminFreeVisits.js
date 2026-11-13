@@ -24,7 +24,12 @@ const { createAdminActivityLog } = require("../utils/adminActivityLog");
 const { addressMatchKey, checkFreeVisitEligibility } = require("../utils/freeVisit/eligibility");
 const { channelOf, confirmGuestVisit, declineGuestVisit, hasValidAddress, isReviewableFreeVisit, updateGuestVisit } = require("../utils/freeVisit/guestVisit");
 
-const bookingsWrite = requirePermission(PERMISSIONS.BOOKINGS_WRITE);
+/*
+ * Reviewing a request is approving or declining it, which a field Fixter may
+ * not do (owner decision Q-1): the Jobs section (bookings.assign) is required,
+ * not plain bookings.write.
+ */
+const jobsManage = requirePermission(PERMISSIONS.BOOKINGS_ASSIGN);
 const TIMEZONE = "America/New_York";
 
 function writeError(res, error, fallback) {
@@ -129,7 +134,7 @@ async function presentVisit(bookingId) {
   };
 }
 
-router.get("/:bookingId", auth, ...bookingsWrite, async (req, res) => {
+router.get("/:bookingId", auth, ...jobsManage, async (req, res) => {
   if (!validId(req, res)) return;
   try {
     const visit = await presentVisit(req.params.bookingId);
@@ -140,7 +145,7 @@ router.get("/:bookingId", auth, ...bookingsWrite, async (req, res) => {
   }
 });
 
-router.put("/:bookingId", auth, ...bookingsWrite, express.json(), async (req, res) => {
+router.put("/:bookingId", auth, ...jobsManage, express.json(), async (req, res) => {
   if (!validId(req, res)) return;
   try {
     const body = req.body || {};
@@ -166,7 +171,7 @@ router.put("/:bookingId", auth, ...bookingsWrite, express.json(), async (req, re
   }
 });
 
-router.post("/:bookingId/confirm", auth, ...bookingsWrite, express.json(), async (req, res) => {
+router.post("/:bookingId/confirm", auth, ...jobsManage, express.json(), async (req, res) => {
   if (!validId(req, res)) return;
   try {
     const result = await confirmGuestVisit({
@@ -199,7 +204,7 @@ router.post("/:bookingId/confirm", auth, ...bookingsWrite, express.json(), async
   }
 });
 
-router.post("/:bookingId/decline", auth, ...bookingsWrite, express.json(), async (req, res) => {
+router.post("/:bookingId/decline", auth, ...jobsManage, express.json(), async (req, res) => {
   if (!validId(req, res)) return;
   try {
     const kind = req.body?.kind === "canceled" ? "canceled" : "declined";
