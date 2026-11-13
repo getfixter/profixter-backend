@@ -34,6 +34,8 @@ const SUITES = [
   "test_member_visit_lead_time.js",
   "test_member_calendar_availability.js",
   "test_one_time_visit_payment_flow.js",
+  // Review fix 1: the payment-received email prints "$99", not "99".
+  "test_one_time_payment_email_price.js",
   "test_customer_booking_cutover.js",
   "test_booking_cutover_routes.js",
   "test_slot_reservation_service.js",

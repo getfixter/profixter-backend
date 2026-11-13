@@ -802,6 +802,11 @@ function confirmAdminPaidVisit(booking, reservationIssue) {
   return true;
 }
 
+/* "$99": the payment-received template prints this verbatim ("We received your $99 payment"). */
+function oneTimePaymentPriceLabel(entitlement) {
+  return `$${((entitlement?.priceCents || 9900) / 100).toFixed(0)}`;
+}
+
 async function sendOneTimePaymentEmails({ booking, user, entitlement, session }) {
   const confirmedNow = /^confirmed$/i.test(String(booking.status || ""));
   const address = [booking.address, booking.city, booking.state, booking.zip]
@@ -822,7 +827,7 @@ async function sendOneTimePaymentEmails({ booking, user, entitlement, session })
         address,
         bookingType: booking.bookingType,
         accessType: booking.accessType,
-        price: `${((entitlement?.priceCents || 9900) / 100).toFixed(0)}`,
+        price: oneTimePaymentPriceLabel(entitlement),
         durationMinutes: entitlement?.durationMinutes || 90,
       },
       {
@@ -2866,4 +2871,5 @@ module.exports.__testables = {
   soldByStaff,
   reportPaidVisitPurchase,
   reportGiftPurchase,
+  oneTimePaymentPriceLabel,
 };
