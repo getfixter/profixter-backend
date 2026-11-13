@@ -312,6 +312,17 @@ function withoutSigningUrl(body) {
   return { ...body, signingUrl: null, signingUrlWithheld: true };
 }
 
+/** A duplicate answer only stands while the request it names is still open. */
+async function signatureStillLive(previous) {
+  const id = previous?.signature?.id;
+  if (!id || !mongoose.isValidObjectId(id)) return false;
+  const signature = await ESignature.findById(id).select("status signingToken.state signingToken.expiresAt").lean();
+  if (!signature || signature.signingToken?.state !== "active") return false;
+  if (["Expired", "Cancelled", "Declined", "Completed", "Signed"].includes(signature.status)) return false;
+  const expiresAt = signature.signingToken?.expiresAt;
+  return !expiresAt || new Date(expiresAt).getTime() > Date.now();
+}
+
 router.post("/native/send", async (req, res) => {
   let audit = null;
   try {
@@ -393,6 +404,7 @@ router.post("/native/send", async (req, res) => {
               entityId: documentId,
               recipient: `${documentType}:REMOTE`,
               storeBody: withoutSigningUrl,
+              stillCurrent: signatureStillLive,
             },
             startRequest
           )

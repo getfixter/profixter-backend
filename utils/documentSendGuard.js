@@ -88,7 +88,7 @@ async function waitForFirst(scope, key) {
   }
 }
 
-async function runWindowed({ req, action, entityId, recipient, storeBody }, work) {
+async function runWindowed({ req, action, entityId, recipient, storeBody, stillCurrent }, work) {
   const scope = `send-guard:${action}`;
   const key = guardKey(entityId, recipient);
 
@@ -117,6 +117,12 @@ async function runWindowed({ req, action, entityId, recipient, storeBody }, work
     }
 
     const waited = await waitForFirst(scope, key);
+    if (waited.record && typeof stillCurrent === "function" && !(await stillCurrent(waited.record.response))) {
+      // What the first send produced is gone (e.g. its signing request expired
+      // or was revoked), so this is a new send, not a repeat.
+      await AdminIdempotencyRecord.deleteOne({ _id: waited.record._id }).catch(() => {});
+      continue;
+    }
     if (waited.record) {
       return finish({ httpStatus: waited.record.httpStatus, body: waited.record.response }, { duplicate: true });
     }
@@ -132,14 +138,18 @@ async function runWindowed({ req, action, entityId, recipient, storeBody }, work
   throw new IdempotencyError("SEND_IN_PROGRESS", "This document is already being sent to this address.", 409);
 }
 
-async function runDocumentSend({ req, action, entityId, recipient = "", storeBody = null }, work) {
+/**
+ * `stillCurrent(previousBody)` (optional, window only): resolve false when the
+ * first send's result no longer stands, so the repeat sends after all.
+ */
+async function runDocumentSend({ req, action, entityId, recipient = "", storeBody = null, stillCurrent = null }, work) {
   const raw = rawKeyFrom(req);
   if (raw) {
     const key = readIdempotencyKey(raw);
     const result = await runIdempotent({ req, action, key, entityId: String(entityId || ""), storeBody }, work);
     return result.replayed ? finish(result, { replayed: true }) : { httpStatus: result.httpStatus, body: result.body };
   }
-  return runWindowed({ req, action, entityId, recipient, storeBody }, work);
+  return runWindowed({ req, action, entityId, recipient, storeBody, stillCurrent }, work);
 }
 
 /** Maps a guard refusal to `{message, code}`; returns false for other errors. */
