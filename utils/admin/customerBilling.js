@@ -182,7 +182,7 @@ async function billingForCustomer(user, { now = Date.now(), fresh = false } = {}
       description: r.description,
       status: r.status,
       totalCents: r.totalCents,
-      taxCents: r.taxCents,
+      taxStatus: r.tax?.status || "not_calculated",
       refundedCents: Number(r.refundedCents || 0),
       paidAt: r.paidAt || null,
       createdAt: r.createdAt,

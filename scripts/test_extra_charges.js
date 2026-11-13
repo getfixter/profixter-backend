@@ -1,6 +1,7 @@
 /*
- * Charge extra, end to end: owner-only access, server-side ownership, the
- * saved card, tax, the PaymentIntent, payment links, webhooks and refunds.
+ * Charge customer ("Charge extra"), end to end: owner-only access, server-side
+ * ownership, the saved card, the PaymentIntent for exactly the entered total,
+ * payment links, webhooks, refunds and background reconciliation.
  *
  * Real routes (Admin extra charges, Admin jobs, /api/pay, the Stripe webhook
  * with real signatures), a real in-memory MongoDB replica set. Stripe's API,
@@ -18,8 +19,6 @@ Object.assign(process.env, {
   S3_BUCKET: "test-bucket",
   AWS_REGION: "us-east-1",
   MAIL_ADMIN: "owner@example.test",
-  // A well-formed placeholder: the real code is the accountant's decision (config/taxCodes.js).
-  STRIPE_TAX_CODE_ADDITIONAL_WORK: "txcd_99999999",
 });
 
 const assert = require("assert");
@@ -316,15 +315,10 @@ app.use("/api/pay", require("../routes/pay"));
 
 let base;
 const tokenFor = (u) => jwt.sign({ id: String(u._id), tv: Number(u.tokenVersion || 0) }, process.env.JWT_SECRET, { expiresIn: "10m" });
-const BASIS = {
-  "Capital Improvement - No Sales Tax": { document: "ST-124", reference: "ST-124 signed 11/13, in the job folder", onFile: true },
-  "Tax Exempt": { document: "ST-119.1", reference: "Exempt org cert #EX-12345", onFile: true },
-};
 async function call(method, path, user, body) {
-  if (body && BASIS[body.taxTreatment] && body.taxBasis === undefined) body = { ...body, taxBasis: BASIS[body.taxTreatment] };
-  if (body && body.taxBasis === null) {
-    body = { ...body };
-    delete body.taxBasis;
+  if (body && body.previewFingerprint !== undefined) {
+    body = { ...body, targetFingerprint: body.previewFingerprint };
+    delete body.previewFingerprint;
   }
   const r = await fetch(`${base}${path}`, {
     method,
@@ -384,18 +378,21 @@ async function makeBooking(user, fields = {}) {
 }
 let keySeq = 0;
 const key = () => `test-key-${Date.now()}-${++keySeq}`;
-async function previewFor(owner, booking, input) {
-  const r = await call("POST", `/api/admin/jobs/${booking._id}/extra-charges/preview`, owner, input);
+/** What the sheet shows before "Charge $X": the target, plus the entered total (what is charged, nothing added). */
+async function previewFor(owner, booking, input = {}) {
+  const r = await call("GET", `/api/admin/jobs/${booking._id}/extra-charges/target`, owner);
   assert.strictEqual(r.status, 200, JSON.stringify(r.body));
-  return r.body.preview;
+  const cents = input.amount !== undefined ? extras.readAmountCents({ amount: input.amount }) : null;
+  return { ...r.body.target, totalCents: cents };
 }
 async function charge(owner, booking, input, extra = {}) {
   const p = await previewFor(owner, booking, input);
-  const body = { ...input, idempotencyKey: key(), customerAgreed: true, previewFingerprint: p.fingerprint, expectedTotalCents: p.totalCents, method: "card", ...extra };
+  const body = { amount: input.amount, note: input.description || "", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card", allowRepeat: true, ...extra };
   const r = await call("POST", `/api/admin/jobs/${booking._id}/extra-charges`, owner, body);
   return { preview: p, res: r, body };
 }
 const piCreates = () => F.calls.filter((c) => c[0] === "paymentIntents.create").length;
+// Old test inputs carried a tax treatment; the server now ignores any such field (nothing is added on top).
 const TAXABLE = "Taxable Repair / Maintenance";
 const CAPITAL = "Capital Improvement - No Sales Tax";
 
@@ -428,7 +425,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
     await check("only the owner may preview, charge, list or act; everyone else is refused by the server", async () => {
       const input = { description: "Hang extra shelf", amount: "40", taxTreatment: CAPITAL };
       for (const who of [general, manager, field, alice]) {
-        for (const [m, p] of [["GET", `/api/admin/jobs/${aliceJob._id}/extra-charges`], ["POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/preview`], ["POST", `/api/admin/jobs/${aliceJob._id}/extra-charges`]]) {
+        for (const [m, p] of [["GET", `/api/admin/jobs/${aliceJob._id}/extra-charges`], ["GET", `/api/admin/jobs/${aliceJob._id}/extra-charges/target`], ["POST", `/api/admin/jobs/${aliceJob._id}/extra-charges`]]) {
           const r = await call(m, p, who, { ...input, idempotencyKey: key(), customerAgreed: true, method: "card" });
           assert.strictEqual(r.status, 403, `${who.name} ${m} ${p} -> ${r.status}`);
         }
@@ -448,51 +445,42 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       const pending = await makeBooking(alice, { status: "Pending" });
       const p = await call("GET", `/api/admin/jobs/${pending._id}`, owner);
       assert.ok(!p.body.job.allowedActions.includes("chargeExtra"));
-      const pr = await previewFor(owner, pending, { description: "Extra work", amount: "10", taxTreatment: CAPITAL });
+      const pr = await previewFor(owner, pending);
       assert.strictEqual(pr.direct.allowed, false);
       assert.strictEqual(pr.direct.code, "BOOKING_NOT_CHARGEABLE");
     });
 
     /* ------------------------- preview and tax ---------------------------- */
-    await check("preview: the booking's own customer, address and card; taxable work taxed by Stripe Tax; integer cents", async () => {
-      const p = await previewFor(owner, aliceJob, { description: "Replace two outlets", amount: "123.45", taxTreatment: TAXABLE });
+    await check("target: the booking's own customer, address and card; no Stripe ids reach the browser", async () => {
+      const p = await previewFor(owner, aliceJob);
       assert.strictEqual(p.customer.name, "Alice Able");
       assert.strictEqual(p.serviceAddress.full, "10 Shared Ln, Huntington, NY 11743");
       assert.deepStrictEqual({ brand: p.card.brand, last4: p.card.last4 }, { brand: "visa", last4: "1111" });
-      assert.strictEqual(p.subtotalCents, 12345);
-      assert.strictEqual(p.taxCents, Math.round((12345 * 8.625) / 100));
-      assert.strictEqual(p.totalCents, 12345 + p.taxCents);
-      assert.strictEqual(p.tax.source, "stripe_tax");
-      assert.strictEqual(p.tax.taxCode, "txcd_99999999", "the configured code is sent, never an account default");
       assert.ok(p.direct.allowed && p.link.allowed);
-      assert.ok(p.consentStatement.includes(`$${(p.totalCents / 100).toFixed(2)}`));
+      assert.ok(p.fingerprint && p.fingerprint.length === 32);
       assert.ok(!JSON.stringify(p).includes("pm_alice") && !JSON.stringify(p).includes("cus_alice"), "no Stripe ids reach the browser");
     });
 
-    await check("tax: no-tax classifications are $0, 'Not Determined' and a Stripe answer of no tax are blockers, never a silent $0", async () => {
-      const cap = await previewFor(owner, aliceJob, { description: "New deck stairs", amount: "200", taxTreatment: CAPITAL });
-      assert.strictEqual(cap.taxCents, 0);
-      assert.strictEqual(cap.tax.source, "documented_exemption");
-      const none = await previewFor(owner, aliceJob, { description: "Something", amount: "200" });
-      assert.strictEqual(none.tax.ok, false);
-      assert.strictEqual(none.tax.code, "TAX_TREATMENT_REQUIRED");
-      assert.strictEqual(none.totalCents, null);
-      assert.strictEqual(none.direct.allowed, false);
-      assert.strictEqual(none.link.allowed, false);
-      F.taxReason = "not_collecting";
-      const nc = await previewFor(owner, aliceJob, { description: "Fix faucet", amount: "200", taxTreatment: TAXABLE });
-      F.taxReason = "standard_rated";
-      assert.strictEqual(nc.tax.code, "TAX_NOT_COLLECTED");
-      assert.ok(/not collecting/i.test(nc.tax.message));
-      assert.strictEqual(nc.direct.allowed, false);
-      const guestNoAddr = await makeBooking(null, { adminGuest: true, address: "", city: "", zip: "" });
-      const ga = await previewFor(owner, guestNoAddr, { description: "Fix faucet", amount: "200", taxTreatment: TAXABLE });
-      assert.strictEqual(ga.tax.code, "TAX_ADDRESS_MISSING");
-      const bad = await call("POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/preview`, owner, { description: "x y z", amount: "12.345", taxTreatment: CAPITAL });
-      assert.strictEqual(bad.status, 400);
-      assert.strictEqual(bad.body.code, "INVALID_AMOUNT");
+    await check("amount: the entered total is charged as is (integer cents), with no tax added and no exemption claimed", async () => {
+      const calcs = F.calls.filter((c) => c[0].startsWith("tax.")).length;
+      const job = await makeBooking(alice);
+      const p = await previewFor(owner, job);
+      const r = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "123.45", note: "", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card", taxTreatment: "Tax Exempt" });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      assert.strictEqual(r.body.charge.totalCents, 12345);
+      assert.strictEqual(r.body.charge.taxStatus, "not_calculated");
+      const rec = await AdditionalCharge.findById(r.body.charge.id).lean();
+      assert.strictEqual(F.pis.get(rec.paymentIntentId).amount, 12345, "exactly the entered amount, nothing on top");
+      assert.strictEqual(F.pis.get(rec.paymentIntentId).metadata.taxStatus, "not_calculated");
+      assert.strictEqual(rec.tax.status, "not_calculated", "not marked exempt: tax is accounted separately");
+      assert.strictEqual(F.calls.filter((c) => c[0].startsWith("tax.")).length, calcs, "no Stripe Tax calls in this flow");
+      for (const [amount, code] of [["12.345", "INVALID_AMOUNT"], ["0.10", "AMOUNT_TOO_SMALL"], ["5000.01", "AMOUNT_TOO_LARGE"], ["", "INVALID_AMOUNT"]]) {
+        const bad = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount, idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card" });
+        assert.strictEqual(bad.body.code, code, amount);
+      }
       assert.strictEqual(extras.readAmountCents({ amount: "0.29" }), 29);
       assert.strictEqual(extras.readAmountCents({ amount: "1,234.5" }), 123450);
+      assert.strictEqual(extras.readAmountCents({ amount: "$40" }), 4000);
     });
 
     /* ---------------------------- the charge ------------------------------ */
@@ -501,7 +489,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       const before = (await Booking.findById(aliceJob._id).lean());
       const entBefore = await VisitEntitlement.countDocuments();
       const emailsBefore = sentEmails.length;
-      const { preview: p, res } = await charge(owner, aliceJob, { description: "Replace two outlets", amount: "123.45", taxTreatment: TAXABLE, writtenApprovalRef: "Text from customer 2:14pm" });
+      const { preview: p, res } = await charge(owner, aliceJob, { description: "Replace two outlets", amount: "123.45" });
       assert.strictEqual(res.status, 201, JSON.stringify(res.body));
       const c = res.body.charge;
       aliceCharge = c;
@@ -515,19 +503,19 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(rec.stripeCustomerId, "cus_alice");
       assert.strictEqual(rec.paymentMethodId, "pm_alice");
       assert.strictEqual(rec.consent.confirmedByName, "Owner Person");
-      assert.strictEqual(rec.consent.totalCents, p.totalCents);
-      assert.strictEqual(rec.consent.writtenApprovalRef, "Text from customer 2:14pm");
+      assert.strictEqual(rec.consent.totalCents, 12345);
+      assert.strictEqual(rec.consent.statement, 'The owner pressed "Charge $123.45".');
       assert.ok(rec.consent.confirmedAt);
+      assert.strictEqual(rec.description, "Replace two outlets", "the optional note is kept");
       const pi = F.pis.get(rec.paymentIntentId);
       assert.strictEqual(pi.customer, "cus_alice");
       assert.strictEqual(pi.payment_method, "pm_alice");
       assert.strictEqual(pi.amount, p.totalCents);
       assert.strictEqual(pi.receipt_email, "shared@example.test");
       assert.deepStrictEqual(
-        { k: pi.metadata.productKind, a: pi.metadata.additionalChargeId, b: pi.metadata.bookingId, u: pi.metadata.userMongoId, t: pi.metadata.taxCents },
-        { k: "additional_charge", a: c.id, b: String(aliceJob._id), u: String(alice._id), t: String(p.taxCents) }
+        { k: pi.metadata.productKind, a: pi.metadata.additionalChargeId, b: pi.metadata.bookingId, u: pi.metadata.userMongoId, t: pi.metadata.amountCents },
+        { k: "additional_charge", a: c.id, b: String(aliceJob._id), u: String(alice._id), t: "12345" }
       );
-      assert.strictEqual(F.taxTx.filter((t) => t.reference === rec.number).length, 1, "tax recorded in Stripe Tax once");
       assert.strictEqual(sentEmails.length, emailsBefore, "no email of ours: the receipt is Stripe's");
       const after = await Booking.findById(aliceJob._id).lean();
       for (const k of ["status", "paymentState", "accessType", "bookingType", "entitlementId", "subscription"]) assert.deepStrictEqual(after[k], before[k], k);
@@ -562,17 +550,29 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(c.body.charge.status, "paid");
     });
 
-    await check("consent: refused unless the owner confirms (never assumed), and refused when anything changed since review", async () => {
+    await check("stale details and repeats: a changed card or account since the screen opened is refused; the same amount again soon asks first", async () => {
       const job = await makeBooking(alice);
-      const input = { description: "Extra hour", amount: "80", taxTreatment: CAPITAL };
-      const p = await previewFor(owner, job, input);
-      const r = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { ...input, idempotencyKey: key(), previewFingerprint: p.fingerprint, expectedTotalCents: p.totalCents, method: "card" });
-      assert.strictEqual(r.status, 428);
-      assert.strictEqual(r.body.code, "CONFIRMATION_REQUIRED");
-      const wrongTotal = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { ...input, idempotencyKey: key(), customerAgreed: true, previewFingerprint: p.fingerprint, expectedTotalCents: p.totalCents + 1, method: "card" });
-      assert.strictEqual(wrongTotal.status, 409);
-      assert.strictEqual(wrongTotal.body.code, "PREVIEW_CHANGED");
+      const p = await previewFor(owner, job);
+      const stale = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "80", idempotencyKey: key(), targetFingerprint: "0".repeat(32), method: "card" });
+      assert.strictEqual(stale.status, 409);
+      assert.strictEqual(stale.body.code, "TARGET_CHANGED");
+      assert.ok(stale.body.target && stale.body.target.card.last4 === "1111", "the new details come back to show");
+      const missing = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "80", idempotencyKey: key(), method: "card" });
+      assert.strictEqual(missing.body.code, "TARGET_CHANGED");
       assert.strictEqual(await AdditionalCharge.countDocuments({ booking: job._id }), 0);
+      const first = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "80", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card" });
+      assert.strictEqual(first.body.charge.status, "paid");
+      const creates = piCreates();
+      const again = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "80", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card" });
+      assert.strictEqual(again.status, 409);
+      assert.strictEqual(again.body.code, "POSSIBLE_DUPLICATE");
+      assert.ok(/already charged/.test(again.body.message));
+      assert.strictEqual(piCreates(), creates, "no second charge without the owner saying so");
+      const different = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "35", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card" });
+      assert.strictEqual(different.status, 201, "a different amount is a different charge");
+      const meant = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { amount: "80", idempotencyKey: key(), targetFingerprint: p.fingerprint, method: "card", allowRepeat: true });
+      assert.strictEqual(meant.status, 201, "a deliberate second charge, confirmed");
+      assert.strictEqual(await AdditionalCharge.countDocuments({ booking: job._id, status: "paid" }), 3);
     });
 
     /* ---------------------------- linkage --------------------------------- */
@@ -739,7 +739,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       const s = F.sessions.get(sessionId);
       assert.strictEqual(s.customer, "cus_lee");
       assert.strictEqual(s.line_items_param.reduce((a, l) => a + l.price_data.unit_amount, 0), authCharge.totalCents);
-      assert.strictEqual(s.line_items_param.length, 2, "subtotal and sales tax lines");
+      assert.strictEqual(s.line_items_param.length, 1, "one line: exactly the entered total, nothing added");
       const { session, pi } = completeSession(sessionId);
       assert.strictEqual(await sendEvent("checkout.session.completed", session, "evt_link_1"), 200);
       assert.strictEqual(await sendEvent("checkout.session.completed", session, "evt_link_1"), 200);
@@ -748,7 +748,6 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(rec.status, "paid");
       assert.strictEqual(rec.paymentIntentId, pi.id);
       assert.strictEqual(rec.extraPayments.length, 0);
-      assert.strictEqual(F.taxTx.filter((t) => t.reference === rec.number).length, 1);
       assert.strictEqual((await AdminPaymentLink.findById(link._id).lean()).status, "paid");
       const again = await call("POST", `/api/pay/${token}/checkout`);
       assert.strictEqual(again.status, 410);
@@ -893,7 +892,6 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       for (const id of ["evt_pp_1", "evt_pp_1", "evt_pp_2", "evt_pp_3"]) assert.strictEqual(await sendEvent("payment_intent.succeeded", { ...pi }, id), 200);
       const after = await AdditionalCharge.findById(rec._id).lean();
       assert.strictEqual(after.status, "paid");
-      assert.strictEqual(F.taxTx.filter((t) => t.reference === after.number).length, 1);
       assert.strictEqual(after.extraPayments.length, 0);
     });
 
@@ -904,7 +902,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual((await AdditionalCharge.findById(rec._id).lean()).status, "awaiting_payment");
     });
 
-    await check("refunds made in Stripe: partial then full, status and Stripe Tax reversals follow, repeated events are harmless", async () => {
+    await check("refunds made in Stripe: partial then full, the status follows, repeated events are harmless", async () => {
       const rec = await AdditionalCharge.findById(aliceCharge.id).lean();
       const ch = F.charges.get(rec.chargeId);
       ch.amount_refunded = 5000;
@@ -917,9 +915,7 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       await sendEvent("charge.refunded", { ...ch, object: "charge" }, "evt_r2");
       after = await AdditionalCharge.findById(rec._id).lean();
       assert.strictEqual(after.status, "refunded");
-      const revs = F.reversals.filter((r) => r.original_transaction === rec.tax.transactionId);
-      assert.deepStrictEqual(revs.map((r) => r.mode), ["partial", "full"]);
-      assert.strictEqual(revs[0].flat_amount, -5000);
+      assert.strictEqual(F.reversals.length, 0, "no Stripe Tax records in this flow");
       const listed = await call("GET", `/api/admin/jobs/${aliceJob._id}/extra-charges`, owner);
       const row = listed.body.charges.find((c) => c.id === aliceCharge.id);
       assert.strictEqual(row.statusLabel, "Refunded");
@@ -939,51 +935,6 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual((await call("POST", `/api/pay/${token}/checkout`)).status, 410);
       const paidClose = await call("POST", `/api/admin/jobs/${aliceJob._id}/extra-charges/${aliceCharge.id}/close`, owner, {});
       assert.strictEqual(paidClose.status, 409);
-    });
-
-    await check("no tax needs a documented basis: missing, wrong for the treatment, or not on file is refused; the basis is stored", async () => {
-      const job = await makeBooking(alice);
-      const none = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: null });
-      assert.strictEqual(none.tax.code, "TAX_BASIS_REQUIRED");
-      assert.strictEqual(none.direct.allowed, false);
-      assert.strictEqual(none.link.allowed, false);
-      const wrong = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-119.1", reference: "cert 1234", onFile: true } });
-      assert.strictEqual(wrong.tax.code, "TAX_BASIS_REQUIRED", "an exempt-org certificate is not a capital-improvement basis");
-      const notOnFile = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-124", reference: "ST-124 signed", onFile: false } });
-      assert.strictEqual(notOnFile.tax.code, "TAX_BASIS_REQUIRED");
-      const noRef = await previewFor(owner, job, { description: "Ramp", amount: "100", taxTreatment: "Tax Exempt", taxBasis: { document: "GOVERNMENT_PO", reference: "x", onFile: true } });
-      assert.strictEqual(noRef.tax.code, "TAX_BASIS_REQUIRED");
-      const ok = await previewFor(owner, job, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL });
-      assert.strictEqual(ok.tax.ok, true);
-      assert.strictEqual(ok.tax.basis.document, "ST-124");
-      // The basis is part of what the owner confirmed: changing it after review is refused.
-      const r = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, taxBasis: { document: "ST-124", reference: "a different reference", onFile: true }, idempotencyKey: key(), customerAgreed: true, previewFingerprint: ok.fingerprint, expectedTotalCents: ok.totalCents, method: "card" });
-      assert.strictEqual(r.status, 409);
-      assert.strictEqual(r.body.code, "PREVIEW_CHANGED");
-      const good = await call("POST", `/api/admin/jobs/${job._id}/extra-charges`, owner, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL, idempotencyKey: key(), customerAgreed: true, previewFingerprint: ok.fingerprint, expectedTotalCents: ok.totalCents, method: "card" });
-      assert.strictEqual(good.status, 201, JSON.stringify(good.body));
-      const rec = await AdditionalCharge.findById(good.body.charge.id).lean();
-      assert.deepStrictEqual({ d: rec.tax.basis.document, r: rec.tax.basis.reference, f: rec.tax.basis.onFile, s: rec.tax.source }, { d: "ST-124", r: "ST-124 signed 11/13, in the job folder", f: true, s: "documented_exemption" });
-      assert.strictEqual(good.body.charge.tax.basis.document, "ST-124");
-      const log = await AdminActivityLog.findOne({ "details.additionalChargeId": good.body.charge.id }).lean();
-      assert.strictEqual(log.details.taxBasis.document, "ST-124");
-    });
-
-    await check("tax code not configured: taxable work is refused with TAX_CODE_NOT_CONFIGURED; exempt work still allowed", async () => {
-      const saved = process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK;
-      delete process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK;
-      try {
-        const calcs = F.calls.filter((c) => c[0] === "tax.calculations.create").length;
-        const p = await previewFor(owner, aliceJob, { description: "Fix faucet", amount: "100", taxTreatment: TAXABLE });
-        assert.strictEqual(p.tax.code, "TAX_CODE_NOT_CONFIGURED");
-        assert.strictEqual(p.direct.allowed, false);
-        assert.strictEqual(p.link.allowed, false);
-        assert.strictEqual(F.calls.filter((c) => c[0] === "tax.calculations.create").length, calcs, "Stripe Tax not even asked with a guessed code");
-        const ok = await previewFor(owner, aliceJob, { description: "New deck stairs", amount: "100", taxTreatment: CAPITAL });
-        assert.strictEqual(ok.direct.allowed, true);
-      } finally {
-        process.env.STRIPE_TAX_CODE_ADDITIONAL_WORK = saved;
-      }
     });
 
     /* ------------------- recovery: one collectible payment ------------------- */
@@ -1120,15 +1071,14 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       await sweepOpen({ now: new Date(Date.now() + 5 * 60 * 1000) });
       let rec = await AdditionalCharge.findById(res.body.charge.id).lean();
       assert.strictEqual(rec.status, "paid");
-      assert.ok(rec.tax.transactionId, "Stripe Tax recorded by the sweep path too");
       F.charges.get(rec.chargeId).amount_refunded = rec.totalCents; // refunded in Stripe, NO webhook
       await AdditionalCharge.updateOne({ _id: rec._id }, { $set: { lastStripeSyncAt: null } });
       await sweepRefunds();
       rec = await AdditionalCharge.findById(rec._id).lean();
       assert.strictEqual(rec.status, "refunded");
-      assert.strictEqual(F.reversals.filter((x) => x.original_transaction === rec.tax.transactionId).length, 1);
+      assert.strictEqual(rec.refundedCents, rec.totalCents);
       await sweepRefunds();
-      assert.strictEqual(F.reversals.filter((x) => x.original_transaction === rec.tax.transactionId).length, 1, "a second sweep changes nothing");
+      assert.strictEqual((await AdditionalCharge.findById(rec._id).lean()).status, "refunded", "a second sweep changes nothing");
     });
 
     await check("background sweep: a card cancel Stripe did not confirm is retried until it is canceled", async () => {
@@ -1157,8 +1107,8 @@ const CAPITAL = "Capital Improvement - No Sales Tax";
       assert.strictEqual(total, recs.reduce((s, r) => s + r.totalCents, 0), "counted once");
     });
 
-    await check("Overview revenue: an extra is its own kind and its sales tax is not counted as revenue", async () => {
-      const row = classifyCharge({ id: "ch_x", amount: 13410, amount_refunded: 0, created: now(), payment_intent: { id: "pi_x", metadata: { productKind: "additional_charge", taxCents: "1065" } } });
+    await check("Overview revenue: an extra is its own kind", async () => {
+      const row = classifyCharge({ id: "ch_x", amount: 13410, amount_refunded: 0, created: now(), payment_intent: { id: "pi_x", metadata: { productKind: "additional_charge", taxStatus: "not_calculated" } } });
       assert.strictEqual(row.kind, "extra");
     });
   } finally {

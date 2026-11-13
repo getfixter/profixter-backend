@@ -3,8 +3,8 @@
  * Mounted under /api/admin.
  *
  *   GET  /jobs/:id/extra-charges                       the extras, reconciled with Stripe
- *   POST /jobs/:id/extra-charges/preview               who pays, card, tax, total (nothing saved)
- *   POST /jobs/:id/extra-charges                       confirm: card charge or payment link
+ *   GET  /jobs/:id/extra-charges/target                who pays: customer, saved card (nothing saved)
+ *   POST /jobs/:id/extra-charges                       "Charge $X" (card) or payment link
  *   POST /jobs/:id/extra-charges/:chargeId/refresh     ask Stripe now
  *   POST /jobs/:id/extra-charges/:chargeId/retry-card  try the saved card again (owner's press only)
  *   POST /jobs/:id/extra-charges/:chargeId/payment-link   send or copy a link for the same charge
@@ -46,8 +46,7 @@ async function log(req, action, record, details = {}) {
       number: record.number,
       status: record.status,
       totalCents: record.totalCents,
-      subtotalCents: record.subtotalCents,
-      taxCents: record.taxCents,
+      taxStatus: record.tax?.status || "not_calculated",
       method: record.method,
       ...details,
     },
@@ -63,11 +62,11 @@ router.get("/jobs/:id/extra-charges", auth, ...ownerOnly, async (req, res) => {
   }
 });
 
-router.post("/jobs/:id/extra-charges/preview", auth, ...ownerOnly, async (req, res) => {
+router.get("/jobs/:id/extra-charges/target", auth, ...ownerOnly, async (req, res) => {
   try {
-    return res.json({ preview: await extras.preview(req.params.id, req.body || {}) });
+    return res.json({ target: await extras.targetFor(req.params.id) });
   } catch (error) {
-    return sendError(res, error, "POST extra-charges/preview");
+    return sendError(res, error, "GET extra-charges/target");
   }
 });
 
@@ -76,9 +75,9 @@ router.post("/jobs/:id/extra-charges", auth, ...ownerOnly, async (req, res) => {
     const { record, payUrl, delivery, replayed } = await extras.create(req, req.params.id, req.body || {});
     if (!replayed) {
       await log(req, record.method === "card" ? "Extra Charged (Saved Card)" : "Extra Charge Payment Link Created", record, {
-        consent: { statement: record.consent.statement, confirmedAt: record.consent.confirmedAt, writtenApprovalRef: record.consent.writtenApprovalRef },
+        consent: { statement: record.consent.statement, confirmedAt: record.consent.confirmedAt },
+        note: record.description || "",
         card: record.card?.last4 ? `${record.card.brand} •••• ${record.card.last4}` : "",
-        taxBasis: record.tax?.basis?.document ? { document: record.tax.basis.document, reference: record.tax.basis.reference } : null,
         paymentIntentId: record.paymentIntentId || "",
         delivery: delivery || null,
       });

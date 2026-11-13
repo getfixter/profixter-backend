@@ -8,7 +8,7 @@
  *
  *   frequent (every 10 min): charging/processing (an answer we never got),
  *     awaiting_payment with a Checkout page made (paid on a link), failed with
- *     a card cancel Stripe did not confirm, paid without its Stripe Tax record.
+ *     a card cancel Stripe did not confirm.
  *   daily: paid / partly refunded in the last 180 days, for refunds made in
  *     Stripe while charge.refunded was not delivered.
  *
@@ -30,7 +30,7 @@ async function reconcileEach(records, { force = true } = {}) {
   for (const r of records) {
     checked += 1;
     try {
-      const before = `${r.status}:${r.refundedCents}:${r.tax?.transactionId || ""}`;
+      const before = `${r.status}:${r.refundedCents}`;
       let after = await extras.reconcile(r, { force });
       if (r.status === "failed" && r.attempts.some((a) => a.cancelPending)) {
         try {
@@ -40,7 +40,7 @@ async function reconcileEach(records, { force = true } = {}) {
         }
         after = await AdditionalCharge.findById(r._id);
       }
-      if (after && `${after.status}:${after.refundedCents}:${after.tax?.transactionId || ""}` !== before) changed += 1;
+      if (after && `${after.status}:${after.refundedCents}` !== before) changed += 1;
     } catch (error) {
       errors += 1;
       console.error(JSON.stringify({ level: "warn", event: "extra_charge_sweep_failed", additionalChargeId: String(r._id), message: String(error?.message || error).slice(0, 200) }));
@@ -56,7 +56,6 @@ async function sweepOpen({ now = new Date() } = {}) {
       { status: { $in: ["charging", "processing"] }, statusChangedAt: { $lte: settled } },
       { status: "awaiting_payment", "attempts.kind": "checkout" },
       { status: "failed", "attempts.cancelPending": true },
-      { status: { $in: ["paid", "partially_refunded"] }, "tax.calculationId": { $ne: "" }, "tax.transactionId": "" },
     ],
   })
     .sort({ statusChangedAt: 1 })

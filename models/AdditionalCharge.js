@@ -69,43 +69,24 @@ const AdditionalChargeSchema = new mongoose.Schema(
       zip: { type: String, default: "" },
     },
 
-    description: { type: String, required: true, maxlength: 500 },
+    /* An optional note from the owner. */
+    description: { type: String, default: "", maxlength: 500 },
     currency: { type: String, default: "usd" },
-    subtotalCents: { type: Number, required: true, min: 50 },
-    taxCents: { type: Number, required: true, min: 0 },
+    /* The final total the owner entered and the customer pays. Nothing is added on top. */
     totalCents: { type: Number, required: true, min: 50 },
-    tax: {
-      treatment: { type: String, required: true },
-      source: { type: String, default: "" }, // stripe_tax | documented_exemption
-      /* No-tax treatments only: the document that makes it true (utils/extraCharges/tax.js). */
-      basis: {
-        document: { type: String, default: "" },
-        label: { type: String, default: "" },
-        reference: { type: String, default: "" },
-        onFile: { type: Boolean, default: false },
-      },
-      calculationId: { type: String, default: "" },
-      calculationExpiresAt: { type: Date, default: null },
-      taxCode: { type: String, default: "" },
-      taxabilityReason: { type: String, default: "" },
-      ratePercent: { type: String, default: "" },
-      transactionId: { type: String, default: "" },
-      transactionError: { type: String, default: "" },
-      reversals: { type: [{ refundedCents: Number, transactionId: String, at: Date, _id: false }], default: [] },
-    },
-
     /*
-     * The owner's statement, exactly as confirmed. It records what the OWNER
-     * said; it is not proof of the customer's consent on its own.
+     * Sales tax is NOT calculated in this flow, and the payment is NOT marked
+     * exempt: tax accounting is done separately from Stripe and these records.
      */
+    tax: { status: { type: String, default: "not_calculated" } },
+
+    /* The owner's press of "Charge $X" (or "payment link"), with who and when. */
     consent: {
       statement: { type: String, required: true },
       confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
       confirmedByName: { type: String, default: "" },
       confirmedAt: { type: Date, required: true },
-      description: { type: String, required: true },
       totalCents: { type: Number, required: true },
-      writtenApprovalRef: { type: String, default: "", maxlength: 300 },
     },
 
     method: { type: String, enum: ["card", "link"], required: true },

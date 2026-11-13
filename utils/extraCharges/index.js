@@ -1,25 +1,30 @@
 /**
- * Charge extra: agreed additional work on a booking, charged once.
+ * Charge customer (Admin "Charge extra"): the owner types the final total to
+ * collect on a booking and presses "Charge $X". That press is the confirmation.
  *
- *   preview  -> who pays (linkage.js), the card, the tax (tax.js), the total,
- *               and a fingerprint of all of it.
- *   create   -> the owner confirms that exact fingerprint. The AdditionalCharge
- *               record is written FIRST, then Stripe is asked:
- *                 card: an off-session PaymentIntent on the account's own
- *                       Stripe customer and its default card, with a Stripe
- *                       idempotency key made from the record id + attempt;
+ *   target   -> who pays (linkage.js): the booking's own account, its verified
+ *               Stripe customer and that customer's attached card, plus a
+ *               fingerprint of them. Nothing is computed on top of the amount.
+ *   create   -> the fingerprint must still match (stale or switched account
+ *               details are refused). The AdditionalCharge record is written
+ *               FIRST, then Stripe is asked:
+ *                 card: an off-session PaymentIntent for exactly the amount on
+ *                       that customer and card, idempotency key = record id +
+ *                       attempt;
  *                 link: a booking-specific profixter.com/pay/<token> link that
  *                       opens a Stripe-hosted Checkout for the same record.
  *   reconcile-> every answer from Stripe (the API call, its retry after a
- *               timeout, a webhook, a pull from Stripe) goes through
- *               applyPaymentIntent, which only ever moves the record forward,
- *               atomically, and only for a PaymentIntent that names this
- *               record, this amount and this customer.
+ *               timeout, a webhook, a pull, the background sweep) goes through
+ *               applyPaymentIntent, which only moves the record forward and only
+ *               for an intent naming this record, amount and customer.
+ *
+ * TAX: the amount is the total collected. Sales tax is NOT calculated here and
+ * the payment is NOT marked exempt; the record says "tax not calculated" so the
+ * accounting is done separately, from Stripe and these records.
  *
  * Nothing here touches the booking, visit entitlements, loyalty or membership
  * billing. Refunds are made in Stripe; charge.refunded keeps the record in step.
- * The receipt is Stripe's (receipt_email on the PaymentIntent): one path, no
- * email of ours.
+ * The receipt is Stripe's (receipt_email on the PaymentIntent).
  */
 const crypto = require("crypto");
 const mongoose = require("mongoose");
@@ -27,7 +32,6 @@ const AdditionalCharge = require("../../models/AdditionalCharge");
 const AdminPaymentLink = require("../../models/AdminPaymentLink");
 const Booking = require("../../models/Booking");
 const { resolveChargeTarget, fullAddressText } = require("./linkage");
-const { TaxBlocker, quoteTax, readTreatment } = require("./tax");
 
 const PRODUCT_KIND = "additional_charge";
 const MIN_CENTS = 50; // Stripe's minimum charge in USD
@@ -40,6 +44,7 @@ const CHARGEABLE_STATUSES = new Set(["Confirmed", "Completed"]);
 const statusOf = (booking) => require("../jobs/jobStatus").canonicalStatus(booking.status);
 const PAID_STATES = ["paid", "partially_refunded", "refunded"];
 const OPEN_STATES = ["charging", "processing"];
+const REPEAT_WINDOW_MS = 15 * 60 * 1000; // the same amount again on the same visit this soon asks first
 
 let client = null;
 function setStripeClient(next) {
@@ -67,7 +72,7 @@ const idOf = (v) => (v && typeof v === "object" ? String(v.id || "") : String(v 
 const sameId = (a, b) => String(a || "") === String(b || "");
 
 function consentStatement(totalCents) {
-  return `I confirm the customer agreed to this additional work and to the total of ${money(totalCents)}.`;
+  return `The owner pressed "Charge ${money(totalCents)}".`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -88,39 +93,22 @@ function readAmountCents(body) {
 }
 
 function readInput(body = {}) {
-  const description = String(body.description || "").replace(/\s+/g, " ").trim();
-  if (description.length < 3) throw new ExtraChargeError("DESCRIPTION_REQUIRED", "Describe the additional work.");
-  if (description.length > 500) throw new ExtraChargeError("DESCRIPTION_TOO_LONG", "Keep the description under 500 characters.");
-  const subtotalCents = readAmountCents(body);
-  if (subtotalCents < MIN_CENTS) throw new ExtraChargeError("AMOUNT_TOO_SMALL", "The amount must be at least $0.50.");
-  if (subtotalCents > MAX_CENTS) throw new ExtraChargeError("AMOUNT_TOO_LARGE", `One extra can be at most ${money(MAX_CENTS)}. Use a project invoice for larger work.`);
-  const taxTreatment = readTreatment(body.taxTreatment);
-  const writtenApprovalRef = String(body.writtenApprovalRef || "").replace(/\s+/g, " ").trim().slice(0, 300);
-  const b = body.taxBasis && typeof body.taxBasis === "object" ? body.taxBasis : {};
-  const taxBasis = { document: String(b.document || "").trim().slice(0, 40), reference: String(b.reference || "").replace(/\s+/g, " ").trim().slice(0, 200), onFile: b.onFile === true };
-  return { description, subtotalCents, taxTreatment, writtenApprovalRef, taxBasis };
+  const totalCents = readAmountCents(body);
+  if (totalCents < MIN_CENTS) throw new ExtraChargeError("AMOUNT_TOO_SMALL", "The amount must be at least $0.50.");
+  if (totalCents > MAX_CENTS) throw new ExtraChargeError("AMOUNT_TOO_LARGE", `One charge can be at most ${money(MAX_CENTS)}. Use a project invoice for larger work.`);
+  const note = String(body.note ?? body.description ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+  return { totalCents, note };
 }
 
 /* ------------------------------------------------------------------ */
-/* Preview                                                             */
+/* Target: who pays, shown before "Charge $X"                          */
 /* ------------------------------------------------------------------ */
 
-function fingerprintOf(bookingId, target, input, tax) {
+/** The account, Stripe customer and card the owner sees. Any change between showing and charging is refused. */
+function fingerprintOf(bookingId, target) {
   return crypto
     .createHash("sha256")
-    .update(
-      JSON.stringify([
-        String(bookingId),
-        target.accountUserId,
-        target.customerId,
-        target.paymentMethodId,
-        input.description,
-        input.subtotalCents,
-        tax ? tax.taxCents : null,
-        input.taxTreatment,
-        input.taxTreatment === "Taxable Repair / Maintenance" ? null : [input.taxBasis?.document || "", input.taxBasis?.reference || "", Boolean(input.taxBasis?.onFile)],
-      ])
-    )
+    .update(JSON.stringify([String(bookingId), target.accountUserId, target.customerId, target.paymentMethodId, Boolean(target.direct.allowed)]))
     .digest("hex")
     .slice(0, 32);
 }
@@ -131,43 +119,26 @@ async function blockedReason(target, booking) {
   return block ? { code: "CUSTOMER_BLOCKED", message: "This customer is blocked. Unblock them on their profile before charging." } : null;
 }
 
-/** Everything the owner must see before confirming, computed on the server. */
-async function buildPreview(booking, input) {
+async function buildTarget(booking) {
   const target = await resolveChargeTarget(booking, { stripe: stripe() });
-  let tax = null;
-  let taxError = null;
-  try {
-    tax = await quoteTax({ stripe: stripe(), subtotalCents: input.subtotalCents, treatment: input.taxTreatment, address: target.serviceAddress, reference: `booking-${booking.bookingNumber || booking._id}`, basis: input.taxBasis });
-  } catch (error) {
-    if (!(error instanceof TaxBlocker)) throw error;
-    taxError = { code: error.code, message: error.message, taxabilityReason: error.taxabilityReason || "", taxCode: error.taxCode || "" };
-  }
   const block = await blockedReason(target, booking);
   const statusBlock = CHARGEABLE_STATUSES.has(String(statusOf(booking) || ""))
     ? null
-    : { code: "BOOKING_NOT_CHARGEABLE", message: "Extras can be charged on confirmed or completed visits only." };
-  const hard = block || statusBlock || (taxError ? { code: taxError.code, message: taxError.message } : null);
+    : { code: "BOOKING_NOT_CHARGEABLE", message: "Customers can be charged on confirmed or completed visits only." };
+  const hard = block || statusBlock;
   const direct = hard ? { allowed: false, ...hard } : target.direct;
   const link = hard ? { allowed: false, canSend: false, ...hard } : target.link;
   return {
     target,
-    tax,
-    preview: {
+    view: {
       booking: { id: String(booking._id), number: String(booking.bookingNumber || ""), date: booking.date || null, service: booking.service || "", status: booking.status || "" },
       customer: { name: target.customerName, guest: target.guest, accountLinked: target.customerLinked, hasEmail: Boolean(target.contact.email), hasPhone: Boolean(target.contact.phone) },
       serviceAddress: { ...target.serviceAddress, full: fullAddressText(target.serviceAddress) },
       card: target.card && target.card.last4 ? { brand: target.card.brand, last4: target.card.last4, expMonth: target.card.expMonth, expYear: target.card.expYear } : null,
-      description: input.description,
-      subtotalCents: input.subtotalCents,
-      taxCents: tax ? tax.taxCents : null,
-      totalCents: tax ? input.subtotalCents + tax.taxCents : null,
-      tax: tax
-        ? { ok: true, treatment: tax.treatment, source: tax.source, ratePercent: tax.ratePercent, taxCode: tax.taxCode, taxabilityReason: tax.taxabilityReason, basis: tax.basis || null }
-        : { ok: false, treatment: input.taxTreatment, ...taxError },
       direct,
       link,
-      consentStatement: tax ? consentStatement(input.subtotalCents + tax.taxCents) : "",
-      fingerprint: fingerprintOf(booking._id, target, input, tax),
+      fingerprint: fingerprintOf(booking._id, { ...target, direct }),
+      limits: { minCents: MIN_CENTS, maxCents: MAX_CENTS },
     },
   };
 }
@@ -179,10 +150,9 @@ async function loadChargeableBooking(bookingId) {
   return booking;
 }
 
-async function preview(bookingId, body) {
+async function targetFor(bookingId) {
   const booking = await loadChargeableBooking(bookingId);
-  const input = readInput(body);
-  return (await buildPreview(booking, input)).preview;
+  return (await buildTarget(booking)).view;
 }
 
 /* ------------------------------------------------------------------ */
@@ -198,9 +168,8 @@ function metadataFor(record) {
     bookingNumber: String(record.bookingNumber || ""),
     userMongoId: record.user ? String(record.user) : "",
     stripeCustomerId: record.stripeCustomerId || "",
-    subtotalCents: String(record.subtotalCents),
-    taxCents: String(record.taxCents),
-    taxTreatment: String(record.tax?.treatment || "").slice(0, 100),
+    amountCents: String(record.totalCents),
+    taxStatus: "not_calculated",
     createdByMongoId: String(record.createdBy || ""),
   };
 }
@@ -246,21 +215,6 @@ async function updateAttempt(id, match, fields) {
 async function closeLinksFor(record, status = "canceled") {
   if (!record.paymentLink) return;
   await AdminPaymentLink.updateMany({ additionalCharge: record._id, status: "open" }, { $set: { status } });
-}
-
-async function recordTaxTransaction(record) {
-  if (!record.tax?.calculationId || record.tax.transactionId) return;
-  try {
-    const tx = await stripe().tax.transactions.createFromCalculation(
-      { calculation: record.tax.calculationId, reference: record.number, metadata: { additionalChargeId: String(record._id) } },
-      { idempotencyKey: `pfx-xc-${record._id}-taxtx` }
-    );
-    await AdditionalCharge.updateOne({ _id: record._id }, { $set: { "tax.transactionId": String(tx.id || ""), "tax.transactionError": "" } });
-  } catch (error) {
-    const message = String(error?.code || error?.message || error).slice(0, 200);
-    await AdditionalCharge.updateOne({ _id: record._id }, { $set: { "tax.transactionError": message } });
-    console.error(JSON.stringify({ level: "error", event: "extra_charge_tax_transaction_failed", additionalChargeId: String(record._id), message }));
-  }
 }
 
 async function chargeDetails(chargeId) {
@@ -418,7 +372,6 @@ async function applyPaymentIntent(pi, { source = "api" } = {}) {
     }
     await AdminPaymentLink.updateMany({ additionalCharge: record._id, status: "open" }, { $set: { status: "paid", paidAt: new Date() } });
     await expireOpenSessions(paid, { except: "" });
-    await recordTaxTransaction(paid);
     return { record: await AdditionalCharge.findById(record._id), changed: true };
   }
 
@@ -521,7 +474,6 @@ async function reconcile(record, { force = false } = {}) {
   if (PAID_STATES.includes(record.status) && record.chargeId) {
     const details = await chargeDetails(record.chargeId);
     if (typeof details.refundedCents === "number") await applyRefundTotal(record, details.refundedCents);
-    if (!record.tax?.transactionId && record.tax?.calculationId) await recordTaxTransaction(record);
     return AdditionalCharge.findById(record._id);
   }
   return record;
@@ -539,7 +491,7 @@ function cardParams(record) {
     payment_method: record.paymentMethodId,
     off_session: true,
     confirm: true,
-    description: `Profixter additional work (${record.number}): ${record.description}`.slice(0, 1000),
+    description: `Profixter charge (${record.number}, visit #${record.bookingNumber})${record.description ? `: ${record.description}` : ""}`.slice(0, 1000),
     ...(record.receiptEmail ? { receipt_email: record.receiptEmail } : {}),
     metadata: metadataFor(record),
   };
@@ -622,7 +574,7 @@ async function runCardAttempt(record) {
 /* ------------------------------------------------------------------ */
 
 function linkItemLabel(record) {
-  return `additional work on your visit #${String(record.bookingNumber || "").replace(/^#/, "")}: ${record.description}`.slice(0, 200);
+  return `your visit #${String(record.bookingNumber || "").replace(/^#/, "")}${record.description ? `: ${record.description}` : ""} (${money(record.totalCents)})`.slice(0, 200);
 }
 
 async function issueLink(record, { send = false, channels = [], admin, contact, user = null, booking = null }) {
@@ -698,8 +650,8 @@ async function openCheckoutForLink(link, token) {
   try {
     const n = record.attempts.length + 1;
     const line = (amount, name, description) => ({ quantity: 1, price_data: { currency: record.currency, unit_amount: amount, product_data: { name, ...(description ? { description } : {}) } } });
-    const lineItems = [line(record.subtotalCents, `Additional work, visit #${String(record.bookingNumber || "").replace(/^#/, "")}`, record.description.slice(0, 500))];
-    if (record.taxCents > 0) lineItems.push(line(record.taxCents, `Sales tax${record.tax?.ratePercent ? ` (${Number(record.tax.ratePercent)}%)` : ""}`));
+    // One line for exactly the amount the owner entered: nothing is added on top.
+    const lineItems = [line(record.totalCents, `Profixter, visit #${String(record.bookingNumber || "").replace(/^#/, "")}`, (record.description || "").slice(0, 500))];
     const expiresAt = Math.floor(Math.min(now.getTime() + 23 * 60 * 60 * 1000, Math.max(new Date(link.expiresAt).getTime(), now.getTime() + 31 * 60 * 1000)) / 1000);
     const metadata = { ...metadataFor(record), adminPaymentLinkId: String(link._id) };
     const session = await stripe().checkout.sessions.create(
@@ -708,7 +660,7 @@ async function openCheckoutForLink(link, token) {
         ...(record.stripeCustomerId ? { customer: record.stripeCustomerId } : record.receiptEmail ? { customer_email: record.receiptEmail } : {}),
         line_items: lineItems,
         payment_intent_data: {
-          description: `Profixter additional work (${record.number}): ${record.description}`.slice(0, 1000),
+          description: `Profixter charge (${record.number}, visit #${record.bookingNumber})${record.description ? `: ${record.description}` : ""}`.slice(0, 1000),
           metadata,
           ...(record.receiptEmail ? { receipt_email: record.receiptEmail } : {}),
         },
@@ -768,20 +720,6 @@ async function applyRefundTotal(record, refundedCents) {
     { $set: { refundedCents: refunded, status, statusChangedAt: new Date() } },
     { new: true }
   );
-  if (updated && updated.tax?.transactionId && refunded > Number(record.refundedCents || 0)) {
-    const delta = refunded - Number(record.refundedCents || 0);
-    try {
-      const reversal = await stripe().tax.transactions.createReversal(
-        refunded >= total
-          ? { mode: "full", original_transaction: updated.tax.transactionId, reference: `${updated.number}-refund-${refunded}` }
-          : { mode: "partial", original_transaction: updated.tax.transactionId, reference: `${updated.number}-refund-${refunded}`, flat_amount: -delta },
-        { idempotencyKey: `pfx-xc-${updated._id}-rev-${refunded}` }
-      );
-      await AdditionalCharge.updateOne({ _id: updated._id }, { $push: { "tax.reversals": { refundedCents: refunded, transactionId: String(reversal.id || ""), at: new Date() } } });
-    } catch (error) {
-      console.error(JSON.stringify({ level: "error", event: "extra_charge_tax_reversal_failed", additionalChargeId: String(updated._id), message: String(error?.message || error).slice(0, 200) }));
-    }
-  }
   return updated || record;
 }
 
@@ -814,27 +752,36 @@ async function create(req, bookingId, body = {}) {
   const booking = await loadChargeableBooking(bookingId);
   const input = readInput(body);
   const method = body.method === "link" ? "link" : body.method === "card" ? "card" : "";
-  if (!method) throw new ExtraChargeError("METHOD_REQUIRED", "Choose Charge card or Payment link.");
+  if (!method) throw new ExtraChargeError("METHOD_REQUIRED", "Choose Charge or Payment link.");
 
-  // The same intent again (a double tap, a retry after a timeout): the same record, resolved.
+  // The same press again (a double tap, a retry after a timeout): the same record, resolved.
   const existing = await AdditionalCharge.findOne({ booking: booking._id, clientKey });
   if (existing) {
-    if (existing.description !== input.description || existing.subtotalCents !== input.subtotalCents) {
-      throw new ExtraChargeError("KEY_REUSED", "This request was already used for a different charge.", 409);
-    }
+    if (existing.totalCents !== input.totalCents) throw new ExtraChargeError("KEY_REUSED", "This request was already used for a different charge.", 409);
     return { record: await reconcile(existing, { force: true }), replayed: true };
   }
 
-  if (body.customerAgreed !== true) {
-    throw new ExtraChargeError("CONFIRMATION_REQUIRED", "Confirm that the customer agreed to this work and this total.", 428);
+  const { target, view } = await buildTarget(booking);
+  if (String(body.targetFingerprint || "") !== view.fingerprint) {
+    throw new ExtraChargeError("TARGET_CHANGED", "The customer or saved card for this visit changed since the screen opened. Check it and press Charge again.", 409, { target: view });
   }
-  const { target, tax, preview: p } = await buildPreview(booking, input);
-  if (!tax || p.totalCents === null) throw new ExtraChargeError(p.tax.code || "TAX_UNAVAILABLE", p.tax.message || "The tax could not be worked out.", 409, { preview: p });
-  if (String(body.previewFingerprint || "") !== p.fingerprint || Number(body.expectedTotalCents) !== p.totalCents) {
-    throw new ExtraChargeError("PREVIEW_CHANGED", "Something changed since you reviewed this (the card, the customer or the tax). Review the new details.", 409, { preview: p });
+  if (method === "card" && !view.direct.allowed) throw new ExtraChargeError(view.direct.code || "DIRECT_UNAVAILABLE", view.direct.message || "The card cannot be charged.", 409, { target: view });
+  if (method === "link" && !view.link.allowed) throw new ExtraChargeError(view.link.code || "LINK_UNAVAILABLE", view.link.message || "A payment link cannot be made.", 409, { target: view });
+
+  // The same amount on the same visit a few minutes ago: ask before a second, separate charge.
+  if (body.allowRepeat !== true) {
+    const recent = await AdditionalCharge.findOne({
+      booking: booking._id,
+      totalCents: input.totalCents,
+      status: { $in: ["charging", "processing", "paid", "awaiting_payment"] },
+      createdAt: { $gte: new Date(Date.now() - REPEAT_WINDOW_MS) },
+    }).lean();
+    if (recent) {
+      throw new ExtraChargeError("POSSIBLE_DUPLICATE", `${money(input.totalCents)} was already ${recent.status === "paid" ? "charged" : "started"} on this visit at ${new Date(recent.createdAt).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })}. Charge it again?`, 409, {
+        recent: { id: String(recent._id), number: recent.number, status: recent.status },
+      });
+    }
   }
-  if (method === "card" && !p.direct.allowed) throw new ExtraChargeError(p.direct.code || "DIRECT_UNAVAILABLE", p.direct.message || "The card cannot be charged.", 409, { preview: p });
-  if (method === "link" && !p.link.allowed) throw new ExtraChargeError(p.link.code || "LINK_UNAVAILABLE", p.link.message || "A payment link cannot be made.", 409, { preview: p });
 
   const admin = actingAdmin(req);
   const now = new Date();
@@ -849,29 +796,10 @@ async function create(req, bookingId, body = {}) {
     customerName: target.customerName,
     serviceAddress: target.serviceAddress,
     receiptEmail: target.contact.email || "",
-    description: input.description,
-    subtotalCents: input.subtotalCents,
-    taxCents: tax.taxCents,
-    totalCents: input.subtotalCents + tax.taxCents,
-    tax: {
-      treatment: tax.treatment,
-      source: tax.source,
-      basis: tax.basis || null,
-      calculationId: tax.calculationId,
-      calculationExpiresAt: tax.calculationExpiresAt,
-      taxCode: tax.taxCode,
-      taxabilityReason: tax.taxabilityReason,
-      ratePercent: tax.ratePercent,
-    },
-    consent: {
-      statement: p.consentStatement,
-      confirmedBy: admin._id,
-      confirmedByName: admin.name,
-      confirmedAt: now,
-      description: input.description,
-      totalCents: input.subtotalCents + tax.taxCents,
-      writtenApprovalRef: input.writtenApprovalRef,
-    },
+    description: input.note,
+    totalCents: input.totalCents,
+    tax: { status: "not_calculated" },
+    consent: { statement: consentStatement(input.totalCents), confirmedBy: admin._id, confirmedByName: admin.name, confirmedAt: now, totalCents: input.totalCents },
     method,
     status: method === "card" ? "charging" : "awaiting_payment",
     paymentMethodId: method === "card" ? target.paymentMethodId : "",
@@ -953,7 +881,7 @@ async function listForBooking(bookingId, { sync = true } = {}) {
   const records = await AdditionalCharge.find({ booking: bookingId }).sort({ seq: 1 });
   if (sync) {
     for (const r of records) {
-      if (OPEN_STATES.includes(r.status) || r.status === "awaiting_payment" || (PAID_STATES.includes(r.status) && !r.tax?.transactionId && r.tax?.calculationId)) {
+      if (OPEN_STATES.includes(r.status) || r.status === "awaiting_payment") {
         try {
           await reconcile(r);
         } catch (error) {
@@ -1005,17 +933,16 @@ function serialize(r) {
   return {
     id: String(x._id),
     number: x.number,
-    description: x.description,
-    subtotalCents: x.subtotalCents,
-    taxCents: x.taxCents,
+    note: x.description || "",
     totalCents: x.totalCents,
-    tax: { treatment: x.tax?.treatment || "", source: x.tax?.source || "", ratePercent: x.tax?.ratePercent || "", taxCode: x.tax?.taxCode || "", recorded: Boolean(x.tax?.transactionId), recordError: x.tax?.transactionError || "", basis: x.tax?.basis?.document ? { document: x.tax.basis.document, label: x.tax.basis.label || "", reference: x.tax.basis.reference || "" } : null },
+    taxStatus: x.tax?.status || "not_calculated",
     status: x.status,
     statusLabel: STATUS_LABEL[x.status] || x.status,
     method: x.method,
     createdAt: x.createdAt,
     createdByName: x.createdByName || "",
-    consent: { statement: x.consent?.statement || "", confirmedByName: x.consent?.confirmedByName || "", confirmedAt: x.consent?.confirmedAt || null, writtenApprovalRef: x.consent?.writtenApprovalRef || "" },
+    confirmedByName: x.consent?.confirmedByName || x.createdByName || "",
+    confirmedAt: x.consent?.confirmedAt || x.createdAt || null,
     customerName: x.customerName || "",
     guest: Boolean(x.guest),
     card: x.card?.last4 ? { brand: x.card.brand || "", last4: x.card.last4 } : null,
@@ -1046,7 +973,7 @@ module.exports = {
   listForBooking,
   openCheckoutForLink,
   paymentLink,
-  preview,
+  targetFor,
   readAmountCents,
   reconcile,
   retryCard,
