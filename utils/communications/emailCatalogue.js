@@ -410,6 +410,18 @@ const NON_REGISTRY_EMAILS = {
     source: "utils/growth/actions/playbookEmail.js",
     protectedNote: "Key is playbook:<key>. Marketing rules, one-click unsubscribe, one per person per playbook, 4 quiet days after any other marketing email, no discounts or prices (copy rules).",
   },
+  staff_setup_invite: {
+    label: "Telemarketer account setup invitation",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "New Telemarketer (employee)",
+    channelClass: "operational",
+    trigger: "The owner presses Send or Resend invitation on Team for a Telemarketer who has not set a password yet.",
+    source: "utils/auth/staffSetup.js",
+    protectedNote:
+      "Carries a single-use setup link that expires after 72 hours; each new invitation replaces the previous link. " +
+      "The email log keeps a redacted copy, never the link. Copy lives in code next to the token handling.",
+  },
   "agent:owner_report": {
     label: "Growth agent report / alert to the owner",
     category: "B",
