@@ -120,6 +120,24 @@ const UserSchema = new mongoose.Schema(
       issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
       issuedByName: { type: String, default: "" },
     },
+    /*
+     * A Telemarketer account set up from an invitation link
+     * (utils/auth/staffSetup.js). While pending, the account has no usable
+     * password and opens nothing. Only the SHA-256 of the link's token is kept.
+     */
+    staffSetup: {
+      pending: { type: Boolean, default: false },
+      tokenHash: { type: String, default: null },
+      issuedAt: { type: Date, default: null },
+      expiresAt: { type: Date, default: null },
+      issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      issuedByName: { type: String, default: "" },
+      lastSentAt: { type: Date, default: null },
+      lastSentTo: { type: String, default: "" },
+      sendCount: { type: Number, default: 0 },
+      completedAt: { type: Date, default: null },
+      convertedAt: { type: Date, default: null },
+    },
     /* Set when Admin created this account by phone. Provenance only. */
     adminCreated: {
       at: { type: Date, default: null },
@@ -546,6 +564,10 @@ UserSchema.index(
  * which account to open when more than one has verified the same handset.
  */
 UserSchema.index({ phone: 1, phoneVerifiedAt: 1 }, { name: "user_phone_verified_idx" });
+UserSchema.index(
+  { "staffSetup.tokenHash": 1 },
+  { name: "user_staff_setup_token_idx", partialFilterExpression: { "staffSetup.tokenHash": { $type: "string" } } }
+);
 
 UserSchema.index(
   { isDefaultFixter: 1 },

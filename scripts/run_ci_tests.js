@@ -169,6 +169,8 @@ const SUITES = [
   "test_invoice_locate.js",
   "test_extra_charges.js",
   "test_sales_desk.js",
+  // Telemarketer invitation-link setup: no shared first password, single-use expiring links.
+  "test_staff_setup.js",
 ];
 
 /**

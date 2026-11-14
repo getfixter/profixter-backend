@@ -64,6 +64,8 @@ function previewEnv({ port, frontend }) {
     MARKETING_FROM: "Profixter Preview <news@preview.test>",
     CLIENT_URL: frontend,
     SITE_URL: frontend,
+    // Invitation links for new Telemarketers point at the local frontend, not www.
+    STAFF_SETUP_BASE_URL: frontend,
     PUBLIC_SITE_BASE_URL: frontend,
     PLANS_URL: `${frontend}/membership/plans`,
     SCHEDULE_URL: `${frontend}/book`,

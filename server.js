@@ -209,6 +209,8 @@ mongoose
 app.use("/api/auth", require("./routes/auth"));
 // Sign-in 2.0: phone code, email code, Apple. Same sessions as above.
 app.use("/api/auth", require("./routes/authV2"));
+// A new Telemarketer's invitation link: check it, then choose a password (utils/auth/staffSetup.js).
+app.use("/api/staff-setup", require("./routes/staffSetup"));
 app.use("/api/stripe/checkout", require("./routes/stripe"));
 // GoHighLevel legacy: /lead-assigned answers 410 (retired 2026-11). The current sync is /api/ghl/webhook above.
 app.use("/api/ghl", require("./routes/ghl"));

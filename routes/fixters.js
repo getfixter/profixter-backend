@@ -12,6 +12,7 @@ const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
 const { SECTIONS, SECTIONS_VERSION, cleanSections, isFieldPosition, isSealedPosition, registryForEditor } = require("../utils/adminAccess");
 const { revokeAllForUser } = require("../utils/auth/sessions");
+const staffSetup = require("../utils/auth/staffSetup");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 const {
   createAdminActivityLog,
@@ -115,6 +116,8 @@ function fixterDTO(user, reporting = {}) {
     adminSections: cleanSections(user.adminSections),
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
+    /* Invitation-link setup (Telemarketers): state and expiry only, never the link. */
+    setup: staffSetup.statusOf(user),
     isDefaultFixter: !!user.isDefaultFixter,
     employeeAvailabilityStatus:
       user.employeeAvailabilityStatus || "Available",
@@ -267,36 +270,44 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const user = await User.create({
+    /*
+     * A Telemarketer gets NO password: an invitation link instead
+     * (utils/auth/staffSetup.js). The link is returned once, here, for the
+     * owner to copy or send; nothing is emailed until they press Send.
+     */
+    const byLink = employeePosition === "Telemarketer";
+    const user = new User({
       userId: await nextUserId(),
       name: `${firstName} ${lastName}`,
       firstName,
       lastName,
       email,
       phone,
-      password: await bcrypt.hash("11111111", 10),
+      ...(byLink ? {} : { password: await bcrypt.hash("11111111", 10) }),
       role: "employee",
       employeePosition,
       employeeTitle,
       adminSections,
       adminSectionsVersion: SECTIONS_VERSION,
       isActive: true,
-      mustChangePassword: true,
+      mustChangePassword: !byLink,
       employeeAvailabilityStatus: "Available",
       addresses: [],
       defaultAddressId: null,
       subscription: null,
     });
+    const setupLink = byLink ? staffSetup.issue(user, { admin: req.authUser }) : null;
+    await user.save();
     await createAdminActivityLog(req, {
       action: "Employee Created",
       entityType: "employee",
       entityId: user._id,
       entityName: user.name,
-      details: { title: employeeTitle, fieldWork: employeePosition || "None", sections: labels(adminSections) },
+      details: { title: employeeTitle, fieldWork: employeePosition || "None", sections: labels(adminSections), ...(byLink ? { setup: "Invitation link created (not sent)" } : {}) },
     }).catch((e) => console.warn("Employee audit log failed:", e.message));
     // Only field workers have a working calendar.
     if (!isFieldPosition(employeePosition)) {
-      return res.status(201).json({ fixter: fixterDTO(user), templateReady: true });
+      return res.status(201).json({ fixter: fixterDTO(user), templateReady: true, ...(setupLink ? { setupLink } : {}) });
     }
     try {
       await ensureTechnicianTemplate(user._id);
@@ -355,7 +366,19 @@ router.put("/:id", async (req, res) => {
     user.adminSections = adminSections;
     user.adminSectionsVersion = SECTIONS_VERSION;
     if (!isFieldPosition(employeePosition)) user.isDefaultFixter = false;
+    /*
+     * Moved into Telemarketer while still on the shared first password: that
+     * password stops working now and the owner sends a setup link. A password
+     * the employee already chose is kept.
+     */
+    const toLinkSetup = employeePosition === "Telemarketer" && user.mustChangePassword && !user.temporaryPassword?.issuedAt && !user.staffSetup?.pending;
+    if (toLinkSetup) {
+      user.password = undefined;
+      user.mustChangePassword = false;
+      user.staffSetup = { ...(user.staffSetup?.toObject ? user.staffSetup.toObject() : {}), pending: true, tokenHash: null, expiresAt: null, convertedAt: new Date() };
+    }
     await user.save();
+    if (toLinkSetup) await revokeAllForUser(user._id, "staff_setup_required").catch(() => {});
     if (isFieldPosition(employeePosition) && !isFieldPosition(before.fieldWork)) {
       await ensureTechnicianTemplate(user._id).catch((e) => console.error("Template provisioning failed:", e.message));
     }
@@ -417,6 +440,11 @@ router.patch("/:id/status", async (req, res) => {
       user.isActive = false;
       user.isDefaultFixter = false;
       user.employeeAvailabilityStatus = "Inactive";
+      // An unused setup link dies with the account; turning it back on needs a new one.
+      if (user.staffSetup?.pending) {
+        user.staffSetup.tokenHash = null;
+        user.staffSetup.expiresAt = null;
+      }
     }
 
     await user.save();
@@ -454,6 +482,84 @@ router.patch("/:id/status", async (req, res) => {
   } catch (error) {
     console.error("Update Fixter active status failed:", error);
     return res.status(500).json({ message: "Failed to update Fixter status" });
+  }
+});
+
+/*
+ * Invitation-link setup for a Telemarketer (utils/auth/staffSetup.js).
+ *
+ *   POST /:id/setup-link    a new link to copy (nothing is sent)
+ *   POST /:id/setup-invite  a new link, emailed to the employee
+ *
+ * Either one REPLACES the previous link: whatever was copied or sent before
+ * stops working at once. Refused once the employee has set their password, so
+ * these can never reset a password somebody already chose.
+ */
+async function setupTarget(req, res) {
+  const user = await User.findOne({ _id: req.params.id, role: "employee" });
+  if (!user) return void res.status(404).json({ message: "Employee not found" });
+  if (!staffSetup.usesSetupLink(user) && !user.staffSetup?.pending) {
+    return void res.status(409).json({ message: "Setup links are for Telemarketer accounts.", code: "SETUP_NOT_APPLICABLE" });
+  }
+  if (!staffSetup.awaitingSetup(user)) {
+    return void res.status(409).json({ message: `${user.firstName || "This employee"} has already set up their password.`, code: "SETUP_COMPLETE" });
+  }
+  if (user.isActive === false) {
+    return void res.status(409).json({ message: "Turn this account back on before sending a setup link.", code: "EMPLOYEE_INACTIVE" });
+  }
+  return user;
+}
+
+const setupLog = (req, user, action, details) =>
+  createAdminActivityLog(req, { action, entityType: "employee", entityId: user._id, entityName: user.name, details }).catch((e) =>
+    console.warn("Employee audit log failed:", e.message)
+  );
+
+router.post("/:id/setup-link", async (req, res) => {
+  try {
+    const user = await setupTarget(req, res);
+    if (!user) return;
+    const setupLink = staffSetup.issue(user, { admin: req.authUser });
+    await user.save();
+    await setupLog(req, user, "Employee Setup Link Created", { expiresAt: setupLink.expiresAt, previousLinkInvalidated: true });
+    return res.json({ setupLink, fixter: fixterDTO(user) });
+  } catch (error) {
+    console.error("Setup link failed:", error.message);
+    return res.status(500).json({ message: "Couldn't create a setup link" });
+  }
+});
+
+router.post("/:id/setup-invite", async (req, res) => {
+  try {
+    const user = await setupTarget(req, res);
+    if (!user) return;
+    const { hitAll } = require("../utils/auth/authRateLimit");
+    const limit = await hitAll([{ key: `staff-setup:invite:${user._id}`, limit: 6, windowMs: 60 * 60 * 1000 }]);
+    if (!limit.allowed) {
+      return res.status(429).json({ message: "Too many invitations to this employee in the last hour. Copy the link instead, or wait.", code: "RATE_LIMITED" });
+    }
+    const setupLink = staffSetup.issue(user, { admin: req.authUser });
+    await user.save();
+    try {
+      await staffSetup.sendInvite(user, setupLink);
+    } catch (mailError) {
+      console.error("Setup invitation email failed:", mailError.message);
+      await setupLog(req, user, "Employee Setup Link Created", { expiresAt: setupLink.expiresAt, previousLinkInvalidated: true, emailFailed: true });
+      return res.status(502).json({ sent: false, setupLink, fixter: fixterDTO(user), message: "The email didn't go out. The new link below works: copy it and send it yourself, or try again." });
+    }
+    user.staffSetup.lastSentAt = new Date();
+    user.staffSetup.lastSentTo = user.email;
+    user.staffSetup.sendCount = Number(user.staffSetup.sendCount || 0) + 1;
+    await user.save();
+    await setupLog(req, user, user.staffSetup.sendCount > 1 ? "Employee Invitation Resent" : "Employee Invitation Sent", {
+      sentTo: user.email,
+      expiresAt: setupLink.expiresAt,
+      previousLinkInvalidated: true,
+    });
+    return res.json({ sent: true, sentTo: user.email, setupLink, fixter: fixterDTO(user) });
+  } catch (error) {
+    console.error("Setup invitation failed:", error.message);
+    return res.status(500).json({ message: "Couldn't send the invitation" });
   }
 });
 

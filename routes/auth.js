@@ -20,6 +20,7 @@ const { effectivePlansForUser } = require("../utils/loyalty/effectivePlan");
 const { accessProfile, effectiveRole } = require("../middleware/authorize");
 const authAccounts = require("../utils/auth/accounts");
 const temporaryPassword = require("../utils/auth/temporaryPassword");
+const staffSetup = require("../utils/auth/staffSetup");
 const { hitAll } = require("../utils/auth/authRateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
 const { ProviderTokenError, verifyGoogleAccessToken, verifyGoogleIdToken } = require("../utils/auth/providerTokens");
@@ -672,6 +673,12 @@ router.post("/login", async (req, res) => {
     const matches = [];
     for (const candidate of candidates) {
       if (!candidate.password) continue;
+      /*
+       * A Telemarketer still to be set up from an invitation link has no
+       * password of their own. Skipped outright, so the old shared first
+       * password can never open one, even before the boot conversion runs.
+       */
+      if (staffSetup.awaitingSetup(candidate)) continue;
       if (await bcrypt.compare(password, candidate.password)) matches.push(candidate);
       else if (await temporaryPassword.matches(candidate, password)) matches.push(candidate);
     }
