@@ -94,13 +94,18 @@ async function seedSales({ log = console.log, now = new Date() } = {}) {
   await sale(u[5], 2, { kind: "full_day_paid" });
   const back = await sale(u[6], 1, { returning: true });
   await sale(u[7], 6, { plan: "premium" });
+  // Self-referral check (preview): Theo lives at the address of one of his customers, so that sale is held for the owner.
+  const housemate = await User.findById(u[8]).lean();
+  const a = housemate?.addresses?.[0];
+  if (a?.line1 && a?.zip) {
+    await User.updateOne({ _id: theo._id }, { $set: { staffHomeAddress: { line1: a.line1, unit: a.unit || "", city: a.city || "", zip: a.zip } } });
+    await sale(u[8], 3);
+  }
   await credit.createRequest(tess, { leadId: leadDocs[6]._id, saleId: back._id, kind: "recovery", explanation: "Former member; rejoined after our two calls this week (preview).", evidence: [{ kind: "ghl_reference", text: "GHL call yesterday 4:10 pm, 7 min" }] });
 
-  // Approve and pay the most recent finished week with entries, for statement history.
+  // Approve and pay every finished week with entries, oldest first (the ledger refuses any other order), for statement history.
   const weeks = (await S.CommissionEntry.distinct("statementWeek")).sort();
-  const finished = weeks.filter((w) => time.weekFromStart(w).endsAt <= now);
-  if (finished.length) {
-    const w = finished[finished.length - 1];
+  for (const w of weeks.filter((x) => time.weekFromStart(x).endsAt <= now)) {
     const batch = await ledger.approveWeek(w, owner);
     for (const line of batch.lines) await ledger.recordPayment(w, line.employee, { paidOn: time.weekFromStart(w).payday, method: "payroll", reference: "PREVIEW" }, owner);
   }

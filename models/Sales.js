@@ -115,6 +115,8 @@ const SalesLeadSchema = new Schema(
     /* GoHighLevel contact id: the stable mapping, set by the employee or the owner. */
     ghlContactId: { type: String, default: null, trim: true },
     ghlConversationId: { type: String, default: null, trim: true },
+    /* Self-referral check on an employee-added lead (its phone or email is the employee's own). A flag for the owner, never a refusal. */
+    intakeFlags: { type: [String], default: [] },
     lastActivityAt: { type: Date, default: null },
   },
   { timestamps: true }
@@ -293,6 +295,8 @@ const SalesEventSchema = new Schema(
       disputeId: { type: String, default: null },
       priceId: { type: String, default: null },
       billingReason: { type: String, default: null },
+      /* Stripe's card fingerprint (a hash, not card data): only for the self-referral check, never sent to a browser. */
+      cardFingerprint: { type: String, default: null },
     },
     /* For a sale: the regular price, the discount and the payment excluding tax. For a refund/dispute: its amount. */
     amounts: {
@@ -328,6 +332,7 @@ SalesEventSchema.index({ user: 1, paidAt: -1 });
 SalesEventSchema.index({ "stripe.chargeId": 1 });
 SalesEventSchema.index({ "stripe.paymentIntentId": 1 });
 SalesEventSchema.index({ "stripe.invoiceId": 1 });
+SalesEventSchema.index({ "stripe.cardFingerprint": 1 }, { partialFilterExpression: { "stripe.cardFingerprint": { $type: "string" } } });
 // A Stripe subscription can produce exactly one first-paid sale.
 SalesEventSchema.index(
   { "stripe.subscriptionId": 1 },
@@ -405,6 +410,11 @@ const SalesCreditRequestSchema = new Schema(
       detail: { type: String, default: "" },
       countsForBonusDefault: { type: Boolean, default: false },
     },
+    /* Self-referral signals found by the server (utils/sales/selfReferral.js). A flag for the owner, never a refusal. */
+    checks: {
+      selfReferral: { type: [{ code: String, strength: String, text: String }], default: [] },
+      checkedAt: { type: Date, default: null },
+    },
     status: { type: String, enum: ["pending", "needs_info", "approved", "rejected", "withdrawn"], default: "pending" },
     decisions: {
       type: [
@@ -415,6 +425,8 @@ const SalesCreditRequestSchema = new Schema(
           reason: { type: String, default: "" },
           amountCents: { type: Number, default: null },
           countsForBonus: { type: Boolean, default: null },
+          /* On approval of a flagged request: the owner confirmed they checked the self-referral signals. */
+          selfReferralCleared: { type: Boolean, default: null },
           at: { type: Date, default: Date.now },
         },
       ],
@@ -643,6 +655,14 @@ const SalesLockSchema = new Schema(
 );
 SalesLockSchema.index({ until: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
 
+/**
+ * The ledger clock: one document that every ledger write (addEntry) and every
+ * week approval increments inside its transaction. Two such transactions can
+ * therefore never interleave, so an entry is either on the statement being
+ * approved or placed after it, never on an older week nobody will approve.
+ */
+const SalesLedgerClockSchema = new Schema({ _id: String, n: { type: Number, default: 0 } }, { versionKey: false });
+
 const model = (name, schema, collection) => mongoose.models[name] || mongoose.model(name, schema, collection);
 
 module.exports = {
@@ -664,4 +684,5 @@ module.exports = {
   SalesGoal: model("SalesGoal", SalesGoalSchema),
   GhlWebhookEvent: model("GhlWebhookEvent", GhlWebhookEventSchema),
   SalesLock: model("SalesLock", SalesLockSchema, "sales_locks"),
+  SalesLedgerClock: model("SalesLedgerClock", SalesLedgerClockSchema, "sales_ledger_clock"),
 };

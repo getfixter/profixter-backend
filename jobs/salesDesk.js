@@ -30,7 +30,9 @@ function startSalesDeskJobs() {
   cron.schedule("10 5 * * *", () =>
     guarded("reconcile", 50 * 60 * 1000, async () => {
       const r = require("../utils/sales/reconcile");
-      return { firstPayments: await r.firstPayments(), refunds: await r.refunds() };
+      const integrity = await require("../utils/sales/ledger").ledgerIntegrity();
+      if (!integrity.ok) console.error(JSON.stringify({ level: "error", event: "sales_ledger_integrity", problems: integrity.problems.slice(0, 20) }));
+      return { firstPayments: await r.firstPayments(), refunds: await r.refunds(), ledgerOk: integrity.ok };
     }), { timezone: TIMEZONE });
 }
 

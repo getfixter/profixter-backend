@@ -65,10 +65,18 @@ function bonusPeriod(anchorDate, index) {
   };
 }
 
-/** The bonus period index containing `date`, or -1 before the anchor. */
+/**
+ * The bonus period index containing `date`. Before the anchor the same
+ * anniversary calendar runs backwards (-1 is the month before period 0, and so
+ * on), so a payment always lands in the month-long period that contains it.
+ */
 function bonusPeriodIndexFor(anchorDate, date) {
   const t = new Date(date).getTime();
-  if (t < startOfNyDay(anchorDate).valueOf()) return -1;
+  if (t < startOfNyDay(anchorDate).valueOf()) {
+    let i = -1;
+    while (bonusPeriod(anchorDate, i).startsAt.getTime() > t) i -= 1;
+    return i;
+  }
   const local = moment(date).tz(TZ);
   const a = startOfNyDay(anchorDate);
   let i = Math.max(0, (local.year() - a.year()) * 12 + (local.month() - a.month()) - 1);

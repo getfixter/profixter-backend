@@ -250,6 +250,17 @@ const UserSchema = new mongoose.Schema(
      * needs to answer "which campaign produced paying members" against our own
      * data, not only inside Meta's attribution window.
      */
+    /*
+     * A Telemarketer's home address, recorded by the owner (optional). Used only
+     * by the sales-desk self-referral check (a customer at the same address is
+     * flagged for review, never refused). Returned only to the owner.
+     */
+    staffHomeAddress: {
+      line1: { type: String, default: "", maxlength: 120 },
+      unit: { type: String, default: "", maxlength: 40 },
+      city: { type: String, default: "", maxlength: 60 },
+      zip: { type: String, default: "", maxlength: 10 },
+    },
     attribution: {
       utmSource: { type: String, default: null },
       utmMedium: { type: String, default: null },

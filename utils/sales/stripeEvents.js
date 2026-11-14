@@ -17,6 +17,9 @@
  *   are separate payments and never part of these events.
  * - Time: Stripe's payment time (invoice status_transitions.paid_at, the
  *   charge's created time), never the webhook's arrival.
+ * - Card fingerprint: read from the paying charge (read-only) for the
+ *   self-referral check only. It is Stripe's hash of the card number, not card
+ *   data, and it never leaves the server.
  */
 const User = require("../../models/User");
 const Subscription = require("../../models/Subscription");
@@ -40,6 +43,25 @@ function identityFor(user, { customerId, metadata }) {
   const ids = [m.userId, m.userMongoId].filter(Boolean).map(String);
   if (user && ids.some((id) => id === String(user.userId) || id === String(user._id))) return "checkout_account";
   return "unverified";
+}
+
+const stripeClient = () => require("../subscriptionManagement").stripe;
+
+/** The paying card's fingerprint, or null. Read-only; never throws. */
+async function cardFingerprintOf({ charge = null, chargeId = null, paymentIntentId = null, stripe = null }) {
+  const read = (ch) => (ch && typeof ch === "object" ? ch.payment_method_details?.card?.fingerprint || null : null);
+  try {
+    if (read(charge)) return read(charge);
+    const client = stripe || stripeClient();
+    if (chargeId) return read(await client.charges.retrieve(chargeId));
+    if (paymentIntentId) {
+      const pi = await client.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
+      return read(pi?.latest_charge);
+    }
+  } catch (error) {
+    log("warn", "card_fingerprint_lookup_failed", { chargeId, paymentIntentId, message: String(error?.message || error).slice(0, 200) });
+  }
+  return null;
 }
 
 function membershipLines(invoice) {
@@ -104,6 +126,9 @@ async function onInvoicePaid({ invoice, stripeSubscription, subscription }) {
     const paidAt = invoice.status_transitions?.paid_at ? new Date(invoice.status_transitions.paid_at * 1000) : new Date(invoice.created * 1000);
     const sellerId = stripeSubscription?.metadata?.adminUserId || null;
     const kind = reason === "subscription_create" ? "membership_first_paid" : "membership_change_paid";
+    const known = await SalesEvent.findOne({ sourceKey: `invoice:${invoice.id}` }).lean();
+    if (known) return creditForSale(known); // a replay: nothing new to read from Stripe
+    const cardFingerprint = await cardFingerprintOf({ charge: typeof invoice.charge === "object" ? invoice.charge : null, chargeId: idOf(invoice.charge), paymentIntentId: idOf(invoice.payment_intent) });
     const { sale, created } = await recordSale({
       sourceKey: `invoice:${invoice.id}`,
       kind,
@@ -119,6 +144,7 @@ async function onInvoicePaid({ invoice, stripeSubscription, subscription }) {
         paymentIntentId: idOf(invoice.payment_intent),
         priceId: membershipLines(invoice)[0]?.price?.id || subscription.stripePriceId || null,
         billingReason: reason,
+        cardFingerprint,
       },
       amounts: {
         regularCents: regular,
@@ -157,12 +183,14 @@ async function onFullDayPaid({ session, booking, entitlement, user, stripe }) {
     const piId = idOf(session.payment_intent);
     let paidAt = null;
     let chargeId = null;
+    let cardFingerprint = null;
     if (piId && stripe) {
       try {
         const pi = await stripe.paymentIntents.retrieve(piId, { expand: ["latest_charge"] });
         const ch = pi?.latest_charge;
         if (ch && typeof ch === "object") {
           chargeId = ch.id;
+          cardFingerprint = ch.payment_method_details?.card?.fingerprint || null;
           if (ch.created) paidAt = new Date(ch.created * 1000);
         } else if (typeof ch === "string") chargeId = ch;
       } catch (error) {
@@ -176,7 +204,7 @@ async function onFullDayPaid({ session, booking, entitlement, user, stripe }) {
       identity: identityFor(user, { customerId: idOf(session.customer), metadata: session.metadata }),
       plan: null,
       cycle: null,
-      stripe: { customerId: idOf(session.customer), paymentIntentId: piId, chargeId, checkoutSessionId: session.id },
+      stripe: { customerId: idOf(session.customer), paymentIntentId: piId, chargeId, checkoutSessionId: session.id, cardFingerprint },
       amounts: { regularCents: subtotal, discountCents: discount, paidPreTaxCents: paidPreTax, taxCents: tax, amountCents: Number(session.amount_total || 0) },
       booking: booking?._id || null,
       entitlement: entitlement._id,

@@ -15,7 +15,7 @@ const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const { SalesLead, LeadAssignment, SalesActivity, SalesTask, SalesCredit, SalesCreditRequest, SalesReview, SalesEvent, CommissionEntry, PayoutBatch, SalesGoal, SalesReferral } = require("../models/Sales");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
-const { SalesError, weekView, approveWeek, recordPayment, batchCsv } = require("../utils/sales/ledger");
+const { SalesError, weekView, approveWeek, recordPayment, ledgerIntegrity, batchCsv } = require("../utils/sales/ledger");
 const leads = require("../utils/sales/leads");
 const views = require("../utils/sales/views");
 const credit = require("../utils/sales/credit");
@@ -74,7 +74,7 @@ router.get("/employees/:id", wrap(async (req, res) => {
   const u = await telemarketer(req.params.id);
   const { from, to } = range(req);
   res.json({
-    employee: { id: String(u._id), name: u.name, active: u.isActive !== false, email: u.email || "" },
+    employee: { id: String(u._id), name: u.name, active: u.isActive !== false, email: u.email || "", homeAddress: homeAddressDto(u) },
     metrics: await views.metricsFor(u._id, from, to),
     from,
     to,
@@ -87,6 +87,24 @@ router.get("/employees/:id", wrap(async (req, res) => {
     goals: await views.goalsFor(u._id),
     coaching: await coachingFor(u._id),
   });
+}));
+
+function homeAddressDto(u) {
+  const a = u.staffHomeAddress || {};
+  return { line1: a.line1 || "", unit: a.unit || "", city: a.city || "", zip: a.zip || "" };
+}
+
+/** The employee's home address, for the self-referral check only (owner-only, optional). */
+router.put("/employees/:id/home-address", wrap(async (req, res) => {
+  const u = await telemarketer(req.params.id);
+  const b = req.body || {};
+  const t = (v, n) => String(v || "").replace(/\s+/g, " ").trim().slice(0, n);
+  const next = { line1: t(b.line1, 120), unit: t(b.unit, 40), city: t(b.city, 60), zip: t(b.zip, 10) };
+  if (next.zip && !/^\d{5}(-\d{4})?$/.test(next.zip)) throw new SalesError("BAD_ZIP", "Enter a 5-digit ZIP code.");
+  if (next.line1 && !next.zip) throw new SalesError("ZIP_REQUIRED", "Add the ZIP code so the address can be matched.");
+  await User.updateOne({ _id: u._id }, { $set: { staffHomeAddress: next } });
+  await log(req, "Sales Employee Home Address Set", "employee", u._id, u.name, { recorded: Boolean(next.line1) });
+  res.json({ homeAddress: next });
 }));
 
 async function coachingFor(employeeId) {
@@ -108,6 +126,11 @@ router.put("/employees/:id/goals", wrap(async (req, res) => {
 
 /* ------------------------------------------------------------- leads */
 
+const INTAKE_FLAG_TEXT = {
+  matches_employee_phone: "Self-referral check: this phone number is the employee's own.",
+  matches_employee_email: "Self-referral check: this email is the employee's own.",
+};
+
 async function leadRow(l, open, names) {
   const supp = await leads.suppressionState(l.phone);
   return {
@@ -120,6 +143,7 @@ async function leadRow(l, open, names) {
     source: l.source,
     sourcedBy: l.sourcedBy ? names.get(String(l.sourcedBy)) || "" : "",
     linked: Boolean(l.linkedUser),
+    intakeFlags: (l.intakeFlags || []).map((code) => ({ code, text: INTAKE_FLAG_TEXT[code] || code })),
     assignee: open ? { id: String(open.employee), name: names.get(String(open.employee)) || "", since: open.startedAt } : null,
     creditHolder: open ? { id: String(open.creditEmployee), name: names.get(String(open.creditEmployee)) || "" } : null,
     doNotCall: supp.call,
@@ -194,6 +218,7 @@ router.get("/leads/:id", wrap(async (req, res) => {
       source: lead.source,
       sourceNote: lead.sourceNote,
       sourcedBy: lead.sourcedBy ? names.get(String(lead.sourcedBy)) : null,
+      intakeFlags: (lead.intakeFlags || []).map((code) => ({ code, text: INTAKE_FLAG_TEXT[code] || code })),
       ghl: { ...leads.ghlLinks(lead), contactId: lead.ghlContactId || null },
       link: lead.link,
       linkedAccount: linked ? { id: String(linked._id), name: linked.name, userId: linked.userId, since: linked.createdAt } : null,
@@ -352,8 +377,8 @@ router.get("/credit-requests/:id", wrap(async (req, res) => {
 
 router.post("/credit-requests/:id/decide", wrap(async (req, res) => {
   const b = req.body || {};
-  const result = await credit.decideRequest(req.params.id, { action: b.action, reason: b.reason, amountCents: b.amountCents, countsForBonus: b.countsForBonus }, req.accessUser);
-  await log(req, "Sales Credit Request Decided", "sales_credit_request", result.request._id, result.request.kind, { action: b.action, reason: b.reason, amountCents: result.entry?.amountCents ?? null, countsForBonus: b.countsForBonus ?? null });
+  const result = await credit.decideRequest(req.params.id, { action: b.action, reason: b.reason, amountCents: b.amountCents, countsForBonus: b.countsForBonus, selfReferralCleared: b.selfReferralCleared === true }, req.accessUser);
+  await log(req, "Sales Credit Request Decided", "sales_credit_request", result.request._id, result.request.kind, { action: b.action, reason: b.reason, amountCents: result.entry?.amountCents ?? null, countsForBonus: b.countsForBonus ?? null, selfReferralCleared: b.selfReferralCleared === true ? true : null });
   res.json({ request: requestDto(result.request, { forOwner: true }), entryId: result.entry ? String(result.entry._id) : null });
 }));
 
@@ -395,7 +420,8 @@ router.get("/payouts", wrap(async (_req, res) => {
     if (!v.lines.length && week !== payWeekOf(new Date()).week && v.status !== "approved") continue;
     out.push({ week, lastDay: v.lastDay, payday: v.payday, status: v.status, totalCents: v.lines.reduce((s, l) => s + l.totalCents, 0), employees: v.lines.length, unpaid: v.status === "approved" ? v.lines.filter((l) => l.payment?.status !== "paid").length : null });
   }
-  res.json({ payouts: out });
+  const check = await ledgerIntegrity();
+  res.json({ payouts: out, integrity: { ok: check.ok, problems: check.problems.slice(0, 20), approvedWeeks: check.approvedWeeks } });
 }));
 
 function readWeek(req) {

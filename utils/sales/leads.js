@@ -117,6 +117,16 @@ async function submitIntake(req, body) {
   const today = await SalesLead.countDocuments({ createdBy: me._id, source: "employee_intake", createdAt: { $gte: since } });
   if (today >= INTAKE_PER_DAY) throw new SalesError("INTAKE_LIMIT", `You can add up to ${INTAKE_PER_DAY} leads a day. Ask the owner about larger lists.`, 429);
   const lead = await createLead(req, { ...body, userId: null }, { source: "employee_intake", status: "intake", sourcedBy: me._id });
+  // Self-referral check: flag (never refuse) a lead whose phone or email is the employee's own.
+  const { normPhone, normEmail } = require("./selfReferral");
+  const flags = [];
+  const mine = (await User.findById(me._id).select("phone email").lean()) || me;
+  if (normPhone(mine.phone) && normPhone(mine.phone) === normPhone(lead.phone)) flags.push("matches_employee_phone");
+  if (normEmail(mine.email) && normEmail(mine.email) === normEmail(lead.email)) flags.push("matches_employee_email");
+  if (flags.length) {
+    await SalesLead.updateOne({ _id: lead._id }, { $set: { intakeFlags: flags } });
+    lead.intakeFlags = flags;
+  }
   await SalesActivity.create({ lead: lead._id, actor: me._id, actorName: me.name || "", actorRole: "telemarketer", kind: "note", body: clean(body.note, 2000) || "Lead added for review.", source: "manual" });
   await audit(req, "Sales Lead Submitted", lead, { source: "employee_intake" });
   return lead;
@@ -302,7 +312,8 @@ function visitStatus(b, now = Date.now()) {
   if (/no.?show/i.test(s)) return { status: "no_show", label: "No-show", verified: true };
   if (/pending/i.test(s)) return { status: "requested", label: "Requested, waiting for confirmation", verified: true };
   if (/confirm/i.test(s)) {
-    if (b.date && new Date(b.date).getTime() < now - 6 * 3600 * 1000) return { status: "not_completed", label: "Date passed, not marked completed (estimated)", verified: false };
+    // The date passed and nobody recorded what happened. Profixter does not record no-shows, so the outcome is Unknown: never guessed.
+    if (b.date && new Date(b.date).getTime() < now - 6 * 3600 * 1000) return { status: "unknown", label: "Unknown", detail: "The visit date has passed and no outcome was recorded.", verified: false };
     return { status: "scheduled", label: "Scheduled", verified: true };
   }
   return { status: "other", label: s || "Unknown", verified: true };
@@ -357,7 +368,7 @@ async function timelineFor(lead, { forOwner = false } = {}) {
     if (j.phoneVerifiedAt) items.push({ at: j.phoneVerifiedAt, kind: "phone_verified", text: "Verified their phone", origin: "system" });
     for (const v of j.freeVisits) {
       items.push({ at: v.requestedAt, kind: "free_visit_requested", text: "Requested a free visit", origin: "system" });
-      if (v.status !== "requested") items.push({ at: v.date || v.requestedAt, kind: `free_visit_${v.status}`, text: `Free visit: ${v.label}`, origin: v.verified ? "system" : "estimated" });
+      if (v.status !== "requested") items.push({ at: v.date || v.requestedAt, kind: `free_visit_${v.status}`, text: v.status === "unknown" ? "Free visit outcome: Unknown (no outcome recorded)" : `Free visit: ${v.label}`, origin: v.verified ? "system" : "unknown" });
     }
     for (const p of j.purchases) items.push({ at: p.paidAt, kind: p.kind, text: p.label, origin: "system" });
   }

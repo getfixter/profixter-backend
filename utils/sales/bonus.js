@@ -9,7 +9,11 @@
  * not mark as counting.
  *
  * Periods: see utils/sales/time.js. The anchor is fixed the first time a
- * qualifying sale is counted and is never moved afterwards.
+ * qualifying sale is counted and is never moved afterwards (moving it would
+ * reshuffle bonuses already paid). A sale approved later whose payment is
+ * BEFORE the anchor (a late-approved recovery) counts in the month-long period
+ * of the same anniversary calendar that contains its payment date (index -1,
+ * -2, ...), never in period 0 with sales from a different month.
  *
  * A bonus entry, once created, is never removed automatically. A refund of a
  * counted sale only opens a review (utils/sales/credit.js).
@@ -69,8 +73,9 @@ async function anchorFor(employeeId) {
   return first ? first.anchorDate : null;
 }
 
-/** Which period a payment falls in. A sale dated before the anchor (a late-approved recovery) counts in period 0. */
-const periodIndexOf = (anchor, paidAt) => Math.max(0, bonusPeriodIndexFor(anchor, paidAt));
+/** Which period a payment falls in (negative before the anchor: see the header). */
+const periodIndexOf = (anchor, paidAt) => bonusPeriodIndexFor(anchor, paidAt);
+const periodName = (index, p) => (index >= 0 ? `bonus month ${index + 1} (${p.firstDay} – ${p.lastDay})` : `the bonus month ${p.firstDay} – ${p.lastDay}, before your first counted sale's month`);
 
 /**
  * Create every bonus the employee has earned and does not yet have. Safe to
@@ -114,7 +119,7 @@ async function evaluateBonus(employeeId) {
           paidAt: last.paidAt,
           calc: {
             method: "volume_bonus",
-            explain: `${block * threshold} qualifying memberships in bonus month ${index + 1} (${p.firstDay} – ${p.lastDay}): bonus ${block} of $${(amountCents / 100).toFixed(0)}`,
+            explain: `${block * threshold} qualifying memberships in ${periodName(index, p)}: bonus ${block} of ${(amountCents / 100).toFixed(0)}`,
             rule: period.rule,
           },
           bonus: { period: period._id, periodIndex: index, block, countedEntries: counted.map((c) => c._id) },

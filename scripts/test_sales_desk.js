@@ -893,6 +893,358 @@ const entriesFor = (emp, extra = {}) => S.CommissionEntry.find({ employee: emp._
     assert.doesNotMatch(JSON.stringify(rows), /a@b\.c|16315551234/);
   });
 
+  /* ================================================ self-referral check */
+  const selfRef = require("../utils/sales/selfReferral");
+  const leadsLib = require("../utils/sales/leads");
+  await check("self-referral matching: Gmail dots and +tags, phone formats, street abbreviations and units", async () => {
+    assert.strictEqual(selfRef.normEmail("Sam.Self+promo@GoogleMail.com"), selfRef.normEmail("samself@gmail.com"));
+    assert.notStrictEqual(selfRef.normEmail("sam.self@outlook.com"), selfRef.normEmail("samself@outlook.com"), "dots only ignored for Gmail");
+    assert.strictEqual(selfRef.normPhone("(631) 555-9001"), selfRef.normPhone("+16315559001"));
+    const home = { line1: "12 Oak Street", unit: "Apt. 3", zip: "11743" };
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 oak st", unit: "3", zip: "11743-1234" }), true);
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 Oak St, Apt 3", zip: "11743" }), true, "unit folded into line1");
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 Oak St #3", zip: "11743" }), true);
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 Oak St", unit: "Apt 5", zip: "11743" }), false, "a neighbour in another unit is not a match");
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 Oak St Apt 5", zip: "11743" }), false);
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "120 Oak St", unit: "3", zip: "11743" }), false);
+    assert.strictEqual(selfRef.sameAddress(home, { line1: "12 Oak St", unit: "3", zip: "11746" }), false);
+  });
+
+  const sam = await telemarketer("Sam Self", { email: "sam.self@gmail.com", phone: "+16315559001" });
+  async function buyWithCard(user, { paidAt, fingerprint = null, plan = "basic", cycle = "monthly" }) {
+    const sub = makeSub({ id: `sub_${++seq}`, customer: user.stripeCustomerId, user, plan, cycle, created: paidAt });
+    const inv = invoice({ sub, plan, cycle, paidAt });
+    if (fingerprint) fake.charges.get(inv.charge).payment_method_details = { type: "card", card: { fingerprint, last4: "4242" } };
+    assert.strictEqual(await sendEvent("invoice.paid", inv), 200);
+    const sale = await S.SalesEvent.findOne({ sourceKey: `invoice:${inv.id}` }).lean();
+    return { sale, credit: await S.SalesCredit.findOne({ sale: sale._id }).lean() };
+  }
+  const resolveHold = (sale, employee, reason) =>
+    S.SalesReview.findOne({ sale: sale._id, kind: "credit_hold" }).lean().then((rv) => call("POST", `/api/admin/sales-desk/reviews/${rv._id}/resolve`, owner, { decision: "credit", employeeId: String(employee._id), reason }));
+
+  await check("self-referral: a customer with the employee's own phone is HELD for the owner (not refused); the employee sees a neutral reason", async () => {
+    const c = await customer({ name: "Sammy Phone", phone: "+16315559001" });
+    await leadFor(owner, c, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const { sale, credit: cr } = await buyWithCard(c, { paidAt: "2026-11-09T15:00:00Z" });
+    assert.strictEqual(cr.status, "held");
+    assert.ok(cr.holdReasons.includes("self_referral_check"));
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ sale: sale._id }), 0, "no earnings until the owner decides");
+    const rvId = String((await S.SalesReview.findOne({ credit: cr._id }).lean())._id);
+    const rv = (await call("GET", "/api/admin/sales-desk/reviews", owner)).body.reviews.find((r) => r.id === rvId);
+    assert.ok(rv, "the owner has a review");
+    assert.match(rv.summary, /Self-referral check: may be the employee's own purchase/);
+    assert.deepStrictEqual(rv.effects.selfReferral[0].signals.map((x) => [x.code, x.strength]), [["same_phone", "same_person"]]);
+    const mine = await views.pendingClaims(sam._id);
+    const claim = mine.find((x) => x.saleId === String(sale._id));
+    assert.strictEqual(claim.why, "a routine owner check of the customer's details");
+    assert.doesNotMatch(JSON.stringify(mine), /self.?referral|own purchase/i);
+    const ok = await resolveHold(sale, sam, "Verified: his father's account, own household budget, genuine sale");
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const e = await S.CommissionEntry.findOne({ sale: sale._id }).lean();
+    assert.deepStrictEqual([e.amountCents, e.countsForBonus], [7450, true], "a household purchase the owner verifies is a normal sale");
+  });
+  await check("self-referral: the employee's email under a Gmail variant is flagged", async () => {
+    const c = await customer({ name: "Mail Variant", email: "Sam.Self+promo@googlemail.com" });
+    await leadFor(owner, c, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const { credit: cr } = await buyWithCard(c, { paidAt: "2026-11-09T16:00:00Z" });
+    assert.strictEqual(cr.status, "held");
+    const rv = await S.SalesReview.findOne({ credit: cr._id }).lean();
+    assert.deepStrictEqual(rv.effects.selfReferral[0].signals.map((x) => x.code), ["same_email"]);
+  });
+  await check("self-referral: the home address (owner-only) flags a household purchase for review; the owner can still credit it", async () => {
+    assert.strictEqual((await call("PUT", `/api/admin/sales-desk/employees/${sam._id}/home-address`, sam, { line1: "1 Fake St", zip: "11743" })).status, 403);
+    assert.strictEqual((await call("PUT", `/api/admin/sales-desk/employees/${sam._id}/home-address`, general, { line1: "1 Fake St", zip: "11743" })).status, 403);
+    assert.strictEqual((await call("PUT", `/api/admin/sales-desk/employees/${sam._id}/home-address`, owner, { line1: "12 Oak Street", zip: "117" })).body.code, "BAD_ZIP");
+    const put = await call("PUT", `/api/admin/sales-desk/employees/${sam._id}/home-address`, owner, { line1: "12 Oak Street", unit: "Apt. 3", city: "Huntington", zip: "11743" });
+    assert.strictEqual(put.status, 200, JSON.stringify(put.body));
+    assert.strictEqual((await call("GET", `/api/admin/sales-desk/employees/${sam._id}`, owner)).body.employee.homeAddress.line1, "12 Oak Street");
+    assert.doesNotMatch(JSON.stringify((await call("GET", "/api/sales/me", sam)).body), /Oak/, "never in the employee's own API");
+    const c = await customer({ name: "Sis Self", addresses: [{ line1: "12 Oak St", unit: "3", city: "Huntington", state: "NY", zip: "11743" }] });
+    await leadFor(owner, c, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const { sale, credit: cr } = await buyWithCard(c, { paidAt: "2026-11-09T17:00:00Z" });
+    assert.strictEqual(cr.status, "held");
+    const rv = await S.SalesReview.findOne({ credit: cr._id }).lean();
+    assert.deepStrictEqual(rv.effects.selfReferral[0].signals.map((x) => [x.code, x.strength]), [["same_home_address", "household"]]);
+    assert.match(rv.summary, /possibly a household member/);
+    assert.strictEqual((await resolveHold(sale, sam, "Sister lives with him and bought for her own room; genuine")).status, 200);
+    assert.strictEqual((await S.CommissionEntry.findOne({ sale: sale._id }).lean()).amountCents, 7450);
+  });
+  await check("self-referral: a neighbour in another unit and a customer who only shares the surname are credited automatically", async () => {
+    const n = await customer({ name: "Nora Neighbour", addresses: [{ line1: "12 Oak St Apt 5", city: "Huntington", state: "NY", zip: "11743" }] });
+    await leadFor(owner, n, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const a = await buyWithCard(n, { paidAt: "2026-11-09T18:00:00Z" });
+    const s2 = await customer({ name: "Pat Self" });
+    await leadFor(owner, s2, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const b = await buyWithCard(s2, { paidAt: "2026-11-09T19:00:00Z" });
+    assert.deepStrictEqual([a.credit.status, b.credit.status], ["credited", "credited"], JSON.stringify([a.credit.holdReasons, b.credit.holdReasons, a.credit.reason, b.credit.reason]));
+    assert.deepStrictEqual([a.credit.holdReasons, b.credit.holdReasons], [[], []]);
+  });
+  await check("self-referral: one card paying for two different customers of the same employee flags the second for review", async () => {
+    const x = await customer({ name: "Card One" });
+    const y = await customer({ name: "Card Two" });
+    await leadFor(owner, x, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    await leadFor(owner, y, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const first = await buyWithCard(x, { paidAt: "2026-11-10T15:00:00Z", fingerprint: "fp_shared_1" });
+    const second = await buyWithCard(y, { paidAt: "2026-11-10T16:00:00Z", fingerprint: "fp_shared_1" });
+    assert.strictEqual(first.credit.status, "credited");
+    assert.strictEqual(second.credit.status, "held");
+    assert.strictEqual(second.sale.stripe.cardFingerprint, "fp_shared_1");
+    const rv = await S.SalesReview.findOne({ credit: second.credit._id }).lean();
+    assert.deepStrictEqual(rv.effects.selfReferral[0].signals.map((s) => [s.code, s.strength]), [["same_card", "payment"]]);
+    const detail = (await call("GET", `/api/admin/sales-desk/reviews`, owner)).body;
+    assert.doesNotMatch(JSON.stringify(detail), /fp_shared_1/, "the fingerprint never leaves the server");
+    // A different employee's customer on the same card is not this employee's concern.
+    const z = await customer({ name: "Card Three" });
+    const tom = await telemarketer("Tom Other");
+    await leadFor(owner, z, tom, { at: new Date("2026-11-01T12:00:00Z") });
+    assert.strictEqual((await buyWithCard(z, { paidAt: "2026-11-10T17:00:00Z", fingerprint: "fp_shared_1" })).credit.status, "credited");
+  });
+  await check("self-referral on a credit request: shown to the owner only; approval needs an explicit confirmation, then pays normally", async () => {
+    const c = await customer({ name: "Back Again", email: "samself@gmail.com" });
+    await Subscription.create({ user: c._id, userId: c.userId, subscriptionType: "basic", billingCycle: "monthly", status: "canceled", addressId: c.addresses[0]._id, stripeSubscriptionId: `sub_old_${seq}`, startDate: new Date("2026-01-01"), latestPaymentDate: new Date("2026-05-01"), nextPaymentDate: new Date("2026-06-01"), cancellationDate: new Date("2026-06-01") });
+    const leadId = await leadFor(owner, c, sam, { at: new Date("2026-11-01T12:00:00Z") });
+    const { sale, credit: cr } = await buyWithCard(c, { paidAt: "2026-11-10T18:00:00Z" });
+    assert.strictEqual(cr.reason, "returning_customer");
+    const r = await call("POST", "/api/sales/credit-requests", sam, { leadId, saleId: String(sale._id), kind: "recovery", explanation: "Former member, brought back on my calls this month." });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+    assert.strictEqual(r.body.request.selfReferral, undefined, "the employee's copy has no flags");
+    const mine = (await call("GET", "/api/sales/credit-requests", sam)).body.requests.find((x) => x.id === r.body.request.id);
+    assert.strictEqual(mine.selfReferral, undefined);
+    const d = (await call("GET", `/api/admin/sales-desk/credit-requests/${r.body.request.id}`, owner)).body;
+    assert.deepStrictEqual(d.request.selfReferral.map((x) => x.code), ["same_email"]);
+    const no = await call("POST", `/api/admin/sales-desk/credit-requests/${r.body.request.id}/decide`, owner, { action: "approved", reason: "ok" });
+    assert.deepStrictEqual([no.status, no.body.code], [409, "SELF_REFERRAL_CHECK"]);
+    assert.strictEqual(no.body.signals[0].code, "same_email");
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ sale: sale._id }), 0);
+    const ok = await call("POST", `/api/admin/sales-desk/credit-requests/${r.body.request.id}/decide`, owner, { action: "approved", reason: "His aunt uses his old address book email; called her myself", selfReferralCleared: true });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const e = await S.CommissionEntry.findById(ok.body.entryId).lean();
+    assert.deepStrictEqual([e.amountCents, e.countsForBonus], [7450, true]);
+    assert.strictEqual(ok.body.request.decisions.at(-1).selfReferralCleared, true, "the confirmation is on the record");
+  });
+  await check("self-referral on intake: a lead with the employee's own phone is accepted into the queue and flagged for the owner only", async () => {
+    const ivy = await telemarketer("Ivy Intake", { phone: "+16315559050" });
+    const r = await call("POST", "/api/sales/intake", ivy, { name: "My Cousin", phone: "631-555-9050", town: "Commack" });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+    assert.doesNotMatch(JSON.stringify(r.body), /intakeFlags|matches_employee/);
+    const row = (await call("GET", "/api/admin/sales-desk/leads?view=intake", owner)).body.leads.find((l) => l.id === r.body.lead.id);
+    assert.deepStrictEqual(row.intakeFlags.map((f) => f.code), ["matches_employee_phone"]);
+    const plain = await call("POST", "/api/sales/intake", ivy, { name: "Real Lead", phone: "631-555-9051" });
+    assert.deepStrictEqual((await call("GET", "/api/admin/sales-desk/leads?view=intake", owner)).body.leads.find((l) => l.id === plain.body.lead.id).intakeFlags, []);
+  });
+
+  /* ======================================= no-show: Unknown, never estimated */
+  await check("a free visit whose date passed with no recorded outcome is 'Unknown', not an estimate; recorded outcomes keep their label", async () => {
+    const past = new Date(Date.now() - 3 * 86400000);
+    const v = leadsLib.visitStatus({ status: "confirmed", date: past });
+    assert.deepStrictEqual([v.status, v.label, v.verified], ["unknown", "Unknown", false]);
+    assert.doesNotMatch(JSON.stringify(v), /estimat|no.?show|probably|likely/i);
+    assert.deepStrictEqual([leadsLib.visitStatus({ status: "no_show", date: past }).label, leadsLib.visitStatus({ status: "completed", date: past }).label], ["No-show", "Completed"]);
+    const src = require("fs").readFileSync(require.resolve("../utils/sales/leads"), "utf8") + require("fs").readFileSync(require.resolve("../utils/sales/views"), "utf8");
+    assert.doesNotMatch(src, /"estimated"|\(estimated\)/, "no estimated origin or label is produced anywhere");
+  });
+
+  /* ======================================= recoveries and the bonus period */
+  const rita = await telemarketer("Rita Recovery");
+  async function ritaSale(paidAt, { returning = false } = {}) {
+    const c = await customer();
+    const leadId = await leadFor(owner, c, rita, { at: new Date("2025-12-01T12:00:00Z") });
+    const r = await directSale(c, new Date(paidAt), { returning });
+    return { ...r, leadId };
+  }
+  async function ritaRequest(paidAt) {
+    const r = await ritaSale(paidAt, { returning: true });
+    const q = await call("POST", "/api/sales/credit-requests", rita, { leadId: r.leadId, saleId: String(r.sale._id), kind: "recovery", explanation: "Former member; won back on my calls." });
+    assert.strictEqual(q.status, 201, JSON.stringify(q.body));
+    return { ...r, requestId: q.body.request.id };
+  }
+  const decide = (id, body) => call("POST", `/api/admin/sales-desk/credit-requests/${id}/decide`, owner, body);
+  let ritaPending;
+  await check("recovery before the first counted sale counts in ITS OWN month (same anniversary calendar), never folded into period 1", async () => {
+    await ritaSale("2026-03-10T15:00:00Z"); // anchor: Mar 10
+    for (let i = 0; i < 18; i++) await ritaSale(new Date(Date.parse("2026-03-20T15:00:00Z") + i * 60000)); // 19 in Mar 10 – Apr 9
+    const early = await ritaRequest("2026-02-01T15:00:00Z"); // Jan 10 – Feb 9 (period -2)
+    const ok = await decide(early.requestId, { action: "approved", reason: "Confirmed in GHL" });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    assert.strictEqual((await S.CommissionEntry.findById(ok.body.entryId).lean()).countsForBonus, true, "counted automatically, no choice needed");
+    assert.strictEqual((await entriesFor(rita, { kind: "bonus" })).length, 0, "19 in March + 1 in late January is not 20 in one month");
+    const p = await S.BonusPeriod.findOne({ employee: rita._id, index: -2 }).lean();
+    assert.ok(p, "the January period exists");
+    assert.deepStrictEqual([time.nyDate(p.startsAt), time.nyDate(p.endsAt)], ["2026-01-10", "2026-02-10"]);
+    assert.strictEqual((await S.BonusPeriod.findOne({ employee: rita._id, index: 0 }).lean()).anchorDate, "2026-03-10", "the anchor never moves");
+  });
+  await check("an approved recovery paid inside a bonus month is counted there automatically; as the 20th it earns that month's $500 as a late line", async () => {
+    const r = await ritaRequest("2026-04-05T15:00:00Z"); // still Mar 10 – Apr 9
+    const ok = await decide(r.requestId, { action: "approved", reason: "Confirmed" });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const [b] = await entriesFor(rita, { kind: "bonus" });
+    assert.ok(b, "bonus created by the approval itself");
+    assert.deepStrictEqual([b.amountCents, b.bonus.periodIndex, b.bonus.block, b.late], [50000, 0, 1, true]);
+    assert.ok(b.bonus.countedEntries.map(String).includes(String(ok.body.entryId)), "the recovery is one of the 20 counted");
+    assert.strictEqual(time.payWeekOf(b.earnedAt).week, "2026-04-03", "earned in the week of the 20th payment");
+    const prog = await bonus.bonusProgress(rita._id, new Date("2026-04-08T15:00:00Z"));
+    assert.deepStrictEqual([prog.period.number, prog.verifiedCount, prog.earnedThisPeriodCents], [1, 20, 50000]);
+  });
+  await check("a pending recovery shows as pending (not counted); the owner cannot switch off its bonus count; a rejection never counts", async () => {
+    ritaPending = await ritaRequest("2026-04-15T15:00:00Z"); // Apr 10 – May 9
+    let prog = await bonus.bonusProgress(rita._id, new Date("2026-04-20T15:00:00Z"));
+    assert.deepStrictEqual([prog.period.number, prog.verifiedCount, prog.pendingCount], [2, 0, 1]);
+    const off = await decide(ritaPending.requestId, { action: "approved", reason: "ok", countsForBonus: false });
+    assert.deepStrictEqual([off.status, off.body.code], [400, "MEMBERSHIP_COUNTS"]);
+    assert.strictEqual((await S.SalesCreditRequest.findById(ritaPending.requestId).lean()).status, "pending");
+    assert.strictEqual((await decide(ritaPending.requestId, { action: "rejected", reason: "Customer came back from the website on their own" })).status, 200);
+    prog = await bonus.bonusProgress(rita._id, new Date("2026-04-20T15:00:00Z"));
+    assert.deepStrictEqual([prog.verifiedCount, prog.pendingCount], [0, 0]);
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ sale: ritaPending.sale._id }), 0);
+  });
+  await check("an approved Full Day claim pays $100 and never counts toward the membership bonus", async () => {
+    const c = await customer();
+    const leadId = await leadFor(owner, c, rita, { at: new Date("2026-04-20T12:00:00Z") });
+    const { sale } = await credit.recordSale({ sourceKey: "fullday:rita:1", kind: "full_day_paid", user: c._id, identity: "stripe_customer", stripe: { paymentIntentId: "pi_rita_fd" }, amounts: { regularCents: 59900, paidPreTaxCents: 59900 }, paidAt: new Date("2026-04-18T15:00:00Z"), paidAtSource: "stripe_charge" });
+    assert.strictEqual((await credit.creditForSale(sale)).reason, "unattributed", "paid before the assignment");
+    const q = await call("POST", "/api/sales/credit-requests", rita, { leadId, saleId: String(sale._id), kind: "other", explanation: "I booked this Full Day for her on the phone." });
+    assert.strictEqual(q.status, 201, JSON.stringify(q.body));
+    assert.strictEqual((await decide(q.body.request.id, { action: "approved", reason: "ok", countsForBonus: true })).body.code, "FULL_DAY_NOT_BONUS");
+    const ok = await decide(q.body.request.id, { action: "approved", reason: "Confirmed" });
+    const e = await S.CommissionEntry.findById(ok.body.entryId).lean();
+    assert.deepStrictEqual([e.amountCents, e.countsForBonus], [10000, false]);
+  });
+
+  /* ============================================= renewals never earn twice */
+  await check("a year of monthly renewals and an annual renewal earn nothing; no new sales are recorded", async () => {
+    const before = await S.CommissionEntry.countDocuments({ kind: "commission" });
+    const events = await S.SalesEvent.countDocuments({});
+    const monthly = fake.subs.get(sale1.stripe.subscriptionId);
+    for (let m = 1; m <= 12; m++) assert.strictEqual(await sendEvent("invoice.paid", invoice({ sub: monthly, reason: "subscription_cycle", paidAt: new Date(Date.parse("2026-10-26T15:05:00Z") + m * 30 * 86400000).toISOString() })), 200);
+    const annualSale = await S.SalesEvent.findOne({ kind: "membership_first_paid", cycle: "annual", plan: "plus" }).lean();
+    const annual = fake.subs.get(annualSale.stripe.subscriptionId);
+    assert.strictEqual(await sendEvent("invoice.paid", invoice({ sub: annual, reason: "subscription_cycle", plan: "plus", cycle: "annual", paidAt: "2027-10-27T16:00:00Z" })), 200);
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ kind: "commission" }), before);
+    assert.strictEqual(await S.SalesEvent.countDocuments({}), events);
+  });
+  await check("the renewal of a membership credited by an approved recovery earns nothing", async () => {
+    const rec = await S.SalesEvent.findOne({ user: recoveryUser._id, kind: "membership_first_paid" }).lean();
+    const n = await S.CommissionEntry.countDocuments({ employee: ana._id });
+    assert.strictEqual(await sendEvent("invoice.paid", invoice({ sub: fake.subs.get(rec.stripe.subscriptionId), reason: "subscription_cycle", paidAt: "2026-11-29T15:00:00Z" })), 200);
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ employee: ana._id }), n);
+  });
+  await check("other billing reasons (manual, threshold, plain subscription) are never sales", async () => {
+    const sub = fake.subs.get(sale1.stripe.subscriptionId);
+    const events = await S.SalesEvent.countDocuments({});
+    for (const reason of ["manual", "subscription_threshold", "subscription", "upcoming"]) assert.strictEqual(await sendEvent("invoice.paid", invoice({ sub, reason, paidAt: "2026-11-11T15:00:00Z" })), 200);
+    assert.strictEqual(await S.SalesEvent.countDocuments({}), events);
+  });
+  await check("a second 'subscription_create' invoice for the same subscription (new invoice id) keeps the first sale and its one commission", async () => {
+    const sub = fake.subs.get(sale1.stripe.subscriptionId);
+    assert.strictEqual(await sendEvent("invoice.paid", invoice({ sub, reason: "subscription_create", paidAt: "2026-10-27T15:05:00Z" })), 200);
+    assert.strictEqual(await S.SalesEvent.countDocuments({ kind: "membership_first_paid", "stripe.subscriptionId": sub.id }), 1);
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ sale: sale1._id, kind: "commission" }), 1);
+  });
+  await check("the nightly reconciliation after the webhooks adds nothing, run twice", async () => {
+    const reconcile = require("../utils/sales/reconcile");
+    const entries = await S.CommissionEntry.countDocuments({});
+    const events = await S.SalesEvent.countDocuments({});
+    await reconcile.firstPayments({ days: 3650 });
+    await reconcile.firstPayments({ days: 3650 });
+    assert.strictEqual(await S.CommissionEntry.countDocuments({}), entries);
+    assert.strictEqual(await S.SalesEvent.countDocuments({}), events);
+  });
+
+  /* ============================== payouts: nothing omitted, nothing paid twice */
+  const pat = await telemarketer("Pat Parallel");
+  await check("weeks are approved oldest first: a later week is refused while an earlier one still has open earnings", async () => {
+    const r = await call("POST", "/api/admin/sales-desk/payouts/2026-11-06/approve", owner, {});
+    assert.deepStrictEqual([r.status, r.body.code], [409, "EARLIER_WEEK_OPEN"]);
+    assert.ok(r.body.weeks.includes("2026-10-30"), JSON.stringify(r.body));
+    assert.strictEqual((await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean())?.status || "open", "open");
+  });
+  await check("earnings arriving WHILE a week is approved: each is frozen in that week or placed on a later one; none lost, none twice", async () => {
+    const make = (i) => ledger.addEntry({ sourceKey: `race:${i}`, employee: pat._id, kind: "adjustment", product: "adjustment", amountCents: 100 + i, reason: "race test", calc: { method: "owner_adjustment", explain: "race" }, earnedAt: new Date(Date.parse("2026-11-02T15:00:00Z") + i * 1000) });
+    const jobs = [];
+    for (let i = 0; i < 12; i++) jobs.push(make(i));
+    jobs.push(ledger.approveWeek("2026-10-30", owner).then((b) => ({ approved: b })));
+    for (let i = 12; i < 24; i++) jobs.push(make(i));
+    jobs.push(make(3)); // a replay of the same key, at the same moment
+    const results = await Promise.all(jobs);
+    const batch = await S.PayoutBatch.findOne({ week: "2026-10-30" }).lean();
+    assert.strictEqual(batch.status, "approved");
+    const mine = await S.CommissionEntry.find({ employee: pat._id }).lean();
+    assert.strictEqual(mine.length, 24, "every entry exists exactly once");
+    for (const e of mine) {
+      if (e.statementWeek === "2026-10-30") assert.strictEqual(e.status, "approved", "on the approved week = frozen in it");
+      else assert.deepStrictEqual([e.statementWeek, e.status, e.late], ["2026-11-06", "open", true], "otherwise on the next week");
+    }
+    const line = batch.lines.find((l) => String(l.employee) === String(pat._id));
+    const frozenHere = mine.filter((e) => e.statementWeek === "2026-10-30");
+    assert.strictEqual(line ? line.entries.length : 0, frozenHere.length);
+    assert.strictEqual(line ? line.totalCents : 0, frozenHere.reduce((s, e) => s + e.amountCents, 0));
+    assert.ok(results.some((r) => r?.approved));
+  });
+  await check("two approvals at once: exactly one succeeds; the week's lines list every entry once", async () => {
+    const [a, b] = await Promise.allSettled([ledger.approveWeek("2026-11-06", owner), ledger.approveWeek("2026-11-06", owner)]);
+    const ok = [a, b].filter((x) => x.status === "fulfilled");
+    const bad = [a, b].filter((x) => x.status === "rejected");
+    assert.strictEqual(ok.length, 1);
+    assert.strictEqual(bad[0].reason.code, "ALREADY_APPROVED");
+    const batch = await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean();
+    const ids = batch.lines.flatMap((l) => l.entries.map(String));
+    assert.strictEqual(new Set(ids).size, ids.length);
+    assert.strictEqual(ids.length, await S.CommissionEntry.countDocuments({ statementWeek: "2026-11-06" }), "every entry of the week is on it");
+  });
+  await check("two payment records at once for the same line: one is recorded, the other refused; the entries are paid once", async () => {
+    const [a, b] = await Promise.allSettled([
+      ledger.recordPayment("2026-11-06", pat._id, { paidOn: "2026-11-13", method: "payroll", reference: "A" }, owner),
+      ledger.recordPayment("2026-11-06", pat._id, { paidOn: "2026-11-13", method: "payroll", reference: "B" }, owner),
+    ]);
+    assert.strictEqual([a, b].filter((x) => x.status === "fulfilled").length, 1);
+    assert.strictEqual([a, b].find((x) => x.status === "rejected").reason.code, "ALREADY_PAID");
+    const line = (await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean()).lines.find((l) => String(l.employee) === String(pat._id));
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ _id: { $in: line.entries }, status: "paid" }), line.entries.length);
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ employee: pat._id, status: "paid", batch: { $ne: line ? (await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean())._id : null } }), 0, "nothing of Pat's outside this line was marked paid");
+  });
+  await check("a credit decided now for a sale paid in an old, never-approved week lands on the first open week, never stranded", async () => {
+    const c = await customer({ name: "Old September" });
+    await leadFor(owner, c, ana, { at: new Date("2026-09-01T12:00:00Z") });
+    const sale = await credit.recordSale({ sourceKey: "stranded:1", kind: "membership_first_paid", user: c._id, identity: "unverified", plan: "basic", cycle: "monthly", stripe: { subscriptionId: "sub_stranded_1" }, amounts: { regularCents: 14900, paidPreTaxCents: 14900 }, paidAt: new Date("2026-09-15T15:00:00Z"), paidAtSource: "stripe_invoice" });
+    await credit.creditForSale(sale.sale);
+    const rv = await S.SalesReview.findOne({ sale: sale.sale._id }).lean();
+    const r = await call("POST", `/api/admin/sales-desk/reviews/${rv._id}/resolve`, owner, { decision: "credit", employeeId: String(ana._id), reason: "Verified with the customer" });
+    const e = await S.CommissionEntry.findById(r.body.entryId).lean();
+    assert.deepStrictEqual([e.earnedWeek, e.statementWeek, e.late], ["2026-09-11", "2026-11-13", true]);
+  });
+  await check("ledger integrity holds on the whole ledger, and the checker really catches a stranded or double-listed entry", async () => {
+    const ok = await ledger.ledgerIntegrity();
+    assert.ok(ok.ok, ok.problems.join("\n"));
+    assert.ok(ok.approvedWeeks >= 3);
+    const list = (await call("GET", "/api/admin/sales-desk/payouts", owner)).body;
+    assert.strictEqual(list.integrity.ok, true);
+    // Plant a stranded open entry (bypassing the ledger) and a double listing; the checker must see both.
+    const planted = new mongoose.Types.ObjectId();
+    await S.CommissionEntry.collection.insertOne({ _id: planted, sourceKey: "planted:1", employee: pat._id, kind: "adjustment", product: "adjustment", amountCents: 1, earnedWeek: "2026-10-16", statementWeek: "2026-10-16", status: "open", late: false, batch: null });
+    const b1 = await S.PayoutBatch.findOne({ week: "2026-10-30" }).lean();
+    const b2 = await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean();
+    const dupId = b1.lines[0].entries[0];
+    await S.PayoutBatch.collection.updateOne({ _id: b2._id }, { $push: { "lines.0.entries": dupId } });
+    const bad = await ledger.ledgerIntegrity();
+    assert.strictEqual(bad.ok, false);
+    assert.ok(bad.problems.some((p) => /would never be paid/.test(p)), bad.problems.join("\n"));
+    assert.ok(bad.problems.some((p) => /listed on week 2026-10-30 and on week 2026-11-06/.test(p)), bad.problems.join("\n"));
+    await S.CommissionEntry.collection.deleteOne({ _id: planted });
+    await S.PayoutBatch.collection.updateOne({ _id: b2._id }, { $pull: { "lines.0.entries": dupId } });
+    assert.ok((await ledger.ledgerIntegrity()).ok);
+  });
+  await check("each approved week's payroll CSV totals equal the sum of its entries", async () => {
+    for (const week of ["2026-10-23", "2026-10-30", "2026-11-06"]) {
+      const batch = await S.PayoutBatch.findOne({ week }).lean();
+      const csv = await (await fetch(`${base}/api/admin/sales-desk/payouts/${week}/csv`, { headers: { authorization: `Bearer ${tokenFor(owner)}` } })).text();
+      const rows = csv.trim().split("\n").slice(1);
+      const csvTotal = rows.reduce((s, r) => s + Math.round(Number(r.split(",")[7]) * 100), 0);
+      const entries = await S.CommissionEntry.find({ batch: batch._id }).lean();
+      assert.strictEqual(csvTotal, entries.reduce((s, e) => s + e.amountCents, 0), week);
+    }
+  });
+
+
   server.close();
   await mongoose.disconnect();
   await mongod.stop();

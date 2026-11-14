@@ -171,6 +171,16 @@ async function leadsByUserFor(userIds) {
   return new Map(leads.map((l) => [String(l.linkedUser), l]));
 }
 
+/* What the employee is told about a hold: plain and neutral (the owner sees the detail). */
+const EMPLOYEE_HOLD_TEXT = {
+  identity_unverified: "the payment still has to be matched to the account",
+  competing_claims: "more than one person has a claim on this sale",
+  referral_only: "the owner confirms referral-link sales",
+  employee_inactive: "waiting for the owner's review",
+  linked_after_sale: "the account was linked after the payment",
+  self_referral_check: "a routine owner check of the customer's details",
+};
+
 /** Pending claims: held credits and open credit requests, with what they would pay. Never earnings. */
 async function pendingClaims(employeeId) {
   const held = await SalesCredit.find({ status: "held", "claimants.employee": employeeId }).lean();
@@ -181,7 +191,7 @@ async function pendingClaims(employeeId) {
     const s = sales.get(String(h.sale));
     if (!s) continue;
     const { computed } = await previewCommission(s);
-    out.push({ type: "held_credit", saleId: String(s._id), label: saleLabel(s), paidAt: s.paidAt, proposedCents: computed.amountCents || 0, why: (h.holdReasons || []).join(", "), countsForBonus: s.kind === "membership_first_paid" });
+    out.push({ type: "held_credit", saleId: String(s._id), label: saleLabel(s), paidAt: s.paidAt, proposedCents: computed.amountCents || 0, why: [...new Set((h.holdReasons || []).map((r) => EMPLOYEE_HOLD_TEXT[r] || "waiting for the owner's review"))].join("; "), countsForBonus: s.kind === "membership_first_paid" });
   }
   for (const r of reqs) {
     const s = sales.get(String(r.sale));

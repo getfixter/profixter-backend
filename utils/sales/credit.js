@@ -10,6 +10,7 @@
  *     creditEmployee (chosen by the manager at any reassignment) gets the credit
  *   - nobody else has a claim (another employee's referral link on the account)
  *   - the customer is not returning (never paid for a membership before)
+ *   - the self-referral check (utils/sales/selfReferral.js) finds nothing
  * Otherwise the credit is HELD for the owner, or NONE (unattributed / returning
  * customer, which the employee can claim with Request sales credit).
  *
@@ -22,6 +23,7 @@ const { addEntry, SalesError } = require("./ledger");
 const { evaluateBonus } = require("./bonus");
 const { computeCommission, ruleAt, ruleKeyForSale, dollars, label } = require("./rules");
 const { effectiveRole } = require("../../middleware/authorize");
+const selfReferral = require("./selfReferral");
 
 const isMembershipSale = (sale) => sale.kind === "membership_first_paid";
 
@@ -138,6 +140,12 @@ async function creditForSale(saleOrId) {
   if (!assignment) holdReasons.push("referral_only");
   const employee = await User.findById(claimants[0].employee).select("isActive employeePosition role name").lean();
   if (!employee || employee.isActive === false) holdReasons.push("employee_inactive");
+  const selfChecks = [];
+  for (const id of distinct) {
+    const signals = await selfReferral.signalsFor({ employeeId: id, sale, lead });
+    if (signals.length) selfChecks.push({ employee: id, signals });
+  }
+  if (selfChecks.length) holdReasons.push("self_referral_check");
 
   if (holdReasons.length) {
     const credit = await upsertCredit({ ...base, status: "held", basis: assignment ? "assignment" : "referral", employee: null, holdReasons, reason: holdReasons.join(",") });
@@ -147,8 +155,8 @@ async function creditForSale(saleOrId) {
       key: `hold:${sale._id}`,
       sale: sale._id,
       credit: credit._id,
-      summary: `${saleLabel(sale)} on ${sale.paidAt.toISOString().slice(0, 10)}: ${holdReasons.map(holdText).join("; ")}. Claims: ${claimants.map((c) => `${who.get(String(c.employee)) || "employee"} (${c.basis})`).join(", ")}.`,
-      effects: { holdReasons, claimants: claimants.map((c) => ({ ...c, employee: String(c.employee) })) },
+      summary: `${saleLabel(sale)} on ${sale.paidAt.toISOString().slice(0, 10)}: ${holdReasons.map(holdText).join("; ")}. Claims: ${claimants.map((c) => `${who.get(String(c.employee)) || "employee"} (${c.basis})`).join(", ")}.${selfChecks.length ? ` ${selfReferral.summaryOf(selfChecks.flatMap((x) => x.signals))}` : ""}`,
+      effects: { holdReasons, claimants: claimants.map((c) => ({ ...c, employee: String(c.employee) })), ...(selfChecks.length ? { selfReferral: selfChecks.map((x) => ({ employee: x.employee, employeeName: who.get(x.employee) || "", signals: x.signals })) } : {}) },
     });
     return credit;
   }
@@ -178,6 +186,7 @@ const HOLD_TEXT = {
   referral_only: "only a referral link, no assignment",
   employee_inactive: "the employee is no longer active",
   linked_after_sale: "the lead was linked to this account after the payment",
+  self_referral_check: "the customer's details match the employee's own (self-referral check)",
 };
 const holdText = (r) => HOLD_TEXT[r] || r;
 
@@ -258,8 +267,10 @@ async function createRequest(employee, { leadId, saleId, kind, explanation, evid
   if (credit && credit.status === "credited") throw new SalesError("ALREADY_CREDITED", "This purchase already has sales credit.", 409);
   if (credit && credit.status === "held") throw new SalesError("UNDER_REVIEW", "This purchase is already waiting for the owner's decision.", 409);
   const proposed = await proposalFor(sale);
+  const signals = await selfReferral.signalsFor({ employeeId: employee._id, sale, lead });
   try {
     const doc = await SalesCreditRequest.create({
+      checks: { selfReferral: signals, checkedAt: new Date() },
       employee: employee._id,
       lead: lead._id,
       user: lead.linkedUser,
@@ -277,7 +288,25 @@ async function createRequest(employee, { leadId, saleId, kind, explanation, evid
   }
 }
 
-async function decideRequest(requestId, { action, reason, amountCents, countsForBonus }, actor) {
+/**
+ * Whether an approved claim counts toward the bonus. Owner-confirmed rules:
+ * an approved recovery (a first paid membership) always counts, a Full Day
+ * never does, and a plan change counts only when the owner explicitly says so.
+ */
+function bonusCountFor(sale, countsForBonus) {
+  if (sale.kind === "membership_change_paid") {
+    if (typeof countsForBonus !== "boolean") throw new SalesError("BONUS_CHOICE_REQUIRED", "For a plan change, say whether it counts toward the 20-membership bonus.");
+    return countsForBonus;
+  }
+  if (sale.kind === "full_day_paid") {
+    if (countsForBonus === true) throw new SalesError("FULL_DAY_NOT_BONUS", "A Full Day never counts toward the membership bonus.");
+    return false;
+  }
+  if (countsForBonus === false) throw new SalesError("MEMBERSHIP_COUNTS", "An approved membership sale always counts toward the bonus. Reject the request instead if it should not be credited.");
+  return true;
+}
+
+async function decideRequest(requestId, { action, reason, amountCents, countsForBonus, selfReferralCleared }, actor) {
   const req = await SalesCreditRequest.findById(requestId);
   if (!req) throw new SalesError("NOT_FOUND", "Request not found.", 404);
   if (!["pending", "needs_info"].includes(req.status)) throw new SalesError("ALREADY_DECIDED", "This request is already decided.", 409);
@@ -293,10 +322,15 @@ async function decideRequest(requestId, { action, reason, amountCents, countsFor
   const sale = await SalesEvent.findById(req.sale).lean();
   const amount = amountCents === undefined || amountCents === null || amountCents === "" ? req.proposed.amountCents : Number(amountCents);
   if (!Number.isInteger(amount) || amount <= 0 || amount > 1000000) throw new SalesError("BAD_AMOUNT", "The commission must be a positive amount in cents.");
-  if (sale.kind === "membership_change_paid" && typeof countsForBonus !== "boolean") {
-    throw new SalesError("BONUS_CHOICE_REQUIRED", "For a plan change, say whether it counts toward the 20-membership bonus.");
+  const counts = bonusCountFor(sale, countsForBonus);
+  // Re-run the self-referral check at decision time (a later sale may share the card); flagged claims need the owner's confirmation.
+  const signals = await selfReferral.signalsFor({ employeeId: req.employee, sale, lead: req.lead ? await SalesLead.findById(req.lead).lean() : null });
+  if (signals.length && selfReferralCleared !== true) {
+    throw new SalesError("SELF_REFERRAL_CHECK", "The self-referral check flagged this claim. Review the signals, then confirm you checked them to approve (or reject the request).", 409, { signals });
   }
-  const counts = typeof countsForBonus === "boolean" ? countsForBonus : req.proposed.countsForBonusDefault;
+  if (signals.length) {
+    req.checks = { selfReferral: signals, checkedAt: new Date() };
+  }
   let credit = await SalesCredit.findOne({ sale: sale._id });
   if (credit && credit.status === "credited") throw new SalesError("ALREADY_CREDITED", "This purchase already has sales credit.", 409);
   if (!credit) credit = new SalesCredit({ sale: sale._id, user: sale.user, lead: req.lead, status: "none", basis: "none" });
@@ -318,7 +352,7 @@ async function decideRequest(requestId, { action, reason, amountCents, countsFor
     explainPrefix: `Approved credit request (${req.kind}): `,
   });
   req.status = "approved";
-  req.decisions.push({ action: "approved", by: actor._id, byName: actor.name || "", reason: why.slice(0, 1000), amountCents: amount, countsForBonus: counts });
+  req.decisions.push({ action: "approved", by: actor._id, byName: actor.name || "", reason: why.slice(0, 1000), amountCents: amount, countsForBonus: counts, selfReferralCleared: signals.length ? true : null });
   await req.save();
   return { request: req.toObject(), entry };
 }
@@ -484,14 +518,24 @@ async function reviewSalesAfterLink(lead) {
     if (!credit || credit.status !== "none" || credit.reason !== "unattributed") continue;
     const a = await assignmentAt(lead._id, sale.paidAt);
     if (!a) continue;
+    const signals = await selfReferral.signalsFor({ employeeId: a.creditEmployee, sale, lead });
+    const reasons = ["linked_after_sale", ...(signals.length ? ["self_referral_check"] : [])];
     credit.status = "held";
     credit.basis = "assignment";
     credit.lead = lead._id;
     credit.claimants = [{ employee: a.creditEmployee, basis: "assignment", detail: "assigned at the time of payment; linked later" }];
-    credit.holdReasons = ["linked_after_sale"];
-    credit.reason = "linked_after_sale";
+    credit.holdReasons = reasons;
+    credit.reason = reasons.join(",");
     await credit.save();
-    await openReview({ kind: "credit_hold", key: `hold:${sale._id}`, sale: sale._id, credit: credit._id, summary: `${saleLabel(sale)} paid ${sale.paidAt.toISOString().slice(0, 10)}: ${holdText("linked_after_sale")}.`, effects: { holdReasons: ["linked_after_sale"] } });
+    const name = signals.length ? (await namesOf([a.creditEmployee])).get(String(a.creditEmployee)) || "" : "";
+    await openReview({
+      kind: "credit_hold",
+      key: `hold:${sale._id}`,
+      sale: sale._id,
+      credit: credit._id,
+      summary: `${saleLabel(sale)} paid ${sale.paidAt.toISOString().slice(0, 10)}: ${reasons.map(holdText).join("; ")}.${signals.length ? ` ${selfReferral.summaryOf(signals)}` : ""}`,
+      effects: { holdReasons: reasons, ...(signals.length ? { selfReferral: [{ employee: String(a.creditEmployee), employeeName: name, signals }] } : {}) },
+    });
   }
 }
 
@@ -511,5 +555,6 @@ module.exports = {
   effectsOf,
   saleLabel,
   holdText,
+  bonusCountFor,
   REQUEST_KINDS,
 };

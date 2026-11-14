@@ -208,7 +208,9 @@ function requestDto(r, { forOwner = false } = {}) {
     status: r.status,
     proposed: r.proposed,
     evidence: (r.evidence || []).map((e) => ({ id: String(e._id), kind: e.kind, text: e.text, fileName: e.fileName, size: e.size, addedAt: e.addedAt })),
-    decisions: (r.decisions || []).map((d) => ({ action: d.action, by: forOwner || d.action === "submitted" || d.action === "employee_reply" ? d.byName : "Owner", reason: d.reason, amountCents: d.amountCents, countsForBonus: d.countsForBonus, at: d.at })),
+    decisions: (r.decisions || []).map((d) => ({ action: d.action, by: forOwner || d.action === "submitted" || d.action === "employee_reply" ? d.byName : "Owner", reason: d.reason, amountCents: d.amountCents, countsForBonus: d.countsForBonus, ...(forOwner ? { selfReferralCleared: d.selfReferralCleared ?? null } : {}), at: d.at })),
+    /* The self-referral signals are for the owner's review only. */
+    ...(forOwner ? { selfReferral: (r.checks?.selfReferral || []).map((x) => ({ code: x.code, strength: x.strength, text: x.text })) } : {}),
     createdAt: r.createdAt,
   };
 }
