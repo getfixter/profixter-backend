@@ -220,6 +220,8 @@ async function main() {
   } else {
     log(`[preview] using existing data seeded ${new Date(meta.seededAt).toISOString()} (dates do not move; use --reset for a fresh two-week window)`);
   }
+  // Sales desk demo data (telemarketers, leads, verified sales), once.
+  await require("./seedSales").seedSales({ log });
   await mongoose.disconnect();
 
   /* 6. The real app, wrapped so preview-only routes come first. */
