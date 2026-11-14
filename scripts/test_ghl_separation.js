@@ -38,8 +38,25 @@ const ROOT = path.join(__dirname, "..");
  * visible decision in a diff rather than a side effect of where somebody put
  * something.
  */
+/*
+ * The telemarketer sales desk (2026-11, owner brief). INBOUND only: GHL calls
+ * us (signed, off by default) with do-not-disturb changes and call/text
+ * METADATA for contacts an employee mapped by hand; Profixter stores the GHL
+ * contact id and builds deep links. It sends nothing to GHL and makes no
+ * outbound HTTP call (asserted below).
+ */
+const SALES_DESK = [
+  path.join("routes", "sales.js"),
+  path.join("routes", "adminSalesDesk.js"),
+  path.join("utils", "sales", "ghl.js"),
+  path.join("utils", "sales", "leads.js"),
+  path.join("utils", "sales", "views.js"),
+  path.join("models", "Sales.js"),
+];
+
 const ALLOWED = new Set([
-  /* Inbound lead assignment. Receives from GHL; sends nothing. */
+  ...SALES_DESK,
+  /* Legacy route file: /lead-assigned now answers 410 and writes nothing. */
   path.join("routes", "ghl.js"),
   /* Stores rep ownership of a cold lead. Our record, our database. */
   path.join("models", "RepAttribution.js"),
@@ -234,11 +251,19 @@ function main() {
   /* ==================================================================== */
   section("Independent lead generation is untouched");
 
-  test("the inbound lead-assignment route still exists", () => {
-    const src = fs.readFileSync(path.join(ROOT, "routes", "ghl.js"), "utf8");
-    assert.match(src, /\/lead-assigned/, "the cold-lead intake endpoint must remain");
-    assert.match(src, /RepAttribution/, "it must still record rep ownership");
-    assert.match(src, /GHL_WEBHOOK_SECRET/, "it must stay authenticated");
+  test("the old lead-assignment route is retired: it answers 410 and writes nothing", () => {
+    const code = codeOf(path.join("routes", "ghl.js"));
+    assert.match(code, /\/lead-assigned/);
+    assert.match(code, /status\(410\)/, "retired, not silently accepting");
+    assert.ok(!/RepAttribution|\.save\(|\.create\(/.test(code), "it must write nothing");
+  });
+
+  test("the sales desk only RECEIVES from GHL: no outbound call, no GHL API host", () => {
+    for (const file of SALES_DESK) {
+      const code = codeOf(file);
+      assert.ok(!code.includes("leadconnectorhq"), `${file} must never call the GHL API`);
+      assert.ok(!/\bfetch\s*\(|axios|https?\.request\(/.test(code), `${file} must make no outbound HTTP call`);
+    }
   });
 
   test("it is inbound only - it sends nothing to GHL", () => {
@@ -249,14 +274,19 @@ function main() {
 
   test("server still mounts it and allows its header", () => {
     const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-    assert.match(src, /app\.use\("\/api\/ghl"/, "the inbound route must stay mounted");
-    assert.match(src, /x-ghl-secret/, "its shared-secret header must stay allowed through CORS");
+    assert.match(src, /app\.use\("\/api\/ghl"/, "the legacy route file stays mounted (to answer 410)");
+    assert.match(src, /app\.post\("\/api\/ghl\/webhook", express\.raw/, "the signed sales-desk webhook is mounted with a raw body");
   });
 
-  test("RepAttribution survives, with its commission fields", () => {
+  test("RepAttribution survives as a read-only archive of the retired commission (history is preserved)", () => {
     const src = fs.readFileSync(path.join(ROOT, "models", "RepAttribution.js"), "utf8");
-    for (const field of ["commissionAmount", "commissionRate"]) {
-      assert.ok(src.includes(field), `${field} is rep attribution data and must not be removed`);
+    for (const field of ["commissionAmount", "commissionRate", "commissionStatus"]) {
+      assert.ok(src.includes(field), `${field} is historical evidence and must not be removed`);
+    }
+    // ...and nothing writes to it any more: no signup or checkout path credits the old way.
+    for (const file of [path.join("routes", "webhook.js"), path.join("utils", "auth", "accounts.js"), path.join("routes", "auth.js")]) {
+      const code = codeOf(file);
+      assert.ok(!/await markLeadSubscribed\(|await markLeadRegistered\(/.test(code), `${file} must not run the retired commission`);
     }
   });
 

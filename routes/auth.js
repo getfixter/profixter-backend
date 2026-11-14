@@ -22,7 +22,6 @@ const authAccounts = require("../utils/auth/accounts");
 const temporaryPassword = require("../utils/auth/temporaryPassword");
 const { hitAll } = require("../utils/auth/authRateLimit");
 const { clientIp } = require("../utils/auth/clientIp");
-const { markLeadRegistered } = authAccounts;
 const { ProviderTokenError, verifyGoogleAccessToken, verifyGoogleIdToken } = require("../utils/auth/providerTokens");
 const {
   findCustomerByEmail,
@@ -271,8 +270,8 @@ function phoneRequiredFor(user) {
   return Boolean(created && created >= PHONE_REQUIRED_SINCE);
 }
 
-// Cold-lead matching (findBestLeadMatch, markLeadRegistered) lives in
-// utils/auth/accounts so every way of signing up credits reps the same way.
+// The retired cold-lead matching (markLeadRegistered) no longer runs at signup. An account
+// made through an employee's referral link is recorded by utils/sales/leads.recordReferralSignup.
 
 router.post("/register", async (req, res) => {
   try {
@@ -462,7 +461,7 @@ router.post("/register", async (req, res) => {
     if (attribution) user.attribution = attribution;
 
     await user.save();
-    await markLeadRegistered(user);
+    await require("../utils/sales/leads").recordReferralSignup(user);
 
     /*
      * The consent history: each box the customer ticked, with the exact

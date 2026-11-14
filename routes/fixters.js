@@ -10,7 +10,8 @@ const TechnicianAvailabilityTemplate = require("../models/TechnicianAvailability
 const AvailabilityOverride = require("../models/AvailabilityOverride");
 const CapacityOverride = require("../models/CapacityOverride");
 const { PERMISSIONS, requirePermission } = require("../middleware/authorize");
-const { SECTIONS, SECTIONS_VERSION, cleanSections, isFieldPosition, registryForEditor } = require("../utils/adminAccess");
+const { SECTIONS, SECTIONS_VERSION, cleanSections, isFieldPosition, isSealedPosition, registryForEditor } = require("../utils/adminAccess");
+const { revokeAllForUser } = require("../utils/auth/sessions");
 const { ensureTechnicianTemplate } = require("../utils/availabilityBootstrap");
 const {
   createAdminActivityLog,
@@ -26,7 +27,20 @@ const {
  * Admin sections the owner switched on. See utils/adminAccess.js.
  */
 const router = express.Router();
-const POSITIONS = ["Fixter", "General Fixter"];
+/* Field work (Fixter / General Fixter) or the sealed office role Telemarketer. */
+const POSITIONS = ["Fixter", "General Fixter", "Telemarketer"];
+
+/* A Telemarketer's access is fixed: never any Admin sections (see utils/adminAccess.js). */
+const sectionsFor = (position, sections) => (isSealedPosition(position) ? [] : cleanSections(sections));
+async function salesRecordsOf(userId) {
+  const { LeadAssignment, CommissionEntry, SalesCreditRequest } = require("../models/Sales");
+  const [open, entries, requests] = await Promise.all([
+    LeadAssignment.countDocuments({ employee: userId, endedAt: null }),
+    CommissionEntry.countDocuments({ employee: userId }),
+    SalesCreditRequest.countDocuments({ employee: userId }),
+  ]);
+  return { openLeads: open, ledgerEntries: entries, creditRequests: requests, any: open + entries + requests > 0 };
+}
 const TITLE_MAX = 80;
 
 const sectionLabel = new Map(SECTIONS.map((s) => [s.id, s.label]));
@@ -226,14 +240,14 @@ router.post("/", async (req, res) => {
     if (!position.ok) return res.status(400).json({ message: "Invalid field work option" });
     const employeePosition = position.value;
     const employeeTitle = readTitle(req.body.employeeTitle, employeePosition);
-    const adminSections = cleanSections(req.body.adminSections);
+    const adminSections = sectionsFor(employeePosition, req.body.adminSections);
 
     if (!firstName || !lastName || !email) {
       return res.status(400).json({ message: "First name, last name and email are required" });
     }
     // Field workers get job texts, so they need a phone; for office staff it is optional.
-    if (phone === null || (employeePosition && !phone)) {
-      return res.status(400).json({ message: employeePosition ? "A valid phone is required for a Fixter" : "Phone number is not valid" });
+    if (phone === null || (isFieldPosition(employeePosition) && !phone)) {
+      return res.status(400).json({ message: isFieldPosition(employeePosition) ? "A valid phone is required for a Fixter" : "Phone number is not valid" });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ message: "Invalid email" });
@@ -314,13 +328,17 @@ router.put("/:id", async (req, res) => {
     const lastName = clean(req.body.lastName);
     const phone = normalizePhone(req.body.phone);
     const position = readPosition(req.body.employeePosition);
-    if (!firstName || !lastName || !position.ok || phone === null || (position.value && !phone)) {
+    if (!firstName || !lastName || !position.ok || phone === null || (isFieldPosition(position.value) && !phone)) {
       return res.status(400).json({ message: "Valid name and field work are required, and a phone for a Fixter" });
     }
     const employeePosition = position.value;
+    if (user.employeePosition === "Telemarketer" && employeePosition !== "Telemarketer") {
+      const recs = await salesRecordsOf(user._id);
+      if (recs.openLeads) return res.status(409).json({ message: `Reassign this telemarketer's ${recs.openLeads} open lead(s) in Sales desk before changing their role.` });
+    }
     const employeeTitle = readTitle(req.body.employeeTitle, employeePosition);
     // Sections are only changed when sent, so an older client editing a name cannot wipe them.
-    const adminSections = req.body.adminSections === undefined ? cleanSections(user.adminSections) : cleanSections(req.body.adminSections);
+    const adminSections = sectionsFor(employeePosition, req.body.adminSections === undefined ? user.adminSections : req.body.adminSections);
 
     const before = {
       title: user.employeeTitle || user.employeePosition || "",
@@ -336,9 +354,9 @@ router.put("/:id", async (req, res) => {
     user.employeeTitle = employeeTitle;
     user.adminSections = adminSections;
     user.adminSectionsVersion = SECTIONS_VERSION;
-    if (!employeePosition) user.isDefaultFixter = false;
+    if (!isFieldPosition(employeePosition)) user.isDefaultFixter = false;
     await user.save();
-    if (employeePosition && !before.fieldWork) {
+    if (isFieldPosition(employeePosition) && !isFieldPosition(before.fieldWork)) {
       await ensureTechnicianTemplate(user._id).catch((e) => console.error("Template provisioning failed:", e.message));
     }
 
@@ -402,6 +420,16 @@ router.patch("/:id/status", async (req, res) => {
     }
 
     await user.save();
+    /*
+     * Offboarding a Telemarketer: every session ends now (not only on the next
+     * request), their records and earned money stay, and their open leads are
+     * listed for the owner to reassign (choosing who keeps credit).
+     */
+    let sales = null;
+    if (!user.isActive && wasActive && user.employeePosition === "Telemarketer") {
+      await revokeAllForUser(user._id, "employee_disabled").catch((e) => console.error("Session revoke on disable failed:", e.message));
+      sales = await salesRecordsOf(user._id);
+    }
     if (wasActive !== user.isActive) {
       await createAdminActivityLog(req, {
         action: user.isActive ? "Employee Enabled" : "Employee Disabled",
@@ -421,6 +449,7 @@ router.patch("/:id/status", async (req, res) => {
       fixter: fixterDTO(user),
       templateReady: true,
       futureAssignedJobs,
+      ...(sales ? { sales: { openLeads: sales.openLeads, sessionsRevoked: true } } : {}),
     });
   } catch (error) {
     console.error("Update Fixter active status failed:", error);
@@ -590,6 +619,10 @@ router.delete("/:id", async (req, res) => {
         message:
           "Remove this fixter as the default fixter before deleting.",
       });
+    }
+    // Sales history (earnings, statements, credit decisions) must outlive the account: disable instead.
+    if ((await salesRecordsOf(user._id)).any) {
+      return res.status(409).json({ message: "This employee has sales records and earnings history. Disable the account instead of deleting it." });
     }
 
     const futureBookings = await Booking.find({

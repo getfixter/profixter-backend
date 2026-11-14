@@ -229,7 +229,7 @@ async function main() {
       assert.strictEqual(await ConversationThread.countDocuments({ ghlConversationId: "conv-hook" }), 0);
       assert.strictEqual(modelCalls, 0);
       // the rep-attribution webhook still answers (400: a phone is required)
-      assert.strictEqual((await post("/lead-assigned", {})).status, 400);
+      assert.strictEqual((await post("/lead-assigned", {})).status, 410);
     } finally {
       server.close();
       delete process.env.CONVERSATIONS_ENABLED;

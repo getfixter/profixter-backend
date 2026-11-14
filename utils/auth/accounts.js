@@ -1,7 +1,6 @@
 const jwt = require("jsonwebtoken");
 const sessions = require("./sessions");
 const User = require("../../models/User");
-const RepAttribution = require("../../models/RepAttribution");
 const SiteVisitor = require("../../models/SiteVisitor");
 const { normalizeEmail, normalizePhone } = require("../identity");
 const { sanitizeAttribution } = require("../analytics/attribution");
@@ -181,52 +180,10 @@ async function attachVerifiedEmail(user, email) {
   return { ok: true, previousEmail };
 }
 
-/* -------------------------------------------------------- lead matching */
-
-async function findBestLeadMatch({ email, phone }) {
-  const phoneNormalized = normalizePhone(phone);
-  const emailNormalized = normalizeEmail(email);
-  let doc = null;
-  if (phoneNormalized) {
-    doc = await RepAttribution.findOne({
-      phoneNormalized,
-      status: { $in: ["active", "registered", "subscribed"] },
-    }).sort({ assignedAt: -1, createdAt: -1 });
-  }
-  if (!doc && emailNormalized) {
-    doc = await RepAttribution.findOne({
-      emailNormalized,
-      status: { $in: ["active", "registered", "subscribed"] },
-    }).sort({ assignedAt: -1, createdAt: -1 });
-  }
-  return doc;
-}
-
-/**
- * A field rep's cold lead who has now made an account. Moved here unchanged
- * from routes/auth.js so every way of signing up credits the rep the same way.
+/*
+ * Lead matching (findBestLeadMatch / markLeadRegistered) was retired 2026-11: it linked
+ * RepAttribution rows to new accounts by phone or EMAIL. See utils/sales/leads.recordReferralSignup.
  */
-async function markLeadRegistered(user) {
-  try {
-    const match = await findBestLeadMatch({ email: user.email, phone: user.phone });
-    if (!match) return;
-    match.matchedUserId = user._id;
-    match.emailRaw = user.email || match.emailRaw;
-    match.emailNormalized = normalizeEmail(user.email) || match.emailNormalized;
-    match.phoneRaw = user.phone || match.phoneRaw;
-    match.phoneNormalized = normalizePhone(user.phone) || match.phoneNormalized;
-    if (!match.fullName && user.name) match.fullName = user.name;
-    if (!match.cityAtAssignment && user.city) match.cityAtAssignment = user.city;
-    if (!match.stateAtAssignment && user.state) match.stateAtAssignment = user.state;
-    if (match.status !== "subscribed") match.status = "registered";
-    if (match.conversionType === "none") match.conversionType = "registered";
-    if (!match.registeredAt) match.registeredAt = new Date();
-    match.lastSyncedAt = new Date();
-    await match.save();
-  } catch (error) {
-    console.error("❌ markLeadRegistered failed:", error.message);
-  }
-}
 
 /* ------------------------------------------------------ account creation */
 
@@ -280,7 +237,8 @@ function reportAccountLead(user, { req, metaEventId, fbp, fbc, sourcePath = "/si
  * Each step is best effort: a failed email must never undo an account.
  */
 async function afterAccountCreated(user, { req, metaEventId, fbp, fbc, consents = null, sourcePath } = {}) {
-  await markLeadRegistered(user);
+  // Sales desk: an account created through an employee's referral link is recorded (evidence, not proof).
+  await require("../sales/leads").recordReferralSignup(user);
 
   if (consents && user.phone) {
     try {
@@ -418,7 +376,6 @@ module.exports = {
   attachVerifiedEmail,
   attachVerifiedPhone,
   createCustomer,
-  findBestLeadMatch,
   findCustomerByEmail,
   findCustomersByVerifiedPhone,
   issueChoiceToken,
@@ -429,7 +386,6 @@ module.exports = {
   issueLinkToken,
   issueSession,
   sessionIsCurrent,
-  markLeadRegistered,
   readLinkToken,
   reportAccountLead,
 };

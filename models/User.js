@@ -80,7 +80,7 @@ const UserSchema = new mongoose.Schema(
     },
     employeePosition: {
       type: String,
-      enum: ["Fixter", "General Fixter", null],
+      enum: ["Fixter", "General Fixter", "Telemarketer", null],
       default: null,
     },
     isActive: { type: Boolean, default: true, required: true, index: true },
@@ -268,6 +268,8 @@ const UserSchema = new mongoose.Schema(
       adName: { type: String, default: null },
       /* ?source= on our own links (event QR, referral). */
       refSource: { type: String, default: null },
+      /* ?ref= code (an employee's sales referral link, an event code). Evidence only. */
+      refCode: { type: String, default: null },
       /* The first page this browser ever saw, marketing or not. */
       firstLandingPath: { type: String, default: null },
       firstReferrer: { type: String, default: null },

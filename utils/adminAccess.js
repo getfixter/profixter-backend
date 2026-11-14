@@ -62,6 +62,12 @@ const PERMISSIONS = Object.freeze({
   PROMOTION_MANAGE: "promotion.manage",
   BLACKLIST_MANAGE: "blacklist.manage",
   ACTIVITY_READ: "activity.read",
+
+  /*
+   * The Telemarketer workspace (/api/sales): the caller's OWN assigned leads,
+   * tasks, sales credit, commissions and statements. Never part of a section.
+   */
+  SALES_OWN: "sales.own",
 });
 
 /*
@@ -90,6 +96,17 @@ const POSITIONS = Object.freeze({
     PERMISSIONS.SCHEDULE_WRITE,
     PERMISSIONS.TIPS_READ,
   ]),
+});
+
+/*
+ * Office roles that are not field work: no calendar, no jobs, never assignable
+ * to a booking. A Telemarketer gets exactly this and nothing else: the owner
+ * cannot add Admin sections to a Telemarketer (utils/adminAccess + routes/fixters),
+ * so they can never reach customer lists, cards, charges, refunds, memberships,
+ * exports, or General Fixter permissions.
+ */
+const OFFICE_POSITIONS = Object.freeze({
+  Telemarketer: Object.freeze([PERMISSIONS.SALES_OWN]),
 });
 
 const GROUPS = Object.freeze([
@@ -240,8 +257,13 @@ function permissionsForSections(sectionIds) {
 }
 
 function positionPermissions(position) {
-  return POSITIONS[position] ? [...POSITIONS[position]] : [];
+  if (POSITIONS[position]) return [...POSITIONS[position]];
+  if (OFFICE_POSITIONS[position]) return [...OFFICE_POSITIONS[position]];
+  return [];
 }
+
+/** A position whose access is fixed: no Admin sections may be added to it. */
+const isSealedPosition = (position) => Object.prototype.hasOwnProperty.call(OFFICE_POSITIONS, position || "");
 
 function isFieldPosition(position) {
   return Object.prototype.hasOwnProperty.call(POSITIONS, position || "");
@@ -260,6 +282,7 @@ function registryForEditor() {
     groups: GROUPS.map((g) => ({ ...g })),
     sections: SECTIONS.map(({ id, group, label, description, requires }) => ({ id, group, label, description, requires: requires || null })),
     positions: Object.keys(POSITIONS),
+    officePositions: Object.keys(OFFICE_POSITIONS),
     includedByPosition,
   };
 }
@@ -267,6 +290,8 @@ function registryForEditor() {
 module.exports = {
   PERMISSIONS,
   POSITIONS,
+  OFFICE_POSITIONS,
+  isSealedPosition,
   GROUPS,
   SECTIONS,
   SECTIONS_VERSION,

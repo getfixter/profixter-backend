@@ -168,6 +168,7 @@ const SUITES = [
   // Old invoice email links find their project (ids only, projects.manage).
   "test_invoice_locate.js",
   "test_extra_charges.js",
+  "test_sales_desk.js",
 ];
 
 /**

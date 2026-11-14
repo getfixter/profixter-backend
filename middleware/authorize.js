@@ -1,5 +1,5 @@
 const User = require("../models/User");
-const { PERMISSIONS, cleanSections, permissionsForSections, positionPermissions } = require("../utils/adminAccess");
+const { PERMISSIONS, cleanSections, permissionsForSections, positionPermissions, isSealedPosition } = require("../utils/adminAccess");
 
 /*
  * Permissions live in utils/adminAccess.js (the registry). This file turns a
@@ -25,7 +25,8 @@ function permissionsForUser(user) {
   if (role === "admin") return Object.values(PERMISSIONS);
   if (role !== "employee" || user.isActive === false) return [];
   const out = new Set(positionPermissions(user.employeePosition));
-  for (const p of permissionsForSections(user.adminSections)) out.add(p);
+  // A Telemarketer's access is sealed: stored sections are ignored, whatever they say.
+  if (!isSealedPosition(user.employeePosition)) for (const p of permissionsForSections(user.adminSections)) out.add(p);
   // Belt and braces: the owner's key is never in a section, but never let it through.
   out.delete(PERMISSIONS.ADMIN);
   return [...out];
@@ -86,7 +87,7 @@ function accessProfile(user) {
     isOwner: role === "admin",
     employeePosition: user.employeePosition || null,
     employeeTitle: user.employeeTitle || "",
-    adminSections: role === "employee" ? cleanSections(user.adminSections) : [],
+    adminSections: role === "employee" && !isSealedPosition(user.employeePosition) ? cleanSections(user.adminSections) : [],
     isActive: user.isActive !== false,
     mustChangePassword: !!user.mustChangePassword,
     permissions: permissionsForUser(user),

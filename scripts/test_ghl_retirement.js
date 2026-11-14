@@ -8,7 +8,7 @@
  *   - The GoHighLevel reply agent cannot send: the client has no send call,
  *     the action never sends, the inbound webhook is gone (404) and the
  *     10-minute poller is gone. Stored threads stay readable.
- *   - The rep-attribution webhook (/api/ghl/lead-assigned) stays mounted:
+ *   - The rep-attribution webhook (/api/ghl/lead-assigned) stays mounted but answers 410 (retired 2026-11):
  *     rep commissions still depend on it.
  *   - The communication settings no longer warn about GHL workflows.
  *
@@ -158,7 +158,7 @@ async function main() {
     assert.deepStrictEqual(registry.getDefinition("conversation_reply").maxMode, "shadow");
   });
 
-  await test("/api/ghl/inbound-message is gone (404); /api/ghl/lead-assigned still answers", async () => {
+  await test("/api/ghl/inbound-message is gone (404); /api/ghl/lead-assigned is retired (410)", async () => {
     process.env.GHL_WEBHOOK_SECRET = "hook-secret";
     process.env.CONVERSATIONS_ENABLED = "true";
     const app = express();
@@ -169,7 +169,7 @@ async function main() {
     const post = (p, body) => realFetch(`${base}${p}`, { method: "POST", headers: { "Content-Type": "application/json", "x-ghl-secret": "hook-secret" }, body: JSON.stringify(body) });
     try {
       assert.strictEqual((await post("/inbound-message", { contactId: "c", conversationId: "v", body: "hi" })).status, 404);
-      assert.strictEqual((await post("/lead-assigned", {})).status, 400, "rep attribution: phone required");
+      assert.strictEqual((await post("/lead-assigned", {})).status, 410, "retired cold-call commission: answers 410, writes nothing");
     } finally {
       server.close();
       delete process.env.CONVERSATIONS_ENABLED;

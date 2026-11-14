@@ -10,9 +10,7 @@ const StripeWebhookEvent = require("../models/StripeWebhookEvent");
 const BookingSlotReservation = require("../models/BookingSlotReservation");
 const ReservationTimeBucket = require("../models/ReservationTimeBucket");
 const ReservationCapacityBucket = require("../models/ReservationCapacityBucket");
-const RepAttribution = require("../models/RepAttribution");
 const Tip = require("../models/Tip");
-const { normalizeEmail, normalizePhone } = require("../utils/identity");
 const {
   handleGiftCheckoutCompleted,
   handleGiftRefund,
@@ -49,6 +47,7 @@ const {
   releaseCheckoutHold,
 } = require("../utils/slotReservationService");
 const { markFirstVisitPaid, markFirstVisitExpired, fulfillFirstVisitDraft } = require("../utils/membershipFirstVisitFulfillment");
+const salesStripe = require("../utils/sales/stripeEvents");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const {
@@ -135,84 +134,7 @@ function cleanObject(obj) {
  * the only way out to Meta now, and it names the dataset in code.
  */
 
-async function findBestLeadMatch({ user }) {
-  let doc = null;
-
-  if (user?._id) {
-    doc = await RepAttribution.findOne({ matchedUserId: user._id }).sort({
-      assignedAt: -1,
-      createdAt: -1,
-    });
-  }
-
-  if (!doc) {
-    const phoneNormalized = normalizePhone(user?.phone);
-    if (phoneNormalized) {
-      doc = await RepAttribution.findOne({
-        phoneNormalized,
-        status: { $in: ["active", "registered", "subscribed"] },
-      }).sort({ assignedAt: -1, createdAt: -1 });
-    }
-  }
-
-  if (!doc) {
-    const emailNormalized = normalizeEmail(user?.email);
-    if (emailNormalized) {
-      doc = await RepAttribution.findOne({
-        emailNormalized,
-        status: { $in: ["active", "registered", "subscribed"] },
-      }).sort({ assignedAt: -1, createdAt: -1 });
-    }
-  }
-
-  return doc;
-}
-
-async function markLeadSubscribed({ user, subscription, plan, billingCycle, value }) {
-  try {
-    const match = await findBestLeadMatch({ user });
-    if (!match) {
-      console.log("No cold-lead match found on subscription for:", user.email);
-      return;
-    }
-
-    match.matchedUserId = user._id;
-    match.matchedSubscriptionId = subscription._id;
-    match.emailRaw = user.email || match.emailRaw;
-    match.emailNormalized = normalizeEmail(user.email) || match.emailNormalized;
-    match.phoneRaw = user.phone || match.phoneRaw;
-    match.phoneNormalized = normalizePhone(user.phone) || match.phoneNormalized;
-
-    if (!match.fullName && user.name) match.fullName = user.name;
-    if (!match.cityAtAssignment && user.city) match.cityAtAssignment = user.city;
-    if (!match.stateAtAssignment && user.state) match.stateAtAssignment = user.state;
-
-    match.status = "subscribed";
-    match.conversionType = "subscribed";
-    if (!match.registeredAt) match.registeredAt = new Date();
-    if (!match.subscribedAt) match.subscribedAt = new Date();
-
-    match.subscriptionPlan = plan || null;
-    match.subscriptionBillingCycle = billingCycle || null;
-    match.subscriptionValue = Number(value) || 0;
-    match.commissionAmount = Number(value || 0) * Number(match.commissionRate || 0.5);
-    match.lastSyncedAt = new Date();
-
-    await match.save();
-
-    /*
-     * The subscription conversion stops here, in ProFixter's database.
-     *
-     * commissionAmount, subscriptionValue and the status transition are all
-     * computed and saved above. What used to follow was a push of that same
-     * fact into a GoHighLevel opportunity - a mirror that never worked (no
-     * attribution record has ever held a ghlOpportunityId) and that a
-     * registered customer should not be generating in the first place.
-     */
-  } catch (error) {
-    console.error("markLeadSubscribed failed:", error.message);
-  }
-}
+/* findBestLeadMatch / markLeadSubscribed: retired 2026-11 (see the note in handleCheckoutCompleted). */
 
 async function findUserForStripeObject(stripeObject) {
   const metadata = stripeObject?.metadata || {};
@@ -1449,6 +1371,9 @@ async function handleFullDayCheckoutCompleted(session) {
     await entitlement.save();
   }
 
+  // Sales desk: a separately PAID Full Day (never an included or loyalty day). Never throws.
+  await salesStripe.onFullDayPaid({ session, booking, entitlement, user, stripe });
+
   await sendFullDayPaidEmails({ booking, user: contact, entitlement, session });
   // Previously no server Purchase at all for the most valuable single sale.
   if (user) reportPaidVisitPurchase({ session, user, booking, contentName: "full_day_visit" });
@@ -1889,13 +1814,14 @@ async function handleCheckoutCompleted(session, eventId) {
   const currency = "USD";
   const now = new Date();
 
-  await markLeadSubscribed({
-    user,
-    subscription,
-    plan,
-    billingCycle,
-    value,
-  });
+  /*
+   * The obsolete cold-call commission (markLeadSubscribed) used to run here:
+   * it matched a lead by phone or EMAIL and wrote 50% of the catalog price
+   * (Annual Basic: $745), overwriting amounts even after they were paid.
+   * Retired 2026-11: sales credit now comes only from the verified first
+   * payment (invoice.paid above, utils/sales). Its historical rows are kept,
+   * read-only, in RepAttribution; see scripts/ops/legacy_rep_attribution_report.js.
+   */
 
   const prevLP = user.lastPurchase || {};
   const confirmationToken = crypto.randomUUID();
@@ -2297,6 +2223,13 @@ async function handleInvoicePaid(invoice) {
    * that makes Stripe retry it.
    */
   await recordLoyaltyRenewal({ invoice, stripeSubscription });
+
+  /*
+   * Sales desk: a FIRST membership payment (billing_reason subscription_create,
+   * money actually paid) becomes a verified sale; a paid plan change is
+   * recorded for credit requests only; renewals are ignored. Never throws.
+   */
+  await salesStripe.onInvoicePaid({ invoice, stripeSubscription, subscription });
 
   return subscription;
 }
@@ -2713,6 +2646,8 @@ module.exports = async (req, res) => {
           charge: event.data.object,
           reason: "charge_refunded",
         });
+        // Sales desk: a refund on a credited sale opens an owner review. Nothing is deducted automatically.
+        await salesStripe.onChargeRefunded(event.data.object);
         break;
 
       /*
@@ -2726,6 +2661,12 @@ module.exports = async (req, res) => {
        */
       case "charge.dispute.created":
         await handleLoyaltyDispute(event.data.object);
+        await salesStripe.onDispute(event.data.object, "opened");
+        break;
+
+      // Sales desk only: the outcome of a chargeback, for the owner's review. (Subscribe the endpoint to it to receive it.)
+      case "charge.dispute.closed":
+        await salesStripe.onDispute(event.data.object, "closed");
         break;
 
       case "checkout.session.expired":

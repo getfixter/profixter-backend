@@ -103,6 +103,9 @@ app.post(
   require("./routes/webhook")
 );
 
+// GoHighLevel → sales desk sync (signed, raw body, OFF unless GHL_SALES_SYNC_ENABLED=true): utils/sales/ghl.js
+app.post("/api/ghl/webhook", express.raw({ type: "*/*", limit: "1mb" }), require("./utils/sales/ghl").receive);
+
 // ⛔ MUST come BEFORE json body parser
 app.use("/api/bookings", (req, res, next) => next());
 
@@ -207,8 +210,11 @@ app.use("/api/auth", require("./routes/auth"));
 // Sign-in 2.0: phone code, email code, Apple. Same sessions as above.
 app.use("/api/auth", require("./routes/authV2"));
 app.use("/api/stripe/checkout", require("./routes/stripe"));
-// GoHighLevel: only the inbound rep-attribution webhook (/lead-assigned) remains; the reply-agent webhook was removed 2026-11-12.
+// GoHighLevel legacy: /lead-assigned answers 410 (retired 2026-11). The current sync is /api/ghl/webhook above.
 app.use("/api/ghl", require("./routes/ghl"));
+// Sales desk: the Telemarketer workspace and the owner's manager view.
+app.use("/api/sales", require("./routes/sales"));
+app.use("/api/admin/sales-desk", require("./routes/adminSalesDesk"));
 
 app.use("/api/password-reset", require("./routes/passwordReset"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
@@ -489,6 +495,8 @@ require("./jobs/signatureExpiry").startSignatureExpiry();
 require("./jobs/campaignSender").startCampaignSender();
 /* Charge extra: open payments every 10 minutes, refunds nightly, from Stripe (never charges or messages). */
 require("./jobs/extraCharges").startExtraChargeJobs();
+// Sales desk: GHL webhook retries and nightly Stripe reconciliation (our records only).
+require("./jobs/salesDesk").startSalesDeskJobs();
 
 /*
  * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
