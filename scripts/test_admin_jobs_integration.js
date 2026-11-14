@@ -124,9 +124,20 @@ async function call(user, method, path, body, { form } = {}) {
 let keySeq = 0;
 const key = () => `test-key-${Date.now()}-${++keySeq}`;
 
-function openDay(daysAhead) {
-  const d = moment.tz(TZ).add(daysAhead, "days");
-  while (d.day() === 0) d.add(1, "day");
+/**
+ * The n-th working day (Sundays skipped) after today, New York time.
+ * Counting only working days keeps every n distinct whatever weekday the suite
+ * runs on. The old "add n days, then slide off Sunday" form made openDay(8) and
+ * openDay(9) the same Monday when run on a Saturday, so two tests booked the
+ * same Fixter at the same time and the reinstate test failed with "This time
+ * is no longer available".
+ */
+function openDay(n) {
+  const d = moment.tz(TZ).startOf("day");
+  for (let left = n; left > 0; ) {
+    d.add(1, "day");
+    if (d.day() !== 0) left -= 1;
+  }
   return d.format("YYYY-MM-DD");
 }
 const at = (day, time) => moment.tz(`${day} ${time}`, "YYYY-MM-DD HH:mm", TZ).toDate();

@@ -15,7 +15,7 @@ const User = require("../models/User");
 const Subscription = require("../models/Subscription");
 const { SalesLead, LeadAssignment, SalesActivity, SalesTask, SalesCredit, SalesCreditRequest, SalesReview, SalesEvent, CommissionEntry, PayoutBatch, SalesGoal, SalesReferral } = require("../models/Sales");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
-const { SalesError, weekView, approveWeek, recordPayment, ledgerIntegrity, batchCsv } = require("../utils/sales/ledger");
+const { SalesError, weekView, approveWeek, recordPayment, runLedgerCheck, payoutGate, PAUSED_TEXT, batchCsv } = require("../utils/sales/ledger");
 const leads = require("../utils/sales/leads");
 const views = require("../utils/sales/views");
 const credit = require("../utils/sales/credit");
@@ -420,8 +420,14 @@ router.get("/payouts", wrap(async (_req, res) => {
     if (!v.lines.length && week !== payWeekOf(new Date()).week && v.status !== "approved") continue;
     out.push({ week, lastDay: v.lastDay, payday: v.payday, status: v.status, totalCents: v.lines.reduce((s, l) => s + l.totalCents, 0), employees: v.lines.length, unpaid: v.status === "approved" ? v.lines.filter((l) => l.payment?.status !== "paid").length : null });
   }
-  const check = await ledgerIntegrity();
-  res.json({ payouts: out, integrity: { ok: check.ok, problems: check.problems.slice(0, 20), approvedWeeks: check.approvedWeeks } });
+  res.json({ payouts: out, integrity: await payoutGate() });
+}));
+
+/** The owner's "Check again": a passing full check is the only thing (besides the nightly job) that lifts a pause. */
+router.post("/payouts/check", wrap(async (req, res) => {
+  const r = await runLedgerCheck("owner");
+  await log(req, "Sales Ledger Checked", "payout_batch", null, r.ok ? "passed" : "failed", { ok: r.ok, problems: r.problems.length });
+  res.json({ integrity: await payoutGate() });
 }));
 
 function readWeek(req) {
@@ -455,6 +461,8 @@ router.get("/payouts/:week/csv", wrap(async (req, res) => {
   const week = readWeek(req);
   const batch = await PayoutBatch.findOne({ week }).lean();
   if (!batch || batch.status !== "approved") throw new SalesError("NOT_APPROVED", "Approve the week to export it for payroll.", 409);
+  const gate = await payoutGate({ source: "refused_export" });
+  if (gate.blocked) throw new SalesError("LEDGER_CHECK_FAILED", PAUSED_TEXT, 409, { problems: gate.problems, paused: true });
   await log(req, "Sales Payout Exported", "payout_batch", batch._id, week, { rows: batch.lines.length });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="payout-${week}.csv"`);

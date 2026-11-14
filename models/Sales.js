@@ -663,6 +663,18 @@ SalesLockSchema.index({ until: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
  */
 const SalesLedgerClockSchema = new Schema({ _id: String, n: { type: Number, default: 0 } }, { versionKey: false });
 
+/**
+ * The last full ledger check (ledgerIntegrity), one document (_id "ledger").
+ * While ok is false, payouts are PAUSED: approving a week, recording a payment
+ * and the payroll export are all refused on the server. Only a later full check
+ * that passes lifts it (the nightly job, or the owner's "Check again"); an
+ * approval or payment never lifts it by itself.
+ */
+const SalesLedgerCheckSchema = new Schema(
+  { _id: String, ok: Boolean, problems: [String], checkedAt: Date, source: String, failedSince: Date },
+  { versionKey: false }
+);
+
 const model = (name, schema, collection) => mongoose.models[name] || mongoose.model(name, schema, collection);
 
 module.exports = {
@@ -685,4 +697,5 @@ module.exports = {
   GhlWebhookEvent: model("GhlWebhookEvent", GhlWebhookEventSchema),
   SalesLock: model("SalesLock", SalesLockSchema, "sales_locks"),
   SalesLedgerClock: model("SalesLedgerClock", SalesLedgerClockSchema, "sales_ledger_clock"),
+  SalesLedgerCheck: model("SalesLedgerCheck", SalesLedgerCheckSchema, "sales_ledger_check"),
 };

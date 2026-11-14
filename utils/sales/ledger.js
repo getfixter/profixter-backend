@@ -17,14 +17,20 @@
  * - Approval takes every open entry of the week, once (status open -> approved,
  *   with the batch id); a payment is recorded once per line and moves exactly
  *   that line's entries approved -> paid. ledgerIntegrity() proves all of this
- *   on the stored data (tests, and the nightly job).
+ *   on the stored data.
+ * - The check BLOCKS, it does not just warn. approveWeek and recordPayment run
+ *   it inside their transaction before writing (a broken ledger is refused) and
+ *   again after writing (a write that would break it is rolled back). Any
+ *   failed check is stored (SalesLedgerCheck) and pauses payouts: approve, pay
+ *   and the payroll export are refused until a full check passes again
+ *   (nightly job or the owner's "Check again"). Code LEDGER_CHECK_FAILED, 409.
  *
  * Payday: the Friday immediately after the Friday–Thursday week (no extra hold).
  * No money is moved from here. "Paid" is the owner recording a payment they
  * made outside Profixter.
  */
 const mongoose = require("mongoose");
-const { CommissionEntry, PayoutBatch, SalesLedgerClock } = require("../../models/Sales");
+const { CommissionEntry, PayoutBatch, SalesLedgerClock, SalesLedgerCheck } = require("../../models/Sales");
 const User = require("../../models/User");
 const { payWeekOf, weekFromStart, nextWeekKey, shortDay } = require("./time");
 
@@ -62,6 +68,91 @@ async function ensureClock() {
 }
 /** Every ledger transaction writes the clock: concurrent ones conflict, and one is retried after the other commits. */
 const tick = (session) => SalesLedgerClock.updateOne({ _id: CLOCK }, { $inc: { n: 1 } }, { session });
+
+/* ------------------------------------------------ the ledger check gate */
+
+const CHECK = "ledger";
+const PAUSED_TEXT = "Payouts are paused: the ledger check found a problem. No week can be approved, paid or exported until the check passes again.";
+
+/** The stored result of the last full check (null if none ever ran). */
+const storedCheck = (session = null) => SalesLedgerCheck.findById(CHECK).session(session).lean();
+
+/** Store a full check's result. A failure pauses payouts; only a passing full check lifts the pause. */
+async function recordCheck(result, source) {
+  const now = new Date();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const prev = await storedCheck();
+      const failedSince = result.ok ? null : prev && prev.ok === false && prev.failedSince ? prev.failedSince : now;
+      await SalesLedgerCheck.updateOne(
+        { _id: CHECK },
+        { $set: { ok: result.ok, problems: (result.problems || []).slice(0, 50), checkedAt: now, source, failedSince } },
+        { upsert: true }
+      );
+      return;
+    } catch (error) {
+      if (error?.code !== 11000 || attempt) throw error;
+    }
+  }
+}
+
+/** Run the full check now and store it (nightly job, owner's "Check again"). */
+async function runLedgerCheck(source) {
+  const result = await ledgerIntegrity();
+  await recordCheck(result, source);
+  return result;
+}
+
+/** What the Payouts screen and the export need: is paying allowed, and why not. */
+async function payoutGate({ source = "payouts_screen" } = {}) {
+  const live = await ledgerIntegrity();
+  if (!live.ok) await recordCheck(live, source);
+  const held = await storedCheck();
+  const paused = Boolean(held && held.ok === false);
+  return {
+    ok: live.ok,
+    paused,
+    blocked: !live.ok || paused,
+    problems: (live.ok ? (paused ? held.problems || [] : []) : live.problems).slice(0, 20),
+    approvedWeeks: live.approvedWeeks,
+    checkedAt: held?.checkedAt || null,
+    failedSince: paused ? held.failedSince || null : null,
+    source: held?.source || null,
+  };
+}
+
+function checkFailed(problems, stage, what) {
+  const message = stage === "after" ? `${what} was not saved: it would have broken the payout ledger. ${PAUSED_TEXT}` : PAUSED_TEXT;
+  const e = new SalesError("LEDGER_CHECK_FAILED", message, 409, { problems: problems.slice(0, 20), paused: true });
+  e.ledgerProblems = problems;
+  e.stage = stage;
+  return e;
+}
+
+/**
+ * Inside a payout transaction: refuse while paused, and refuse if the ledger
+ * (as this transaction sees it) does not pass the full check.
+ */
+async function assertLedgerSound(session, stage, what) {
+  if (stage === "before") {
+    const held = await storedCheck(session);
+    if (held && held.ok === false) throw checkFailed(held.problems || [], "paused", what);
+  }
+  const r = await ledgerIntegrity({ session });
+  if (!r.ok) throw checkFailed(stage === "after" ? r.problems.map((p) => `${what} would have caused: ${p}`) : r.problems, stage, what);
+}
+
+/** Run a payout write; when the check refused it, store the failure (after the rollback) so payouts stay paused. */
+async function gated(fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error?.code === "LEDGER_CHECK_FAILED" && error.ledgerProblems && error.stage !== "paused") {
+      await recordCheck({ ok: false, problems: error.ledgerProblems }, `refused_${error.stage}`).catch(() => {});
+    }
+    throw error;
+  }
+}
 
 /** Touch the week's batch (creating it open) and return it; inside the caller's transaction. */
 async function touchWeek(week, session) {
@@ -154,8 +245,10 @@ async function approveWeek(week, actor) {
   const w = weekFromStart(week);
   if (Date.now() < w.endsAt.getTime()) throw new SalesError("WEEK_NOT_FINISHED", `This week ends Thursday ${w.lastDay} at midnight; it can be approved from payday, ${w.payday}.`, 409);
   await ensureClock();
-  return inTransaction(async (session) => {
+  const what = `Approving the week of ${shortDay(week)}`;
+  return gated(() => inTransaction(async (session) => {
     await tick(session);
+    await assertLedgerSound(session, "before", what);
     const batch = await touchWeek(week, session);
     if (batch.status !== "open") throw new SalesError("ALREADY_APPROVED", "This payout week is already approved.", 409);
     const earlier = (await CommissionEntry.distinct("statementWeek", { statementWeek: { $lt: week }, status: "open" }).session(session)).sort();
@@ -174,8 +267,9 @@ async function approveWeek(week, actor) {
     if (entries.length) {
       await CommissionEntry.updateMany({ _id: { $in: entries.map((e) => e._id) }, status: "open" }, { $set: { status: "approved", batch: batch._id } }, { session });
     }
+    await assertLedgerSound(session, "after", what);
     return PayoutBatch.findById(batch._id).session(session).lean();
-  });
+  }));
 }
 
 /** Record that the owner paid one employee's line (outside Profixter). Once only. */
@@ -183,7 +277,11 @@ async function recordPayment(week, employeeId, { paidOn, method, reference }, ac
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(paidOn || ""))) throw new SalesError("BAD_DATE", "Enter the date you paid.");
   const m = String(method || "").trim();
   if (!m) throw new SalesError("METHOD_REQUIRED", "Say how it was paid (for example payroll, check or transfer).");
-  return inTransaction(async (session) => {
+  await ensureClock();
+  const what = "Recording this payment";
+  return gated(() => inTransaction(async (session) => {
+    await tick(session);
+    await assertLedgerSound(session, "before", what);
     const batch = await PayoutBatch.findOne({ week }).session(session);
     if (!batch || batch.status !== "approved") throw new SalesError("NOT_APPROVED", "Approve the week before recording payments.", 409);
     const line = batch.lines.find((l) => String(l.employee) === String(employeeId));
@@ -193,8 +291,9 @@ async function recordPayment(week, employeeId, { paidOn, method, reference }, ac
     batch.writes += 1;
     await batch.save({ session });
     await CommissionEntry.updateMany({ _id: { $in: line.entries }, status: "approved" }, { $set: { status: "paid" } }, { session });
+    await assertLedgerSound(session, "after", what);
     return batch.toObject();
-  });
+  }));
 }
 
 /**
@@ -204,12 +303,12 @@ async function recordPayment(week, employeeId, { paidOn, method, reference }, ac
  *   - no open entry sits on or before the latest approved week (it would never be paid)
  *   - a paid line's entries are all paid, an unpaid line's none
  */
-async function ledgerIntegrity() {
+async function ledgerIntegrity({ session = null } = {}) {
   const problems = [];
-  const batches = await PayoutBatch.find({ status: "approved" }).sort({ week: 1 }).lean();
+  const batches = await PayoutBatch.find({ status: "approved" }).sort({ week: 1 }).session(session).lean();
   const seen = new Map();
   for (const b of batches) {
-    const inBatch = await CommissionEntry.find({ batch: b._id }).lean();
+    const inBatch = await CommissionEntry.find({ batch: b._id }).session(session).lean();
     const byId = new Map(inBatch.map((e) => [String(e._id), e]));
     const listed = new Set();
     for (const l of b.lines || []) {
@@ -235,11 +334,11 @@ async function ledgerIntegrity() {
     }
     for (const e of inBatch) if (!listed.has(String(e._id))) problems.push(`entry ${e._id} is in week ${b.week}'s batch but on no line`);
   }
-  const orphan = await CommissionEntry.countDocuments({ status: { $in: ["approved", "paid"] }, batch: null });
+  const orphan = await CommissionEntry.countDocuments({ status: { $in: ["approved", "paid"] }, batch: null }).session(session);
   if (orphan) problems.push(`${orphan} approved or paid entries have no payout week`);
   const latest = batches[batches.length - 1];
   if (latest) {
-    const stranded = await CommissionEntry.find({ status: "open", statementWeek: { $lte: latest.week } }).select("_id statementWeek").lean();
+    const stranded = await CommissionEntry.find({ status: "open", statementWeek: { $lte: latest.week } }).select("_id statementWeek").session(session).lean();
     for (const e of stranded) problems.push(`open entry ${e._id} is on week ${e.statementWeek}, on or before the approved week ${latest.week}: it would never be paid`);
   }
   return { ok: problems.length === 0, problems, approvedWeeks: batches.length, checkedEntries: seen.size };
@@ -261,4 +360,4 @@ function batchCsv(batch) {
   return rows.map((r) => r.map(csvCell).join(",")).join("\n") + "\n";
 }
 
-module.exports = { SalesError, inTransaction, addEntry, weekView, approveWeek, recordPayment, ledgerIntegrity, batchCsv, csvCell, money };
+module.exports = { SalesError, inTransaction, addEntry, weekView, approveWeek, recordPayment, ledgerIntegrity, runLedgerCheck, payoutGate, storedCheck, PAUSED_TEXT, batchCsv, csvCell, money };

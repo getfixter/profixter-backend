@@ -1245,6 +1245,119 @@ const entriesFor = (emp, extra = {}) => S.CommissionEntry.find({ employee: emp._
   });
 
 
+  /* ======================= the ledger check BLOCKS payouts (not only a warning) */
+  const jobs = require("../jobs/salesDesk");
+  const unpaidLines = async () => {
+    const out = [];
+    for (const b of await S.PayoutBatch.find({ status: "approved" }).sort({ week: 1 }).lean()) for (const l of b.lines) if (l.payment?.status !== "paid") out.push({ week: b.week, employee: l.employee, entries: l.entries });
+    return out;
+  };
+  const lineOf = async (week, employee) => (await S.PayoutBatch.findOne({ week }).lean()).lines.find((l) => String(l.employee) === String(employee));
+  const csvStatus = async (week) => (await fetch(`${base}/api/admin/sales-desk/payouts/${week}/csv`, { headers: { authorization: `Bearer ${tokenFor(owner)}` } })).status;
+  const OLD_EMPTY_WEEK = "2026-09-04"; // finished, never touched: approvable, so the refusal must come from the gate
+  await check("a payment that would break the ledger is rolled back, and payouts pause until a full check passes", async () => {
+    assert.ok((await ledger.ledgerIntegrity()).ok);
+    const [l1] = await unpaidLines();
+    assert.ok(l1, "an unpaid line exists");
+    // Simulate a defect in the write: the line is marked paid but its entries are not.
+    const orig = S.CommissionEntry.updateMany;
+    S.CommissionEntry.updateMany = function (filter, update, opts) {
+      if (update?.$set?.status === "paid") return orig.call(this, { _id: null }, update, opts);
+      return orig.call(this, filter, update, opts);
+    };
+    let err;
+    try {
+      await ledger.recordPayment(l1.week, l1.employee, { paidOn: "2026-11-13", method: "payroll" }, owner);
+    } catch (e) {
+      err = e;
+    } finally {
+      S.CommissionEntry.updateMany = orig;
+    }
+    assert.strictEqual(err?.code, "LEDGER_CHECK_FAILED", String(err));
+    assert.ok(err.extra.problems.some((p) => /would have caused: .*on a paid line but is approved/.test(p)), JSON.stringify(err.extra.problems));
+    assert.notStrictEqual((await lineOf(l1.week, l1.employee)).payment?.status, "paid", "the payment was rolled back");
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ _id: { $in: l1.entries }, status: "approved" }), l1.entries.length, "entries untouched");
+    assert.ok((await ledger.ledgerIntegrity()).ok, "the stored ledger is still sound");
+    const held = await ledger.storedCheck();
+    assert.deepStrictEqual([held.ok, held.source], [false, "refused_after"]);
+    // Paused: the same payment, done correctly, is still refused until a full check passes.
+    const again = await call("POST", `/api/admin/sales-desk/payouts/${l1.week}/lines/${l1.employee}/paid`, owner, { paidOn: "2026-11-13", method: "payroll" });
+    assert.deepStrictEqual([again.status, again.body.code, again.body.paused], [409, "LEDGER_CHECK_FAILED", true], JSON.stringify(again.body));
+    const gate = (await call("GET", "/api/admin/sales-desk/payouts", owner)).body.integrity;
+    assert.deepStrictEqual([gate.ok, gate.paused, gate.blocked], [true, true, true]);
+    const ck = await call("POST", "/api/admin/sales-desk/payouts/check", owner, {});
+    assert.deepStrictEqual([ck.status, ck.body.integrity.blocked, ck.body.integrity.paused], [200, false, false], JSON.stringify(ck.body));
+    const paid = await call("POST", `/api/admin/sales-desk/payouts/${l1.week}/lines/${l1.employee}/paid`, owner, { paidOn: "2026-11-13", method: "payroll" });
+    assert.strictEqual(paid.status, 200, JSON.stringify(paid.body));
+    assert.strictEqual(await S.CommissionEntry.countDocuments({ _id: { $in: l1.entries }, status: "paid" }), l1.entries.length);
+  });
+  await check("the NIGHTLY check that fails pauses payouts on the server: payment, approval and payroll export are refused; nothing changes", async () => {
+    const [l2] = await unpaidLines();
+    assert.ok(l2, "a second unpaid line exists");
+    const planted = new mongoose.Types.ObjectId();
+    await S.CommissionEntry.collection.insertOne({ _id: planted, sourceKey: "planted:nightly", employee: pat._id, kind: "adjustment", product: "adjustment", amountCents: 1, earnedWeek: "2026-10-16", statementWeek: "2026-10-16", status: "open", late: false, batch: null });
+    const night = await jobs.nightlyPass();
+    assert.deepStrictEqual([night.ledgerOk, night.payoutsPaused], [false, true]);
+    const held = await ledger.storedCheck();
+    assert.deepStrictEqual([held.ok, held.source], [false, "nightly"]);
+    assert.ok(held.problems.some((p) => /would never be paid/.test(p)));
+    // The data is repaired, but the pause holds until a full check passes: no write slips through on a stale "ok".
+    await S.CommissionEntry.collection.deleteOne({ _id: planted });
+    const pay = await call("POST", `/api/admin/sales-desk/payouts/${l2.week}/lines/${l2.employee}/paid`, owner, { paidOn: "2026-11-13", method: "payroll" });
+    assert.deepStrictEqual([pay.status, pay.body.code], [409, "LEDGER_CHECK_FAILED"], JSON.stringify(pay.body));
+    const appr = await call("POST", `/api/admin/sales-desk/payouts/${OLD_EMPTY_WEEK}/approve`, owner, {});
+    assert.deepStrictEqual([appr.status, appr.body.code], [409, "LEDGER_CHECK_FAILED"], JSON.stringify(appr.body));
+    assert.strictEqual(await csvStatus(l2.week), 409, "the payroll export is refused too");
+    assert.notStrictEqual((await lineOf(l2.week, l2.employee)).payment?.status, "paid");
+    assert.strictEqual((await S.PayoutBatch.findOne({ week: OLD_EMPTY_WEEK }).lean())?.status || "open", "open");
+    const gate = (await call("GET", "/api/admin/sales-desk/payouts", owner)).body.integrity;
+    assert.deepStrictEqual([gate.paused, gate.blocked, gate.source], [true, true, "nightly"]);
+    assert.ok(gate.failedSince);
+    // The next nightly run passes and lifts the pause by itself.
+    assert.strictEqual((await jobs.nightlyPass()).payoutsPaused, false);
+    assert.strictEqual((await call("POST", `/api/admin/sales-desk/payouts/${l2.week}/lines/${l2.employee}/paid`, owner, { paidOn: "2026-11-13", method: "payroll" })).status, 200);
+    assert.strictEqual(await csvStatus(l2.week), 200);
+  });
+  await check("a problem found at approval time (no earlier pause) refuses the approval, stores the pause, and changes nothing", async () => {
+    assert.strictEqual((await ledger.storedCheck()).ok, true);
+    const b1 = await S.PayoutBatch.findOne({ week: "2026-10-30" }).lean();
+    const b2 = await S.PayoutBatch.findOne({ week: "2026-11-06" }).lean();
+    const dupId = b1.lines[0].entries[0];
+    await S.PayoutBatch.collection.updateOne({ _id: b2._id }, { $push: { "lines.0.entries": dupId } });
+    const appr = await call("POST", `/api/admin/sales-desk/payouts/${OLD_EMPTY_WEEK}/approve`, owner, {});
+    assert.deepStrictEqual([appr.status, appr.body.code], [409, "LEDGER_CHECK_FAILED"], JSON.stringify(appr.body));
+    assert.ok(appr.body.problems.some((p) => /listed on week 2026-10-30 and on week 2026-11-06/.test(p)), JSON.stringify(appr.body.problems));
+    assert.strictEqual((await S.PayoutBatch.findOne({ week: OLD_EMPTY_WEEK }).lean())?.status || "open", "open");
+    assert.deepStrictEqual([(await ledger.storedCheck()).ok, (await ledger.storedCheck()).source], [false, "refused_before"]);
+    const stillBad = (await call("POST", "/api/admin/sales-desk/payouts/check", owner, {})).body.integrity;
+    assert.deepStrictEqual([stillBad.ok, stillBad.blocked], [false, true], "Check again cannot lift it while the problem is real");
+    await S.PayoutBatch.collection.updateOne({ _id: b2._id }, { $pull: { "lines.0.entries": dupId } });
+    assert.strictEqual((await call("POST", "/api/admin/sales-desk/payouts/check", owner, {})).body.integrity.blocked, false);
+    assert.strictEqual((await call("POST", `/api/admin/sales-desk/payouts/${OLD_EMPTY_WEEK}/approve`, owner, {})).status, 200);
+    assert.ok((await ledger.ledgerIntegrity()).ok);
+  });
+
+  /* ============================== GHL stays inert while sync is off */
+  await check("with GHL sync OFF nothing is processed: no deliveries, no retry job, no Retry button, no replay on mapping", async () => {
+    assert.notStrictEqual(process.env.GHL_SALES_SYNC_ENABLED, "true");
+    assert.strictEqual((await sendGhl({ type: "OutboundMessage", webhookId: "wh_off_1", contactId: "GhlContactOff" })).status, 503);
+    assert.strictEqual(await S.GhlWebhookEvent.countDocuments({ eventId: "wh_off_1" }), 0, "a delivery while off is not stored");
+    const failedEv = await S.GhlWebhookEvent.create({ eventId: "wh_off_failed", type: "OutboundMessage", contactId: "GhlContact0001", payload: { type: "OutboundMessage", contactId: "GhlContact0001", messageType: "TYPE_SMS" }, status: "failed", attempts: 1, nextAttemptAt: new Date(Date.now() - 1000) });
+    const unmappedEv = await S.GhlWebhookEvent.create({ eventId: "wh_off_unmapped", type: "OutboundMessage", contactId: "GhlContactOff2", payload: { type: "OutboundMessage", contactId: "GhlContactOff2", messageType: "TYPE_SMS" }, status: "unmapped" });
+    assert.strictEqual(await jobs.ghlRetryPass(), 0, "the 10-minute job does nothing");
+    const retry = await call("POST", `/api/admin/sales-desk/ghl/events/${failedEv._id}/retry`, owner, {});
+    assert.deepStrictEqual([retry.status, retry.body.code], [409, "SYNC_DISABLED"], JSON.stringify(retry.body));
+    const l = (await call("GET", "/api/sales/leads", ana)).body.leads.find((x) => !x.doNotCall && !x.ghlContactId);
+    if (l) {
+      const map = await call("PUT", `/api/sales/leads/${l.id}/ghl`, ana, { contact: "https://app.gohighlevel.com/v2/location/LOCtest123/contacts/detail/GhlContactOff2" });
+      assert.strictEqual(map.status, 200, JSON.stringify(map.body));
+    }
+    assert.deepStrictEqual([(await S.GhlWebhookEvent.findById(failedEv._id).lean()).status, (await S.GhlWebhookEvent.findById(failedEv._id).lean()).attempts], ["failed", 1]);
+    assert.strictEqual((await S.GhlWebhookEvent.findById(unmappedEv._id).lean()).status, "unmapped", "mapping a contact replays nothing while off");
+    const st = (await call("GET", "/api/admin/sales-desk/ghl", owner)).body.ghl;
+    assert.deepStrictEqual([st.enabled, st.liveVerified], [false, false]);
+  });
+
   server.close();
   await mongoose.disconnect();
   await mongod.stop();

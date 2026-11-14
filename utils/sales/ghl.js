@@ -175,8 +175,16 @@ async function processEvent(id) {
   return doc;
 }
 
+/*
+ * While sync is OFF nothing is processed at all: not new deliveries (503 above),
+ * not the 10-minute retry job, not the owner's Retry button, and not the replay
+ * that mapping a contact would start. Stored events simply wait. This keeps the
+ * whole GHL path inert until its live setup is verified and the flag is set.
+ */
+
 /** Retry failed events whose backoff has passed (and unmapped ones, now possibly mapped). */
 async function retryFailed({ limit = 100 } = {}) {
+  if (!enabled()) return 0;
   const due = await GhlWebhookEvent.find({ status: "failed", nextAttemptAt: { $ne: null, $lte: new Date() } }).limit(limit).select("_id").lean();
   for (const d of due) await processEvent(d._id);
   return due.length;
@@ -184,6 +192,7 @@ async function retryFailed({ limit = 100 } = {}) {
 
 /** After a contact is mapped: replay its unmapped events. */
 async function replayUnmapped(contactId) {
+  if (!enabled()) return 0;
   const list = await GhlWebhookEvent.find({ contactId: String(contactId), status: "unmapped" }).select("_id").lean();
   for (const d of list) {
     await GhlWebhookEvent.updateOne({ _id: d._id, status: "unmapped" }, { $set: { status: "received" } });
@@ -211,6 +220,10 @@ async function syncStatus() {
 }
 
 async function retryOne(id) {
+  if (!enabled()) {
+    const { SalesError } = require("./ledger");
+    throw new SalesError("SYNC_DISABLED", "GoHighLevel sync is off. Events are kept and processed only after the live setup is verified and sync is turned on.", 409);
+  }
   const doc = await GhlWebhookEvent.findById(id);
   if (!doc) return null;
   if (doc.status === "failed" || doc.status === "unmapped") {

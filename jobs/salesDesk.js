@@ -25,15 +25,20 @@ async function guarded(name, ms, fn) {
   }
 }
 
-function startSalesDeskJobs() {
-  cron.schedule("*/10 * * * *", () => guarded("ghl-retry", 9 * 60 * 1000, () => require("../utils/sales/ghl").retryFailed()), { timezone: TIMEZONE });
-  cron.schedule("10 5 * * *", () =>
-    guarded("reconcile", 50 * 60 * 1000, async () => {
-      const r = require("../utils/sales/reconcile");
-      const integrity = await require("../utils/sales/ledger").ledgerIntegrity();
-      if (!integrity.ok) console.error(JSON.stringify({ level: "error", event: "sales_ledger_integrity", problems: integrity.problems.slice(0, 20) }));
-      return { firstPayments: await r.firstPayments(), refunds: await r.refunds(), ledgerOk: integrity.ok };
-    }), { timezone: TIMEZONE });
+/** The nightly pass (exported for tests). The ledger check runs first and is stored: a failure pauses payouts on the server. */
+async function nightlyPass() {
+  const r = require("../utils/sales/reconcile");
+  const integrity = await require("../utils/sales/ledger").runLedgerCheck("nightly");
+  if (!integrity.ok) console.error(JSON.stringify({ level: "error", event: "sales_ledger_integrity", payoutsPaused: true, problems: integrity.problems.slice(0, 20) }));
+  return { firstPayments: await r.firstPayments(), refunds: await r.refunds(), ledgerOk: integrity.ok, payoutsPaused: !integrity.ok };
 }
 
-module.exports = { startSalesDeskJobs };
+/** GHL retries: a no-op while GHL_SALES_SYNC_ENABLED is not "true" (utils/sales/ghl.js). */
+const ghlRetryPass = () => require("../utils/sales/ghl").retryFailed();
+
+function startSalesDeskJobs() {
+  cron.schedule("*/10 * * * *", () => guarded("ghl-retry", 9 * 60 * 1000, ghlRetryPass), { timezone: TIMEZONE });
+  cron.schedule("10 5 * * *", () => guarded("reconcile", 50 * 60 * 1000, nightlyPass), { timezone: TIMEZONE });
+}
+
+module.exports = { startSalesDeskJobs, nightlyPass, ghlRetryPass };
