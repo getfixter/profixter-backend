@@ -130,6 +130,16 @@ function startOneTimeVisitHoldCleanup() {
       totals.failures += 1;
       console.error("Membership first visit sweep failed:", error.message);
     }
+    // Paid free-visit conversions the webhook could not finish, and links that ran out (utils/freeVisit/conversion.js).
+    try {
+      const tally = await require("../utils/freeVisit/conversion").sweepConversions();
+      totals.conversionsFinished += tally?.finished || 0;
+      totals.conversionLinksExpired += tally?.expired || 0;
+      if (tally?.finished) console.log(`Finished ${tally.finished} free visit conversion(s)`);
+    } catch (error) {
+      totals.failures += 1;
+      console.error("Free visit conversion sweep failed:", error.message);
+    }
     // Then drafts nobody paid for, and their photos (retention: utils/membershipFirstVisitCleanup.js).
     try {
       const tally = await require("../utils/membershipFirstVisitCleanup").cleanupFirstVisitDrafts();
@@ -155,7 +165,7 @@ function startOneTimeVisitHoldCleanup() {
 }
 
 function emptyTotals() {
-  return { cycles: 0, failures: 0, holdsExpired: 0, firstVisitsFinished: 0, draftsAbandoned: 0, draftsDeleted: 0 };
+  return { cycles: 0, failures: 0, holdsExpired: 0, firstVisitsFinished: 0, conversionsFinished: 0, conversionLinksExpired: 0, draftsAbandoned: 0, draftsDeleted: 0 };
 }
 
 module.exports = {

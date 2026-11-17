@@ -55,7 +55,7 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
 const MAX_RANGE_DAYS = 62;
 const ROW_FIELDS =
-  "_id bookingNumber date scheduledStart scheduledEnd status bookingType accessType isFreeFirstVisit guestRequestId freeVisitChannel freeVisitPurpose freeVisitReview name phone user address city state zip assignedFixterId assignedFixterName paymentState paymentHoldExpiresAt reservationIssue updatedAt";
+  "_id bookingNumber date scheduledStart scheduledEnd status bookingType accessType isFreeFirstVisit guestRequestId freeVisitChannel freeVisitPurpose freeVisitReview name phone user address city state zip assignedFixterId assignedFixterName paymentState paymentHoldExpiresAt reservationIssue freeVisitConversion updatedAt";
 
 const VIEWS = new Set(["today", "tomorrow", "week", "range", "needs_action"]);
 /* Default statuses: everything except Canceled (the old calendar counted those, J-16). */
@@ -434,11 +434,60 @@ async function extraChargeSummary(bookingId) {
   };
 }
 
+/* Converting a free visit is reviewing it plus selling: the Jobs section (bookings.assign), like the free-visit review. */
+function canConvertToPaid(req, booking, now) {
+  if (!hasPerm(req, PERMISSIONS.BOOKINGS_ASSIGN) || !hasPerm(req, PERMISSIONS.BOOKINGS_WRITE)) return false;
+  return !require("../freeVisit/conversion").convertProblem(booking, now);
+}
+
+/** What the job sheet shows about a conversion: a converted visit's origin, or the live link's state. */
+async function conversionSummary(req, booking) {
+  if (!hasPerm(req, PERMISSIONS.BOOKINGS_ASSIGN)) return null;
+  const converted = booking.freeVisitConversion?.convertedAt ? booking.freeVisitConversion : null;
+  const FreeVisitConversion = require("../../models/FreeVisitConversion");
+  const live = await FreeVisitConversion.findOne({ booking: booking._id, status: { $in: FreeVisitConversion.LIVE_STATUSES } })
+    .select("_id status kind plan billingCycle linkExpiresAt checkout.sessionId sends attention")
+    .lean();
+  if (!converted && !live) return null;
+  /* Converted, then canceled: its payment (and a membership's subscription) wait for Admin's decision. */
+  const record = converted?.conversionId ? await FreeVisitConversion.findById(converted.conversionId).select("_id afterCancel resolution").lean() : null;
+  const followUp = record?.afterCancel?.at && !record.afterCancel.resolvedAt ? "after_cancel" : null;
+  return {
+    converted: converted
+      ? {
+          conversionId: converted.conversionId ? String(converted.conversionId) : null,
+          followUp,
+          resolution: record?.resolution?.at ? { kind: record.resolution.kind, at: record.resolution.at, byName: record.resolution.byName } : null,
+          kind: converted.kind,
+          plan: converted.plan || "",
+          billingCycle: converted.billingCycle || "",
+          convertedAt: converted.convertedAt,
+          leadTimeRule: converted.leadTimeRule || "",
+          fromStatus: converted.from?.status || "",
+          fromChannel: converted.from?.freeVisitChannel || "",
+        }
+      : null,
+    live: live
+      ? {
+          id: String(live._id),
+          status: live.status,
+          kind: live.kind,
+          plan: live.plan || "",
+          billingCycle: live.billingCycle || "",
+          linkExpiresAt: live.linkExpiresAt,
+          checkoutOpen: Boolean(live.checkout?.sessionId),
+          sent: (live.sends || []).map((s) => s.channel),
+          attention: live.attention?.at ? { reason: live.attention.reason, message: live.attention.message } : null,
+        }
+      : null,
+  };
+}
+
 /** The JobDetail DTO. `allowedActions` is computed by the caller's rules. */
 async function jobDetail(req, booking, { now = new Date() } = {}) {
   const { allowedActionsFor } = require("../bookingTransitions");
   const row = toJobRow(booking, now);
-  const [customer, fullMoney] = await Promise.all([customerSummary(req, booking), moneyBlockFor(booking)]);
+  const [customer, fullMoney, conversion] = await Promise.all([customerSummary(req, booking), moneyBlockFor(booking), conversionSummary(req, booking)]);
   const money = moneyForCaller(req, fullMoney);
   return {
     ...row,
@@ -458,7 +507,7 @@ async function jobDetail(req, booking, { now = new Date() } = {}) {
     libraryReference: booking.libraryReference || "",
     money,
     staffNotes: staffNotesOf(booking),
-    freeVisit: booking.guestRequestId || booking.freeVisitChannel
+    freeVisit: (booking.guestRequestId || booking.freeVisitChannel) && !booking.freeVisitConversion?.convertedAt
       ? {
           channel: booking.guestRequestId ? "callback" : booking.freeVisitChannel || "",
           purpose: booking.freeVisitPurpose || "",
@@ -471,7 +520,14 @@ async function jobDetail(req, booking, { now = new Date() } = {}) {
     cancellationReason: canonicalStatus(booking.status) === STATUS.CANCELED ? booking.cancellationReason || "" : "",
     completedAt: booking.completedAt || null,
     createdAt: booking.createdAt || null,
-    allowedActions: [...allowedActionsFor(req, booking), ...(canChargeExtra(req, booking) ? ["chargeExtra"] : [])],
+    /* "Convert to paid visit" (utils/freeVisit/conversion.js): where the visit came from, and any link in progress. */
+    conversion,
+    allowedActions: [
+      ...allowedActionsFor(req, booking),
+      ...(canChargeExtra(req, booking) ? ["chargeExtra"] : []),
+      /* Also while a link is live, so a paid one that needs attention can be retried or closed whatever the visit's state; and while a canceled converted visit's payment waits for a decision. */
+      ...(canConvertToPaid(req, booking, now) || ((conversion?.live || conversion?.converted?.followUp) && hasPerm(req, PERMISSIONS.BOOKINGS_WRITE)) ? ["convertToPaid"] : []),
+    ],
     // Owner and General Fixter only: the charges on this visit, summarised; the sheet loads the full list.
     extraCharges: require("../extraCharges/access").canChargeCustomers(req) ? await extraChargeSummary(booking._id) : undefined,
     history: { href: `/api/admin/bookings/${booking._id}/history` },

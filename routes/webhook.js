@@ -47,6 +47,7 @@ const {
   releaseCheckoutHold,
 } = require("../utils/slotReservationService");
 const { markFirstVisitPaid, markFirstVisitExpired, fulfillFirstVisitDraft } = require("../utils/membershipFirstVisitFulfillment");
+const freeVisitConversion = require("../utils/freeVisit/conversion");
 const salesStripe = require("../utils/sales/stripeEvents");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
@@ -1682,6 +1683,37 @@ async function handleCheckoutCompleted(session, eventId) {
     return extraCharges.handleCheckoutSession(session);
   }
 
+  /*
+   * A free visit paid for as a One-Time Visit (utils/freeVisit/conversion.js).
+   * Before the One-Time handler on purpose: that one rewrites and, on expiry,
+   * cancels the booking it is given; a conversion changes the free visit in
+   * place, once, only if it is still the visit the link was made for. A
+   * membership conversion takes the normal subscription path below first.
+   */
+  if (freeVisitConversion.isConversionSession(session) && String(session.mode || "") === "payment") {
+    /* Reported once: a payment this conversion already recorded is a replay. */
+    const FreeVisitConversion = require("../models/FreeVisitConversion");
+    const recordedBefore = await FreeVisitConversion.exists({ _id: session.metadata.freeVisitConversionId, "payment.sessionId": session.id });
+    const result = await freeVisitConversion.handleConversionPaid(session);
+    /*
+     * The customer's own upgrade is a website purchase, reported as any paid
+     * visit is (server only: the page returns to My Visits, not the
+     * confirmation page). An Admin link is a staff sale and never reported.
+     */
+    if (!recordedBefore && session.metadata?.initiatedBy === "customer" && !soldByStaff(session)) {
+      try {
+        const [buyer, visit] = await Promise.all([
+          User.findById(result?.user || null).lean(),
+          Booking.findById(session.metadata.convertsBookingId).lean(),
+        ]);
+        if (buyer && visit) reportPaidVisitPurchase({ session, user: buyer, booking: visit, contentName: "One-Time Visit (upgraded free visit)" });
+      } catch (error) {
+        logWebhook("warn", "conversion_purchase_report_failed", { stripeSessionId: session.id, message: String(error?.message || error).slice(0, 160) });
+      }
+    }
+    return result;
+  }
+
   if (isFixterTipCheckoutSession(session)) {
     return handleFixterTipCheckoutCompleted(session, eventId);
   }
@@ -1790,6 +1822,12 @@ async function handleCheckoutCompleted(session, eventId) {
     if (error?.code !== HOME_ALREADY_ACTIVE) throw error;
     // Covered already; the new subscription is a second bill for the same home.
     await alertIfHomeBilledTwice({ user, subscription: error.existing, stripeSubscription });
+    // A free-visit conversion paid this way is never converted on a second bill: the owner is told.
+    if (freeVisitConversion.isConversionSession(session)) {
+      await freeVisitConversion.handleConversionPaid(session, { duplicateMembership: true }).catch((e) =>
+        logWebhook("error", "free_visit_conversion_failed", { stripeSessionId: session.id, message: String(e?.message || e).slice(0, 200) })
+      );
+    }
     return error.existing;
   }
 
@@ -1806,6 +1844,20 @@ async function handleCheckoutCompleted(session, eventId) {
     if (draft) await fulfillFirstVisitDraft(draft._id);
   } catch (error) {
     logWebhook("error", "first_visit_fulfillment_deferred", { stripeSessionId: session.id, message: String(error?.message || error).slice(0, 200) });
+  }
+
+  /*
+   * A free visit paid for as a membership (utils/freeVisit/conversion.js):
+   * the visit is converted in place now that the membership exists. Never
+   * fails this event - a conversion that cannot finish stays "paid" for the
+   * sweep (jobs/oneTimeVisitHolds.js), then goes to Admin.
+   */
+  if (freeVisitConversion.isConversionSession(session)) {
+    try {
+      await freeVisitConversion.handleConversionPaid(session, { subscription });
+    } catch (error) {
+      logWebhook("error", "free_visit_conversion_deferred", { stripeSessionId: session.id, message: String(error?.message || error).slice(0, 200) });
+    }
   }
 
   const plan = String(subscription.subscriptionType || "").toLowerCase();
@@ -2672,6 +2724,13 @@ module.exports = async (req, res) => {
       case "checkout.session.expired":
         if (extraCharges.isExtraChargeObject(event.data.object)) {
           syncResult = await extraCharges.handleCheckoutSession(event.data.object);
+        } else if (freeVisitConversion.isConversionSession(event.data.object)) {
+          /*
+           * A free-visit conversion page closed unpaid: the free visit is
+           * untouched and its link still works. No abandoned-checkout email:
+           * the customer still has their visit, and Admin sees the link.
+           */
+          syncResult = await freeVisitConversion.handleConversionExpired(event.data.object);
         } else if (isOneTimeCheckoutSession(event.data.object)) {
           syncResult = await handleOneTimeCheckoutExpired(event.data.object, "expired");
         } else if (isFullDayCheckoutSession(event.data.object)) {

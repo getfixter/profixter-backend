@@ -56,6 +56,8 @@ function isFinalStatus(status) {
 /* ------------------------------- type ------------------------------- */
 
 function isFreeVisit(booking) {
+  /* Converted to a paid visit (utils/freeVisit/conversion.js): it keeps guestRequestId for its lead, but it is not free any more. */
+  if (booking?.freeVisitConversion?.convertedAt) return false;
   return Boolean(
     booking?.accessType === "free_first_visit" ||
       booking?.isFreeFirstVisit ||

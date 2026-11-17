@@ -171,6 +171,8 @@ const SUITES = [
   "test_sales_desk.js",
   // Telemarketer invitation-link setup: no shared first password, single-use expiring links.
   "test_staff_setup.js",
+  // Convert to paid visit: a free visit paid as a membership or One-Time visit, in place, once (in-memory replica set).
+  "test_free_visit_conversion.js",
 ];
 
 /**

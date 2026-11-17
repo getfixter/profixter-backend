@@ -36,6 +36,8 @@ async function limited(req) {
 }
 
 async function describe(link) {
+  /* A free visit becoming a paid visit (utils/freeVisit/conversion.js): decided by the conversion, never the booking's payment fields. */
+  if (link.kind === "visit_conversion") return require("../utils/freeVisit/conversion").describeConversionLink(link);
   if (link.kind === "extra_charge") {
     // Decided by the AdditionalCharge itself: paid, processing or replaced links never open a page.
     const extra = await require("../utils/extraCharges").describeLink(link);
@@ -70,6 +72,26 @@ router.post("/:token/checkout", async (req, res) => {
     const token = String(req.params.token || "");
     const link = await findLinkByToken(token);
     if (!link) return res.status(404).json({ status: "not_found", message: "This payment link isn't valid." });
+
+    if (link.kind === "visit_conversion") {
+      const conversion = require("../utils/freeVisit/conversion");
+      const block = await findActiveBlock({ userId: link.user, email: link.sentTo?.email, phone: link.sentTo?.phone });
+      if (block) return refuseBlocked(res, "pay_link", block);
+      try {
+        const { url } = await conversion.openConversionCheckout({
+          link,
+          token,
+          acceptTerms: req.body?.acceptTerms === true,
+          termsVersion: String(req.body?.termsVersion || ""),
+          req,
+        });
+        return res.json({ url });
+      } catch (error) {
+        if (!(error instanceof conversion.ConversionError)) throw error;
+        return res.status(error.status || 409).json({ status: error.status === 410 ? "expired" : "unavailable", code: error.code, message: error.message });
+      }
+    }
+
     const state = await describe(link);
     if (state.status !== "open") return res.status(410).json({ ...state, message: state.status === "paid" ? "This has already been paid. Thank you!" : "This payment link has expired. Please call us for a new one." });
 

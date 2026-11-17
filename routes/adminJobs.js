@@ -309,6 +309,8 @@ router.post("/jobs/:id/transition", auth, ...bookingsWrite, express.json(), asyn
           // Payment facts are for callers who see every job (K.1: no money for a field Fixter).
           ...(outcome.payment && canSeeAllJobs(req) ? { payment: outcome.payment } : {}),
           ...(outcome.fullDayRestore ? { fullDayRestore: outcome.fullDayRestore } : {}),
+          // A converted visit's payment (and membership) after a cancel: for callers who see every job, like `payment`.
+          ...(outcome.conversionPayment && canSeeAllJobs(req) ? { conversionPayment: outcome.conversionPayment } : {}),
           ...(outcome.routedTo ? { routedTo: outcome.routedTo } : {}),
         },
       };

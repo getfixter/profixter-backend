@@ -7,6 +7,13 @@
  * lifetime rule (utils/freeVisit/eligibility), which matches on phone and email
  * whether or not the booking is linked. This only makes the ownership visible.
  *
+ * WHEN IT RUNS
+ *  - At every sign-in (routes/auth.js, routes/authV2.js).
+ *  - When a signed-in customer opens My Visits (GET /api/bookings), so a visit
+ *    booked as a guest while already signed in appears without signing in again.
+ *    That trusts nothing sign-in does not: the account's own proved contacts.
+ *  - When the owner completes a guest visit (linkCompletedGuestVisit).
+ *
  * WHAT IT WILL NOT DO
  *  - Link on a contact the account has not proved. A phone counts only with
  *    phoneVerifiedAt, an email only with emailVerifiedAt (OTP, Google, Apple).
@@ -24,11 +31,16 @@ const { canonicalEmail } = require("./eligibility");
 
 const CLOSED = ["Canceled", "Cancelled", "canceled", "cancelled"];
 
-async function linkGuestFreeVisits(user) {
-  if (!user?._id || (user.role && user.role !== "customer")) return 0;
+/**
+ * Links what it safely can and returns the ids it linked. `via` is recorded on
+ * the visit: "sign_in", "my_visits" (an already signed-in customer opening My
+ * Visits, routes/bookings.js) or "completion". Every path applies the same checks.
+ */
+async function linkGuestFreeVisitIds(user, { via = "sign_in" } = {}) {
+  if (!user?._id || (user.role && user.role !== "customer")) return [];
   const phone = user.phoneVerifiedAt ? normalizePhoneE164(user.phone) || "" : "";
   const email = user.emailVerifiedAt ? String(user.email || "").trim().toLowerCase() : "";
-  if (!phone && !email) return 0;
+  if (!phone && !email) return [];
   const canonical = email ? canonicalEmail(email) : "";
 
   const or = [];
@@ -44,7 +56,7 @@ async function linkGuestFreeVisits(user) {
     .limit(10)
     .lean();
 
-  let linked = 0;
+  const linked = [];
   for (const booking of candidates) {
     const bookingEmail = String(booking.email || "").toLowerCase();
     const emailMatch =
@@ -60,12 +72,24 @@ async function linkGuestFreeVisits(user) {
 
     const result = await Booking.updateOne(
       { _id: booking._id, user: null },
-      { $set: { user: user._id, userId: user.userId || "", "freeVisitIdentity.userId": user._id } }
+      {
+        $set: {
+          user: user._id,
+          userId: user.userId || "",
+          "freeVisitIdentity.userId": user._id,
+          "freeVisitIdentity.linkedAt": new Date(),
+          "freeVisitIdentity.linkedVia": String(via || "sign_in"),
+        },
+      }
     );
-    if (result.modifiedCount === 1) linked += 1;
+    if (result.modifiedCount === 1) linked.push(booking._id);
   }
-  if (linked) console.log("free_visit_guest_linked", JSON.stringify({ userId: String(user._id), linked }));
+  if (linked.length) console.log("free_visit_guest_linked", JSON.stringify({ userId: String(user._id), linked: linked.length, via }));
   return linked;
+}
+
+async function linkGuestFreeVisits(user, options) {
+  return (await linkGuestFreeVisitIds(user, options)).length;
 }
 
 /** For sign-in paths: never throws, never delays the response by more than the lookup. */
@@ -99,7 +123,7 @@ async function linkCompletedGuestVisit(booking) {
   if (!or.length) return 0;
   const users = await User.find({ role: "customer", $or: or }).limit(3);
   if (users.length !== 1) return 0;
-  return linkGuestFreeVisits(users[0]);
+  return linkGuestFreeVisits(users[0], { via: "completion" });
 }
 
 async function linkCompletedGuestVisitQuietly(booking) {
@@ -111,4 +135,10 @@ async function linkCompletedGuestVisitQuietly(booking) {
   }
 }
 
-module.exports = { linkCompletedGuestVisit, linkCompletedGuestVisitQuietly, linkGuestFreeVisits, linkGuestFreeVisitsQuietly };
+module.exports = {
+  linkCompletedGuestVisit,
+  linkCompletedGuestVisitQuietly,
+  linkGuestFreeVisitIds,
+  linkGuestFreeVisits,
+  linkGuestFreeVisitsQuietly,
+};

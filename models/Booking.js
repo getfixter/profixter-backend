@@ -138,6 +138,9 @@ const BookingSchema = new mongoose.Schema({
     addressKey: { type: String, default: "" },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     capturedAt: { type: Date, default: null },
+    /* When a guest visit was joined to an account, and from where (utils/freeVisit/guestLink). */
+    linkedAt: { type: Date, default: null },
+    linkedVia: { type: String, default: "" },
   },
   /* A possible repeat the server could not decide alone: the owner verifies it. */
   freeVisitReview: {
@@ -178,6 +181,38 @@ const BookingSchema = new mongoose.Schema({
   libraryReference: { type: String, trim: true, default: "" },
   /* Booked by the Stripe webhook from a membership first-visit draft (utils/membershipFirstVisitFulfillment). */
   firstVisitDraftId: { type: mongoose.Schema.Types.ObjectId, default: undefined },
+  /*
+   * A free visit the customer paid to turn into a membership or One-Time
+   * visit (utils/freeVisit/conversion.js). The booking, its time, reservation,
+   * Fixter, notes and photos stay as they were; only what the visit IS
+   * changes, and only once the payment is confirmed. `from` is the free visit
+   * as it stood, kept for history. guestRequestId stays: the lead, the
+   * lifetime free-visit rule and guest texting still read it.
+   */
+  freeVisitConversion: {
+    type: {
+      conversionId: { type: mongoose.Schema.Types.ObjectId, ref: "FreeVisitConversion" },
+      kind: { type: String, enum: ["membership", "one_time"] },
+      convertedAt: Date,
+      plan: String,
+      billingCycle: String,
+      leadTimeRule: String,
+      stripeCheckoutSessionId: String,
+      from: {
+        accessType: String,
+        bookingType: String,
+        subscription: String,
+        service: String,
+        selectedTask: String,
+        status: String,
+        paymentState: String,
+        isFreeFirstVisit: Boolean,
+        freeVisitChannel: String,
+        freeVisitPurpose: String,
+      },
+    },
+    default: undefined,
+  },
   contentUpdates: [
     {
       actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

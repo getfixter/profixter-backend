@@ -15,7 +15,9 @@ const mongoose = require("mongoose");
 const AdminPaymentLinkSchema = new mongoose.Schema(
   {
     tokenHash: { type: String, required: true, unique: true },
-    kind: { type: String, enum: ["membership", "one_time", "full_day", "extra_charge"], required: true },
+    kind: { type: String, enum: ["membership", "one_time", "full_day", "extra_charge", "visit_conversion"], required: true },
+    /* kind "visit_conversion": the FreeVisitConversion this link pays (utils/freeVisit/conversion.js). */
+    conversion: { type: mongoose.Schema.Types.ObjectId, ref: "FreeVisitConversion", default: null, index: true },
 
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     addressId: { type: mongoose.Schema.Types.ObjectId, default: null },

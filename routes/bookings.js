@@ -368,12 +368,64 @@ async function resolveBookingSubscription(user, address, options = {}) {
 /* ---------- GET /api/bookings (all user bookings) ---------- */
 router.get("/", auth, async (req, res) => {
   try {
+    /*
+     * A visit booked as a guest (the homepage form) while this customer was
+     * already signed in is joined here, so it appears without signing in
+     * again. Same rule as sign-in (utils/freeVisit/guestLink): only on a
+     * phone or email this account has proved, never past an email owned by
+     * another account or a phone another customer proved. Never fails the list.
+     */
+    let justLinked = new Set();
+    try {
+      const me = await User.findById(req.user.id).select("_id role userId phone email phoneVerifiedAt emailVerifiedAt").lean();
+      const { linkGuestFreeVisitIds } = require("../utils/freeVisit/guestLink");
+      justLinked = new Set((await linkGuestFreeVisitIds(me, { via: "my_visits" })).map(String));
+    } catch (error) {
+      console.error("GET /bookings guest link failed:", error?.message || error);
+    }
+
     const bookings = await Booking.find({ user: req.user.id })
       .select(
         "-assignedFixterId -assignedFixterName -assignedFixterEmail -assignedFixterPosition -slotReservationId -adminNote -contentUpdates"
       )
       .sort({ date: 1 })
       .lean();
+
+    /*
+     * A free visit's card offers "Upgrade to a handyman visit", and says how
+     * an upgrade already under way stands (utils/freeVisit/conversion.js).
+     * The server decides; the card only shows it. Nothing internal is sent.
+     */
+    try {
+      const conv = require("../utils/freeVisit/conversion");
+      const FreeVisitConversion = require("../models/FreeVisitConversion");
+      const relevant = bookings.filter((b) => conv.isUnconvertedFreeVisit(b) || conv.isConverted(b)).map((b) => b._id);
+      const rows = relevant.length
+        ? await FreeVisitConversion.find({
+            booking: { $in: relevant },
+            $or: [{ status: { $in: [...FreeVisitConversion.LIVE_STATUSES, "converted", "closed"] } }, { "payment.extraSessionIds.0": { $exists: true } }],
+          })
+            .sort({ createdAt: -1 })
+            .lean()
+        : [];
+      const latest = new Map();
+      for (const row of rows) if (!latest.has(String(row.booking))) latest.set(String(row.booking), row);
+      for (const booking of bookings) {
+        if (!conv.isUnconvertedFreeVisit(booking) && !conv.isConverted(booking)) continue;
+        booking.upgrade = {
+          freeVisit: conv.isUnconvertedFreeVisit(booking),
+          converted: conv.isConverted(booking),
+          current: conv.customerConversionView(latest.get(String(booking._id)) || null, booking),
+        };
+      }
+    } catch (error) {
+      console.error("GET /bookings upgrade state failed:", error?.message || error);
+    }
+    /* Its Stripe ids and the visit's former type are Admin's, not the card's. */
+    for (const booking of bookings) {
+      delete booking.freeVisitConversion;
+      if (justLinked.has(String(booking._id))) booking.linkedJustNow = true;
+    }
 
     return res.json(bookings);
   } catch (e) {
@@ -497,6 +549,8 @@ router.get("/next", auth, async (req, res) => {
             service: next.service,
             bookingNumber: next.bookingNumber,
             addressId: next.addressId,
+            /* A free visit: the overview links to "Upgrade to a handyman visit" on its card. */
+            freeVisit: require("../utils/freeVisit/conversion").isUnconvertedFreeVisit(next),
           }
         : null,
     });

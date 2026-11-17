@@ -119,9 +119,19 @@ async function loadFreeVisitHistory({ session = null, excludeBookingId = null, e
   const [bookings, users, requests] = await Promise.all([
     withSession(
       Booking.find({
-        $or: [{ isFreeFirstVisit: true }, { accessType: "free_first_visit" }, { guestRequestId: { $ne: null } }],
+        /*
+         * A free visit later paid for as a membership or One-Time visit
+         * (utils/freeVisit/conversion.js) still counts: it was booked as the
+         * person's free visit, and converting it must not hand them another.
+         */
+        $or: [
+          { isFreeFirstVisit: true },
+          { accessType: "free_first_visit" },
+          { guestRequestId: { $ne: null } },
+          { "freeVisitConversion.convertedAt": { $ne: null } },
+        ],
       }).select(
-        "_id bookingNumber user userId name phone email address city state zip status completedAt date guestRequestId freeVisitIdentity isFreeFirstVisit accessType"
+        "_id bookingNumber user userId name phone email address city state zip status completedAt date guestRequestId freeVisitIdentity isFreeFirstVisit accessType freeVisitConversion"
       )
     ).lean(),
     withSession(
@@ -142,7 +152,7 @@ async function loadFreeVisitHistory({ session = null, excludeBookingId = null, e
     if (excludeBookingId && String(b._id) === String(excludeBookingId)) continue;
     if (excludeRequestId && b.guestRequestId && String(b.guestRequestId) === String(excludeRequestId)) continue;
     // A guest request that is not yet a free visit (no flag) still claims one.
-    if (!b.isFreeFirstVisit && b.accessType !== "free_first_visit" && !b.guestRequestId) continue;
+    if (!b.isFreeFirstVisit && b.accessType !== "free_first_visit" && !b.guestRequestId && !b.freeVisitConversion?.convertedAt) continue;
     bookingIds.add(String(b._id));
     const frozen = b.freeVisitIdentity || {};
     const owner = b.user ? usersByObjectId.get(String(b.user)) : null;

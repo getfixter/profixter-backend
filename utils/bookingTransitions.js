@@ -384,6 +384,22 @@ async function doCancel({ req, booking, before, expectedUpdatedAt, reason, sourc
   const canceled = (await Booking.findById(claimed._id)) || claimed;
   await logBookingChanges({ bookingId: canceled._id, before, after: bookingSnapshot(canceled), req });
   const payment = await paymentInfoFor(canceled).catch(() => null);
+  /*
+   * A visit converted from a free visit (utils/freeVisit/conversion.js) was
+   * paid for, and a membership one started a subscription. Canceling it
+   * touches neither: it records that the payment now needs Admin's decision
+   * (Needs action) and says so in the result. Nothing is refunded or canceled.
+   */
+  let conversionPayment = null;
+  if (canceled.freeVisitConversion?.convertedAt) {
+    conversionPayment = await require("./freeVisit/paymentResolution")
+      .recordCanceledAfterPayment({ booking: canceled, admin: req?.accessUser || null, reason: cancellationReason, statusBefore: before.status })
+      .catch((error) => {
+        console.error("converted visit cancel follow-up failed:", error.message);
+        return null;
+      });
+    if (conversionPayment) conversionPayment.message = require("./freeVisit/paymentResolution").followUpText(conversionPayment);
+  }
   const notifications = await notifyStatus(canceled, "canceled", { source });
   await syncLead(canceled);
   await audit(req, "Booking Manually Canceled", canceled, {
@@ -394,11 +410,13 @@ async function doCancel({ req, booking, before, expectedUpdatedAt, reason, sourc
     reason: cancellationReason,
     fullDayRestored: Boolean(fullDayRestore?.restored),
     paidCents: payment?.paidCents ?? null,
+    ...(conversionPayment ? { convertedVisitPayment: { kind: conversionPayment.kind, amountCents: conversionPayment.amountCents, followUp: "after_cancel" } } : {}),
   });
   return {
     booking: canceled,
     notifications,
     payment,
+    ...(conversionPayment ? { conversionPayment } : {}),
     fullDayRestore: fullDayRestore ? { restored: Boolean(fullDayRestore.restored), kind: fullDayRestore.kind || null, reason: fullDayRestore.reason || "" } : null,
   };
 }
@@ -411,7 +429,7 @@ function reinstateBlockerSync(booking) {
   if (["pending", "failed", "expired", "refunded"].includes(booking.paymentState)) {
     return { code: "PAYMENT_NOT_COMPLETED", message: "This visit was never paid (or was refunded). Create a new visit instead." };
   }
-  if (current === STATUS.CANCELED && (booking.guestRequestId || booking.freeVisitChannel === "online")) {
+  if (current === STATUS.CANCELED && !booking.freeVisitConversion?.convertedAt && (booking.guestRequestId || booking.freeVisitChannel === "online")) {
     return { code: "USE_FREE_VISIT_REVIEW", message: "A declined free-visit request cannot be reopened. Ask the customer to request again." };
   }
   return null;
@@ -512,6 +530,12 @@ async function doReinstate({ req, booking, before, expectedUpdatedAt, assignedFi
     notifiedCustomer: notifyCustomer === true,
     assignedFixterName: reinstated.assignedFixterName || "",
   });
+  /* A converted visit canceled and now back: its payment no longer waits for a decision. */
+  if (reinstated.freeVisitConversion?.convertedAt) {
+    await require("./freeVisit/paymentResolution")
+      .reinstatedAfterCancel({ booking: reinstated, admin: req?.accessUser || null })
+      .catch((error) => console.error("converted visit reinstate follow-up failed:", error.message));
+  }
   return { booking: reinstated, notifications };
 }
 

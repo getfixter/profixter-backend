@@ -225,6 +225,9 @@ app.use("/api/pay", require("./routes/pay"));
 app.use("/api/requests", require("./routes/requests"));
 app.use("/api/free-visit-requests", require("./routes/freeVisitRequests"));
 app.use("/api/admin/free-visits", require("./routes/adminFreeVisits"));
+app.use("/api/admin/free-visit-conversions", require("./routes/adminFreeVisitConversions"));
+// The customer's own "Upgrade to a handyman visit" (signed in; utils/freeVisit/conversion.js).
+app.use("/api/visit-upgrade", require("./routes/visitUpgrade"));
 // Public gallery read needs no token; the submission route inside it does.
 app.use("/api/recent-work", require("./routes/recentWork"));
 /*

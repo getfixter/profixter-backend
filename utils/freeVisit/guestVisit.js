@@ -62,16 +62,22 @@ function serviceError(code, message, statusCode = 409, extra = {}) {
   return error;
 }
 
+/* Paid for and converted (utils/freeVisit/conversion.js): a paid visit now, never reviewed as a free one. */
+function isConvertedVisit(booking) {
+  return Boolean(booking?.freeVisitConversion?.convertedAt);
+}
+
 function isPendingGuest(booking) {
-  return Boolean(booking?.guestRequestId) && String(booking.status || "").toLowerCase() === PENDING.toLowerCase();
+  return !isConvertedVisit(booking) && Boolean(booking?.guestRequestId) && String(booking.status || "").toLowerCase() === PENDING.toLowerCase();
 }
 
 function isOnlineFreeVisit(booking) {
-  return !booking?.guestRequestId && booking?.freeVisitChannel === "online" && Boolean(booking?.user);
+  return !isConvertedVisit(booking) && !booking?.guestRequestId && booking?.freeVisitChannel === "online" && Boolean(booking?.user);
 }
 
 /** A free visit the owner reviews on the free-visit screen: callback or online. */
 function isReviewableFreeVisit(booking) {
+  if (isConvertedVisit(booking)) return false;
   return Boolean(booking?.guestRequestId) || isOnlineFreeVisit(booking);
 }
 
@@ -120,6 +126,8 @@ function leadStatusFor(booking) {
     return booking.freeVisitConfirmation?.declinedAt ? "declined" : "canceled";
   }
   if (status === PENDING.toLowerCase()) return "pending_confirmation";
+  /* The lead became a paying customer (utils/freeVisit/conversion.js). */
+  if (isConvertedVisit(booking)) return "won";
   return "confirmed";
 }
 
