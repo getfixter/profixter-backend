@@ -126,6 +126,144 @@ router.get("/last-purchase-by-session", async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* ChatGPT Ads: proof of payment for the browser's conversions          */
+/* ------------------------------------------------------------------ */
+/*
+ * The confirmation pages are handed only a Stripe session id in their URL.
+ * That proves nothing: a URL can be shared or replayed, and Meta and GTM on
+ * those same pages receive the full URL, session id included. So each
+ * conversion fires only when one of these answers ok, and they answer only:
+ *
+ *  - to the SIGNED-IN customer who owns the purchase (anyone else gets the
+ *    same 404 as a session that does not exist; no valid sign-in at all is a
+ *    401, which says nothing about the session);
+ *  - when our webhook's record says paid (a paid or used visit entitlement;
+ *    an ACTIVE membership created from this very checkout);
+ *  - when Stripe says, now, that the checkout is complete and paid
+ *    (payment_status "paid", which a $0 or trial checkout never is);
+ *  - for a customer purchase, never a staff-initiated sale (which the webhook
+ *    also keeps out of Meta);
+ *  - with a charged amount above zero.
+ *
+ * MINIMUM DATA. The answer is ok, which product, the amount in cents and the
+ * currency. No name, email, Stripe ids, booking or subscription ids, and no
+ * event id (the page already has the session id it would be derived from).
+ * Every refusal is a bare 404 so the response cannot be used to probe which
+ * sessions exist or whose they are. A failure on our side or Stripe's is a
+ * 500, never a 404, so the browser keeps the conversion for a later retry
+ * instead of taking it as a final "no". no-store, so nothing caches it.
+ */
+const SESSION_ID = /^cs_(live|test)_[A-Za-z0-9]{10,200}$/;
+const proofLimiter = rateLimit({
+  limit: 30,
+  windowMs: 10 * 60 * 1000,
+  keyResolver: (req) => clientIp(req) || null,
+});
+const VISIT_PRODUCTS = { one_time_handyman_visit: "one_time_visit", full_day_visit: "full_day" };
+
+function noProof(res) {
+  return res.status(404).json({ ok: false });
+}
+
+/** Stripe's session if it is a completed, paid, customer (not staff) checkout. */
+async function paidCustomerSession(sessionId) {
+  const { stripe } = require("../utils/subscriptionManagement");
+  let session;
+  try {
+    session = await stripe.checkout.sessions.retrieve(sessionId);
+  } catch (e) {
+    // No such session is a refusal; anything else (Stripe down, rate limit) is ours to retry.
+    if (e?.statusCode === 404 || e?.code === "resource_missing") return null;
+    throw e;
+  }
+  if (!session || session.status !== "complete" || session.payment_status !== "paid") return null;
+  const m = session.metadata || {};
+  if (m.adminInitiated || m.adminGiftRecipientId) return null;
+  return session;
+}
+
+/** A positive whole number of cents, or null. */
+function positiveCents(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** A paid One-Time Visit or Full Day: order_created on /book/confirmation. */
+router.get("/paid-visit-by-session", proofLimiter, optionalAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    const sessionId = String(req.query.session_id || "");
+    if (!SESSION_ID.test(sessionId)) return res.status(400).json({ ok: false });
+    if (!req.user?._id) return res.status(401).json({ ok: false });
+
+    const VisitEntitlement = require("../models/VisitEntitlement");
+    const entitlement = await VisitEntitlement.findOne({
+      stripeCheckoutSessionId: sessionId,
+      user: req.user._id,
+      source: "purchase",
+      status: { $in: ["paid", "consumed"] },
+    })
+      .select("kind")
+      .lean();
+    const product = entitlement && VISIT_PRODUCTS[entitlement.kind];
+    if (!product) return noProof(res);
+
+    const session = await paidCustomerSession(sessionId);
+    // amount_total: what the customer was charged, the figure the webhook sends Meta.
+    const amountCents = positiveCents(session?.amount_total);
+    if (!session || !amountCents) return noProof(res);
+
+    return res.json({ ok: true, product, amountCents, currency: String(session.currency || "usd").toUpperCase() });
+  } catch (e) {
+    return res.status(500).json({ ok: false });
+  }
+});
+
+/** A paid membership that is active now: subscription_created on /confirmationpage. */
+router.get("/membership-by-session", proofLimiter, optionalAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    const sessionId = String(req.query.session_id || "");
+    if (!SESSION_ID.test(sessionId)) return res.status(400).json({ ok: false });
+    if (!req.user?._id) return res.status(401).json({ ok: false });
+
+    /*
+     * The membership THIS checkout created, still active. A checkout whose
+     * home was already covered (a second bill, routes/webhook.js) created no
+     * membership of its own, so it never matches; neither does one already
+     * canceled, past due or merely trialing.
+     */
+    const Subscription = require("../models/Subscription");
+    const subscription = await Subscription.findOne({
+      stripeCheckoutSessionId: sessionId,
+      user: req.user._id,
+      status: "active",
+    })
+      .select("subscriptionType billingCycle")
+      .lean();
+    if (!subscription) return noProof(res);
+
+    const session = await paidCustomerSession(sessionId);
+    if (!session || session.mode !== "subscription") return noProof(res);
+    // What was charged before tax, as the webhook reports it to Meta: subtotal less discounts.
+    const subtotal = Number(session.amount_subtotal);
+    const discount = Number(session.total_details?.amount_discount || 0);
+    const amountCents = positiveCents(Number.isFinite(subtotal) ? subtotal - discount : session.amount_total);
+    if (!amountCents) return noProof(res);
+
+    const plan = String(subscription.subscriptionType || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const cycle = subscription.billingCycle === "annual" ? "annual" : "monthly";
+    return res.json({
+      ok: true,
+      planId: plan ? `${plan}_${cycle}` : cycle,
+      amountCents,
+      currency: String(session.currency || "usd").toUpperCase(),
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false });
+  }
+});
 
 /**
  * The browser handing an event to the server so it can reach Meta a second way.
