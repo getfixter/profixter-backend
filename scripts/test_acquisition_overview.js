@@ -301,9 +301,9 @@ async function main() {
     await User.collection.insertOne({ _id: H, userId: "PF-H", name: "H Tester", email: "h@example.com", phone: "", role: "customer", isActive: true, createdAt: ago(60), attribution: { landingPath: "/", referrer: "https://www.google.com/" } });
     // A paid One-Time Visit two months ago (outside the period), then a first membership this week.
     await Booking.collection.insertOne({ _id: oid(), user: H, date: ago(55), status: "Completed", createdAt: ago(58), bookingType: "one_time_handyman_visit", paymentState: "paid" });
-    await Subscription.collection.insertOne({ _id: oid(), user: H, subscriptionType: "plus", billingCycle: "monthly", status: "active", startDate: ago(2), planPrice: 249, stripeSubscriptionId: "sub_H" });
+    await Subscription.collection.insertOne({ _id: oid(), user: H, addressId: oid(), subscriptionType: "plus", billingCycle: "monthly", status: "active", startDate: ago(2), planPrice: 249, stripeSubscriptionId: "sub_H" });
     // Its second home's membership is not a second first membership.
-    await Subscription.collection.insertOne({ _id: oid(), user: H, subscriptionType: "basic", billingCycle: "monthly", status: "active", startDate: ago(1), planPrice: 149, stripeSubscriptionId: "sub_H2" });
+    await Subscription.collection.insertOne({ _id: oid(), user: H, addressId: oid(), subscriptionType: "basic", billingCycle: "monthly", status: "active", startDate: ago(1), planPrice: 149, stripeSubscriptionId: "sub_H2" });
     body = await load();
     const s = src();
     assert.strictEqual(s.google_organic.firstPaidMemberships, 2, "G and H");
