@@ -268,6 +268,49 @@ async function main() {
     assert.strictEqual(row.count, 1);
   });
 
+  section("Membership path (organic Google -> plans -> plan chosen -> first paid membership)");
+  await test("the three membership steps are counted once per browser per day, under the Google Organic first touch", async () => {
+    const gid = "v-acq-google-member-01";
+    await SiteVisitor.collection.insertOne(V("google-member", 2, { visitorId: gid, referrerHost: "www.google.com", landingPath: "/" }));
+    for (const step of ["home_plans_click", "home_plans_click", "plans_view", "plans_view", "plans_view", "plan_selected", "plan_selected"]) {
+      assert.strictEqual((await call("POST", "/api/track/step", null, { visitorId: gid, step })).status, 204);
+    }
+    // A step name the site does not send is ignored.
+    await call("POST", "/api/track/step", null, { visitorId: gid, step: "membership_paid" });
+    const rows = await FunnelStep.find({ step: { $in: ["home_plans_click", "plans_view", "plan_selected"] } }).lean();
+    assert.deepStrictEqual(rows.map((r) => [r.step, r.source, r.count]).sort(), [["home_plans_click", "google_organic", 1], ["plan_selected", "google_organic", 1], ["plans_view", "google_organic", 1]]);
+    assert.strictEqual(await FunnelStep.countDocuments({ step: "membership_paid" }), 0);
+  });
+  await test("the Overview splits each step by Google Organic and counts first paid memberships by source", async () => {
+    const G = oid();
+    await User.collection.insertOne({ _id: G, userId: "PF-G", name: "G Tester", email: "g@example.com", phone: "", role: "customer", isActive: true, createdAt: ago(1), attribution: { landingPath: "/", referrer: "https://www.google.com/" }, stripeCustomerId: "cus_G" });
+    await Subscription.collection.insertOne({ _id: oid(), user: G, subscriptionType: "basic", billingCycle: "monthly", status: "active", startDate: ago(1), planPrice: 149, stripeSubscriptionId: "sub_G" });
+    body = await load();
+    const st = body.funnel.steps;
+    assert.deepStrictEqual([st.home_plans_click.all, st.home_plans_click.googleOrganic, st.plans_view.googleOrganic, st.plan_selected.googleOrganic], [1, 1, 1, 1]);
+    assert.strictEqual(st.booking_page_view.googleOrganic, 0, "Meta and direct steps are not Google's");
+    assert.strictEqual(st.request_submitted.googleOrganic, null, "an unmeasured step stays null");
+    const s = src();
+    assert.strictEqual(s.google_organic.firstPaidMemberships, 1);
+    assert.strictEqual(s.meta_instagram.firstPaidMemberships, 1, "E's first payment was a membership");
+    assert.strictEqual(s.before_tracking.firstPaidMemberships, 0, "a renewal is not a first payment");
+    assert.strictEqual(body.funnel.firstPaidMemberships, 3); // E, STAFF, G
+  });
+  await test("a customer who paid for a One-Time Visit before still counts when they first pay for a membership", async () => {
+    const H = oid();
+    await User.collection.insertOne({ _id: H, userId: "PF-H", name: "H Tester", email: "h@example.com", phone: "", role: "customer", isActive: true, createdAt: ago(60), attribution: { landingPath: "/", referrer: "https://www.google.com/" } });
+    // A paid One-Time Visit two months ago (outside the period), then a first membership this week.
+    await Booking.collection.insertOne({ _id: oid(), user: H, date: ago(55), status: "Completed", createdAt: ago(58), bookingType: "one_time_handyman_visit", paymentState: "paid" });
+    await Subscription.collection.insertOne({ _id: oid(), user: H, subscriptionType: "plus", billingCycle: "monthly", status: "active", startDate: ago(2), planPrice: 249, stripeSubscriptionId: "sub_H" });
+    // Its second home's membership is not a second first membership.
+    await Subscription.collection.insertOne({ _id: oid(), user: H, subscriptionType: "basic", billingCycle: "monthly", status: "active", startDate: ago(1), planPrice: 149, stripeSubscriptionId: "sub_H2" });
+    body = await load();
+    const s = src();
+    assert.strictEqual(s.google_organic.firstPaidMemberships, 2, "G and H");
+    assert.strictEqual(s.google_organic.newPayingCustomers, 1, "H already paid before the period: not a new paying customer");
+    assert.strictEqual(body.funnel.firstPaidMemberships, 4); // E, STAFF, G, H
+  });
+
   section("Meta reporting and cost");
   await test("Meta not connected: spend, reported figures and every cost are null, never zero", async () => {
     assert.strictEqual(body.spend.connected, false);

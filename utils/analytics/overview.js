@@ -481,6 +481,31 @@ function firstPaidAt(data) {
   return first;
 }
 
+/*
+ * Customers whose FIRST PAID MEMBERSHIP starts in [from, to) - the membership
+ * path's last step (owner decision 2026-11-18). A customer who paid for a
+ * One-Time or Full Day visit earlier still counts here when they first pay for
+ * a membership; a renewal, a second home's membership or a gift never does.
+ */
+function firstPaidMembershipCustomers(data, from, to) {
+  if (!data._firstMembershipAt) {
+    const first = new Map();
+    for (const m of data.memberships) {
+      if (m.kind !== "paid" || !m.userId || !m.start) continue;
+      const t = new Date(m.start);
+      if (Number.isNaN(t.getTime())) continue;
+      if (!first.has(m.userId) || first.get(m.userId) > t) first.set(m.userId, t);
+    }
+    data._firstMembershipAt = first;
+  }
+  const out = [];
+  for (const [userId, at] of data._firstMembershipAt) {
+    const user = data.userById.get(userId);
+    if (user && inRange(at, from, to)) out.push(user);
+  }
+  return out;
+}
+
 function newPayingCustomers(data, from, to) {
   const out = [];
   for (const [userId, at] of firstPaidAt(data)) {
@@ -728,6 +753,7 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
         completedVisits: 0,
         members: 0,
         newPayingCustomers: 0,
+        firstPaidMemberships: 0,
         revenueCents: 0,
         firstPaymentRevenueCents: 0,
         spendCents: null,
@@ -760,6 +786,7 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
   }
   for (const m of counts.newMemberships) bump(data.userById.get(m.userId), "members");
   for (const u of newPaying) bump(u, "newPayingCustomers");
+  for (const u of firstPaidMembershipCustomers(data, period.from, period.to)) bump(u, "firstPaidMemberships");
   let unmatchedRevenueCents = 0;
   const newPayingIds = new Set(newPaying.map((u) => String(u._id)));
   for (const r of revenueRows) {
@@ -806,6 +833,7 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
         completedVisits: sum("completedVisits"),
         members: sum("members"),
         newPayingCustomers: sum("newPayingCustomers"),
+        firstPaidMemberships: sum("firstPaidMemberships"),
         revenueCents: sum("revenueCents"),
         firstPaymentRevenueCents: sum("firstPaymentRevenueCents"),
         repeatRevenueCents: sum("repeatRevenueCents"),
@@ -1000,8 +1028,9 @@ function buildAttention(data, period, counts) {
 
 /*
  * Booking-funnel steps (models/FunnelStep) for the period's days, all
- * sources and Meta Ads alone, plus the first day each step was ever recorded:
- * a step that did not exist yet is "not measured", never zero.
+ * sources, Meta Ads alone and Google Organic alone, plus the first day each
+ * step was ever recorded: a step that did not exist yet is "not measured",
+ * never zero.
  */
 async function funnelSteps(period) {
   try {
@@ -1018,6 +1047,7 @@ async function funnelSteps(period) {
       out[step] = {
         all: 0,
         meta: 0,
+        googleOrganic: 0,
         measuredFromYmd: first,
         // null = not measured for any of the period; partial = measured for only part of it.
         measured: !!first && first <= period.toYmd,
@@ -1028,8 +1058,9 @@ async function funnelSteps(period) {
       if (!out[r.step]) continue;
       out[r.step].all += r.count;
       if (metaKeys.has(r.source)) out[r.step].meta += r.count;
+      if (r.source === "google_organic") out[r.step].googleOrganic += r.count;
     }
-    for (const step of STEPS) if (!out[step].measured) out[step].all = out[step].meta = null;
+    for (const step of STEPS) if (!out[step].measured) out[step].all = out[step].meta = out[step].googleOrganic = null;
     return out;
   } catch (error) {
     console.warn("Overview funnel steps failed:", error.message);
@@ -1369,6 +1400,8 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
       freeVisitCompleted: cur.fvCompleted.length,
       members: cur.newMemberships.filter((m) => m.kind === "paid").length,
       newPayingCustomers: newPaying.length,
+      // First paid membership in the period, earlier paid visits or not: the membership path's last step.
+      firstPaidMemberships: firstPaidMembershipCustomers(data, period.from, period.to).length,
       requestOutcomes: requestOutcomeCounts,
       steps,
     },

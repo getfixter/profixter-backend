@@ -17,8 +17,25 @@ const mongoose = require("mongoose");
  * signup_view        the sign-up screen was shown (signed-out booker, before Nov 3)
  * request_submitted  the server accepted a free-visit request   (from 2026-11-17)
  * request_failed     a submit was refused or never reached us    (from 2026-11-17)
+ *
+ * The membership path (from 2026-11-18): a homepage plans link was tapped, the
+ * plans page was shown, a plan was chosen. The paid membership itself is the
+ * Subscription record, credited to the same first-touch source by the overview.
+ * home_plans_click   a plans link on the homepage was tapped
+ * plans_view         /membership/plans was shown
+ * plan_selected      a plan's Choose button was pressed (new members, any page)
  */
-const STEPS = ["booking_page_view", "booker_started", "slot_selected", "signup_view", "request_submitted", "request_failed"];
+const STEPS = [
+  "booking_page_view",
+  "booker_started",
+  "slot_selected",
+  "signup_view",
+  "request_submitted",
+  "request_failed",
+  "home_plans_click",
+  "plans_view",
+  "plan_selected",
+];
 
 const funnelStepSchema = new mongoose.Schema(
   {
