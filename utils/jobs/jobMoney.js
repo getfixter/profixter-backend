@@ -33,6 +33,23 @@ async function entitlementFor(booking) {
 /** The payment facts the cancel response and the detail screen show. */
 async function paymentInfoFor(booking, { entitlement } = {}) {
   const ent = entitlement === undefined ? await entitlementFor(booking) : entitlement;
+  /* A guest checkout keeps its payment on the booking (no entitlement without an account). */
+  if (!ent && booking?.guestCheckout && booking?.guestPayment?.paidAt) {
+    const gp = booking.guestPayment;
+    const paid = booking.paymentState === "paid";
+    return {
+      paymentState: booking.paymentState || "not_required",
+      paid,
+      paidCents: paid && Number.isFinite(gp.amountCents) ? gp.amountCents : null,
+      currency: gp.currency || "usd",
+      paidAt: gp.paidAt,
+      stripePaymentIntentId: gp.paymentIntentId || null,
+      stripeCheckoutSessionId: booking.checkoutSessionId || null,
+      stripeDashboardUrl: stripePaymentUrl(gp.paymentIntentId),
+      refunded: booking.paymentState === "refunded",
+      refundNote: paid ? REFUND_NOTE : "",
+    };
+  }
   const purchased = ent && ent.source === "purchase";
   const paid = booking?.paymentState === "paid" || Boolean(purchased && ["paid", "consumed"].includes(ent.status));
   const paymentIntentId = purchased ? ent.stripePaymentIntentId || null : null;

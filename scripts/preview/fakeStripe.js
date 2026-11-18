@@ -849,7 +849,7 @@ function createFakeStripeFactory({ log = console.log, publicBase = "http://local
   StripeFactory.webhooks = resources.webhooks;
   StripeFactory.createFetchHttpClient = () => ({});
   StripeFactory.createNodeHttpClient = () => ({});
-  StripeFactory._preview = { state, ensureLoaded };
+  StripeFactory._preview = { state, ensureLoaded, resources };
   return StripeFactory;
 }
 

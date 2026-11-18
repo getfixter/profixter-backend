@@ -682,7 +682,7 @@ async function visitorCounts(from, to) {
   return { total: rows.length, bySource, otherOrigins, meta, staffPagesExcluded: all.length - rows.length };
 }
 
-const NOT_A_VISIT = /^\/(admin|sign|pay|tip)(\/|$)/;
+const NOT_A_VISIT = /^\/(admin|sign|pay|tip|visit)(\/|$)/;
 
 /*
  * Meta reports spend by publisher_platform; the ads write the same placement

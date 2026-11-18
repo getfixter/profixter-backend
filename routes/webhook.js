@@ -1095,6 +1095,15 @@ async function handleOneTimeCheckoutCompleted(session) {
   }
 
   await sendOneTimePaymentEmails({ booking, user: contact, entitlement, session });
+  // A guest's own checkout: the private link to check or change it (once; a replay sends nothing).
+  if (booking.guestCheckout && booking.paymentState === "paid") {
+    // A guest checkout has no entitlement: what Stripe charged is kept on the booking for Admin (amount, payment, time).
+    await Booking.updateOne(
+      { _id: booking._id, "guestPayment.paidAt": null },
+      { $set: { guestPayment: { amountCents: Number(session.amount_total || 0), currency: String(session.currency || "usd"), paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id || "", paidAt: new Date() } } }
+    ).catch(() => {});
+    await require("../utils/guestVisitLink").issueAndSendGuestVisitLink(booking._id).catch((error) => logWebhook("warn", "guest_visit_link_failed", { bookingId: String(booking._id), message: error.message }));
+  }
 
   /*
    * Purchase - a single paid visit, which is the only thing this event means.
@@ -1378,6 +1387,14 @@ async function handleFullDayCheckoutCompleted(session) {
   await salesStripe.onFullDayPaid({ session, booking, entitlement, user, stripe });
 
   await sendFullDayPaidEmails({ booking, user: contact, entitlement, session });
+  if (booking.guestCheckout && booking.paymentState === "paid") {
+    // A guest checkout has no entitlement: what Stripe charged is kept on the booking for Admin (amount, payment, time).
+    await Booking.updateOne(
+      { _id: booking._id, "guestPayment.paidAt": null },
+      { $set: { guestPayment: { amountCents: Number(session.amount_total || 0), currency: String(session.currency || "usd"), paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id || "", paidAt: new Date() } } }
+    ).catch(() => {});
+    await require("../utils/guestVisitLink").issueAndSendGuestVisitLink(booking._id).catch((error) => logWebhook("warn", "guest_visit_link_failed", { bookingId: String(booking._id), message: error.message }));
+  }
   // Previously no server Purchase at all for the most valuable single sale.
   if (user || booking.guestCheckout) reportPaidVisitPurchase({ session, user: user || contact, booking, contentName: "full_day_visit" });
   return {
@@ -2887,6 +2904,11 @@ module.exports = async (req, res) => {
  * rather than the behaviour that matters.
  */
 module.exports.handleFixterTipCheckoutCompleted = handleFixterTipCheckoutCompleted;
+/* The local preview stack's "simulate payment" (scripts/preview/start.js) runs the real completion path. */
+module.exports.handleCheckoutCompleted = handleCheckoutCompleted;
+/* ...and its fake "expire" the real paid-visit expiry path (the preview has no webhooks). */
+module.exports.handlePaidVisitCheckoutExpired = async (session) =>
+  isOneTimeCheckoutSession(session) ? handleOneTimeCheckoutExpired(session, "expired") : isFullDayCheckoutSession(session) ? handleFullDayCheckoutExpired(session, "expired") : null;
 module.exports.handleTipChargeRefunded = handleTipChargeRefunded;
 
 /*

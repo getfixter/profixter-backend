@@ -482,7 +482,7 @@ router.post("/review-open", express.text({ type: "text/plain", limit: "1kb" }), 
  * in a new browser was counted as a Direct visitor. The same prefixes the
  * site keeps trackers off (FrontEnd lib/tracking-scope.ts).
  */
-const NOT_A_VISIT = /^\/(admin|sign|pay|tip)(\/|$)/;
+const NOT_A_VISIT = /^\/(admin|sign|pay|tip|visit)(\/|$)/;
 
 /* A SiteVisitor row in the shape classifySource() reads. */
 function visitorAttribution(v) {

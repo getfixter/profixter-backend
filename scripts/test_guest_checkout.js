@@ -264,6 +264,43 @@ async function main() {
       for (let i = 0; i < 30 && !emails.some((e) => e.to === "rosa@mailbox.org"); i++) await new Promise((r) => setTimeout(r, 100));
       assert.ok(emails.some((e) => e.to === "rosa@mailbox.org"), JSON.stringify(emails.map((e) => [e.key, e.to])));
     });
+    let visitToken = "";
+    await check("the paid guest gets a private visit link by email - once, even if the webhook is replayed", async () => {
+      const linkMails = () => emails.filter((e) => e.kind === "raw" && e.to === "rosa@mailbox.org" && /\/visit\//.test(e.text || ""));
+      for (let i = 0; i < 30 && !linkMails().length; i++) await new Promise((r) => setTimeout(r, 100));
+      assert.strictEqual(linkMails().length, 1);
+      visitToken = (linkMails()[0].text.match(/\/visit\/([A-Za-z0-9_-]+)/) || [])[1];
+      assert.ok(visitToken && visitToken.length >= 40, "a long random token");
+      const b = await Booking.findById(first.body.bookingId).lean();
+      assert.ok(b.guestManage.tokenHash && b.guestManage.tokenHash !== visitToken, "only the hash is stored");
+      assert.strictEqual(await hook("checkout.session.completed", sessions.get(sessionId())), 200);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.strictEqual(linkMails().length, 1, "a replayed payment event sends no second link");
+    });
+    await check("the link shows that visit - status, time, address, job - and nothing about the payment card or contacts", async () => {
+      const v = await call("GET", `/api/bookings/guest/visit/${visitToken}`);
+      assert.strictEqual(v.status, 200);
+      assert.deepStrictEqual([v.body.kind, v.body.state, v.body.date, v.body.time, v.body.paid, v.body.canRequestCancellation], ["one_time", "pending_approval", day, "10:00", true, true]);
+      assert.ok(/40 Oak Ave/.test(v.body.address) && /faucet/.test(v.body.job));
+      assert.ok(!JSON.stringify(v.body).includes("rosa@mailbox.org") && !JSON.stringify(v.body).includes("5165550177"));
+      assert.strictEqual((await call("GET", `/api/bookings/guest/visit/${"x".repeat(43)}`)).status, 404);
+      assert.strictEqual((await call("GET", "/api/bookings/guest/visit/short")).status, 404);
+    });
+    await check("Admin sees the guest's name, phone, email, address, job, time, payment and approval status", async () => {
+      const r = await call("GET", `/api/admin/jobs/${first.body.bookingId}`, { as: owner });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body).slice(0, 300));
+      const j = r.body.job;
+      assert.strictEqual(j.customer.name, "Rosa Diaz");
+      assert.strictEqual(j.customer.email, "rosa@mailbox.org");
+      assert.ok(/516/.test(j.customer.phone) && /0177/.test(j.customer.phone), j.customer.phone);
+      assert.strictEqual(j.customer.guest, true);
+      assert.ok(/40 Oak Ave/.test(j.address.full) && /11758/.test(j.address.full), j.address.full);
+      assert.ok(/faucet/.test(j.description));
+      assert.strictEqual(new Date(j.date).toISOString(), moment.tz(`${day} 10:00`, TZ).toDate().toISOString());
+      assert.strictEqual(j.status, "Pending", "waiting for the owner's approval");
+      assert.deepStrictEqual([j.money.kind, j.money.amountCents], ["paid", 9900], JSON.stringify(j.money));
+      assert.strictEqual(j.guestCheckout, true);
+    });
     await check("Meta gets the server Purchase with hashed contact and no account id", async () => {
       for (let i = 0; i < 30 && !metaSends.some((m) => m.data?.[0]?.event_name === "Purchase"); i++) await new Promise((r) => setTimeout(r, 100));
       const ev = metaSends.find((m) => m.data?.[0]?.event_name === "Purchase")?.data[0];
@@ -289,6 +326,43 @@ async function main() {
       assert.ok(emails.slice(before).some((e) => e.to === "rosa@mailbox.org"), "the confirmation goes to the booking's own email");
       const st = await call("GET", `/api/bookings/guest/status?session_id=${sessionId()}`);
       assert.strictEqual(st.body.status, "confirmed");
+    });
+    await check("from the link: a cancellation REQUEST - the visit stays booked and paid, the owner is told, Admin shows it", async () => {
+      const ownerMails = () => emails.filter((e) => e.kind === "raw" && /Cancellation requested/.test(e.subject || ""));
+      const r = await call("POST", `/api/bookings/guest/visit/${visitToken}/cancel-request`, { body: { reason: "Fixed it myself" } });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(r.body.state, "confirmed", "still booked");
+      assert.ok(r.body.cancellationRequestedAt && r.body.canRequestCancellation === false);
+      const b = await Booking.findById(first.body.bookingId).lean();
+      assert.deepStrictEqual([b.status, b.paymentState], ["Confirmed", "paid"]);
+      const reservation = await BookingSlotReservation.findById(b.slotReservationId).lean();
+      assert.notStrictEqual(reservation.status, "released", "the slot is kept until staff cancel");
+      assert.strictEqual(ownerMails().length, 1);
+      assert.ok(/Fixed it myself/.test(ownerMails()[0].text) && /refund in Stripe/.test(ownerMails()[0].text));
+      assert.ok(emails.some((e) => e.kind === "raw" && e.to === "rosa@mailbox.org" && /received your cancellation request/i.test(e.subject || "")));
+      const again = await call("POST", `/api/bookings/guest/visit/${visitToken}/cancel-request`, { body: {} });
+      assert.strictEqual(again.body.already, true);
+      assert.strictEqual(ownerMails().length, 1, "asking twice tells the owner once");
+      const j = (await call("GET", `/api/admin/jobs/${first.body.bookingId}`, { as: owner })).body.job;
+      assert.strictEqual(j.cancellationRequest.reason, "Fixed it myself");
+      assert.ok(j.flags.some((f) => f.key === "cancel_requested"));
+      const needs = await call("GET", "/api/admin/jobs?view=needs_action", { as: owner });
+      assert.ok(JSON.stringify(needs.body).includes(String(first.body.bookingId)), "in Needs action");
+    });
+    await check("staff cancel it (existing rule): the slot is freed, the payment is not refunded automatically", async () => {
+      const r = await call("POST", `/api/admin/jobs/${first.body.bookingId}/transition`, { as: owner, body: { action: "cancel", expectedStatus: "Confirmed", reason: "Customer asked (guest link)", idempotencyKey: crypto.randomUUID() } });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body).slice(0, 400));
+      const b = await Booking.findById(first.body.bookingId).lean();
+      assert.ok(/cancel/i.test(b.status), b.status);
+      assert.strictEqual(b.paymentState, "paid", "money stays until staff refund in Stripe");
+      const reservation = await BookingSlotReservation.findOne({ bookingId: b._id }).sort({ createdAt: -1 }).lean();
+      assert.strictEqual(reservation.status, "released", "the time is free for someone else");
+      const v = await call("GET", `/api/bookings/guest/visit/${visitToken}`);
+      assert.deepStrictEqual([v.body.state, v.body.canRequestCancellation], ["canceled", false]);
+      const late = await call("POST", `/api/bookings/guest/visit/${visitToken}/cancel-request`, { body: {} });
+      assert.strictEqual(late.status, 409);
+      const st = await call("GET", `/api/bookings/guest/status?session_id=${sessionId()}`);
+      assert.strictEqual(st.body.status, "canceled");
     });
     await check("a made-up session is refused; an unknown one is not found", async () => {
       assert.strictEqual((await call("GET", "/api/bookings/guest/status?session_id=nope")).status, 400);
@@ -402,17 +476,23 @@ async function main() {
       await User.deleteOne({ _id: u._id });
     });
     await check("signing in with the verified phone links the paid visit, recorded as a checkout link", async () => {
+      // Her first visit was canceled above (canceled visits are never linked); a second paid one is.
+      const second = await call("POST", "/api/bookings/guest/one-time/checkout", { form: formOf(guest({ requestedDate: openDay(5), requestedTime: "13:00", clientRequestId: "press-rosa-second" })) });
+      assert.strictEqual(second.status, 200, JSON.stringify(second.body));
+      await pay(second.body.url.split("/").pop());
+      assert.strictEqual(await hook("checkout.session.completed", sessions.get(second.body.url.split("/").pop())), 200);
       const u = await User.create({ userId: "70000012", name: "Rosa Diaz", email: "rosa@mailbox.org", phone: "+15165550177", phoneVerifiedAt: new Date(), role: "customer" });
       const linked = await linkGuestFreeVisitIds(u, { via: "sign_in" });
-      assert.ok(linked.map(String).includes(String(first.body.bookingId)));
-      const b = await Booking.findById(first.body.bookingId).lean();
+      assert.ok(linked.map(String).includes(String(second.body.bookingId)), JSON.stringify(linked));
+      assert.ok(!linked.map(String).includes(String(first.body.bookingId)), "a canceled visit is not linked");
+      const b = await Booking.findById(second.body.bookingId).lean();
       assert.strictEqual(String(b.user), String(u._id));
       assert.strictEqual(String(b.guestCheckoutLink.userId), String(u._id));
       assert.strictEqual(b.guestCheckoutLink.linkedVia, "sign_in");
       assert.ok(!b.freeVisitIdentity?.linkedAt, "a paid visit is never marked as a free visit");
       assert.strictEqual(b.guestCheckout, true);
       const mine = await Booking.find({ user: u._id }).lean();
-      assert.ok(mine.some((x) => String(x._id) === String(first.body.bookingId)), "it is in My Visits");
+      assert.ok(mine.some((x) => String(x._id) === String(second.body.bookingId)), "it is in My Visits");
     });
     await check("a visit whose email belongs to a different account is not linked on a shared phone", async () => {
       const r = await call("POST", "/api/bookings/guest/one-time/checkout", { form: formOf(guest({ requestedTime: "10:00", requestedDate: openDay(4), clientRequestId: "press-shared-01", email: "existing@mailbox.org", phone: "5165550192" })) });
@@ -446,6 +526,14 @@ async function main() {
       assert.notStrictEqual(paid.status, "Confirmed");
       const st = await call("GET", `/api/bookings/guest/status?session_id=${s.id}`);
       assert.deepStrictEqual([st.body.kind, st.body.status, st.body.time], ["full_day", "pending_approval", null]);
+      for (let i = 0; i < 30 && !emails.some((e) => e.kind === "raw" && e.to === "fd@mailbox.org" && /\/visit\//.test(e.text || "")); i++) await new Promise((r) => setTimeout(r, 100));
+      const mail = emails.find((e) => e.kind === "raw" && e.to === "fd@mailbox.org" && /\/visit\//.test(e.text || ""));
+      assert.ok(mail, "the Full Day guest gets the link too");
+      const token = mail.text.match(/\/visit\/([A-Za-z0-9_-]+)/)[1];
+      const v = await call("GET", `/api/bookings/guest/visit/${token}`);
+      assert.deepStrictEqual([v.body.kind, v.body.state, v.body.time], ["full_day", "pending_approval", null]);
+      const j = (await call("GET", `/api/admin/jobs/${r.body.bookingId}`, { as: owner })).body.job;
+      assert.deepStrictEqual([j.money.kind, j.money.amountCents], ["paid", 49900]);
     });
     await check("a Full Day with no list is refused before anything is held", async () => {
       const r = await call("POST", "/api/bookings/guest/full-day/checkout", { form: formOf(guest({ date: openDay(6), note: "", clientRequestId: "press-fullday-2", phone: "5165550121", email: "fd2@mailbox.org" })) });

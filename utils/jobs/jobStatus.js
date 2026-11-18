@@ -149,6 +149,9 @@ function jobFlags(booking, now = new Date()) {
   if (booking?.reservationIssue?.status && !final) {
     flags.push({ key: "reservation_issue", label: "Reservation needs review", severity: "problem" });
   }
+  if (booking?.cancellationRequest?.at && !final) {
+    flags.push({ key: "cancel_requested", label: "Customer asked to cancel", severity: "problem" });
+  }
   if (booking?.freeVisitReview?.required && !booking?.freeVisitReview?.acknowledgedAt && !final) {
     flags.push({ key: "repeat_check", label: "Verify free visit", severity: "attention" });
   }

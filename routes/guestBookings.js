@@ -69,7 +69,7 @@ const { deletePublicObjects } = require("../utils/s3");
 const router = express.Router();
 const TZ = "America/New_York";
 const CLIENT_URL = String(process.env.CLIENT_URL || "https://www.profixter.com").replace(/\/+$/, "");
-const SESSION_ID = /^cs_(live|test)_[A-Za-z0-9]{6,200}$/;
+const SESSION_ID = /^cs_(live|test)_[A-Za-z0-9_]{6,200}$/;
 
 /*
  * The consent line next to the pay button, word for word (FrontEnd
@@ -454,6 +454,41 @@ router.get("/status", statusLimit, async (req, res) => {
   } catch (error) {
     console.error("checkout status failed:", error.message);
     return res.status(500).json({ message: "Status unavailable" });
+  }
+});
+
+/*
+ * The private link a guest checkout's email carries (utils/guestVisitLink).
+ * The token is the only key; a wrong or expired one is "not found", never a hint.
+ */
+const visitLimit = rateLimit({ limit: 60, windowMs: 10 * 60 * 1000, keyResolver: (req) => `guest_visit_ip:${clientIp(req)}` });
+
+router.get("/visit/:token", visitLimit, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.set("Referrer-Policy", "no-referrer");
+  try {
+    const { bookingForToken, visitView } = require("../utils/guestVisitLink");
+    const booking = await bookingForToken(req.params.token);
+    if (!booking) return res.status(404).json({ code: "LINK_NOT_FOUND", message: "This link isn't valid any more. Call or text 631-599-1363." });
+    return res.json(visitView(booking));
+  } catch (error) {
+    console.error("guest visit view failed:", error.message);
+    return res.status(500).json({ message: "Please try again." });
+  }
+});
+
+router.post("/visit/:token/cancel-request", visitLimit, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    const { bookingForToken, visitView, requestCancellation } = require("../utils/guestVisitLink");
+    const booking = await bookingForToken(req.params.token);
+    if (!booking) return res.status(404).json({ code: "LINK_NOT_FOUND", message: "This link isn't valid any more. Call or text 631-599-1363." });
+    const result = await requestCancellation(booking, { reason: req.body?.reason });
+    return res.json({ ...visitView(result.booking), already: result.already });
+  } catch (error) {
+    if (error.statusCode === 409) return res.status(409).json({ code: error.code, message: error.message });
+    console.error("guest cancellation request failed:", error.message);
+    return res.status(500).json({ message: "Please try again, or call or text 631-599-1363." });
   }
 });
 

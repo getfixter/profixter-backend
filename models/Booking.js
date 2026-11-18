@@ -107,6 +107,28 @@ const BookingSchema = new mongoose.Schema({
   guestCheckout: { type: Boolean, default: false, index: true },
   /* The Stripe Checkout Session this paid visit was opened with (guest checkouts; the status page reads it). */
   checkoutSessionId: { type: String, default: undefined, index: true, sparse: true },
+  /* What Stripe charged for a guest checkout (it has no VisitEntitlement): Admin's money block reads it. */
+  guestPayment: {
+    amountCents: { type: Number, default: null },
+    currency: { type: String, default: "" },
+    paymentIntentId: { type: String, default: "" },
+    paidAt: { type: Date, default: null },
+  },
+  /* A guest checkout's private link (utils/guestVisitLink): only the token's hash is kept. */
+  guestManage: {
+    tokenHash: { type: String, default: "", index: true },
+    issuedAt: { type: Date, default: null },
+    sentAt: { type: Date, default: null },
+  },
+  /*
+   * The customer asked for this visit to be cancelled (from a guest link). A
+   * request only: staff cancel it and refund in Stripe, as for every paid visit.
+   */
+  cancellationRequest: {
+    at: { type: Date, default: null },
+    reason: { type: String, default: "" },
+    via: { type: String, default: "" },
+  },
   /* When and how a guest checkout was joined to the account that proved its contact. */
   guestCheckoutLink: {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
