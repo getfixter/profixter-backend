@@ -44,8 +44,14 @@ async function main() {
     ["Instagram ad (live URL template)", { ...LIVE_META, utmSource: "ig", landingPath: "/", referrer: "https://l.instagram.com/" }, "meta_instagram"],
     ["Other Meta placement: Audience Network", { ...LIVE_META, utmSource: "an" }, "meta_other"],
     ["Other Meta placement: Messenger", { ...LIVE_META, utmSource: "msg" }, "meta_other"],
-    ["fbclid alone is Meta, not Facebook", { fbclid: "IwQ", referrer: "https://www.facebook.com/" }, "meta_other"],
-    ["fbclid on an Instagram referrer is still not assumed Instagram", { fbclid: "IwQ", referrer: "https://l.instagram.com/" }, "meta_other"],
+    /* 2026-11-17: Meta adds fbclid to organic links too, so fbclid alone is not an ad. */
+    ["fbclid alone is a Meta app link, not an ad", { fbclid: "IwQ", referrer: "https://www.facebook.com/" }, "meta_untagged"],
+    ["fbclid on an Instagram referrer is still not assumed Instagram, nor an ad", { fbclid: "IwQ", referrer: "https://l.instagram.com/" }, "meta_untagged"],
+    ["Instagram bio link (ig / social + fbclid) is not an ad", { utmSource: "ig", utmMedium: "social", fbclid: "IwQ" }, "meta_untagged"],
+    ["Facebook group post (facebook / reklamagroup) is not an ad", { utmSource: "Facebook", utmMedium: "reklamagroup", utmCampaign: "Fbgroup" }, "meta_untagged"],
+    ["utm_source=meta with utm_medium=paid is an ad", { utmSource: "meta", utmMedium: "paid" }, "meta_other"],
+    ["Audience Network placement with no fbclid is still an ad", { utmSource: "an", utmMedium: "paid", utmCampaign: "52606450943827" }, "meta_other"],
+    ["fb placement + Meta campaign id, no medium, is an ad", { utmSource: "fb", utmCampaign: "52606450943827" }, "meta_facebook"],
     ["Meta ids without utm_source", { campaignId: "120201234567890" }, "meta_other"],
     ["Google Ads: gclid (live ads, no UTMs)", { gclid: "Cj0K", landingPath: "/kitchen-bathroom", referrer: "https://www.google.com/" }, "google_ads"],
     ["Google Ads: gclid with no referrer", { gclid: "Cj0K" }, "google_ads"],
@@ -70,12 +76,27 @@ async function main() {
   ];
   for (const [label, attr, want] of CASES) await test(`${label} -> ${want}`, async () => assert.strictEqual(src(attr), want));
 
-  await test("labels: Facebook, Instagram, Other Meta share the Meta group", async () => {
+  await test("labels: Facebook, Instagram, Audience Network & other placements share the Meta group", async () => {
     assert.deepStrictEqual(
-      ["fb", "ig", "an"].map((s) => classifySource({ fbclid: "x", utmSource: s })).map((c) => [c.label, c.group]),
-      [["Facebook", "meta"], ["Instagram", "meta"], ["Other Meta", "meta"]]
+      ["fb", "ig", "an"].map((s) => classifySource({ fbclid: "x", utmSource: s, utmMedium: "paid" })).map((c) => [c.label, c.group]),
+      [["Facebook", "meta"], ["Instagram", "meta"], ["Audience Network & other placements", "meta"]]
     );
+    assert.strictEqual(classifySource({ fbclid: "x", utmSource: "ig", utmMedium: "social" }).group, null, "an organic medium: not Meta Ads");
+    assert.strictEqual(classifySource({ fbclid: "x" }).group, null, "fbclid alone: not Meta Ads");
     assert.strictEqual(classifySource({ gclid: "g" }).group, null);
+  });
+  await test("free-visit request attribution { firstTouch, url } is read as its first touch", async () => {
+    const { flattenAttribution } = require("../utils/analytics/attribution");
+    const ig = { url: { utm_source: "ig", utm_medium: "paid", utm_campaign: "52606450943827", fbclid: "x" }, firstTouch: { utmSource: "ig", utmMedium: "paid", utmCampaign: "52606450943827", fbclid: "x", landingPath: "/" } };
+    assert.strictEqual(classifySource(flattenAttribution(ig)).key, "meta_instagram");
+    // A later ad click on the submitting page never replaces an earlier first touch.
+    const google = { url: { utm_source: "ig", utm_medium: "paid", fbclid: "x" }, firstTouch: { landingPath: "/", referrer: "https://www.google.com/" } };
+    assert.strictEqual(classifySource(flattenAttribution(google)).key, "google_organic");
+    // No stored first touch at all: the submitting URL decides.
+    assert.strictEqual(classifySource(flattenAttribution({ url: { utm_source: "fb", utm_medium: "paid" } })).key, "meta_facebook");
+    // Flat records pass through unchanged.
+    assert.strictEqual(classifySource(flattenAttribution({ utmSource: "fb", utmMedium: "paid" })).key, "meta_facebook");
+    assert.deepStrictEqual(flattenAttribution(null), {});
   });
   await test("sanitizer drops an internal ?source= stored by an older browser", async () => {
     assert.strictEqual(sanitizeAttribution({ refSource: "home", landingPath: "/signup" }).refSource, null);

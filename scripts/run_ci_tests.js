@@ -86,6 +86,8 @@ const SUITES = [
   // Admin edits a customer: owner-only phone/email, verification reset, audit (in-memory Mongo).
   "test_admin_customer_edit.js",
   "test_attribution.js",
+  // Customer Acquisition audit 2026-11-17: guest requests, inherited sources, funnel coverage, Meta event log, agency fees.
+  "test_acquisition_overview.js",
   "test_transactional_email_system.js",
   "test_admin_customer_calendar_integration.js",
   "test_customer_availability_readiness.js",

@@ -10,7 +10,15 @@ const mongoose = require("mongoose");
  * reload does not inflate the funnel. No personal data: a random browser id
  * is used only for that de-duplication and is not kept in the daily counts.
  */
-const STEPS = ["booking_page_view", "booker_started", "slot_selected", "signup_view"];
+/*
+ * booking_page_view  the free-visit booker was shown
+ * booker_started     the visitor first typed into / tapped the booker
+ * slot_selected      a day and time were chosen
+ * signup_view        the sign-up screen was shown (signed-out booker, before Nov 3)
+ * request_submitted  the server accepted a free-visit request   (from 2026-11-17)
+ * request_failed     a submit was refused or never reached us    (from 2026-11-17)
+ */
+const STEPS = ["booking_page_view", "booker_started", "slot_selected", "signup_view", "request_submitted", "request_failed"];
 
 const funnelStepSchema = new mongoose.Schema(
   {

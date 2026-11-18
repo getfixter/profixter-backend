@@ -299,7 +299,10 @@ async function main() {
     assert.strictEqual(src.meta_instagram.visitors, 1);
   });
   await test("event QR customer credited to Events / QR", async () => assert.strictEqual(src.events_qr.registrations, 1));
-  await test("one-time revenue credited to the customer's own source (direct)", async () => assert.strictEqual(src.direct.revenueCents, 9900));
+  await test("one-time revenue credited to the customer's own source: an account older than the first recorded visitor is 'Before tracking began', not Direct", async () => {
+    assert.strictEqual(src.before_tracking.revenueCents, 9900);
+    assert.strictEqual(src.direct.revenueCents, 0);
+  });
   await test("no spend data: cost and ROAS are empty, never zero", async () => {
     assert.strictEqual(body.spend.connected, false);
     assert.strictEqual(src.meta_facebook.roas, null);
