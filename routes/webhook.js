@@ -1905,6 +1905,24 @@ async function handleCheckoutCompleted(session, eventId) {
   );
 
   /*
+   * ANNOUNCED ONCE PER CHECKOUT. Everything below tells somebody: Meta, the
+   * customer (text and email) and the owner. The record above is idempotent;
+   * these are not. A checkout.session.completed processed a second time - a
+   * retry after a later step failed, or the same session under a new event id -
+   * used to send all of it again (2026-11-18). Claimed atomically here, after
+   * the confirmation page's data is written and before the first message.
+   */
+  const announced = await Subscription.findOneAndUpdate(
+    { _id: subscription._id, "startAnnounced.sessionId": { $ne: session.id } },
+    { $set: { startAnnounced: { sessionId: session.id, at: now } } },
+    { new: true }
+  );
+  if (!announced) {
+    logWebhook("info", "membership_start_already_announced", { stripeSessionId: session.id, subscriptionId: String(subscription._id) });
+    return subscription;
+  }
+
+  /*
    * Subscribe, not Purchase.
    *
    * This reported a started membership as "Purchase" for as long as it has
@@ -2885,6 +2903,14 @@ module.exports = async (req, res) => {
  * rather than the behaviour that matters.
  */
 module.exports.handleFixterTipCheckoutCompleted = handleFixterTipCheckoutCompleted;
+/* The local preview stack's "simulate payment" (scripts/preview/start.js) runs the real completion path. */
+module.exports.handleCheckoutCompleted = handleCheckoutCompleted;
+/* A simulated membership payment delivers what Stripe sends after one: the subscription, its first invoice, the checkout. */
+module.exports.syncStripeSubscriptionRecord = syncStripeSubscriptionRecord;
+module.exports.handleInvoicePaid = handleInvoicePaid;
+/* ...and its fake "expire" the real paid-visit expiry path (the preview has no webhooks). */
+module.exports.handlePaidVisitCheckoutExpired = async (session) =>
+  isOneTimeCheckoutSession(session) ? handleOneTimeCheckoutExpired(session, "expired") : isFullDayCheckoutSession(session) ? handleFullDayCheckoutExpired(session, "expired") : null;
 module.exports.handleTipChargeRefunded = handleTipChargeRefunded;
 
 /*

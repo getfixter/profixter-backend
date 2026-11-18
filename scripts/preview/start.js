@@ -16,6 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const http = require("http");
 
 const BACKEND = path.resolve(__dirname, "..", "..");
@@ -157,10 +158,58 @@ function previewRouter({ express, s3, outbox, safety, StripeFactory, state }) {
     res.type("html").send(
       previewPage(
         `Preview ${kind}`,
-        `<h1>Stripe ${kind} (fake)</h1><p>This is where Stripe would open. In the local preview no card can be entered and nothing is charged.</p>${session ? `<pre>${escapeHtml(JSON.stringify({ id: session.id, mode: session.mode, amount: session.amount_total, metadata: session.metadata }, null, 2))}</pre>${session.cancel_url ? `<p><a href="${escapeHtml(session.cancel_url)}">Back</a></p>` : ""}` : ""}`
+        `<h1>Stripe ${kind} (fake)</h1><p>This is where Stripe would open. In the local preview no card can be entered and nothing is charged.</p>${session ? `<pre>${escapeHtml(JSON.stringify({ id: session.id, mode: session.mode, amount: session.amount_total, metadata: session.metadata }, null, 2))}</pre>${session.status === "open" && ["payment", "subscription"].includes(session.mode) ? `<p><a href="/__preview/checkout/${escapeHtml(session.id)}/pay" data-preview-pay>Simulate a successful payment (preview only)</a></p>` : ""}${session.cancel_url ? `<p><a href="${escapeHtml(session.cancel_url)}">Back</a></p>` : ""}` : ""}`
       )
     );
   };
+  /*
+   * Preview only: pretend the customer paid this fake Checkout, then run the
+   * REAL webhook completion path (routes/webhook handleCheckoutCompleted) and
+   * land on the success URL, as Stripe would. Fake prices are unknown to the
+   * fake Stripe, so a paid visit takes its list price for the demo.
+   */
+  /*
+   * Preview only: Stripe sends checkout.session.expired when a page is
+   * expired (abandon, or the hold running out). The fake has no webhooks, so
+   * its expire() runs the real paid-visit expiry handler itself.
+   */
+  {
+    const fake = StripeFactory._preview;
+    const sessions = fake.resources?.checkout?.sessions || null;
+    if (sessions && !sessions.__previewExpireHooked) {
+      const original = sessions.expire.bind(sessions);
+      sessions.expire = async (id) => {
+        const result = await original(id);
+        await require(path.join(BACKEND, "routes", "webhook")).handlePaidVisitCheckoutExpired(JSON.parse(JSON.stringify(result))).catch((e) => log(`[preview] expiry handler failed: ${e.message}`));
+        return result;
+      };
+      sessions.__previewExpireHooked = true;
+    }
+  }
+  router.get("/__preview/checkout/:id/pay", async (req, res) => {
+    const state = StripeFactory._preview.state;
+    const s = state.sessions.get(req.params.id);
+    if (!s || s.status !== "open") return res.status(409).type("html").send(previewPage("Not payable", "<p>This fake checkout is not open.</p>"));
+    if (s.mode === "subscription") {
+      /*
+       * A membership: deliver what Stripe sends after a card goes through, in the
+       * order it usually arrives - the subscription, its paid first invoice, then
+       * the completed checkout - each to the real handler.
+       */
+      const webhook = require(path.join(BACKEND, "routes", "webhook"));
+      const paid = await StripeFactory._preview.completeSubscriptionCheckout(s.id);
+      await webhook.syncStripeSubscriptionRecord(paid.subscription);
+      await webhook.handleInvoicePaid(paid.invoice);
+      await webhook.handleCheckoutCompleted(paid.session, `evt_preview_${Date.now()}`);
+      return res.redirect(String(s.success_url || "/").replace("{CHECKOUT_SESSION_ID}", s.id));
+    }
+    s.status = "complete";
+    s.payment_status = "paid";
+    s.payment_intent = `pi_preview_${s.id.slice(-8)}`;
+    if (!s.amount_total) s.amount_total = s.metadata?.productKind === "full_day_visit" ? 49900 : s.metadata?.productKind === "one_time_handyman_visit" ? 9900 : 0;
+    await require(path.join(BACKEND, "routes", "webhook")).handleCheckoutCompleted(JSON.parse(JSON.stringify(s)), `evt_preview_${Date.now()}`);
+    return res.redirect(String(s.success_url || "/").replace("{CHECKOUT_SESSION_ID}", s.id));
+  });
   router.get("/__preview/checkout/:id", fakeStripePage("Checkout"));
   router.get("/__preview/portal/:id", fakeStripePage("billing portal"));
   router.get("/__preview/invoice/:id", fakeStripePage("hosted invoice"));
@@ -258,6 +307,20 @@ async function main() {
   };
 
   require(path.join(BACKEND, "server.js"));
+
+  /*
+   * Sign-in codes by text. SMS_OTP_ENABLED stays "false" (Twilio Verify is never
+   * reached); the code a phone sign-up asks for is written to the outbox instead,
+   * so the preview can sign up the way most customers do. Email codes take their
+   * normal path (the faked mailer, also the outbox).
+   */
+  {
+    const otpDelivery = require(path.join(BACKEND, "utils", "auth", "otpDelivery"));
+    require(path.join(BACKEND, "routes", "authV2")).deps.deliver = async ({ channel, target, code }) => {
+      if (channel !== "sms") return otpDelivery.sendEmailCode(target, code);
+      await fakes.outbox.record({ channel: "sms", to: String(target), body: otpDelivery.smsBody(code), notificationType: "sign_in_code", sid: `SMpreview${crypto.randomBytes(12).toString("hex")}` });
+    };
+  }
 
   function banner() {
     const { ACCOUNTS } = require("./seed");

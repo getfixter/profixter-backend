@@ -67,6 +67,17 @@ const SubscriptionSchema = new mongoose.Schema(
       bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null },
     },
 
+    /*
+     * The checkout this membership was announced for (routes/webhook
+     * handleCheckoutCompleted): Meta Subscribe, the welcome text and email, and
+     * the owner's "Membership Started". Claimed once per checkout session, so a
+     * retried or repeated checkout.session.completed never announces it twice.
+     */
+    startAnnounced: {
+      sessionId: { type: String, default: null },
+      at: { type: Date, default: null },
+    },
+
     status: {
       type: String,
       enum: [

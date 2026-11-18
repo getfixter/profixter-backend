@@ -679,6 +679,9 @@ function createFakeStripeFactory({ log = console.log, publicBase = "http://local
             payment_intent: null,
             subscription: null,
             line_items: params.line_items || [],
+            /* Kept so a simulated payment can start the subscription this page describes (completeSubscriptionCheckout). */
+            subscription_data: params.subscription_data || null,
+            discounts: params.discounts || null,
           };
           state.sessions.set(id, session);
           log(`[preview stripe] checkout.sessions.create -> ${session.url} (mode ${session.mode}, $${(amount / 100).toFixed(2)}; nothing can be paid)`);
@@ -849,7 +852,50 @@ function createFakeStripeFactory({ log = console.log, publicBase = "http://local
   StripeFactory.webhooks = resources.webhooks;
   StripeFactory.createFetchHttpClient = () => ({});
   StripeFactory.createNodeHttpClient = () => ({});
-  StripeFactory._preview = { state, ensureLoaded };
+  /*
+   * A simulated payment of a membership checkout page (preview only): what Stripe
+   * creates when the card goes through - a customer if there was none, an active
+   * subscription with this page's price and subscription_data metadata, and its
+   * first invoice (billing_reason subscription_create), paid, with any coupon
+   * applied. Returns the objects Stripe would put in its webhooks.
+   */
+  async function completeSubscriptionCheckout(sessionId) {
+    await ensureLoaded();
+    const s = state.sessions.get(String(sessionId));
+    if (!s || s.mode !== "subscription" || s.status !== "open") throw stripeError("This fake checkout is not an open membership page (preview)");
+    if (!s.customer) {
+      const c = await resources.customers.create({ email: s.customer_email || s.metadata?.email || null, metadata: { userId: s.metadata?.userId || "" } });
+      s.customer = c.id;
+    }
+    const customer = state.customers.get(s.customer);
+    customer.invoice_settings.default_payment_method = { id: `pm_preview_${s.customer.slice(-8)}`, object: "payment_method", type: "card", card: { brand: "visa", last4: "4242", exp_month: 12, exp_year: 2030 } };
+    const priceId = String(s.line_items?.[0]?.price || "");
+    const price = state.prices.get(priceId);
+    if (!price) throw stripeError(`No such price: '${priceId}' (preview)`);
+    const now = new Date();
+    const end = new Date(now);
+    if (price.recurring?.interval === "year") end.setUTCFullYear(end.getUTCFullYear() + 1);
+    else end.setUTCMonth(end.getUTCMonth() + 1);
+    const id = nextId("sub");
+    addSubscriptionFromRecord({ id, customer: s.customer, status: "active", priceId, startDate: now, currentPeriodStart: now, currentPeriodEnd: end, metadata: s.subscription_data?.metadata || {} });
+    const sub = state.subscriptions.get(id);
+    const invoice = state.invoices.get(sub.latest_invoice);
+    const couponId = s.discounts?.[0]?.coupon || null;
+    if (couponId) {
+      const coupon = state.coupons.get(couponId) || { id: couponId, percent_off: 20, duration: "once" };
+      const off = Math.round((invoice.subtotal * Number(coupon.percent_off || 0)) / 100);
+      Object.assign(invoice, { total: invoice.subtotal - off, amount_due: invoice.subtotal - off, amount_paid: invoice.subtotal - off, total_discount_amounts: [{ amount: off, discount: `di_${id}` }], discount: { coupon } });
+      sub.discount = { id: `di_${id}`, coupon };
+      const charge = state.charges.get(invoice.charge);
+      if (charge) charge.amount = invoice.total;
+    }
+    invoice.status_transitions = { paid_at: unix(now) };
+    Object.assign(s, { status: "complete", payment_status: "paid", subscription: id, invoice: invoice.id, amount_subtotal: invoice.subtotal, amount_total: invoice.total, total_details: { amount_discount: invoice.subtotal - invoice.total, amount_tax: 0 } });
+    log(`[preview stripe] simulated membership payment ${s.id} -> ${id}, first invoice ${invoice.id} $${(invoice.total / 100).toFixed(2)} (nothing charged)`);
+    return { session: clone(s), subscription: clone(sub), invoice: clone(invoice) };
+  }
+
+  StripeFactory._preview = { state, ensureLoaded, resources, completeSubscriptionCheckout };
   return StripeFactory;
 }
 
