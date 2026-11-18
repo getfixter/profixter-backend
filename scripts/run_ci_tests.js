@@ -88,6 +88,8 @@ const SUITES = [
   "test_attribution.js",
   // Customer Acquisition audit 2026-11-17: guest requests, inherited sources, funnel coverage, Meta event log, agency fees.
   "test_acquisition_overview.js",
+  // Guest checkout for paid visits (One-Time, Full Day): no account, owner review, verified linking.
+  "test_guest_checkout.js",
   "test_transactional_email_system.js",
   "test_admin_customer_calendar_integration.js",
   "test_customer_availability_readiness.js",

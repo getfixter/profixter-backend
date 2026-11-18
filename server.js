@@ -220,6 +220,8 @@ app.use("/api/admin/sales-desk", require("./routes/adminSalesDesk"));
 
 app.use("/api/password-reset", require("./routes/passwordReset"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
+// Guest checkout first: the bookings router's /:id routes would otherwise claim these paths.
+app.use("/api/bookings/guest", require("./routes/guestBookings"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/pay", require("./routes/pay"));
 app.use("/api/requests", require("./routes/requests"));
