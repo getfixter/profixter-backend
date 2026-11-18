@@ -61,9 +61,11 @@ const AD_FIELDS = [
   "clicks",
   "reach",
   "actions",
+  "outbound_clicks",
+  "attribution_setting",
   "account_currency",
 ];
-const PLATFORM_FIELDS = ["spend", "impressions", "clicks", "reach", "actions", "account_currency"];
+const PLATFORM_FIELDS = ["spend", "impressions", "clicks", "reach", "actions", "outbound_clicks", "account_currency"];
 
 /*
  * The platform-reported actions worth keeping. Keys are stored without dots
@@ -77,6 +79,12 @@ const ACTION_KEYS = {
   "offsite_conversion.fb_pixel_lead": "pixel_lead",
   "offsite_conversion.fb_pixel_complete_registration": "pixel_complete_registration",
   "offsite_conversion.fb_pixel_purchase": "pixel_purchase",
+  /* Subscribe from the pixel/dataset: Meta has reported it under both names. */
+  "offsite_conversion.fb_pixel_subscribe": "pixel_subscribe",
+  subscribe_website: "pixel_subscribe",
+  "offsite_conversion.fb_pixel_schedule": "pixel_schedule",
+  schedule_website: "pixel_schedule",
+  outbound_click: "outbound_click",
 };
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +154,12 @@ function toMinorUnits(value, currency = "USD") {
   let minor = whole * 10 ** digits + (digits ? Number(frac.slice(0, digits)) : 0);
   if (Number(frac[digits]) >= 5) minor += 1;
   return Number.isSafeInteger(minor) ? minor : null;
+}
+
+/* outbound_clicks comes back as an actions-style list: [{ action_type: "outbound_click", value }]. */
+function outboundOf(list) {
+  if (!Array.isArray(list)) return null;
+  return list.reduce((sum, a) => sum + (a?.action_type === "outbound_click" ? toInt(a.value) : 0), 0);
 }
 
 function toInt(value) {
@@ -398,6 +412,8 @@ function adRow(r, { accountId, currency, fetchedAt }) {
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     reach: toInt(r.reach),
+    outboundClicks: outboundOf(r.outbound_clicks),
+    attributionSetting: clip(r.attribution_setting, 80),
     actions: pickActions(r.actions),
     currency: cur,
     fetchedAt,
@@ -424,6 +440,8 @@ function platformRow(r, { accountId, currency, fetchedAt }) {
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     reach: toInt(r.reach),
+    outboundClicks: outboundOf(r.outbound_clicks),
+    attributionSetting: null,
     actions: pickActions(r.actions),
     currency: cur,
     fetchedAt,
@@ -706,6 +724,10 @@ async function adSpendForPeriod({ fromYmd, toYmd, env = process.env } = {}) {
     platformSplit: false,
     byPlatform: {},
     campaigns: new Map(),
+    reported: null,
+    attributionSettings: [],
+    accountTimezone: null,
+    accountName: null,
     ...extra,
   });
   try {
@@ -715,9 +737,18 @@ async function adSpendForPeriod({ fromYmd, toYmd, env = process.env } = {}) {
     const AdSpendDaily = require("../../models/AdSpendDaily");
     const accountId = configuredAccountId(env) || state.accountId || null;
     const docs = await AdSpendDaily.find({ platform: "meta", ...(accountId ? { accountId } : {}), date: { $gte: fromYmd, $lte: toYmd } })
-      .select("level entityId campaignId campaignName adsetId adsetName adId adName publisherPlatform spendCents currency date")
+      .select("level entityId campaignId campaignName adsetId adsetName adId adName publisherPlatform spendCents impressions clicks outboundClicks attributionSetting actions currency date")
       .lean();
     let totalCents = 0;
+    /*
+     * What Meta itself reports for these days (ad level only: the platform
+     * rows are the same delivery split another way). Each is null, not zero,
+     * when no synced row carried it - outbound clicks only exist on rows
+     * synced from 2026-11-17.
+     */
+    const reported = { impressions: 0, clicks: 0, outboundClicks: null, landingPageViews: 0, websiteLeads: 0, leads: 0, websitePurchases: 0, websiteSubscribes: 0, websiteSchedules: 0 };
+    const attributionSettings = new Set();
+    let adRows = 0;
     const byPlatform = {};
     let platformRows = 0;
     const campaigns = new Map();
@@ -735,6 +766,18 @@ async function adSpendForPeriod({ fromYmd, toYmd, env = process.env } = {}) {
         continue;
       }
       totalCents += cents;
+      adRows += 1;
+      const acts = d.actions || {};
+      reported.impressions += Number(d.impressions || 0);
+      reported.clicks += Number(d.clicks || 0);
+      if (d.outboundClicks !== null && d.outboundClicks !== undefined) reported.outboundClicks = (reported.outboundClicks || 0) + Number(d.outboundClicks);
+      reported.landingPageViews += Number(acts.landing_page_view || 0);
+      reported.websiteLeads += Number(acts.pixel_lead || 0);
+      reported.leads += Number(acts.lead || 0);
+      reported.websitePurchases += Number(acts.pixel_purchase || 0);
+      reported.websiteSubscribes += Number(acts.pixel_subscribe || 0);
+      reported.websiteSchedules += Number(acts.pixel_schedule || 0);
+      if (d.attributionSetting) attributionSettings.add(d.attributionSetting);
       const campId = d.campaignId || "unknown";
       const camp = node(campaigns, campId, d.campaignName);
       camp.adsets ||= new Map();
@@ -758,6 +801,10 @@ async function adSpendForPeriod({ fromYmd, toYmd, env = process.env } = {}) {
       platformSplit: platformRows > 0,
       byPlatform,
       campaigns,
+      reported: adRows ? reported : null,
+      attributionSettings: [...attributionSettings].sort(),
+      accountTimezone: state.accountTimezone || null,
+      accountName: state.accountName || null,
     };
   } catch (error) {
     console.warn("Overview ad spend read failed:", error.message);

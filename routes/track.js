@@ -340,6 +340,7 @@ router.post("/meta", optionalAuth, async (req, res) => {
       null;
 
     await metaCapi.send({
+      origin: "browser_relay",
       eventName: String(eventName),
       eventId: eventId ? String(eventId) : undefined,
       eventSourceUrl: eventSourceUrl || req.headers.referer,
@@ -415,8 +416,16 @@ router.post("/step", stepLimiter, async (req, res) => {
       if (error?.code === 11000) return res.status(204).end(); // already counted today
       throw error;
     }
-    const visitor = await SiteVisitor.findOne({ visitorId }).select("source").lean();
-    await FunnelStep.updateOne({ date, step, source: visitor?.source || "direct" }, { $inc: { count: 1 } }, { upsert: true });
+    /*
+     * The source by TODAY's rules, from the visitor's stored first touch - not
+     * the `source` written at insert, which froze whatever the rules were then
+     * (fbclid alone counted as Meta Ads until 2026-11-17).
+     */
+    const visitor = await SiteVisitor.findOne({ visitorId })
+      .select("source utmSource utmMedium utmCampaign utmTerm utmContent campaignId adsetId adId refSource refCode referrerHost landingPath hasFbclid hasGclid")
+      .lean();
+    const source = visitor ? classifySource(visitorAttribution(visitor)).key : "direct";
+    await FunnelStep.updateOne({ date, step, source }, { $inc: { count: 1 } }, { upsert: true });
   } catch (error) {
     console.warn("Funnel step failed:", error.message);
   }
@@ -468,6 +477,23 @@ router.post("/review-open", express.text({ type: "text/plain", limit: "1kb" }), 
   return res.status(204).end();
 });
 
+/*
+ * Staff tools and token pages are not acquisition: an employee opening /admin
+ * in a new browser was counted as a Direct visitor. The same prefixes the
+ * site keeps trackers off (FrontEnd lib/tracking-scope.ts).
+ */
+const NOT_A_VISIT = /^\/(admin|sign|pay|tip|visit)(\/|$)/;
+
+/* A SiteVisitor row in the shape classifySource() reads. */
+function visitorAttribution(v) {
+  return {
+    ...v,
+    fbclid: v.hasFbclid ? "1" : null,
+    gclid: v.hasGclid ? "1" : null,
+    referrer: v.referrerHost ? `https://${v.referrerHost}/` : null,
+  };
+}
+
 router.post("/visit", visitLimiter, async (req, res) => {
   try {
     const body = req.body || {};
@@ -475,6 +501,7 @@ router.post("/visit", visitLimiter, async (req, res) => {
     if (!/^[A-Za-z0-9_-]{12,64}$/.test(visitorId) || BOT_UA.test(String(req.headers["user-agent"] || ""))) {
       return res.status(204).end();
     }
+    if (NOT_A_VISIT.test(String(body.landingPath || ""))) return res.status(204).end();
     const clip = (v, n = 200) => (v === undefined || v === null || v === "" ? null : String(v).slice(0, n));
     let referrerHost = null;
     try {
@@ -504,12 +531,7 @@ router.post("/visit", visitLimiter, async (req, res) => {
       hasFbclid: !!body.fbclid,
       hasGclid: !!(body.gclid || body.gbraid || body.wbraid),
     };
-    doc.source = classifySource({
-      ...doc,
-      fbclid: doc.hasFbclid ? "1" : null,
-      gclid: doc.hasGclid ? "1" : null,
-      referrer: referrerHost ? `https://${referrerHost}/` : null,
-    }).key;
+    doc.source = classifySource(visitorAttribution(doc)).key;
     await SiteVisitor.updateOne({ visitorId }, { $setOnInsert: doc }, { upsert: true });
   } catch (error) {
     if (error?.code !== 11000) console.warn("Visit record failed:", error.message);

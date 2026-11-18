@@ -2817,3 +2817,5 @@ module.exports = router;
 /* Reused by Admin's "Create Visit" (utils/admin/adminVisits.js) so a member's limit is one rule. */
 module.exports.resolveBookingSubscription = resolveBookingSubscription;
 module.exports.resolvePlanCapacity = resolvePlanCapacity;
+/* Guest checkout (routes/guestBookings.js) stores photos exactly as a signed-in booking does. */
+module.exports.uploadBookingImages = uploadBookingImages;

@@ -13,6 +13,12 @@
  * placement Meta itself writes into utm_source ({{site_source_name}}); fbclid
  * proves Meta, not which Meta app.
  *
+ * PAID IS PROVEN, NOT ASSUMED (2026-11-17). Facebook and Instagram add fbclid
+ * to every outbound link - organic posts, bio links and shares included - so
+ * fbclid alone is "Facebook / Instagram, no ad tags", not Meta Ads. An ad is
+ * proven by the ad's own tags: a Meta campaign / ad set / ad id, a paid
+ * utm_medium, or a placement only ads have (an = Audience Network).
+ *
  * Everything posted is untrusted: only the listed keys are kept, each is
  * clipped, and unknown keys are dropped.
  */
@@ -98,7 +104,10 @@ function sanitizeAttribution(raw, { now = new Date() } = {}) {
 const SOURCES = [
   { key: "meta_facebook", label: "Facebook", group: "meta" },
   { key: "meta_instagram", label: "Instagram", group: "meta" },
-  { key: "meta_other", label: "Other Meta", group: "meta" },
+  /* Paid placements other than the two feeds: Audience Network (an), Messenger, ids with no utm_source. */
+  { key: "meta_other", label: "Audience Network & other placements", group: "meta" },
+  /* A Meta app link with no ad tags: organic posts, bio links, shares. Not Meta Ads. */
+  { key: "meta_untagged", label: "Facebook / Instagram, no ad tags" },
   { key: "google_ads", label: "Google Ads" },
   { key: "google_organic", label: "Google Organic" },
   { key: "search_other", label: "Bing & other search" },
@@ -107,6 +116,15 @@ const SOURCES = [
   { key: "events_qr", label: "Events / QR" },
   { key: "referral", label: "Referral" },
   { key: "other", label: "Other" },
+  /*
+   * The next two are decided by the Overview (they need the account, not just
+   * its first touch), never by classifySource: an account entered by staff
+   * (phone or office sale) with no tracked first touch, and an account created
+   * before the site began recording first touches. Both used to read as
+   * Direct / Unknown, which hid where most memberships and revenue came from.
+   */
+  { key: "staff_entered", label: "Entered by staff (phone / office)" },
+  { key: "before_tracking", label: "Before tracking began" },
   { key: "direct", label: "Direct / Unknown" },
 ];
 const BY_KEY = Object.fromEntries(SOURCES.map((s) => [s.key, s]));
@@ -117,6 +135,11 @@ const FACEBOOK = new Set(["fb", "facebook", "facebook_ads", "facebook.com"]);
 const INSTAGRAM = new Set(["ig", "instagram", "instagram.com"]);
 const OUTREACH_SOURCES = new Set(["ghl_sms", "ghl_email", "direct_mail", "postcard", "eddm"]);
 const PAID_MEDIUMS = new Set(["cpc", "ppc", "paid", "paid_social", "paidsocial", "paid-social", "social_paid", "ads", "ad", "cpm"]);
+/* utm_source values only an ad can produce. */
+const PAID_ONLY_META_SOURCES = new Set(["an", "audience_network", "facebook_ads", "meta_ads"]);
+
+/* A Meta id: all digits. The ads put campaign / ad set / ad ids into utm_campaign / utm_term / utm_content. */
+const isMetaId = (v) => /^\d{6,}$/.test(String(v || "").trim());
 
 function hostOf(url) {
   try {
@@ -154,10 +177,18 @@ function classifySource(attr) {
   const host = normalizeHost(hostOf(a.referrer || a.firstReferrer));
 
   let key = "direct";
-  if (a.fbclid || a.campaignId || a.adsetId || a.adId || META_SOURCES.has(src)) {
+  const metaEvidence = a.fbclid || a.campaignId || a.adsetId || a.adId || META_SOURCES.has(src);
+  const paidMeta =
+    a.campaignId || a.adsetId || a.adId || PAID_ONLY_META_SOURCES.has(src) || isMetaId(a.utmCampaign) ||
+    // A placement value (fb/ig/msg...) is what the ad URL template writes; a non-paid medium
+    // (social, bio_profile, a group post) says a person tagged an organic link by hand.
+    (META_SOURCES.has(src) && (!medium || PAID_MEDIUMS.has(medium))) ||
+    (a.fbclid && PAID_MEDIUMS.has(medium));
+  if (metaEvidence && paidMeta) {
     // Placement only from Meta's own utm_source ({{site_source_name}}); fbclid alone is just "Meta".
     key = FACEBOOK.has(src) ? "meta_facebook" : INSTAGRAM.has(src) ? "meta_instagram" : "meta_other";
-  } else if (a.gclid || a.gbraid || a.wbraid || (src === "google" && PAID_MEDIUMS.has(medium))) key = "google_ads";
+  } else if (metaEvidence) key = "meta_untagged";
+  else if (a.gclid || a.gbraid || a.wbraid || (src === "google" && PAID_MEDIUMS.has(medium))) key = "google_ads";
   else if (ref === "event" || ref === "qr" || src === "event" || src === "qr" || medium === "qr" || landing.startsWith("/event")) key = "events_qr";
   else if (OUTREACH_SOURCES.has(src)) key = "outreach";
   else if (a.refCode || ref === "referral" || medium === "referral" || src === "referral") key = "referral";
@@ -169,6 +200,56 @@ function classifySource(attr) {
   else if (!isInternalHost(host)) key = "other";
   const s = BY_KEY[key];
   return { key, label: s.label, group: s.group || null };
+}
+
+/*
+ * Snake-case URL parameters (a raw query string) -> the stored field names.
+ * Free-visit requests keep { url: <params on the submitting page>, firstTouch:
+ * <the browser's stored first touch> }; every other record is already flat.
+ */
+const URL_PARAM_FIELDS = {
+  utm_source: "utmSource",
+  utm_medium: "utmMedium",
+  utm_campaign: "utmCampaign",
+  utm_term: "utmTerm",
+  utm_content: "utmContent",
+  fbclid: "fbclid",
+  gclid: "gclid",
+  gbraid: "gbraid",
+  wbraid: "wbraid",
+  campaign_id: "campaignId",
+  campaign_name: "campaignName",
+  adset_id: "adsetId",
+  adset_name: "adsetName",
+  ad_id: "adId",
+  ad_name: "adName",
+  ref: "refCode",
+};
+
+/**
+ * Any stored attribution shape, flat. A nested { firstTouch, url } record
+ * (Request.attribution) is read as its first touch - the same rule accounts
+ * follow - and only when the browser kept no first touch at all does the
+ * submitting page's own URL decide (a later ad click never replaces an earlier
+ * first touch).
+ */
+function flattenAttribution(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  if (!raw.firstTouch && !raw.url) return raw;
+  const ft = raw.firstTouch && typeof raw.firstTouch === "object" ? raw.firstTouch : null;
+  if (ft && Object.values(ft).some((v) => v != null && v !== "")) return ft;
+  const out = {};
+  const url = raw.url && typeof raw.url === "object" ? raw.url : {};
+  for (const [param, field] of Object.entries(URL_PARAM_FIELDS)) if (url[param]) out[field] = String(url[param]);
+  const source = String(url.source || "").toLowerCase();
+  if (ACQUISITION_REF_SOURCES.has(source)) out.refSource = source;
+  return out;
+}
+
+/* Is there any first-touch evidence at all (not just a visitor id and a timestamp)? */
+function hasEvidence(attr) {
+  const a = flattenAttribution(attr);
+  return classifySource(a).key !== "direct";
 }
 
 /** For an "Other" first touch: the referring site or the unknown utm_source, so Other can be explained. */
@@ -187,7 +268,6 @@ function originOf(attr) {
  * there that is a Meta id (all digits) is read as the id, never as a name;
  * anything else there is a name. With no name, the Overview shows the id.
  */
-const isMetaId = (v) => /^\d{6,}$/.test(String(v || "").trim());
 
 function split(explicitId, explicitName, utmValue) {
   const id = explicitId || (isMetaId(utmValue) ? String(utmValue).trim() : null);
@@ -228,6 +308,8 @@ module.exports = {
   GROUPS,
   sanitizeAttribution,
   classifySource,
+  flattenAttribution,
+  hasEvidence,
   originOf,
   normalizeHost,
   campaignOf,

@@ -37,7 +37,7 @@ const { deletePublicObjects, putPublicObject } = require("../utils/s3");
 const { reserveGuestFreeVisit } = require("../utils/freeVisit/guestVisit");
 const { CUSTOMER_MESSAGES } = require("../utils/freeVisit/eligibility");
 const { libraryLabel, readLibraryReference } = require("../utils/bookingLibrary");
-const { MAX_PHOTO_BYTES, MAX_PHOTOS, ensureSanitized, sanitizeUploadedPhotos } = require("../utils/imageSanitizer");
+const { MAX_PHOTO_BYTES, MAX_PHOTOS, ensureSanitized, sanitizeUploadedPhotos, photoUpload } = require("../utils/imageSanitizer");
 const { normalizePhoneE164 } = require("../utils/identity");
 const { rateLimit, consume } = require("../utils/rateLimit");
 const { sendAdminEventNotification, formatSubmittedAt } = require("../utils/adminLeadNotification");
@@ -358,7 +358,7 @@ function logOutcomes(requestId, label, results) {
   });
 }
 
-router.post("/", ipLimit, upload.array("images", MAX_PHOTOS), sanitizeUploadedPhotos, async (req, res) => {
+router.post("/", ipLimit, photoUpload(upload), sanitizeUploadedPhotos, async (req, res) => {
   try {
     const body = req.body || {};
     const name = clean(body.name, 120);

@@ -950,7 +950,8 @@ function reportPaidVisitPurchase({ session, user, booking, contentName }) {
       state: primaryAddress?.state || user.state,
       zip: primaryAddress?.zip || user.zip,
     },
-    externalId: user.userId || String(user._id),
+    // A guest has no account id; the booking number identifies the purchase instead.
+    externalId: user.userId || (user._id ? String(user._id) : `booking:${booking.bookingNumber}`),
     fbp: session.metadata?.fbp,
     fbc: session.metadata?.fbc,
     fbclid: user.attribution?.fbclid,
@@ -1024,7 +1025,7 @@ async function handleOneTimeCheckoutCompleted(session) {
    * and announced exactly like any other paid visit.
    */
   const user = booking.user ? await User.findById(booking.user) : null;
-  const contact = user || (booking.adminGuest ? guestContactFromBooking(booking) : null);
+  const contact = user || (booking.adminGuest || booking.guestCheckout ? guestContactFromBooking(booking) : null);
   if (!contact) {
     logWebhook("error", "one_time_checkout_user_not_found", {
       stripeSessionId: session.id,
@@ -1094,6 +1095,15 @@ async function handleOneTimeCheckoutCompleted(session) {
   }
 
   await sendOneTimePaymentEmails({ booking, user: contact, entitlement, session });
+  // A guest's own checkout: the private link to check or change it (once; a replay sends nothing).
+  if (booking.guestCheckout && booking.paymentState === "paid") {
+    // A guest checkout has no entitlement: what Stripe charged is kept on the booking for Admin (amount, payment, time).
+    await Booking.updateOne(
+      { _id: booking._id, "guestPayment.paidAt": null },
+      { $set: { guestPayment: { amountCents: Number(session.amount_total || 0), currency: String(session.currency || "usd"), paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id || "", paidAt: new Date() } } }
+    ).catch(() => {});
+    await require("../utils/guestVisitLink").issueAndSendGuestVisitLink(booking._id).catch((error) => logWebhook("warn", "guest_visit_link_failed", { bookingId: String(booking._id), message: error.message }));
+  }
 
   /*
    * Purchase - a single paid visit, which is the only thing this event means.
@@ -1109,7 +1119,8 @@ async function handleOneTimeCheckoutCompleted(session) {
    *
    * Detached: a Meta outage must never leave a paid booking unconfirmed.
    */
-  if (user) reportPaidVisitPurchase({ session, user, booking, contentName: "one_time_visit" });
+  // A guest's own checkout is a website purchase too (an Admin guest's is skipped as a staff sale inside).
+  if (user || booking.guestCheckout) reportPaidVisitPurchase({ session, user: user || contact, booking, contentName: "one_time_visit" });
 
   return { bookingId: String(booking._id), entitlementId: entitlement ? String(entitlement._id) : null };
 }
@@ -1300,7 +1311,7 @@ async function handleFullDayCheckoutCompleted(session) {
    * and announced exactly like any other paid visit.
    */
   const user = booking.user ? await User.findById(booking.user) : null;
-  const contact = user || (booking.adminGuest ? guestContactFromBooking(booking) : null);
+  const contact = user || (booking.adminGuest || booking.guestCheckout ? guestContactFromBooking(booking) : null);
   if (!contact) {
     logWebhook("error", "full_day_checkout_user_not_found", {
       stripeSessionId: session.id,
@@ -1376,8 +1387,16 @@ async function handleFullDayCheckoutCompleted(session) {
   await salesStripe.onFullDayPaid({ session, booking, entitlement, user, stripe });
 
   await sendFullDayPaidEmails({ booking, user: contact, entitlement, session });
+  if (booking.guestCheckout && booking.paymentState === "paid") {
+    // A guest checkout has no entitlement: what Stripe charged is kept on the booking for Admin (amount, payment, time).
+    await Booking.updateOne(
+      { _id: booking._id, "guestPayment.paidAt": null },
+      { $set: { guestPayment: { amountCents: Number(session.amount_total || 0), currency: String(session.currency || "usd"), paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id || "", paidAt: new Date() } } }
+    ).catch(() => {});
+    await require("../utils/guestVisitLink").issueAndSendGuestVisitLink(booking._id).catch((error) => logWebhook("warn", "guest_visit_link_failed", { bookingId: String(booking._id), message: error.message }));
+  }
   // Previously no server Purchase at all for the most valuable single sale.
-  if (user) reportPaidVisitPurchase({ session, user, booking, contentName: "full_day_visit" });
+  if (user || booking.guestCheckout) reportPaidVisitPurchase({ session, user: user || contact, booking, contentName: "full_day_visit" });
   return {
     bookingId: String(booking._id),
     entitlementId: entitlement ? String(entitlement._id) : null,

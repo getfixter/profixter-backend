@@ -166,10 +166,13 @@ const ADMIN_GUEST_VISIT_TYPES = new Set([
   "PAYMENT_LINK",
 ]);
 
+/* A paid visit booked on the website with no account (booking.guestCheckout): its own confirmations, reminders and changes. */
+const GUEST_CHECKOUT_VISIT_TYPES = new Set([...GUEST_VISIT_TYPES, "ONE_TIME_VISIT_CONFIRMED", "FULL_DAY_CONFIRMED"]);
+
 function guestBookingConsentAllows({ notificationType, booking, user, e164 }) {
-  const types = booking?.adminGuest ? ADMIN_GUEST_VISIT_TYPES : GUEST_VISIT_TYPES;
+  const types = booking?.adminGuest ? ADMIN_GUEST_VISIT_TYPES : booking?.guestCheckout ? GUEST_CHECKOUT_VISIT_TYPES : GUEST_VISIT_TYPES;
   if (!types.has(notificationType)) return false;
-  if (!booking?.guestRequestId && !booking?.adminGuest) return false;
+  if (!booking?.guestRequestId && !booking?.adminGuest && !booking?.guestCheckout) return false;
   const consent = booking.guestContactConsent || {};
   if (!String(consent.text || "").trim() || !consent.at) return false;
   if (!e164 || toE164(booking.phone) !== e164) return false;

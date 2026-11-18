@@ -39,6 +39,10 @@ const adSpendDailySchema = new mongoose.Schema(
     impressions: { type: Number, default: 0 },
     clicks: { type: Number, default: 0 },
     reach: { type: Number, default: 0 },
+    /* Meta's outbound_clicks (clicks that left Meta for the site). Rows synced before 2026-11-17 have none. */
+    outboundClicks: { type: Number, default: null },
+    /* Meta's attribution_setting for the ad's conversions, e.g. "7-day click or 1-day view" as Meta names it. */
+    attributionSetting: { type: String, default: null },
     /* A few platform-reported actions (link_click, landing_page_view, lead, complete_registration...). */
     actions: { type: mongoose.Schema.Types.Mixed, default: {} },
     currency: { type: String, default: null },

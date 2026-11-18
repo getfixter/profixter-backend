@@ -55,7 +55,7 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
 const MAX_RANGE_DAYS = 62;
 const ROW_FIELDS =
-  "_id bookingNumber date scheduledStart scheduledEnd status bookingType accessType isFreeFirstVisit guestRequestId freeVisitChannel freeVisitPurpose freeVisitReview name phone user address city state zip assignedFixterId assignedFixterName paymentState paymentHoldExpiresAt reservationIssue freeVisitConversion updatedAt";
+  "_id bookingNumber date scheduledStart scheduledEnd status bookingType accessType isFreeFirstVisit guestRequestId freeVisitChannel freeVisitPurpose freeVisitReview name phone user address city state zip assignedFixterId assignedFixterName paymentState paymentHoldExpiresAt reservationIssue freeVisitConversion updatedAt cancellationRequest guestCheckout";
 
 const VIEWS = new Set(["today", "tomorrow", "week", "range", "needs_action"]);
 /* Default statuses: everything except Canceled (the old calendar counted those, J-16). */
@@ -216,6 +216,8 @@ function needsActionFilter(now = new Date()) {
       { status: statusMatcher(NON_FINAL), paymentState: { $in: ["failed", "expired"] } },
       { status: statusMatcher(NON_FINAL), paymentState: "pending", paymentHoldExpiresAt: { $ne: null, $lt: now } },
       { status: statusMatcher(NON_FINAL), "reservationIssue.status": { $nin: ["", null] } },
+      // A customer asked (guest link) to cancel a paid visit: staff cancel it and settle the refund.
+      { status: statusMatcher(NON_FINAL), "cancellationRequest.at": { $ne: null } },
     ],
   };
 }
@@ -238,6 +240,9 @@ function needsActionReason(booking, now = new Date()) {
   const status = canonicalStatus(booking.status);
   const nonFinal = NON_FINAL.includes(status);
   const startMs = new Date(booking.date).getTime();
+  if (nonFinal && booking.cancellationRequest?.at) {
+    return { kind: "job_cancel_requested", reason: "The customer asked to cancel. Cancel the job, then refund in Stripe if one is due.", severity: "problem" };
+  }
   if (nonFinal && booking.reservationIssue?.status) {
     return { kind: "job_reservation_issue", reason: booking.reservationIssue.message || "The reservation needs review.", severity: "problem" };
   }
@@ -518,6 +523,10 @@ async function jobDetail(req, booking, { now = new Date() } = {}) {
       ? { status: booking.reservationIssue.status, message: booking.reservationIssue.message || "" }
       : null,
     cancellationReason: canonicalStatus(booking.status) === STATUS.CANCELED ? booking.cancellationReason || "" : "",
+    cancellationRequest: booking.cancellationRequest?.at
+      ? { at: booking.cancellationRequest.at, reason: booking.cancellationRequest.reason || "", via: booking.cancellationRequest.via || "" }
+      : null,
+    guestCheckout: Boolean(booking.guestCheckout),
     completedAt: booking.completedAt || null,
     createdAt: booking.createdAt || null,
     /* "Convert to paid visit" (utils/freeVisit/conversion.js): where the visit came from, and any link in progress. */

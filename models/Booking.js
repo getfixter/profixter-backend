@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
  * those two requirements are lifted for it, and only for it.
  */
 function isGuestBooking() {
-  return Boolean(this.guestRequestId || this.adminGuest);
+  return Boolean(this.guestRequestId || this.adminGuest || this.guestCheckout);
 }
 
 const BookingSchema = new mongoose.Schema({
@@ -97,6 +97,44 @@ const BookingSchema = new mongoose.Schema({
    * reads guestRequestId / isFreeFirstVisit / accessType, none of which this sets.
    */
   adminGuest: { type: Boolean, default: false },
+  /*
+   * Booked AND paid (One-Time or Full Day) by somebody with no account, on the
+   * website (routes/guestBookings.js). Like adminGuest, the contact fields and
+   * address here are the whole record of them until somebody proves the phone
+   * or email on an account (utils/freeVisit/guestLink), which then links it.
+   * Stays true after linking: it says how the visit was booked.
+   */
+  guestCheckout: { type: Boolean, default: false, index: true },
+  /* The Stripe Checkout Session this paid visit was opened with (guest checkouts; the status page reads it). */
+  checkoutSessionId: { type: String, default: undefined, index: true, sparse: true },
+  /* What Stripe charged for a guest checkout (it has no VisitEntitlement): Admin's money block reads it. */
+  guestPayment: {
+    amountCents: { type: Number, default: null },
+    currency: { type: String, default: "" },
+    paymentIntentId: { type: String, default: "" },
+    paidAt: { type: Date, default: null },
+  },
+  /* A guest checkout's private link (utils/guestVisitLink): only the token's hash is kept. */
+  guestManage: {
+    tokenHash: { type: String, default: "", index: true },
+    issuedAt: { type: Date, default: null },
+    sentAt: { type: Date, default: null },
+  },
+  /*
+   * The customer asked for this visit to be cancelled (from a guest link). A
+   * request only: staff cancel it and refund in Stripe, as for every paid visit.
+   */
+  cancellationRequest: {
+    at: { type: Date, default: null },
+    reason: { type: String, default: "" },
+    via: { type: String, default: "" },
+  },
+  /* When and how a guest checkout was joined to the account that proved its contact. */
+  guestCheckoutLink: {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    linkedAt: { type: Date, default: null },
+    linkedVia: { type: String, default: "" },
+  },
   /* Who in Admin created this booking, when Admin did. Provenance only. */
   createdByAdmin: {
     by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

@@ -24,6 +24,15 @@
  * - Source: the customer's first touch (utils/analytics/attribution). Every
  *   event in the period is credited to the source of the customer it belongs
  *   to, so the source rows always add up to the totals above them.
+ *   An account with no first touch of its own is credited, in order, to the
+ *   free-visit request the same person sent before it existed (staff often
+ *   turn a request into an account), else "Entered by staff" when an admin
+ *   created it, else "Before tracking began" when it predates the first
+ *   recorded visitor, else Direct / Unknown (sourceInfo below).
+ * - Free-visit requests: the guest booker's Request records (serviceType
+ *   free_visit_request). Each reserves a Booking with no account, which the
+ *   free-visit counts above never saw; they are counted here, with their
+ *   own first touch, from their own Request and Booking.
  * - Spend: Meta ad spend for the period's days, from the AdSpendDaily mirror
  *   (utils/analytics/metaAdSpend). CAC = spend / new paying customers (first
  *   paid membership or paid One-Time / Full Day visit in the period) credited
@@ -43,7 +52,7 @@ const { subscriptionGrantsAccess } = require("../subscriptionManagement");
 const { giftAccessState } = require("../gifts/giftAccess");
 const { project } = require("../membershipMap/projection");
 const { placeZipCluster } = require("../membershipMap/publicPoint");
-const { classifySource, campaignOf, originOf, displayName, SOURCES, GROUPS } = require("./attribution");
+const { classifySource, flattenAttribution, campaignOf, originOf, displayName, SOURCES, GROUPS } = require("./attribution");
 const { collectedRevenue } = require("./stripeRevenue");
 const { currentMrr } = require("./stripeMrr");
 const { reconcileMembers } = require("./memberReconcile");
@@ -176,9 +185,10 @@ function primaryAddress(user) {
 }
 
 async function loadData({ now = new Date() } = {}) {
-  const [users, subs, gifts, bookings, visitorAgg] = await Promise.all([
+  const Request = require("../../models/Request");
+  const [users, subs, gifts, bookings, visitorAgg, requests] = await Promise.all([
     User.find({})
-      .select("_id userId name email role createdAt addresses defaultAddressId attribution stripeCustomerId")
+      .select("_id userId name email phone role createdAt addresses defaultAddressId attribution stripeCustomerId signupMethod adminCreated.at")
       .lean(),
     Subscription.find({})
       .select("_id user addressId subscriptionType billingCycle status accessStatus startDate createdAt updatedAt cancellationDate cancelAtPeriodEnd currentPeriodEnd trialEnd planPrice stripeSubscriptionId addressSnapshot")
@@ -187,9 +197,12 @@ async function loadData({ now = new Date() } = {}) {
       .select("_id recipient addressId plan status startAt endAt claimedAt cancelledAt cancelledReason addressSnapshot")
       .lean(),
     Booking.find({})
-      .select("_id user addressId date status completedAt createdAt isFreeFirstVisit accessType bookingType paymentState bookingNumber")
+      .select("_id user addressId date status completedAt createdAt isFreeFirstVisit accessType bookingType paymentState bookingNumber statusHistory.status")
       .lean(),
     SiteVisitor.aggregate([{ $group: { _id: null, first: { $min: "$firstSeenAt" } } }]),
+    Request.find({ serviceType: { $in: ["free_visit_request", "callback_request"] } })
+      .select("_id name email phone serviceType status attribution bookingId createdAt")
+      .lean(),
   ]);
 
   const customers = users.filter((u) => !isStaff(u));
@@ -281,7 +294,10 @@ async function loadData({ now = new Date() } = {}) {
   );
   const fullDayVisits = bookings.filter((b) => b.bookingType === "full_day_visit" && b.paymentState === "paid");
 
-  return {
+  const bookingById = new Map(bookings.map((b) => [String(b._id), b]));
+  const freeVisitRequests = requests.filter((r) => r.serviceType === "free_visit_request");
+
+  const data = {
     now,
     customers,
     userById,
@@ -289,12 +305,82 @@ async function loadData({ now = new Date() } = {}) {
     userByStripe,
     memberships,
     bookings,
+    bookingById,
     freeVisits,
     firstFreeVisitByHome,
     oneTimeVisits,
     fullDayVisits,
+    requests,
+    freeVisitRequests,
     visitorsSince: visitorAgg[0]?.first || null,
   };
+  data.sourceInfo = buildSourceInfo(data);
+  return data;
+}
+
+/* ------------------------------------------------------------------ */
+/* Who brought each account                                            */
+/* ------------------------------------------------------------------ */
+
+const contactKeys = (email, phone) => {
+  const keys = [];
+  const e = String(email || "").trim().toLowerCase();
+  const p = String(phone || "").replace(/\D/g, "").slice(-10);
+  if (e) keys.push(`e:${e}`);
+  if (p.length === 10) keys.push(`p:${p}`);
+  return keys;
+};
+
+const BY_SOURCE_KEY = Object.fromEntries(SOURCES.map((s) => [s.key, s]));
+const info = (key, basis, attr) => ({ key, label: BY_SOURCE_KEY[key].label, group: BY_SOURCE_KEY[key].group || null, basis, attr: attr || {} });
+
+/* The source of a free-visit request: its own stored first touch (or, with none, the page it was sent from). */
+function requestSource(r) {
+  const attr = flattenAttribution(r.attribution);
+  const c = classifySource(attr);
+  return info(c.key, "first_touch", attr);
+}
+
+/*
+ * userId -> { key, label, group, basis, attr }, decided once per load.
+ * basis: first_touch | free_visit_request | staff_entered | before_tracking | none.
+ * A request only lends its source to an account the same person (email or
+ * phone) opened after sending it, within 30 days: the request is the first
+ * thing we know about them.
+ */
+function buildSourceInfo(data) {
+  const evidenceRequests = new Map();
+  for (const r of data.requests) {
+    const src = requestSource(r);
+    if (src.key === "direct") continue;
+    for (const k of contactKeys(r.email, r.phone)) {
+      if (!evidenceRequests.has(k)) evidenceRequests.set(k, []);
+      evidenceRequests.get(k).push({ at: new Date(r.createdAt), src });
+    }
+  }
+  const out = new Map();
+  for (const u of data.customers) {
+    const attr = flattenAttribution(u.attribution);
+    const own = classifySource(attr);
+    if (own.key !== "direct") {
+      out.set(String(u._id), info(own.key, "first_touch", attr));
+      continue;
+    }
+    const created = new Date(u.createdAt).getTime();
+    let lent = null;
+    for (const k of contactKeys(u.email, u.phone)) {
+      for (const c of evidenceRequests.get(k) || []) {
+        const t = c.at.getTime();
+        if (t <= created + 60 * 60 * 1000 && created - t <= 30 * DAY && (!lent || t < lent.at.getTime())) lent = c;
+      }
+    }
+    if (lent) out.set(String(u._id), { ...lent.src, basis: "free_visit_request" });
+    // utils/admin/customerAccess writes both; adminCreated itself exists on every account as schema defaults.
+    else if (u.signupMethod === "admin" || u.adminCreated?.at) out.set(String(u._id), info("staff_entered", "staff_entered", attr));
+    else if (data.visitorsSince && created < new Date(data.visitorsSince).getTime()) out.set(String(u._id), info("before_tracking", "before_tracking", attr));
+    else out.set(String(u._id), info("direct", "none", attr));
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -307,13 +393,43 @@ const isCanceled = (b) => statusOf(b) === "canceled" || statusOf(b) === "cancell
 const isNoShow = (b) => statusOf(b) === "noshow";
 const completedAt = (b) => (isCompleted(b) ? new Date(b.completedAt || b.date) : null);
 
+/* Reached Confirmed at some point (a completed visit was confirmed first; a later cancel does not undo it). */
+const wasConfirmed = (b) =>
+  !!b && (statusOf(b) === "confirmed" || isCompleted(b) || (b.statusHistory || []).some((h) => String(h?.status || "").toLowerCase() === "confirmed"));
+
+/*
+ * Where one free-visit request stands now, from the Request and the Booking it
+ * reserved: pending | confirmed | completed | declined | canceled |
+ * confirmed_then_canceled. A request staff resolved by hand ("won") counts as
+ * confirmed.
+ */
+function requestOutcome(r, data) {
+  const b = r.bookingId ? data.bookingById.get(String(r.bookingId)) : null;
+  const st = String(r.status || "").toLowerCase();
+  if (st === "completed" || (b && isCompleted(b))) return "completed";
+  if (st === "declined") return "declined";
+  if (st === "canceled" || st === "lost") return wasConfirmed(b) ? "confirmed_then_canceled" : "canceled";
+  if (st === "confirmed" || st === "won" || wasConfirmed(b)) return "confirmed";
+  if (b && isCanceled(b)) return "canceled";
+  return "pending";
+}
+
 function activeAt(m, t) {
   if (!m.start || m.start > t) return false;
   return !m.end || m.end > t;
 }
 
-function sourceOf(user) {
-  return classifySource(user?.attribution).key;
+/* The source an account is credited to (see buildSourceInfo). Without the load's data: its own first touch only. */
+function sourceInfoOf(user, data) {
+  const known = data?.sourceInfo?.get(String(user?._id));
+  if (known) return known;
+  const attr = flattenAttribution(user?.attribution);
+  const c = classifySource(attr);
+  return info(c.key, c.key === "direct" ? "none" : "first_touch", attr);
+}
+
+function sourceOf(user, data) {
+  return sourceInfoOf(user, data).key;
 }
 
 function membershipStartedAfter(data, userId, after) {
@@ -442,7 +558,9 @@ function periodCounts(data, from, to) {
   // one conversion per customer, however many free-visit bookings they had
   const fvConverted = [...new Map(fvCompleted.filter((b) => membershipStartedAfter(data, String(b.user), b.date)).map((b) => [String(b.user), b])).values()];
   const activeAtEnd = data.memberships.filter((m) => activeAt(m, new Date(Math.min(to.getTime(), data.now.getTime())))).length;
-  return { newCustomers, newMemberships, cancellations, fvBooked, firstFv, fvCompleted, fvConverted, activeAtEnd };
+  // Guest free-visit requests sent in the period (each reserved a Booking with no account).
+  const fvRequests = data.freeVisitRequests.filter((r) => inRange(r.createdAt, from, to));
+  return { newCustomers, newMemberships, cancellations, fvBooked, firstFv, fvCompleted, fvConverted, activeAtEnd, fvRequests };
 }
 
 function buildPlans(data, period, mrr) {
@@ -543,9 +661,11 @@ function visitorAttribution(v) {
  * ?source= ignored) applies to every row. One row per browser, so this stays small.
  */
 async function visitorCounts(from, to) {
-  const rows = await SiteVisitor.find({ firstSeenAt: { $gte: from, $lt: to } })
+  const all = await SiteVisitor.find({ firstSeenAt: { $gte: from, $lt: to } })
     .select("utmSource utmMedium utmCampaign utmTerm utmContent campaignId campaignName adsetId adsetName adId adName refSource refCode referrerHost landingPath hasFbclid hasGclid")
     .lean();
+  // Staff tools are not visits (rows recorded before /api/track/visit refused them, 2026-11-17).
+  const rows = all.filter((v) => !NOT_A_VISIT.test(String(v.landingPath || "")));
   const bySource = {};
   const otherOrigins = {};
   const meta = [];
@@ -559,8 +679,10 @@ async function visitorCounts(from, to) {
     }
     if (src.group === "meta") meta.push(attr);
   }
-  return { total: rows.length, bySource, otherOrigins, meta };
+  return { total: rows.length, bySource, otherOrigins, meta, staffPagesExcluded: all.length - rows.length };
 }
+
+const NOT_A_VISIT = /^\/(admin|sign|pay|tip|visit)(\/|$)/;
 
 /*
  * Meta reports spend by publisher_platform; the ads write the same placement
@@ -590,25 +712,64 @@ function withSpend(row, spendCents) {
 
 function buildSources(data, period, counts, revenueRows, visitors, spend = null, newPaying = []) {
   const rows = new Map(
-    SOURCES.map((s) => [s.key, { key: s.key, label: s.label, group: s.group || null, visitors: visitors.bySource[s.key] || 0, registrations: 0, freeVisits: 0, firstFreeVisits: 0, members: 0, newPayingCustomers: 0, revenueCents: 0, spendCents: null }])
+    SOURCES.map((s) => [
+      s.key,
+      {
+        key: s.key,
+        label: s.label,
+        group: s.group || null,
+        visitors: visitors.bySource[s.key] || 0,
+        registrations: 0,
+        freeVisits: 0,
+        firstFreeVisits: 0,
+        freeVisitRequests: 0,
+        inquiries: 0,
+        confirmed: 0,
+        completedVisits: 0,
+        members: 0,
+        newPayingCustomers: 0,
+        revenueCents: 0,
+        firstPaymentRevenueCents: 0,
+        spendCents: null,
+      },
+    ])
   );
+  const rowOf = (key) => rows.get(key) || rows.get("other");
   const bump = (user, field, by = 1) => {
-    const row = rows.get(sourceOf(user)) || rows.get("other");
-    row[field] += by;
+    rowOf(sourceOf(user, data))[field] += by;
   };
   for (const u of counts.newCustomers) bump(u, "registrations");
   for (const b of counts.fvBooked) bump(data.userById.get(String(b.user)), "freeVisits");
   // NEW FIRST free visits (once per home, its earliest booking) - these add up to kpis.freeVisits.firstBooked;
   // freeVisits above counts every free-visit booking, rebookings included.
-  for (const b of counts.firstFv) bump(data.userById.get(String(b.user)), "firstFreeVisits");
+  for (const b of counts.firstFv) {
+    const user = data.userById.get(String(b.user));
+    bump(user, "firstFreeVisits");
+    bump(user, "inquiries");
+    if (wasConfirmed(b)) bump(user, "confirmed");
+    if (isCompleted(b)) bump(user, "completedVisits");
+  }
+  /* Guest free-visit requests: credited by the request's own first touch. Outcome as it stands now. */
+  for (const r of counts.fvRequests || []) {
+    const row = rowOf(requestSource(r).key);
+    const outcome = requestOutcome(r, data);
+    row.freeVisitRequests += 1;
+    row.inquiries += 1;
+    if (outcome === "confirmed" || outcome === "completed" || outcome === "confirmed_then_canceled") row.confirmed += 1;
+    if (outcome === "completed") row.completedVisits += 1;
+  }
   for (const m of counts.newMemberships) bump(data.userById.get(m.userId), "members");
   for (const u of newPaying) bump(u, "newPayingCustomers");
   let unmatchedRevenueCents = 0;
+  const newPayingIds = new Set(newPaying.map((u) => String(u._id)));
   for (const r of revenueRows) {
     if (!r.service) continue;
     const user = revenueUser(data, r);
-    if (user) bump(user, "revenueCents", rowRevenueCents(r));
-    else unmatchedRevenueCents += rowRevenueCents(r);
+    if (user) {
+      bump(user, "revenueCents", rowRevenueCents(r));
+      // Money from customers whose FIRST payment is in this period; the rest is renewals and repeat business.
+      if (newPayingIds.has(String(user._id))) bump(user, "firstPaymentRevenueCents", rowRevenueCents(r));
+    } else unmatchedRevenueCents += rowRevenueCents(r);
   }
   /*
    * Spend is known only for Meta. Facebook / Instagram / Other Meta carry
@@ -617,7 +778,10 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
    */
   const sourceSpend = spendBySource(spend);
   const list = [...rows.values()].map((r) =>
-    withSpend({ ...r, conversion: pct(r.members, r.registrations) }, Object.prototype.hasOwnProperty.call(sourceSpend, r.key) ? sourceSpend[r.key] : null)
+    withSpend(
+      { ...r, conversion: pct(r.members, r.registrations), repeatRevenueCents: r.revenueCents - r.firstPaymentRevenueCents },
+      Object.prototype.hasOwnProperty.call(sourceSpend, r.key) ? sourceSpend[r.key] : null
+    )
   );
   const totalRegs = counts.newCustomers.length;
   for (const r of list) r.share = pct(r.registrations, totalRegs);
@@ -635,9 +799,16 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
         visitors: sum("visitors"),
         registrations: regs,
         freeVisits: sum("freeVisits"),
+        firstFreeVisits: sum("firstFreeVisits"),
+        freeVisitRequests: sum("freeVisitRequests"),
+        inquiries: sum("inquiries"),
+        confirmed: sum("confirmed"),
+        completedVisits: sum("completedVisits"),
         members: sum("members"),
         newPayingCustomers: sum("newPayingCustomers"),
         revenueCents: sum("revenueCents"),
+        firstPaymentRevenueCents: sum("firstPaymentRevenueCents"),
+        repeatRevenueCents: sum("repeatRevenueCents"),
         conversion: pct(sum("members"), regs),
         share: pct(regs, totalRegs),
       },
@@ -654,7 +825,7 @@ function buildSources(data, period, counts, revenueRows, visitors, spend = null,
     other.get(k)[field] += by;
   };
   for (const [origin, n] of Object.entries(visitors.otherOrigins || {})) add(origin, "visitors", n);
-  for (const u of counts.newCustomers) if (sourceOf(u) === "other") add(originOf(u.attribution), "registrations");
+  for (const u of counts.newCustomers) if (sourceOf(u, data) === "other") add(originOf(sourceInfoOf(u, data).attr), "registrations");
   const otherDetail = [...other.values()].sort((a, b) => b.registrations - a.registrations || b.visitors - a.visitors).slice(0, 8);
 
   return { rows: list, groups, otherDetail, unmatchedRevenueCents };
@@ -679,6 +850,7 @@ function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: []
     visitors: 0,
     registrations: 0,
     freeVisits: 0,
+    freeVisitRequests: 0,
     members: 0,
     newPayingCustomers: 0,
     revenueCents: 0,
@@ -703,10 +875,10 @@ function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: []
     ad.label = displayName(ad.name, ad.id, NO_AD);
     return [camp, adset, ad];
   };
-  const isMeta = (u) => u && classifySource(u.attribution).group === "meta";
+  const isMeta = (u) => u && sourceInfoOf(u, data).group === "meta";
   const add = (user, field, by = 1, plan) => {
     if (!isMeta(user)) return;
-    const nodes = nodeFor(user.attribution);
+    const nodes = nodeFor(sourceInfoOf(user, data).attr);
     for (const n of nodes) n[field] += by;
     if (plan) nodes[0].plans[plan] = (nodes[0].plans[plan] || 0) + 1;
   };
@@ -717,6 +889,10 @@ function buildCampaigns(data, period, counts, revenueRows, visitors = { meta: []
   for (const m of counts.newMemberships) add(data.userById.get(m.userId), "members", 1, m.plan);
   for (const r of revenueRows) if (r.service) add(revenueUser(data, r), "revenueCents", rowRevenueCents(r));
   for (const u of newPaying) add(u, "newPayingCustomers");
+  for (const r of counts.fvRequests || []) {
+    const src = requestSource(r);
+    if (src.group === "meta") for (const n of nodeFor(src.attr)) n.freeVisitRequests += 1;
+  }
 
   /*
    * Spend, matched by Meta id (what the ads put in their URLs), or by exact
@@ -769,7 +945,7 @@ function buildActivity(data, limit = 20) {
   const label = (u) => shortName(u?.name, u?.email);
   for (const u of data.customers) {
     if (inRange(u.createdAt, since, data.now)) {
-      const src = classifySource(u.attribution);
+      const src = sourceInfoOf(u, data);
       events.push({ at: u.createdAt, type: "registered", text: `New customer registered${src.key !== "direct" ? ` from ${src.label}` : ""}`, who: label(u), ref: u?.userId || null, userId: String(u._id) });
     }
   }
@@ -813,10 +989,160 @@ function buildAttention(data, period, counts) {
   const stale = data.freeVisits.filter((b) => !isCompleted(b) && !isCanceled(b) && !isNoShow(b) && b.date && now - new Date(b.date).getTime() > DAY);
   if (stale.length) items.push({ key: "free_visit_unmarked", count: stale.length, tone: "warning", text: `${stale.length} past Free Visit${stale.length === 1 ? " is" : "s are"} not marked completed - conversion can't count ${stale.length === 1 ? "it" : "them"}` });
   const regs = counts.newCustomers.length;
-  const unknown = counts.newCustomers.filter((u) => sourceOf(u) === "direct").length;
+  const unknown = counts.newCustomers.filter((u) => sourceOf(u, data) === "direct").length;
   if (regs >= 5 && unknown / regs >= 0.25) items.push({ key: "attribution_gap", count: unknown, tone: "info", text: `Source unknown for ${Math.round((unknown / regs) * 100)}% of new customers this period` });
   return items;
 }
+
+/* ------------------------------------------------------------------ */
+/* Funnel steps, Meta events, agency fees                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Booking-funnel steps (models/FunnelStep) for the period's days, all
+ * sources and Meta Ads alone, plus the first day each step was ever recorded:
+ * a step that did not exist yet is "not measured", never zero.
+ */
+async function funnelSteps(period) {
+  try {
+    const { FunnelStep, STEPS } = require("../../models/FunnelStep");
+    const [rows, firsts] = await Promise.all([
+      FunnelStep.find({ date: { $gte: period.fromYmd, $lte: period.toYmd } }).select("date step source count").lean(),
+      FunnelStep.aggregate([{ $group: { _id: "$step", first: { $min: "$date" } } }]),
+    ]);
+    const firstByStep = Object.fromEntries(firsts.map((f) => [f._id, f.first]));
+    const metaKeys = new Set(SOURCES.filter((x) => x.group === "meta").map((x) => x.key));
+    const out = {};
+    for (const step of STEPS) {
+      const first = firstByStep[step] || null;
+      out[step] = {
+        all: 0,
+        meta: 0,
+        measuredFromYmd: first,
+        // null = not measured for any of the period; partial = measured for only part of it.
+        measured: !!first && first <= period.toYmd,
+        partial: !!first && first > period.fromYmd && first <= period.toYmd,
+      };
+    }
+    for (const r of rows) {
+      if (!out[r.step]) continue;
+      out[r.step].all += r.count;
+      if (metaKeys.has(r.source)) out[r.step].meta += r.count;
+    }
+    for (const step of STEPS) if (!out[step].measured) out[step].all = out[step].meta = null;
+    return out;
+  } catch (error) {
+    console.warn("Overview funnel steps failed:", error.message);
+    return null;
+  }
+}
+
+/*
+ * What Profixter itself reported to Meta in the period (models/MetaEventLog),
+ * by event and kind. Null before the log existed for the whole period.
+ */
+async function metaEventCounts(period) {
+  try {
+    const MetaEventLog = require("../../models/MetaEventLog");
+    const [first] = await MetaEventLog.find({}).sort({ at: 1 }).limit(1).select("at").lean();
+    if (!first || first.at >= period.to) return { measuredFrom: first?.at || null, measured: false, events: [] };
+    const rows = await MetaEventLog.aggregate([
+      { $match: { at: { $gte: period.from, $lt: period.to }, testEvent: { $ne: true } } },
+      { $group: { _id: { eventName: "$eventName", leadType: "$leadType", origin: "$origin", outcome: "$outcome" }, n: { $sum: 1 }, ids: { $addToSet: "$eventId" } } },
+    ]);
+    const byKind = new Map();
+    for (const r of rows) {
+      const k = `${r._id.eventName}|${r._id.leadType || ""}`;
+      if (!byKind.has(k)) byKind.set(k, { eventName: r._id.eventName, leadType: r._id.leadType || null, sent: 0, failed: 0, fromServer: 0, fromBrowserRelay: 0, distinctEventIds: new Set() });
+      const e = byKind.get(k);
+      if (r._id.outcome === "sent") {
+        e.sent += r.n;
+        if (r._id.origin === "browser_relay") e.fromBrowserRelay += r.n;
+        else e.fromServer += r.n;
+        for (const id of r.ids) if (id) e.distinctEventIds.add(id);
+      } else e.failed += r.n;
+    }
+    return {
+      measuredFrom: first.at,
+      measured: true,
+      partial: first.at > period.from,
+      events: [...byKind.values()]
+        .map((e) => ({ ...e, distinctEventIds: e.distinctEventIds.size }))
+        .sort((a, b) => a.eventName.localeCompare(b.eventName) || String(a.leadType).localeCompare(String(b.leadType))),
+    };
+  } catch (error) {
+    console.warn("Overview Meta events failed:", error.message);
+    return { measuredFrom: null, measured: false, events: [], error: true };
+  }
+}
+
+const AGENCY_FEES_KEY = "agency-fees";
+
+async function readAgencyFees() {
+  try {
+    const AnalyticsState = require("../../models/AnalyticsState");
+    const doc = await AnalyticsState.findOne({ key: AGENCY_FEES_KEY }).lean();
+    return doc?.value?.months || {};
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * The agency's fee for the period: each calendar month's fee, prorated by
+ * the days of that month inside the period. Known only when EVERY month the
+ * period touches has a fee on record; otherwise null, and the months missing.
+ */
+function agencyFeeForPeriod(months, period) {
+  if (!months) return { known: false, cents: null, missingMonths: [], unavailable: true };
+  const missing = [];
+  let cents = 0;
+  let ymd = period.fromYmd;
+  const daysIn = (ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    return new Date(Date.UTC(y, m, 0)).getUTCDate();
+  };
+  const perMonthDays = new Map();
+  while (ymd <= period.toYmd) {
+    const ym = ymd.slice(0, 7);
+    perMonthDays.set(ym, (perMonthDays.get(ym) || 0) + 1);
+    ymd = shiftYmd(ymd, 1);
+  }
+  const breakdown = [];
+  for (const [ym, days] of perMonthDays) {
+    const fee = months[ym];
+    if (!fee || !Number.isFinite(Number(fee.cents))) {
+      missing.push(ym);
+      continue;
+    }
+    const share = Math.round((Number(fee.cents) * days) / daysIn(ym));
+    cents += share;
+    breakdown.push({ month: ym, monthCents: Number(fee.cents), days, daysInMonth: daysIn(ym), cents: share });
+  }
+  return missing.length ? { known: false, cents: null, missingMonths: missing, breakdown } : { known: true, cents, missingMonths: [], breakdown };
+}
+
+/*
+ * What every acquisition figure means, sent with the numbers so the screen
+ * can say it next to them (FrontEnd OverviewModule).
+ */
+const DEFINITIONS = {
+  metaReported: "Reported by Meta Ads Manager through the read-only Marketing API, for the ad account's own days (its time zone), by Meta's attribution setting. Read every six hours; never edited here.",
+  spend: "Meta: amount spent on the ad account for the period's days.",
+  outboundClicks: "Meta: clicks that left Facebook / Instagram / Audience Network for the website.",
+  landingPageViews: "Meta: outbound clicks after which the website page loaded and the Meta Pixel fired.",
+  websiteLeads: "Meta: Lead events from the Profixter dataset that Meta attributes to an ad (offsite_conversion.fb_pixel_lead). One person can make several: an account and a free-visit booking are two Leads.",
+  visitors: "Profixter: browsers seen on the site for the first time in the period (one per browser, ever), excluding staff pages. Not sessions and not landing page views; an Instagram in-app browser and Safari on the same phone are two visitors.",
+  registrations: "Profixter: customer accounts created in the period.",
+  inquiries: "Profixter: real requests for a visit - a guest free-visit request, or the first free visit an account booked - created in the period.",
+  freeVisitRequests: "Profixter: free-visit requests sent from the booker without an account (each reserves a time pending confirmation).",
+  confirmed: "Of those inquiries, how many reached Confirmed (as of now).",
+  completedVisits: "Of those inquiries, how many visits were marked Completed (as of now).",
+  newPayingCustomers: "Profixter: customers whose first-ever payment (a paid membership, a One-Time or Full Day visit) is in the period. Gifts are not payments.",
+  revenue: "Stripe: payments in the period, after refunds, before sales tax, credited to the customer's source - renewals included.",
+  firstPaymentRevenue: "Stripe: the part of revenue paid by new paying customers (first payment in the period).",
+  source: "First touch: how a browser first reached the site, kept through sign-up. An account without one takes the source of the free-visit request the same person sent first; else Entered by staff, Before tracking began, or Direct / Unknown.",
+};
 
 /* ------------------------------------------------------------------ */
 /* The payload                                                         */
@@ -848,14 +1174,18 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
   const revenueWindowFrom = new Date(Math.min(period.prevFrom.getTime(), yearPeriod.from.getTime()));
   const revenueWindowTo = new Date(Math.max(period.to.getTime(), yearPeriod.to.getTime()));
-  const [revenueAll, visitors, prevVisitors, mrr, adSpend] = await Promise.all([
+  const [revenueAll, visitors, prevVisitors, mrr, adSpend, steps, metaEvents, feeMonths] = await Promise.all([
     collectedRevenue({ from: revenueWindowFrom, to: revenueWindowTo }),
     visitorCounts(period.from, period.to),
     visitorCounts(period.prevFrom, period.prevTo),
     currentMrr(),
     // Mirrored by a background sync; never calls Meta here, never throws.
     adSpendForPeriod({ fromYmd: period.fromYmd, toYmd: period.toYmd }),
+    funnelSteps(period),
+    metaEventCounts(period),
+    readAgencyFees(),
   ]);
+  const agencyFee = agencyFeeForPeriod(feeMonths, period);
   const curRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.from, period.to));
   const prevRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.prevFrom, period.prevTo));
   const revenueNow = summarizeRevenue(curRevenueRows);
@@ -874,6 +1204,21 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
   const newPaying = newPayingCustomers(data, period.from, period.to);
   const sources = buildSources(data, period, cur, curRevenueRows, visitors, adSpend, newPaying);
+  const inquiryTotals = sources.rows.reduce(
+    (t, r) => ({ inquiries: t.inquiries + r.inquiries, confirmed: t.confirmed + r.confirmed, completedVisits: t.completedVisits + r.completedVisits }),
+    { inquiries: 0, confirmed: 0, completedVisits: 0 }
+  );
+  const requestOutcomeCounts = {};
+  for (const r of cur.fvRequests) {
+    const o = requestOutcome(r, data);
+    requestOutcomeCounts[o] = (requestOutcomeCounts[o] || 0) + 1;
+  }
+  const visitorsCoverage = {
+    none: !data.visitorsSince || new Date(data.visitorsSince) >= period.to,
+    partial: !!data.visitorsSince && new Date(data.visitorsSince) > period.from && new Date(data.visitorsSince) < period.to,
+  };
+  const metaGroup = sources.groups.find((g) => g.key === "meta");
+  const metaSpendCents = adSpend.connected ? adSpend.totalCents : null;
   const cities = new Map();
   for (const u of data.customers) {
     const addr = primaryAddress(u);
@@ -1008,13 +1353,24 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
         }
       : null,
     funnel: {
-      visitors: visitors.total,
-      prevVisitors: prevVisitors.total,
+      visitors: visitorsCoverage.none ? null : visitors.total,
+      // The previous period ended before the first recorded visitor: not tracked, not zero.
+      prevVisitors: data.visitorsSince && new Date(data.visitorsSince) < period.prevTo ? prevVisitors.total : null,
+      prevVisitorsPartial: !!data.visitorsSince && new Date(data.visitorsSince) > period.prevFrom && new Date(data.visitorsSince) < period.prevTo,
       visitorsTrackingSince: data.visitorsSince,
+      visitorsPartial: visitorsCoverage.partial,
+      staffPagesExcluded: visitors.staffPagesExcluded,
       registered: cur.newCustomers.length,
       freeVisitBooked: cur.fvBooked.length,
+      freeVisitRequests: cur.fvRequests.length,
+      inquiries: inquiryTotals.inquiries,
+      confirmed: inquiryTotals.confirmed,
+      completed: inquiryTotals.completedVisits,
       freeVisitCompleted: cur.fvCompleted.length,
       members: cur.newMemberships.filter((m) => m.kind === "paid").length,
+      newPayingCustomers: newPaying.length,
+      requestOutcomes: requestOutcomeCounts,
+      steps,
     },
     sources: sources.rows,
     sourceGroups: sources.groups,
@@ -1037,7 +1393,33 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
       coverageFromYmd: adSpend.coverageFromYmd,
       platformSplit: adSpend.platformSplit,
       newPayingCustomers: newPaying.length,
+      accountTimezone: adSpend.accountTimezone,
+      accountName: adSpend.accountName,
+      attributionSettings: adSpend.attributionSettings,
+      // Meta's own numbers for the period (null when not connected / nothing synced).
+      reported: adSpend.connected ? adSpend.reported : null,
     },
+    /*
+     * Cost per result, Meta Ads only. Each is null - shown as "not available",
+     * never 0 - when its spend or its count is unknown or zero.
+     */
+    metaEfficiency: {
+      spendCents: metaSpendCents,
+      inquiries: metaGroup?.inquiries ?? 0,
+      confirmed: metaGroup?.confirmed ?? 0,
+      newPayingCustomers: metaGroup?.newPayingCustomers ?? 0,
+      firstPaymentRevenueCents: metaGroup?.firstPaymentRevenueCents ?? 0,
+      costPerInquiryCents: costPer(metaSpendCents, metaGroup?.inquiries),
+      costPerConfirmedBookingCents: costPer(metaSpendCents, metaGroup?.confirmed),
+      costPerNewPayingCustomerCents: costPer(metaSpendCents, metaGroup?.newPayingCustomers),
+      firstPaymentRoas: roasOf(metaGroup?.firstPaymentRevenueCents, metaSpendCents),
+      agencyFee,
+      allInCostCents: metaSpendCents !== null && agencyFee.known ? metaSpendCents + agencyFee.cents : null,
+      allInCostPerNewPayingCustomerCents:
+        metaSpendCents !== null && agencyFee.known ? costPer(metaSpendCents + agencyFee.cents, metaGroup?.newPayingCustomers) : null,
+    },
+    metaEvents,
+    definitions: DEFINITIONS,
     topAreas: [...cities.values()].sort((a, b) => b.customers - a.customers).slice(0, 8),
     activity: buildActivity(data),
     attention: buildAttention(data, period, cur),
@@ -1055,8 +1437,8 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
 function customerRow(data, user, extra = {}) {
   const active = data.memberships.find((m) => m.userId === String(user._id) && m.activeNow);
-  const src = classifySource(user.attribution);
-  const c = campaignOf(user.attribution);
+  const src = sourceInfoOf(user, data);
+  const c = campaignOf(src.attr);
   const addr = primaryAddress(user);
   return {
     userId: String(user._id),
@@ -1118,6 +1500,28 @@ async function buildList({ metric, range, from, to, now = new Date(), param } = 
       title = "One-Time Visits";
       rows = data.oneTimeVisits.filter((b) => inRange(b.createdAt, period.from, period.to)).map((b) => (u(b.user) ? customerRow(data, u(b.user), { date: b.date, status: b.status, converted: membershipStartedAfter(data, String(b.user), b.createdAt) }) : null));
       break;
+    case "freeVisitRequests":
+      title = "Free-visit requests (no account)";
+      rows = cur.fvRequests.map((r) => {
+        const b = r.bookingId ? data.bookingById.get(String(r.bookingId)) : null;
+        return {
+          userId: null,
+          name: r.name || "",
+          email: r.email || "",
+          city: "",
+          plan: null,
+          membership: null,
+          registeredAt: r.createdAt,
+          date: r.createdAt,
+          visitDate: b?.date || null,
+          status: requestOutcome(r, data),
+          source: requestSource(r).label,
+          campaign: null,
+          ad: null,
+          hadFreeVisit: true,
+        };
+      });
+      break;
     case "plan":
       title = `${String(param || "").replace(/^./, (c) => c.toUpperCase())} members`;
       rows = data.memberships.filter((m) => m.activeNow && m.plan === param).map((m) => byMembership(m));
@@ -1127,14 +1531,14 @@ async function buildList({ metric, range, from, to, now = new Date(), param } = 
       const group = GROUPS.find((g) => g.key === param);
       title = `${(group || SOURCES.find((s) => s.key === param) || { label: "Source" }).label}: new customers`;
       rows = cur.newCustomers
-        .filter((user) => (group ? classifySource(user.attribution).group === group.key : sourceOf(user) === param))
+        .filter((user) => (group ? sourceInfoOf(user, data).group === group.key : sourceOf(user, data) === param))
         .map((user) => customerRow(data, user, { date: user.createdAt }));
       break;
     }
     case "campaign":
       title = `Campaign: ${String(param || "").match(/^\d{6,}$/) ? `ID ${param}` : param}`;
       rows = cur.newCustomers
-        .filter((user) => classifySource(user.attribution).group === "meta" && (campaignOf(user.attribution).campaignKey || NO_CAMPAIGN) === param)
+        .filter((user) => sourceInfoOf(user, data).group === "meta" && (campaignOf(sourceInfoOf(user, data).attr).campaignKey || NO_CAMPAIGN) === param)
         .map((user) => customerRow(data, user, { date: user.createdAt }));
       break;
     case "area":
@@ -1165,7 +1569,7 @@ async function buildList({ metric, range, from, to, now = new Date(), param } = 
             return age > 3 * DAY && age < 30 * DAY && !booked.has(String(user._id)) && !members.has(String(user._id));
           })
           .map((user) => customerRow(data, user, { date: user.createdAt }));
-      } else if (param === "attribution_gap") rows = cur.newCustomers.filter((user) => sourceOf(user) === "direct").map((user) => customerRow(data, user, { date: user.createdAt }));
+      } else if (param === "attribution_gap") rows = cur.newCustomers.filter((user) => sourceOf(user, data) === "direct").map((user) => customerRow(data, user, { date: user.createdAt }));
       break;
     }
     default:
@@ -1218,7 +1622,7 @@ async function buildMap({ now = new Date() } = {}) {
       oneTime: data.oneTimeVisits.some((b) => String(b.user) === id),
       joinedAt: user.createdAt,
       memberSince: active?.start || null,
-      source: classifySource(user.attribution).label,
+      source: sourceInfoOf(user, data).label,
       lastVisit: lastVisit.get(id) || null,
       nextVisit: nextVisit.get(id) || null,
     };
@@ -1332,5 +1736,6 @@ module.exports = {
   buildMap,
   clearOverviewCache,
   firstFreeVisitTrend,
-  _internal: { trendVerdict, activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName, costPer, roasOf, withSpend, spendBySource },
+  AGENCY_FEES_KEY,
+  _internal: { trendVerdict, activeAt, summarizeRevenue, granularityFor, buildBuckets, shortName, costPer, roasOf, withSpend, spendBySource, agencyFeeForPeriod, requestOutcome, buildSourceInfo },
 };

@@ -140,7 +140,7 @@ function sanitizeUploadedPhotos(req, res, next) {
   const files = req.files || [];
   if (!files.length) return next();
   if (files.length > MAX_PHOTOS) {
-    return res.status(400).json({ message: `Upload up to ${MAX_PHOTOS} photos at a time.` });
+    return res.status(400).json({ code: "PHOTO_REJECTED", field: "photos", message: `Upload up to ${MAX_PHOTOS} photos at a time.` });
   }
 
   (async () => {
@@ -148,9 +148,29 @@ function sanitizeUploadedPhotos(req, res, next) {
   })()
     .then(() => next())
     .catch((error) => {
+      // code + field (2026-11-17): the booking forms offer "continue without photos" on exactly this.
       res
         .status(error.statusCode || 400)
-        .json({ message: error.message || FRIENDLY_MESSAGE });
+        .json({ code: "PHOTO_REJECTED", field: "photos", message: error.message || FRIENDLY_MESSAGE });
+    });
+}
+
+/**
+ * A multer upload whose own refusals (a file over the size limit, too many
+ * files) answer like the sanitizer does - 400 PHOTO_REJECTED on "photos" -
+ * instead of falling through to the server's generic error page.
+ */
+function photoUpload(multerInstance, field = "images", max = MAX_PHOTOS) {
+  const handler = multerInstance.array(field, max);
+  return (req, res, next) =>
+    handler(req, res, (error) => {
+      if (!error) return next();
+      const tooBig = error.code === "LIMIT_FILE_SIZE";
+      return res.status(400).json({
+        code: "PHOTO_REJECTED",
+        field: "photos",
+        message: tooBig ? "One of the photos is too large. Try a smaller one, or continue without photos." : `Upload up to ${max} photos at a time.`,
+      });
     });
 }
 
@@ -170,5 +190,6 @@ module.exports = {
   sanitizeImageBuffer,
   ensureSanitized,
   sanitizeUploadedPhotos,
+  photoUpload,
   stemOf,
 };

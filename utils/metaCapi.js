@@ -128,6 +128,39 @@ async function postWithRetry(url, init) {
   return fetch(url, init);
 }
 
+/*
+ * A row in MetaEventLog for every send attempt, so the Overview can count what
+ * Profixter reported to Meta (models/MetaEventLog: no personal data). Only
+ * when Mongo is connected - never buffered, never awaited by the caller's
+ * path, never thrown.
+ */
+const LOG_TTL_MS = 400 * 24 * 60 * 60 * 1000;
+function recordSend({ eventName, eventId, customData, origin, outcome, httpStatus }) {
+  try {
+    const mongoose = require("mongoose");
+    if (mongoose.connection?.readyState !== 1) return;
+    const MetaEventLog = require("../models/MetaEventLog");
+    const at = new Date();
+    const short = (v, n = 80) => (v === undefined || v === null || v === "" ? null : String(v).slice(0, n));
+    MetaEventLog.collection
+      .insertOne({
+        at,
+        eventName: short(eventName, 40) || "unknown",
+        leadType: short(customData?.lead_type, 40),
+        contentName: short(customData?.content_name, 60),
+        eventId: short(eventId, 120),
+        origin: origin === "browser_relay" ? "browser_relay" : "server",
+        outcome: short(outcome, 40) || "unknown",
+        httpStatus: Number.isFinite(httpStatus) ? httpStatus : null,
+        testEvent: Boolean(process.env.META_TEST_EVENT_CODE || process.env.FB_TEST_CODE),
+        expiresAt: new Date(at.getTime() + LOG_TTL_MS),
+      })
+      .catch(() => {});
+  } catch {
+    /* logging must never affect a send */
+  }
+}
+
 /** ZIP without the +4, which Meta ignores and which lowers the match rate. */
 function normalizeZip(zip) {
   const digits = String(zip || "").replace(/\D/g, "");
@@ -260,7 +293,12 @@ async function send({
   clientIp,
   userAgent,
   eventTime,
+  origin = "server",
 }) {
+  const done = (result) => {
+    recordSend({ eventName, eventId, customData, origin, outcome: result.sent ? "sent" : result.reason, httpStatus: result.status });
+    return result;
+  };
   try {
     const token = getToken();
     if (!token || !eventName) {
@@ -269,10 +307,10 @@ async function send({
         notConfiguredLoggedAt = Date.now();
         console.error(JSON.stringify({ event: "meta_capi_not_configured", eventName: eventName || null }));
       }
-      return { sent: false, reason: "not_configured" };
+      return done({ sent: false, reason: "not_configured" });
     }
     if (typeof fetch !== "function") {
-      return { sent: false, reason: "no_fetch" };
+      return done({ sent: false, reason: "no_fetch" });
     }
 
     const resolvedIp = clientIp || firstForwardedIp(req);
@@ -292,7 +330,7 @@ async function send({
 
     if (!hasUsableIdentity(userData)) {
       count(eventName, "no_identifiers");
-      return { sent: false, reason: "no_identifiers" };
+      return done({ sent: false, reason: "no_identifiers" });
     }
 
     const payload = {
@@ -335,14 +373,14 @@ async function send({
         detail = await response.text().catch(() => "");
       }
       logFailure(eventName, eventId, "http_error", { status: response.status, detail: detail.slice(0, 400) });
-      return { sent: false, reason: "http_error", status: response.status };
+      return done({ sent: false, reason: "http_error", status: response.status });
     }
 
     count(eventName, "sent");
-    return { sent: true, eventId: eventId || null };
+    return done({ sent: true, eventId: eventId || null });
   } catch (error) {
     logFailure(eventName, eventId, "exception", { message: String(error?.message || error).slice(0, 200) });
-    return { sent: false, reason: "exception" };
+    return done({ sent: false, reason: "exception" });
   }
 }
 

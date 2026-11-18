@@ -47,12 +47,12 @@ async function linkGuestFreeVisitIds(user, { via = "sign_in" } = {}) {
   if (phone) or.push({ phone }, { "freeVisitIdentity.phone": phone });
   if (email) or.push({ email }, { "freeVisitIdentity.email": canonical });
   const candidates = await Booking.find({
-    guestRequestId: { $ne: null },
+    // A guest Free Visit request, or a paid visit booked with no account (routes/guestBookings.js).
+    $and: [{ $or: [{ guestRequestId: { $ne: null } }, { guestCheckout: true }] }, { $or: or }],
     user: null,
     status: { $nin: CLOSED },
-    $or: or,
   })
-    .select("_id phone email freeVisitIdentity")
+    .select("_id phone email freeVisitIdentity guestCheckout guestRequestId")
     .limit(10)
     .lean();
 
@@ -70,17 +70,13 @@ async function linkGuestFreeVisitIds(user, { via = "sign_in" } = {}) {
       if (someoneElse) continue;
     }
 
+    // A paid guest checkout is not a free visit: its link is recorded on its own fields.
+    const linkFields = booking.guestCheckout && !booking.guestRequestId
+      ? { "guestCheckoutLink.userId": user._id, "guestCheckoutLink.linkedAt": new Date(), "guestCheckoutLink.linkedVia": String(via || "sign_in") }
+      : { "freeVisitIdentity.userId": user._id, "freeVisitIdentity.linkedAt": new Date(), "freeVisitIdentity.linkedVia": String(via || "sign_in") };
     const result = await Booking.updateOne(
       { _id: booking._id, user: null },
-      {
-        $set: {
-          user: user._id,
-          userId: user.userId || "",
-          "freeVisitIdentity.userId": user._id,
-          "freeVisitIdentity.linkedAt": new Date(),
-          "freeVisitIdentity.linkedVia": String(via || "sign_in"),
-        },
-      }
+      { $set: { user: user._id, userId: user.userId || "", ...linkFields } }
     );
     if (result.modifiedCount === 1) linked.push(booking._id);
   }
