@@ -1551,7 +1551,10 @@ async function loadTipUser(userId, booking, session) {
     .toLowerCase();
   if (!email) return null;
 
-  return User.findOne({ email, role: "customer" }).select("_id name email role").lean();
+  // Never an account whose email was only typed at checkout (utils/communications/unconfirmedEmailPolicy).
+  return User.findOne({ email, role: "customer", $or: [{ emailUnconfirmedAt: null }, { emailVerifiedAt: { $ne: null } }] })
+    .select("_id name email role")
+    .lean();
 }
 
 /** Tell the Fixter. Uses their own account email; no address is written here. */

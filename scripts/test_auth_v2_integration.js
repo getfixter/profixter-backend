@@ -704,7 +704,7 @@ async function run() {
     assert.equal(sent.filter((x) => x.channel === "email").length, 0, "no email code was sent");
   });
 
-  await test("never replaces an email, never takes another account's, never without a verified phone", async () => {
+  await test("corrects its own typed email, never replaces a proved one, never takes another account's, never without a verified phone", async () => {
     const other = await makePasswordCustomer({ email: "taken@example.com", phone: "" });
     const signup = await phoneSignIn("6315550182");
     const taken = await post("/api/auth/contact/email", { email: "TAKEN@example.com" }, signup.body.token);
@@ -712,10 +712,20 @@ async function run() {
     assert.equal(taken.body.code, "IDENTIFIER_IN_USE");
     const ok = await post("/api/auth/contact/email", { email: "mine@example.com" }, signup.body.token);
     assert.equal(ok.status, 200);
-    const again = await post("/api/auth/contact/email", { email: "different@example.com" }, signup.body.token);
+    // Edit on the final screen (2026-11-20): a still-typed email is corrected the same way.
+    const corrected = await post("/api/auth/contact/email", { email: "different@example.com" }, signup.body.token);
+    assert.equal(corrected.status, 200);
+    const fixedUp = await byPhone(signup);
+    assert.equal(fixedUp.email, "different@example.com");
+    assert.ok(fixedUp.emailUnconfirmedAt && !fixedUp.emailVerifiedAt, "still only typed");
+    const stolen = await post("/api/auth/contact/email", { email: "taken@example.com" }, signup.body.token);
+    assert.equal(stolen.body.code, "IDENTIFIER_IN_USE");
+    // Once proved, it is never replaced this way.
+    await User.updateOne({ _id: fixedUp._id }, { $set: { emailVerifiedAt: new Date(), emailUnconfirmedAt: null } });
+    const again = await post("/api/auth/contact/email", { email: "other@example.com" }, signup.body.token);
     assert.equal(again.status, 409);
     assert.equal(again.body.code, "EMAIL_ALREADY_SET");
-    assert.equal((await byPhone(signup)).email, "mine@example.com");
+    assert.equal((await byPhone(signup)).email, "different@example.com");
     const google = await User.create({ userId: "49990001", name: "No Phone", role: "customer", signupMethod: "google", email: "" });
     const token = jwt.sign({ id: String(google._id), tv: 0 }, process.env.JWT_SECRET);
     const refused = await post("/api/auth/contact/email", { email: "nophone@example.com" }, token);

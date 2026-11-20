@@ -173,13 +173,17 @@ function inboxOpensAccount(user) {
 /**
  * The email a phone-verified customer typed while buying, saved without a
  * second code (2026-11-19). Only onto an account with a verified phone and no
- * email at all - never replacing one - and never an address another account uses.
+ * email, or one whose email is itself still only typed (corrected with Edit) -
+ * never replacing a proved or older one - and never an address another account uses.
  */
 async function attachTypedEmail(user, email) {
   const clean = normalizeEmail(email);
   if (!clean || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean)) return { ok: false, code: "INVALID_EMAIL" };
   if (!user.phoneVerifiedAt) return { ok: false, code: "EMAIL_CODE_REQUIRED" };
-  if (String(user.email || "").trim()) return { ok: false, code: "EMAIL_ALREADY_SET" };
+  // Edit on the final screen (2026-11-20): an email that is still only typed may be replaced the same way; a proved or older one never.
+  const current = normalizeEmail(user.email);
+  if (current && !(user.emailUnconfirmedAt && !user.emailVerifiedAt)) return { ok: false, code: "EMAIL_ALREADY_SET" };
+  if (current === clean) return { ok: true, unchanged: true };
   const holder = await findCustomerByEmail(clean);
   if (holder && String(holder._id) !== String(user._id)) return { ok: false, code: "IDENTIFIER_IN_USE" };
   user.email = clean;

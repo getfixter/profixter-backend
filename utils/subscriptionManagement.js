@@ -1016,6 +1016,12 @@ async function syncLegacyUserSubscription(userId) {
 async function resolveUserStripeCustomerId(user) {
   if (user?.stripeCustomerId) return user.stripeCustomerId;
   if (!user?.email) return null;
+  /*
+   * 2026-11-20: never by an email only typed at checkout. A typo there would
+   * bind this account to a stranger's Stripe customer (a guest who paid with
+   * that address), and every later checkout would open on it.
+   */
+  if (user.emailUnconfirmedAt && !user.emailVerifiedAt) return null;
 
   const customers = await stripe.customers.list({
     email: String(user.email).toLowerCase(),

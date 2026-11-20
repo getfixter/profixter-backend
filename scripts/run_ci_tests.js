@@ -181,6 +181,8 @@ const SUITES = [
   // Convert to paid visit: a free visit paid as a membership or One-Time visit, in place, once (in-memory replica set).
   "test_free_visit_conversion.js",
   "test_membership_signup_once.js",
+  // An email only typed at checkout: billing notices without private details, visit updates as a note, the rest held (in-memory MongoDB).
+  "test_unconfirmed_email_policy.js",
 ];
 
 /**

@@ -70,7 +70,12 @@ async function findEmployeeByEmail(email, options) {
  * would be a behaviour change rather than a safety improvement.
  */
 async function findBillingUserByEmail(email, options) {
-  const users = await findUsersByEmail(email, options);
+  /*
+   * 2026-11-20: an account whose email was only typed at checkout is never found
+   * by that email here - a payment someone else made with the address is not
+   * theirs. Their own checkouts carry their user id.
+   */
+  const users = (await findUsersByEmail(email, options)).filter((u) => !(u.emailUnconfirmedAt && !u.emailVerifiedAt));
   if (!users.length) return null;
   return users.find((user) => !isEmployeeRecord(user)) || users[0];
 }

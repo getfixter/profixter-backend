@@ -1124,6 +1124,24 @@ async function sendRaw({
     throw new Error(`Missing "to" email for subject "${subject}"`);
   }
 
+  /*
+   * An address only typed at checkout, never proved (2026-11-20): what may go
+   * there is decided in utils/communications/unconfirmedEmailPolicy. sendTx has
+   * already decided (with the template's variables); every other caller is
+   * decided here, by its template key.
+   */
+  if (!logContext?.unconfirmedChecked) {
+    const gate = await unconfirmedGate(cleanTo, logContext?.templateKey);
+    if (gate.hold) return gate.result;
+    if (gate.notice) {
+      subject = gate.notice.subject;
+      html = frame(gate.notice.html);
+      text = gate.notice.text;
+      attachments = undefined;
+      logContext = { ...logContext, unconfirmedNotice: true };
+    }
+  }
+
   const plainText = text || toText(html);
   const mail = {
     from,
@@ -1229,9 +1247,44 @@ async function serviceEmailSwitchedOff(to) {
   return Boolean(await User.exists({ email, role: { $ne: "employee" }, "emailPreferences.serviceEnabled": false }));
 }
 
+/*
+ * The unconfirmed-address rule for one send: { hold, result } when nothing may
+ * go, { notice } when a short note replaces it, { redact } with the fields to
+ * leave out, or {} to send as it is.
+ */
+async function unconfirmedGate(to, templateKey) {
+  const policy = require("./communications/unconfirmedEmailPolicy");
+  let unconfirmed = false;
+  try {
+    unconfirmed = await policy.recipientIsUnconfirmed(to);
+  } catch {
+    unconfirmed = false;
+  }
+  if (!unconfirmed) return {};
+  const decision = policy.policyFor(templateKey);
+  if (decision.action === "send") return {};
+  console.log(JSON.stringify({ event: "unconfirmed_email_policy", templateKey: templateKey || "", action: decision.action }));
+  if (decision.action === "redact") return { redact: decision.fields };
+  if (decision.action === "notice") return { notice: policy.noticeEmail({ payment: decision.payment, accountUrl: `${URLS.site}/signin` }) };
+  return { hold: true, result: { suppressed: true, reason: "email_unconfirmed" } };
+}
+
 async function sendTx(key, to, vars = {}, opts = {}) {
   const t = TEMPLATES[key];
   if (!t) throw new Error(`Unknown template: ${key}`);
+
+  const gate = await unconfirmedGate(to, key);
+  if (gate.hold) return gate.result;
+  if (gate.notice) {
+    return sendRaw({
+      to,
+      subject: gate.notice.subject,
+      html: frame(gate.notice.html),
+      text: gate.notice.text,
+      logContext: { templateKey: key, source: "sendTx", ...opts.logContext, unconfirmedChecked: true, unconfirmedNotice: true },
+    });
+  }
+  if (gate.redact) vars = require("./communications/unconfirmedEmailPolicy").redactVars(vars, gate.redact);
 
   if (SERVICE_EMAIL_KEYS.has(key) && (await serviceEmailSwitchedOff(to).catch(() => false))) {
     console.log(JSON.stringify({ event: "service_email_suppressed", templateKey: key, reason: "service_email_off" }));
@@ -1271,6 +1324,7 @@ async function sendTx(key, to, vars = {}, opts = {}) {
       templateKey: key,
       source: "sendTx",
       ...opts.logContext,
+      unconfirmedChecked: true,
     },
   });
 }
