@@ -107,6 +107,19 @@ const BookingSchema = new mongoose.Schema({
   guestCheckout: { type: Boolean, default: false, index: true },
   /* The Stripe Checkout Session this paid visit was opened with (guest checkouts; the status page reads it). */
   checkoutSessionId: { type: String, default: undefined, index: true, sparse: true },
+  /*
+   * A paid visit's payment, settled once (routes/webhook.js, 2026-11-19).
+   * claimedAt is a short lease: the webhook, a Stripe retry and the hold sweep
+   * can all reach the same paid page, and only the one holding the lease
+   * records it and sends the emails. declinedCount/lastDeclinedAt count cards
+   * Stripe refused while the page stayed open; a decline never cancels.
+   */
+  paymentSettlement: {
+    sessionId: { type: String, default: "" },
+    claimedAt: { type: Date, default: null },
+    declinedCount: { type: Number, default: 0 },
+    lastDeclinedAt: { type: Date, default: null },
+  },
   /* What Stripe charged for a guest checkout (it has no VisitEntitlement): Admin's money block reads it. */
   guestPayment: {
     amountCents: { type: Number, default: null },

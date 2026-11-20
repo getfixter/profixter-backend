@@ -70,6 +70,12 @@ const {
   reservationIssueFromPromotionError,
 } = require("../utils/oneTimeVisitPaymentFlow");
 const {
+  claimPaidVisitSettlement,
+  recordPaidVisitDecline,
+  releasePaidVisitClaim,
+  sessionIsPaid,
+} = require("../utils/paidVisitSettlement");
+const {
   sendAdminEventNotification,
 } = require("../utils/adminLeadNotification");
 const { adminLink } = require("../utils/operationalEmail");
@@ -998,26 +1004,69 @@ async function reportGiftPurchase(session, gift) {
   }
 }
 
+/*
+ * Stripe says a visit page was paid and there is no booking to record it on
+ * (2026-11-19). Before, this was a log line only. The owner is told, once per
+ * delivery that reaches here, with what Stripe knows; nothing is refunded or
+ * booked automatically.
+ */
+async function alertPaidVisitWithoutBooking(session, productLabel) {
+  if (!sessionIsPaid(session)) return;
+  try {
+    await sendAdminEventNotification({
+      subject: `Paid ${productLabel} with no booking - needs attention`,
+      heading: "Payment received, booking not found",
+      templateKey: "admin_paid_visit_without_booking",
+      source: "stripeWebhookPaidVisit",
+      who: session.customer_details?.name || session.customer_email || "Customer",
+      highlight: formatAdminMoney(session.amount_total, session.currency || "usd"),
+      customerEmail: session.customer_details?.email || session.customer_email || "",
+      replyToEmail: session.customer_details?.email || session.customer_email || "",
+      fields: [
+        ["Product", productLabel],
+        ["Stripe checkout", session.id || ""],
+        ["Booking id in Stripe", session.metadata?.bookingId || session.client_reference_id || "(none)"],
+        ["Needs attention", "Stripe charged the customer but no booking matches. Find or create the visit, or refund in Stripe."],
+      ],
+    }, { logContext: { stripeSessionId: session.id } });
+  } catch (error) {
+    logWebhook("error", "paid_visit_without_booking_alert_failed", { stripeSessionId: session.id, message: error.message });
+  }
+}
+
 async function handleOneTimeCheckoutCompleted(session) {
   const metadata = session.metadata || {};
   const bookingId = metadata.bookingId || session.client_reference_id || null;
+  if (!bookingId || !mongoose.isValidObjectId(String(bookingId))) {
+    logWebhook("error", "one_time_checkout_missing_booking_id", { stripeSessionId: session.id });
+    await alertPaidVisitWithoutBooking(session, "One-Time Visit");
+    return null;
+  }
+  /* Complete but not yet paid (a delayed payment method): async_payment_succeeded settles it, the hold stays. */
+  if (!sessionIsPaid(session)) {
+    logWebhook("info", "one_time_checkout_payment_processing", { stripeSessionId: session.id, bookingId: String(bookingId) });
+    return { bookingId: String(bookingId), awaitingPayment: true };
+  }
+  const claim = await claimPaidVisitSettlement(Booking, bookingId, session.id);
+  if (claim.state === "already_paid") return { bookingId: String(bookingId), duplicate: true };
+  if (claim.state === "busy") throw new Error("This paid visit is being recorded by another delivery; Stripe will retry.");
+  if (claim.state === "missing") {
+    logWebhook("error", "one_time_checkout_booking_not_found", { stripeSessionId: session.id, bookingId });
+    await alertPaidVisitWithoutBooking(session, "One-Time Visit");
+    return null;
+  }
+  try {
+    return await recordOneTimeCheckoutPaid(session, claim.booking);
+  } catch (error) {
+    await releasePaidVisitClaim(Booking, claim.booking._id);
+    throw error;
+  }
+}
+
+async function recordOneTimeCheckoutPaid(session, booking) {
+  const metadata = session.metadata || {};
+  const bookingId = String(booking._id);
   const entitlementId = metadata.entitlementId || null;
-
-  if (!bookingId) {
-    logWebhook("error", "one_time_checkout_missing_booking_id", {
-      stripeSessionId: session.id,
-    });
-    return null;
-  }
-
-  const booking = await Booking.findById(bookingId);
-  if (!booking) {
-    logWebhook("error", "one_time_checkout_booking_not_found", {
-      stripeSessionId: session.id,
-      bookingId,
-    });
-    return null;
-  }
 
   /*
    * A visit Admin booked for somebody with no account (booking.adminGuest)
@@ -1031,6 +1080,8 @@ async function handleOneTimeCheckoutCompleted(session) {
       stripeSessionId: session.id,
       bookingId,
     });
+    await releasePaidVisitClaim(Booking, booking._id);
+    await alertPaidVisitWithoutBooking(session, "One-Time Visit");
     return null;
   }
 
@@ -1287,23 +1338,36 @@ async function sendFullDayPaidEmails({ booking, user, entitlement, session }) {
 async function handleFullDayCheckoutCompleted(session) {
   const metadata = session.metadata || {};
   const bookingId = metadata.bookingId || session.client_reference_id || null;
+  if (!bookingId || !mongoose.isValidObjectId(String(bookingId))) {
+    logWebhook("error", "full_day_checkout_missing_booking_id", { stripeSessionId: session.id });
+    await alertPaidVisitWithoutBooking(session, "Full Day Fixter");
+    return null;
+  }
+  /* Complete but not yet paid (a delayed payment method): async_payment_succeeded settles it, the hold stays. */
+  if (!sessionIsPaid(session)) {
+    logWebhook("info", "full_day_checkout_payment_processing", { stripeSessionId: session.id, bookingId: String(bookingId) });
+    return { bookingId: String(bookingId), awaitingPayment: true };
+  }
+  const claim = await claimPaidVisitSettlement(Booking, bookingId, session.id);
+  if (claim.state === "already_paid") return { bookingId: String(bookingId), duplicate: true };
+  if (claim.state === "busy") throw new Error("This paid visit is being recorded by another delivery; Stripe will retry.");
+  if (claim.state === "missing") {
+    logWebhook("error", "full_day_checkout_booking_not_found", { stripeSessionId: session.id, bookingId });
+    await alertPaidVisitWithoutBooking(session, "Full Day Fixter");
+    return null;
+  }
+  try {
+    return await recordFullDayCheckoutPaid(session, claim.booking);
+  } catch (error) {
+    await releasePaidVisitClaim(Booking, claim.booking._id);
+    throw error;
+  }
+}
+
+async function recordFullDayCheckoutPaid(session, booking) {
+  const metadata = session.metadata || {};
+  const bookingId = String(booking._id);
   const entitlementId = metadata.entitlementId || null;
-
-  if (!bookingId) {
-    logWebhook("error", "full_day_checkout_missing_booking_id", {
-      stripeSessionId: session.id,
-    });
-    return null;
-  }
-
-  const booking = await Booking.findById(bookingId);
-  if (!booking) {
-    logWebhook("error", "full_day_checkout_booking_not_found", {
-      stripeSessionId: session.id,
-      bookingId,
-    });
-    return null;
-  }
 
   /*
    * A visit Admin booked for somebody with no account (booking.adminGuest)
@@ -1317,6 +1381,8 @@ async function handleFullDayCheckoutCompleted(session) {
       stripeSessionId: session.id,
       bookingId,
     });
+    await releasePaidVisitClaim(Booking, booking._id);
+    await alertPaidVisitWithoutBooking(session, "Full Day Fixter");
     return null;
   }
 
@@ -2799,6 +2865,13 @@ module.exports = async (req, res) => {
 
       case "checkout.session.async_payment_succeeded":
       case "checkout.session.async_payment_failed":
+        // A delayed payment on a paid visit's page: paid settles it once; failed ends it (the page is closed by then).
+        if (isOneTimeCheckoutSession(event.data.object) || isFullDayCheckoutSession(event.data.object)) {
+          if (event.type === "checkout.session.async_payment_succeeded") syncResult = await handleCheckoutCompleted(event.data.object, event.id);
+          else if (isOneTimeCheckoutSession(event.data.object)) syncResult = await handleOneTimeCheckoutExpired(event.data.object, "failed");
+          else syncResult = await handleFullDayCheckoutExpired(event.data.object, "failed");
+          break;
+        }
         syncResult = await extraCharges.handleCheckoutSession(event.data.object);
         break;
 
@@ -2813,10 +2886,13 @@ module.exports = async (req, res) => {
           metadata: event.data.object?.metadata,
           client_reference_id: event.data.object?.metadata?.bookingId || null,
         };
-        if (failedKind === ONE_TIME_PRODUCT_KIND) {
-          syncResult = await handleOneTimeCheckoutExpired(failedSession, "failed");
-        } else if (failedKind === FULL_DAY_PRODUCT_KIND) {
-          syncResult = await handleFullDayCheckoutExpired(failedSession, "failed");
+        /*
+         * A declined card on a One-Time or Full Day page. Stripe keeps the page
+         * open for another card, so the booking and its held time stay
+         * (utils/paidVisitSettlement). The page's own expiry releases them.
+         */
+        if (failedKind === ONE_TIME_PRODUCT_KIND || failedKind === FULL_DAY_PRODUCT_KIND) {
+          syncResult = await recordPaidVisitDecline(Booking, failedSession.client_reference_id);
         }
         break;
       }

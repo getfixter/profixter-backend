@@ -274,6 +274,15 @@ const NON_REGISTRY_EMAILS = {
     trigger: "A One-Time Visit payment succeeds.",
     source: "routes/webhook.js",
   },
+  admin_paid_visit_without_booking: {
+    label: "Admin: paid visit with no booking",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Internal",
+    channelClass: "internal",
+    trigger: "Stripe reports a paid One-Time or Full Day page and no booking (or contact) matches it.",
+    source: "routes/webhook.js",
+  },
   admin_full_day_visit_paid: {
     label: "Admin: Full Day paid",
     category: "B",

@@ -48,6 +48,7 @@ const { buildSignupAddress } = require("../utils/addressVerification");
 const { MAX_PHOTO_BYTES, MAX_PHOTOS, photoUpload, sanitizeUploadedPhotos } = require("../utils/imageSanitizer");
 const { hasStripeSecretKey, stripe } = require("../utils/subscriptionManagement");
 const { getOneTimeVisitSettings, validateOneTimeTask } = require("../utils/oneTimeVisitSettings");
+const { paidVisitCheckoutTimes } = require("../utils/oneTimeVisitPaymentFlow");
 const { getFullDayVisitSettings } = require("../utils/fullDayVisitSettings");
 const {
   FULL_DAY_PRODUCT_KIND,
@@ -177,7 +178,7 @@ async function reuseOpenCheckout(clientKey) {
   return null;
 }
 
-async function openCheckout({ booking, guest, priceId, productKind, holdExpiresAt, cancelUrl, req }) {
+async function openCheckout({ booking, guest, priceId, productKind, pageExpiresAt, cancelUrl, req }) {
   const metadata = {
     productKind,
     bookingId: String(booking._id),
@@ -197,7 +198,7 @@ async function openCheckout({ booking, guest, priceId, productKind, holdExpiresA
     customer_email: guest.email,
     success_url: `${CLIENT_URL}/book/confirmation?booking_id=${booking._id}&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: cancelUrl,
-    expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
+    expires_at: Math.floor(pageExpiresAt.getTime() / 1000),
   });
   if (!session?.url) throw new Error("Stripe checkout did not return a redirect URL");
   await Booking.updateOne({ _id: booking._id }, { $set: { checkoutSessionId: session.id } });
@@ -282,7 +283,7 @@ router.post("/one-time/checkout", ipLimit, photoUpload(upload), sanitizeUploaded
     const start = /^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}$/.test(time) ? moment.tz(`${date} ${time}`, "YYYY-MM-DD HH:mm", true, TZ) : null;
     if (!start?.isValid() || start.isBefore(moment())) throw new GuestError(409, "SLOT_UNAVAILABLE", "That time has passed. Pick another - everything else is saved.", "when");
 
-    const holdExpiresAt = new Date(Date.now() + settings.holdMinutes * 60 * 1000);
+    const { pageExpiresAt, holdExpiresAt } = paidVisitCheckoutTimes(settings.holdMinutes);
     const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
     const { uploadBookingImages } = require("./bookings");
     const photos = await storePhotos(uploadBookingImages, { files: req.files || [], bookingDate: start.toDate(), bookingNumber });
@@ -312,7 +313,7 @@ router.post("/one-time/checkout", ipLimit, photoUpload(upload), sanitizeUploaded
       guest: pre.guest,
       priceId: settings.stripePriceId,
       productKind: "one_time_handyman_visit",
-      holdExpiresAt,
+      pageExpiresAt,
       cancelUrl: `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`,
       req,
     });
@@ -345,7 +346,7 @@ router.post("/full-day/checkout", ipLimit, photoUpload(upload), sanitizeUploaded
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new GuestError(400, "DATE_REQUIRED", "Please choose a date.", "date");
     await assertFullDayBookable({ date });
 
-    const holdExpiresAt = new Date(Date.now() + settings.holdMinutes * 60 * 1000);
+    const { pageExpiresAt, holdExpiresAt } = paidVisitCheckoutTimes(settings.holdMinutes);
     const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
     const { uploadBookingImages } = require("./bookings");
     const photos = await storePhotos(uploadBookingImages, { files: req.files || [], bookingDate: new Date(`${date}T12:00:00Z`), bookingNumber });
@@ -371,7 +372,7 @@ router.post("/full-day/checkout", ipLimit, photoUpload(upload), sanitizeUploaded
       guest: pre.guest,
       priceId: settings.stripePriceId,
       productKind: FULL_DAY_PRODUCT_KIND,
-      holdExpiresAt,
+      pageExpiresAt,
       cancelUrl: `${CLIENT_URL}/book?visit=full-day&canceled=true&booking_id=${booking._id}`,
       req,
     });

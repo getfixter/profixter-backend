@@ -218,7 +218,7 @@ async function main() {
       const reservation = await BookingSlotReservation.findById(b.slotReservationId).lean();
       assert.strictEqual(reservation.status, "held");
     });
-    await check("Stripe gets the email, the booking and no account ids; the page expires with the hold", async () => {
+    await check("Stripe gets the email, the booking and no account ids; the page expires just before the hold", async () => {
       const s = sessions.get(first.body.url.split("/").pop());
       assert.strictEqual(s.config.customer_email, "rosa@mailbox.org");
       assert.strictEqual(s.config.metadata.guestCheckout, "true");
@@ -228,7 +228,8 @@ async function main() {
       assert.ok(s.config.cancel_url.includes("/book/handyman?canceled=1"));
       const b = await Booking.findById(first.body.bookingId).lean();
       assert.strictEqual(b.checkoutSessionId, s.id);
-      assert.strictEqual(s.config.expires_at, Math.floor(new Date(b.paymentHoldExpiresAt).getTime() / 1000));
+      // The page ends 10 minutes before the hold (utils/oneTimeVisitPaymentFlow PAYMENT_HOLD_GRACE_MINUTES).
+      assert.strictEqual(Math.floor(new Date(b.paymentHoldExpiresAt).getTime() / 1000) - s.config.expires_at, 600);
     });
     await check("the same press again reopens the same page - no second booking or hold", async () => {
       const again = await call("POST", "/api/bookings/guest/one-time/checkout", { form: formOf(guest(), { photos: 1 }) });

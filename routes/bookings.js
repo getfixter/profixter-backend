@@ -138,6 +138,7 @@ const {
   publicOneTimeVisitSettings,
   validateOneTimeTask,
 } = require("../utils/oneTimeVisitSettings");
+const { paidVisitCheckoutTimes } = require("../utils/oneTimeVisitPaymentFlow");
 const {
   getFullDayVisitSettings,
   publicFullDayVisitSettings,
@@ -1029,9 +1030,8 @@ router.post(
         return res.status(400).json({ message: "Invalid date." });
       }
 
-      const holdExpiresAt = new Date(
-        Date.now() + oneTimeSettings.holdMinutes * 60 * 1000
-      );
+      // The hold outlives the Stripe page by a short grace (utils/oneTimeVisitPaymentFlow).
+      const { pageExpiresAt, holdExpiresAt } = paidVisitCheckoutTimes(oneTimeSettings.holdMinutes);
       legacyCfg = useReservationEngine ? null : await CalendarConfig.findOne().lean();
       if (!useReservationEngine) {
         const capacity = Math.max(1, Number(legacyCfg?.maxConcurrent ?? 1));
@@ -1184,7 +1184,7 @@ router.post(
         cancel_url: returnToHandyman
           ? `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`
           : `${CLIENT_URL}/book?visit=additional&canceled=true&booking_id=${booking._id}`,
-        expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
+        expires_at: Math.floor(pageExpiresAt.getTime() / 1000),
       };
 
       if (stripeCustomerId) {
@@ -1937,7 +1937,7 @@ router.post(
 
       await assertFullDayBookable({ date });
 
-      const holdExpiresAt = new Date(Date.now() + settings.holdMinutes * 60 * 1000);
+      const { pageExpiresAt, holdExpiresAt } = paidVisitCheckoutTimes(settings.holdMinutes);
       const bookingNumber = Math.floor(10000000 + Math.random() * 90000000).toString();
       const uploadResult = await uploadBookingImages({
         files: req.files || [],
@@ -2028,7 +2028,7 @@ router.post(
         payment_intent_data: { metadata },
         success_url: `${CLIENT_URL}/book/confirmation?booking_id=${booking._id}&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${CLIENT_URL}/book?visit=full-day&canceled=true&booking_id=${booking._id}`,
-        expires_at: Math.floor(holdExpiresAt.getTime() / 1000),
+        expires_at: Math.floor(pageExpiresAt.getTime() / 1000),
       };
       if (stripeCustomerId) sessionConfig.customer = stripeCustomerId;
       else sessionConfig.customer_email = me.email;

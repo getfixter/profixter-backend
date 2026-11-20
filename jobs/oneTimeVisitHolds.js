@@ -10,6 +10,19 @@ const {
   expiredOneTimeHoldBookingUpdate,
 } = require("../utils/oneTimeVisitPaymentFlow");
 const { releaseFullDayCapacity } = require("../utils/fullDayVisitService");
+const { decideExpiredHold } = require("../utils/paidVisitSettlement");
+
+/* The Stripe page a pending paid visit was opened with: on the booking (guest) or its entitlement (signed in). */
+async function checkoutSessionIdFor(booking, VisitEntitlementModel) {
+  if (booking.checkoutSessionId) return booking.checkoutSessionId;
+  const query = booking.entitlementId ? { _id: booking.entitlementId } : { bookingId: booking._id };
+  const entitlement = await VisitEntitlementModel.findOne(query).select("stripeCheckoutSessionId").lean();
+  return entitlement?.stripeCheckoutSessionId || "";
+}
+
+function defaultStripe() {
+  return require("../utils/subscriptionManagement").stripe;
+}
 
 const CLEANUP_INTERVAL_MS = Math.max(
   60_000,
@@ -56,9 +69,37 @@ async function expireOneTimeVisitHolds(now = new Date(), dependencies = {}) {
     paymentHoldExpiresAt: { $lte: now },
   }).limit(100);
 
+  /*
+   * Stripe is asked first (utils/paidVisitSettlement, 2026-11-19): a page that
+   * was paid is recorded instead of canceled, one still open is closed at
+   * Stripe, and a Stripe that cannot be read defers the release.
+   */
+  const retrieveSession = dependencies.retrieveCheckoutSession || ((id) => defaultStripe().checkout.sessions.retrieve(id));
+  const expireSession = dependencies.expireCheckoutSession || ((id) => defaultStripe().checkout.sessions.expire(id));
+  const settlePaidSession = dependencies.settlePaidSession || ((session) => require("../routes/webhook").handleCheckoutCompleted(session, null));
+  const sessionIdFor = dependencies.checkoutSessionIdFor || ((booking) => checkoutSessionIdFor(booking, VisitEntitlementModel));
+  const tally = dependencies.tally || {};
+
   let expired = 0;
   for (const booking of bookings) {
     try {
+      const decision = await decideExpiredHold({
+        booking,
+        sessionId: await sessionIdFor(booking),
+        now,
+        retrieveSession,
+        expireSession,
+      });
+      if (decision.action === "settle") {
+        await settlePaidSession(decision.session);
+        tally.settled = (tally.settled || 0) + 1;
+        console.warn(JSON.stringify({ event: "paid_visit_settled_by_sweep", bookingId: String(booking._id), stripeSessionId: decision.session?.id || null }));
+        continue;
+      }
+      if (decision.action === "wait") {
+        tally.deferred = (tally.deferred || 0) + 1;
+        continue;
+      }
       if (booking.bookingType === "full_day_visit") {
         // Releases the whole workday under either engine. The single-slot
         // release below would give back one hour of a day-long hold.

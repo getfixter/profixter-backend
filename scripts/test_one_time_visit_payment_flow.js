@@ -155,6 +155,8 @@ async function testExpiredHoldRelease() {
     BookingModel,
     VisitEntitlementModel,
     reservationEngineEnabled: () => false,
+    // A hold with no Stripe page on record is released, as before the 2026-11-19 reconciliation.
+    checkoutSessionIdFor: async () => "",
     releaseLegacySlot: async (releasedBooking) => {
       assert.equal(releasedBooking._id, expiredBooking._id);
       calls.releaseLegacySlot += 1;
