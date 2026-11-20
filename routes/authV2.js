@@ -407,8 +407,22 @@ router.post("/otp/phone/verify", async (req, res) => {
     }
     if (verified.length > 1) return res.json(chooseAccountResponse(phone, verified));
 
-    // 2. Accounts that only TYPED this number: never opened on the phone alone.
+    // 2. Accounts that only TYPED this number: never opened on the phone alone...
     const typed = await accounts.findCustomersWithUnverifiedPhone(phone);
+    /*
+     * ...except one whose number staff typed on a call with this customer
+     * (Admin created the account, or changed the number), 2026-11-20. Staff
+     * read it back on the call and the welcome text went to it, so the code
+     * proves the same thing the temporary password (that number, texted to it)
+     * used to. Only when it is the one account listing the number; otherwise
+     * the usual "link to your account" step decides.
+     */
+    if (typed.length === 1 && accounts.staffPhoneUnproved(typed[0])) {
+      const staffMade = typed[0];
+      const attached = await accounts.attachVerifiedPhone(staffMade, phone);
+      if (!attached.ok) throw new AuthFlowError(attached.code);
+      return res.json(await sessionResponse(staffMade, { req }));
+    }
     if (typed.length) {
       const only = typed.length === 1 ? typed[0] : null;
       return res.json({

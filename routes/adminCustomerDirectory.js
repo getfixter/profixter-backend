@@ -159,10 +159,10 @@ function noteDto(note) {
  * on a first password (a temporary one issued, or created by staff with none).
  */
 async function resendAccessEligible(user) {
-  if (!user?.email) return false;
-  const access = await User.findById(user._id).select("password temporaryPassword.issuedAt signupMethod").lean();
+  if (!user?.phone && !user?.email) return false;
+  const access = await User.findById(user._id).select("password temporaryPassword.issuedAt temporaryPassword.expiresAt signupMethod adminCreated phoneVerifiedAt").lean();
   if (!access) return false;
-  return temporaryPassword.isIssued(access) || (access.signupMethod === "admin" && !access.password);
+  return require("../utils/admin/customerAccess").resendAccessWaiting(access);
 }
 
 function allowedActionsFor(req, user, { blocked, resendEligible = false }) {

@@ -657,8 +657,8 @@ const TEMPLATES = {
    * expires (utils/auth/temporaryPassword.js). The first text this number
    * gets from us, so it carries the opt-out.
    */
-  ADMIN_ACCOUNT_CREATED: ({ tempPassword }) =>
-    `${BRAND}: your account is ready. At ${SITE}/signin enter your mobile number, then temp password ${tempPassword || "your phone no."}, and set a new one. Reply STOP to opt out.`,
+  ADMIN_ACCOUNT_CREATED: () =>
+    `${BRAND}: your account is ready. Sign in at ${SITE}/signin with this mobile number - we'll text you a code. Reply STOP to opt out.`,
 
   /* Admin sent a link to pay for something the customer asked for on the phone. */
   PAYMENT_LINK: ({ itemLabel, payUrl }) =>

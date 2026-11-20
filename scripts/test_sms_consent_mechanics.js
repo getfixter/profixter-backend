@@ -1151,6 +1151,11 @@ async function main() {
      * typed (routes/auth.js login needs a code to the phone too). It now says to
      * enter the mobile number, then the temp password. Only that type changed;
      * still one GSM-7 segment (160 chars with the placeholder). For owner approval.
+     *
+     * Re-pinned again 2026-11-20 (later): no temporary password any more. A code
+     * to the staff-typed number signs the customer in (routes/authV2.js), so the
+     * text says "Sign in ... with this mobile number - we'll text you a code"
+     * (137 chars, one segment). Only ADMIN_ACCOUNT_CREATED changed. For owner approval.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1158,7 +1163,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "4f75284bd842c8d1fc0458c9f203b5d240c8e02312d826017c6451c68c559a7f",
+      "54f65dde766d6555a2d29d511038be92a8cb1efce5faa50998df814789da7fc1",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

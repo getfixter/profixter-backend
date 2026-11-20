@@ -19,8 +19,10 @@ const { setCommunicationPreference } = require("./communicationControls");
  *    refused and the existing account is pointed to; a phone already on a
  *    customer account needs Admin to confirm it is a different person.
  *
- * The temporary password, the welcome email and the welcome text are the
- * customer's way in (utils/auth/temporaryPassword.js).
+ * The welcome email and text tell the customer how in: their mobile number
+ * and a code (2026-11-20; routes/authV2.js signs a staff-typed number in
+ * directly). No temporary password is issued any more; one issued before
+ * still retires at the first code sign-in (utils/auth/temporaryPassword.js).
  */
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -42,33 +44,20 @@ function firstNameOf(user) {
   return first ? first.charAt(0).toUpperCase() + first.slice(1) : "there";
 }
 
-function formatExpiry(date) {
-  return new Date(date).toLocaleString("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
-function renderAccessEmail({ user, plain, expiresAt }) {
+function renderAccessEmail({ user }) {
   const signIn = "https://www.profixter.com/signin";
   const e = mail.escapeHtml;
   const p = (t) => `<p style="margin:0 0 16px;">${t}</p>`;
   /*
-   * 2026-11-20: no temporary password in the email. Staff typed this address;
-   * if it is wrong, a stranger's inbox would hold the email and the password
-   * (the customer's phone number) together. The password goes by text to the
-   * phone, and works together with a code to that phone (routes/auth.js login).
+   * 2026-11-20: no password at all. Staff typed this address, so it carries
+   * nothing that opens the account: the way in is a code to the customer's phone.
    */
-  void plain;
+  const how = "To sign in, choose Sign in and enter your mobile number. We'll text you a code - that's all you need.";
   const html = mail.frame(
     `${p(`Hi ${e(firstNameOf(user))},`)}
      ${p("Your Profixter account has been created, as we discussed on the phone.")}
-     ${p("To sign in, choose Sign in and enter your mobile number. We'll text you a code, then enter the temporary password we sent you by text, and create your own password.")}
-     ${p(`The temporary password stops working on ${e(formatExpiry(expiresAt))} (New York time). After that, sign in with a code to your mobile number or call us.`)}
+     ${p(how)}
      ${mail.btn(signIn, "Sign in")}
      <p style="margin:20px 0 0;">The Profixter Team<br/><a href="https://www.profixter.com">https://www.profixter.com</a></p>`,
     { preheader: "Sign in with your mobile number." }
@@ -76,8 +65,7 @@ function renderAccessEmail({ user, plain, expiresAt }) {
   const text = [
     `Hi ${firstNameOf(user)},`,
     "Your Profixter account has been created, as we discussed on the phone.",
-    "To sign in, choose Sign in and enter your mobile number. We'll text you a code, then enter the temporary password we sent you by text, and create your own password.",
-    `The temporary password stops working on ${formatExpiry(expiresAt)} (New York time). After that, sign in with a code to your mobile number or call us.`,
+    how,
     `Sign in: ${signIn}`,
     "The Profixter Team\nhttps://www.profixter.com",
   ].join("\n\n");
@@ -89,15 +77,16 @@ function renderAccessEmail({ user, plain, expiresAt }) {
  * The SMS dedupe key carries the issue time, so a retry of the same issue
  * cannot text twice while a deliberate resend (a new issue) can.
  */
-async function sendAccessDetails(user, { plain, expiresAt, deps = {} } = {}) {
+async function sendAccessDetails(user, { deps = {} } = {}) {
   const sendEmail = deps.sendRaw || mail.sendRaw;
   const sendSms = deps.sendTransactionalSms || sendTransactionalSms;
-  const issuedAt = user.temporaryPassword?.issuedAt ? new Date(user.temporaryPassword.issuedAt).getTime() : Date.now();
+  // Each send is its own (a resend is deliberate); the key only stops a retry of this one from texting twice.
+  const issuedAt = Date.now();
   const result = { email: null, sms: null };
 
   if (user.email) {
     try {
-      const { subject, html, text } = renderAccessEmail({ user, plain, expiresAt });
+      const { subject, html, text } = renderAccessEmail({ user });
       await sendEmail({
         to: user.email,
         subject,
@@ -129,7 +118,7 @@ async function sendAccessDetails(user, { plain, expiresAt, deps = {} } = {}) {
         dedupeKey: `ADMIN_ACCOUNT_CREATED:${user._id}:${issuedAt}`,
         user,
         phone: user.phone,
-        vars: { name: user.name, tempPassword: plain },
+        vars: { name: user.name },
         source: "adminCustomerCreate",
       });
       result.sms = String(sms?.status || "unknown");
@@ -225,11 +214,13 @@ async function createCustomerByAdmin({ body, admin, req = null, deps = {} }) {
     employeePosition: null,
     isActive: true,
     signupMethod: "admin",
-    authProviders: ["password"],
+    authProviders: [],
     addresses: input.addresses,
     adminCreated: { at: now, by: admin?._id || null, byName: String(admin?.name || admin?.email || "").slice(0, 120) },
     // Typed by staff: opens nothing until the customer proves it (utils/auth/accounts inboxOpensAccount).
     emailEnteredByStaffAt: input.email ? now : null,
+    // Typed by staff on the call: a code to it signs the customer in (routes/authV2.js phone verify).
+    phoneEnteredByStaffAt: now,
   });
   if (user.addresses.length) {
     user.defaultAddressId = user.addresses[0]._id;
@@ -240,7 +231,7 @@ async function createCustomerByAdmin({ body, admin, req = null, deps = {} }) {
     user.zip = primary.zip;
     user.county = primary.county || "";
   }
-  const { plain, expiresAt } = await temporaryPassword.issue(user, { admin, now });
+  // 2026-11-20: no temporary password. The customer signs in with a code to this number.
   await user.save();
 
   /*
@@ -269,36 +260,43 @@ async function createCustomerByAdmin({ body, admin, req = null, deps = {} }) {
   }
 
   const fresh = await User.findById(user._id);
-  const delivery = await sendAccessDetails(fresh, { plain, expiresAt, deps });
+  const delivery = await sendAccessDetails(fresh, { deps });
   return {
     user: fresh,
     delivery,
-    expiresAt,
+    expiresAt: null,
     warnings: input.outsideServiceArea.length ? ["address_outside_service_area"] : [],
   };
 }
 
-/** Issue a fresh temporary password and send the details again. */
+/** Send the sign-in steps again (2026-11-20: no password; a code to their phone is the way in). */
 async function resendAccess({ userId, admin, deps = {} }) {
+  void admin;
   const user = await User.findById(userId);
   if (!user) throw new CustomerAccessError("NOT_FOUND", "Customer not found.", 404);
   if (user.role === "employee" || user.role === "admin" || user.employeePosition) {
     throw new CustomerAccessError("NOT_A_CUSTOMER", "Only customer accounts.", 400);
   }
-  if (!user.email) throw new CustomerAccessError("NO_EMAIL", "Add an email address first.", 400);
+  if (!user.phone && !user.email) throw new CustomerAccessError("NO_CONTACT", "Add a phone number first.", 400);
   /*
-   * Only for accounts still waiting on their first password. Resending over a
-   * password the customer chose would let staff (or anyone on the phone who
-   * knows the number) reset it to something guessable.
+   * Only for accounts that have not signed in yet. Once the customer has
+   * proved their phone or set a password, they already know the way in.
    */
-  const waiting = temporaryPassword.isIssued(user) || (user.signupMethod === "admin" && !user.password);
-  if (!waiting) {
-    throw new CustomerAccessError("HAS_OWN_PASSWORD", "This customer already set their own password. They can use \"Forgot password\".", 409);
+  if (!resendAccessWaiting(user)) {
+    throw new CustomerAccessError("ALREADY_SIGNED_IN", "This customer has already signed in. They can sign in with a code to their mobile number.", 409);
   }
-  const { plain, expiresAt } = await temporaryPassword.issue(user, { admin });
-  await user.save();
-  const delivery = await sendAccessDetails(user, { plain, expiresAt, deps });
-  return { user, delivery, expiresAt };
+  // A temporary password issued before 2026-11-20 is no longer how they get in.
+  if (temporaryPassword.isIssued(user)) {
+    await temporaryPassword.retireAfterOtherSignIn(user);
+  }
+  const delivery = await sendAccessDetails(user, { deps });
+  return { user, delivery, expiresAt: null };
+}
+
+/** Still waiting on a first sign-in: staff made it, the phone is unproved and no password of their own. */
+function resendAccessWaiting(user) {
+  const ownPassword = Boolean(user?.password) && !temporaryPassword.isIssued(user);
+  return Boolean(user) && !user.phoneVerifiedAt && !ownPassword && Boolean(user.signupMethod === "admin" || user.adminCreated?.at);
 }
 
 module.exports = {
@@ -308,6 +306,7 @@ module.exports = {
   createCustomerByAdmin,
   renderAccessEmail,
   resendAccess,
+  resendAccessWaiting,
   sendAccessDetails,
   validateNewCustomer,
 };

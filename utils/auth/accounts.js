@@ -173,6 +173,15 @@ function inboxOpensAccount(user) {
   return !staffEmailUnproved(user);
 }
 
+/**
+ * The phone number was typed by staff on a call (Admin created the account, or
+ * changed the number) and the customer has not yet proved it with a code.
+ */
+function staffPhoneUnproved(user) {
+  if (!user || user.phoneVerifiedAt || !String(user.phone || "").trim()) return false;
+  return Boolean(user.phoneEnteredByStaffAt || user.adminCreated?.at);
+}
+
 /** The account's email was typed by staff (Admin created it, or changed the email) and the customer never proved it. */
 function staffEmailUnproved(user) {
   if (!user || user.emailVerifiedAt || !String(user.email || "").trim()) return false;
@@ -427,6 +436,7 @@ module.exports = {
   inboxOpensAccount,
   attachTypedEmail,
   staffEmailUnproved,
+  staffPhoneUnproved,
   findCustomersByVerifiedPhone,
   issueChoiceToken,
   readChoiceToken,

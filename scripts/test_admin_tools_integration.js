@@ -281,22 +281,23 @@ async function main() {
       assert.strictEqual(created.phoneVerifiedAt, null);
       assert.strictEqual(created.emailVerifiedAt, null);
       assert.strictEqual(created.termsAcceptedAt, null, "the customer has not accepted terms yet");
-      assert.ok(temporaryPassword.isLive(created));
-      const hours = (created.temporaryPassword.expiresAt - created.temporaryPassword.issuedAt) / 3600000;
-      assert.strictEqual(hours, 72);
+      // 2026-11-20: no temporary password; a code to the staff-typed number is the way in (routes/authV2.js).
+      assert.ok(!temporaryPassword.isIssued(created) && !created.password, "no password of any kind");
+      assert.ok(created.phoneEnteredByStaffAt && created.emailEnteredByStaffAt, "both contacts marked as typed by staff");
     });
     await check("2. one welcome email: how to sign in, never the temporary password (staff typed the address)", async () => {
       const mails = sentEmails.filter((m) => m.templateKey === "admin_account_created");
       assert.strictEqual(mails.length, 1);
       assert.strictEqual(mails[0].to, "rosa.diaz@mailbox.org");
       assert.ok(!mails[0].text.includes("5165550142") && !String(mails[0].html || "").includes("5165550142"), "no temporary password in the email");
-      assert.ok(/mobile number/i.test(mails[0].text) && /create your own password/i.test(mails[0].text));
+      assert.ok(/mobile number/i.test(mails[0].text) && /text you a code/i.test(mails[0].text));
+      assert.ok(!/temporary password/i.test(mails[0].text), "no password step mentioned");
     });
-    await check("3. one welcome text with the temporary password (consent recorded first, so not suppressed)", async () => {
+    await check("3. one welcome text: sign in with this number and a code (consent recorded first, so not suppressed)", async () => {
       const texts = await SmsMessage.find({ user: created._id, notificationType: "ADMIN_ACCOUNT_CREATED" }).lean();
       assert.strictEqual(texts.length, 1);
       assert.strictEqual(texts[0].status, "simulated", texts[0].suppressionReason || "");
-      assert.ok(texts[0].body.includes("5165550142"));
+      assert.ok(/text you a code/.test(texts[0].body) && !texts[0].body.includes("5165550142"), texts[0].body);
       assert.strictEqual(texts[0].segments, 1);
     });
     await check("the call's consent is in the ledger, attributed to the staff member", async () => {
@@ -342,86 +343,38 @@ async function main() {
       assert.strictEqual(res.status, 403);
     });
 
-    const phoneProof = (e164) => require("../utils/auth/accounts").issueLinkToken(e164, {});
-    let tempToken;
-    await check("4a. email + temporary password alone is refused: staff typed the email (2026-11-20)", async () => {
+    await check("4. email + any password opens nothing: there is no password (2026-11-20)", async () => {
       const res = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142" } });
-      assert.strictEqual(res.status, 401, JSON.stringify(res.body));
-      assert.strictEqual(res.body.code, "SIGN_IN_WITH_PHONE");
-      const wrongPhone = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142", linkToken: phoneProof("+16315550999") } });
-      assert.strictEqual(wrongPhone.status, 401, "a code to some other phone is not enough");
-    });
-    await check("4. with a code to their own phone, the temporary password signs in once, typed as a phone number", async () => {
-      const res = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142", linkToken: phoneProof("+15165550142") } });
-      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
-      assert.strictEqual(res.body.user.mustChangePassword, true);
-      assert.strictEqual(res.body.user.temporaryPassword, true);
-      tempToken = res.body.token;
-    });
-    await check("5. until a new password is set, that session reaches nothing else", async () => {
-      const blocked = await call("GET", "/api/users/me/sms-preferences", { token: tempToken });
-      assert.strictEqual(blocked.status, 403);
-      assert.strictEqual(blocked.body.code, "PASSWORD_CHANGE_REQUIRED");
-      const me = await call("GET", "/api/auth/me", { token: tempToken });
-      assert.strictEqual(me.status, 200);
-      assert.strictEqual(me.body.mustChangePassword, true);
-    });
-    await check("the phone number itself is refused as the new password", async () => {
-      const res = await call("POST", "/api/auth/change-password", { token: tempToken, body: { newPassword: "5165550142" } });
-      assert.strictEqual(res.status, 400);
-      assert.strictEqual(res.body.code, "SAME_AS_TEMPORARY");
-    });
-    await check("5b. setting a new password needs no current password and unlocks the account", async () => {
-      const res = await call("POST", "/api/auth/change-password", { token: tempToken, body: { newPassword: "Garden-Gate-42" } });
-      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
-      assert.strictEqual(res.body.user.mustChangePassword, false);
-      assert.strictEqual(res.body.user.temporaryPassword, false);
-      const open = await call("GET", "/api/users/me/sms-preferences", { token: tempToken });
-      assert.strictEqual(open.status, 200);
-    });
-    await check("6. the temporary password no longer works; the new one does", async () => {
-      const old = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "5165550142" } });
-      assert.strictEqual(old.status, 400);
-      const fresh = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "Garden-Gate-42" } });
-      assert.strictEqual(fresh.status, 200);
-      assert.strictEqual(fresh.body.user.mustChangePassword, false);
-    });
-    await check("resending sign-in details is refused once the customer has their own password", async () => {
-      const res = await asOwner("POST", `/api/admin/customers/${created._id}/resend-access`);
-      assert.strictEqual(res.status, 409);
-      assert.strictEqual(res.body.code, "HAS_OWN_PASSWORD");
+      assert.strictEqual(res.status, 400, JSON.stringify(res.body));
     });
 
     let waiting;
-    await check("an expired temporary password signs nobody in, and ends a session it opened", async () => {
+    await check("Admin can resend: one more email and text with the sign-in steps, still no password", async () => {
       const res = await asOwner("POST", "/api/admin/customers", { body: { firstName: "Ken", lastName: "Park", phone: "631-555-0177", email: "ken@example.test" } });
       assert.strictEqual(res.status, 201);
       waiting = await User.findById(res.body.customer._id);
-      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177", linkToken: phoneProof("+16315550177") } });
-      assert.strictEqual(login.status, 200);
-      await User.updateOne({ _id: waiting._id }, { $set: { "temporaryPassword.expiresAt": new Date(Date.now() - 1000) } });
-      const again = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177" } });
-      assert.strictEqual(again.status, 401);
-      assert.strictEqual(again.body.code, "TEMP_PASSWORD_EXPIRED");
-      const me = await call("GET", "/api/auth/me", { token: login.body.token });
-      assert.strictEqual(me.status, 401);
-    });
-    await check("Admin can resend: a fresh temporary password and one more email and text", async () => {
       const mailsBefore = sentEmails.filter((m) => m.templateKey === "admin_account_created").length;
-      const res = await asOwner("POST", `/api/admin/customers/${waiting._id}/resend-access`);
-      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      const again = await asOwner("POST", `/api/admin/customers/${waiting._id}/resend-access`);
+      assert.strictEqual(again.status, 200, JSON.stringify(again.body));
       assert.strictEqual(sentEmails.filter((m) => m.templateKey === "admin_account_created").length, mailsBefore + 1);
       assert.strictEqual(await SmsMessage.countDocuments({ user: waiting._id, notificationType: "ADMIN_ACCOUNT_CREATED" }), 2);
-      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177", linkToken: phoneProof("+16315550177") } });
-      assert.strictEqual(login.status, 200);
-    });
-    await check("signing in another way (code, Google, Apple) retires the temporary password", async () => {
-      const user = await User.findById(waiting._id);
-      assert.strictEqual(await temporaryPassword.retireAfterOtherSignIn(user), true);
       const after = await User.findById(waiting._id);
-      assert.ok(!after.password && !temporaryPassword.isIssued(after) && after.mustChangePassword === false);
-      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177" } });
-      assert.strictEqual(login.status, 400);
+      assert.ok(!after.password && !temporaryPassword.isIssued(after));
+    });
+    await check("an older account's temporary password is retired by a resend", async () => {
+      const older = await User.findById(waiting._id);
+      await temporaryPassword.issue(older, {});
+      await older.save();
+      const res = await asOwner("POST", `/api/admin/customers/${waiting._id}/resend-access`);
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      const after = await User.findById(waiting._id);
+      assert.ok(!after.password && !temporaryPassword.isIssued(after));
+    });
+    await check("resending is refused once the customer has signed in (phone proved)", async () => {
+      await User.updateOne({ _id: waiting._id }, { $set: { phoneVerifiedAt: new Date() } });
+      const res = await asOwner("POST", `/api/admin/customers/${waiting._id}/resend-access`);
+      assert.strictEqual(res.status, 409);
+      assert.strictEqual(res.body.code, "ALREADY_SIGNED_IN");
     });
 
     /* ======================= 2. Communication switches ======================= */

@@ -184,6 +184,14 @@ const UserSchema = new mongoose.Schema(
      * Admin created before this field are recognised by adminCreated.at.
      */
     emailEnteredByStaffAt: { type: Date, default: null },
+    /**
+     * Staff typed this phone number on a call (Admin created the account or
+     * changed the number), 2026-11-20. A code to it signs the customer in
+     * directly, as long as no other account lists the number
+     * (routes/authV2.js phone verify; utils/auth/accounts staffPhoneUnproved).
+     * Accounts Admin created earlier are recognised by adminCreated.at.
+     */
+    phoneEnteredByStaffAt: { type: Date, default: null },
     /** Apple "Hide My Email" relay address: real and deliverable, but not their own inbox. */
     emailIsAppleRelay: { type: Boolean, default: false },
     /** How the account was first created, for reporting. Never used for access. */

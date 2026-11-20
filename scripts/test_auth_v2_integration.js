@@ -832,29 +832,42 @@ async function run() {
     assert.equal(byCode.body.code, "SIGN_IN_WITH_PHONE");
   });
 
-  await test("email + temporary password alone is refused; with a code to the account's own phone it signs in", async () => {
+  await test("a staff-typed number: the phone code alone signs the customer in (no temporary password step)", async () => {
     const { user, plain } = await makeStaffCustomer({ email: "staff-ok@example.com", phone: "+16315550193" });
     await clearLimits();
+    // Email + the temporary password (an older account still has one) never opens it on its own.
     const alone = await post("/api/auth/login", { email: "staff-ok@example.com", password: plain });
     assert.equal(alone.status, 401, JSON.stringify(alone.body));
     assert.equal(alone.body.code, "SIGN_IN_WITH_PHONE");
-    assert.equal(alone.body.token, undefined);
-    // Somebody else's phone code does not stand in for the account's phone.
-    const other = await post("/api/auth/otp/phone/start", { phone: "6315550194", smsTransactionalConsent: true });
-    assert.equal(other.status, 200);
-    const otherSignup = await post("/api/auth/otp/phone/verify", { phone: "6315550194", code: lastCode("+16315550194") });
-    assert.equal(otherSignup.status, 200);
-    // The customer: a code to their own phone, then the temporary password.
+    const direct = await phoneSignIn("6315550193");
+    assert.equal(direct.status, 200, JSON.stringify(direct.body));
+    assert.equal(direct.body.status, "signed_in", JSON.stringify(direct.body));
+    assert.equal(String(jwt.decode(direct.body.token).id), String(user._id));
+    const fresh = await User.findById(user._id);
+    assert.ok(fresh.phoneVerifiedAt, "the phone is now proved");
+    assert.ok(!fresh.password && !fresh.temporaryPassword?.issuedAt, "the old temporary password is retired");
+    assert.equal(fresh.emailVerifiedAt, null, "the staff-typed email is still unproved");
+  });
+
+  await test("account matching is unchanged: two accounts listing the number, or a customer-typed number, still go to the link step", async () => {
+    await makeStaffCustomer({ email: "staff-shared@example.com", phone: "+16315550196" });
+    await makePasswordCustomer({ email: "typed-shared@example.com", phone: "+16315550196" });
     await clearLimits();
-    await post("/api/auth/otp/phone/start", { phone: "6315550193", smsTransactionalConsent: true });
-    const linkStep = await post("/api/auth/otp/phone/verify", { phone: "6315550193", code: lastCode("+16315550193") });
-    assert.equal(linkStep.body.status, "link_required", JSON.stringify(linkStep.body));
-    assert.equal(linkStep.body.hint.emailCodeOpens, false, "the page offers no email code for a staff-typed email");
-    assert.equal(linkStep.body.hint.temporaryPassword, true);
-    const withPhone = await post("/api/auth/login", { email: "staff-ok@example.com", password: plain, linkToken: linkStep.body.linkToken });
-    assert.equal(withPhone.status, 200, JSON.stringify(withPhone.body));
-    assert.equal(String(jwt.decode(withPhone.body.token).id), String(user._id));
-    assert.ok((await User.findById(user._id)).phoneVerifiedAt, "the phone is now proved");
+    const shared = await phoneSignIn("6315550196");
+    assert.equal(shared.body.status, "link_required", JSON.stringify(shared.body));
+    assert.equal(shared.body.token, undefined);
+    await makePasswordCustomer({ email: "self-typed@example.com", phone: "+16315550197" });
+    await clearLimits();
+    const self = await phoneSignIn("6315550197");
+    assert.equal(self.body.status, "link_required", "a number the customer typed themselves is not opened by the code alone");
+  });
+
+  await test("a number Admin typed on any account (phoneEnteredByStaffAt) signs in the same way", async () => {
+    const changed = await makePasswordCustomer({ email: "admin-changed@example.com", phone: "+16315550198", phoneEnteredByStaffAt: new Date() });
+    await clearLimits();
+    const res = await phoneSignIn("6315550198");
+    assert.equal(res.body.status, "signed_in", JSON.stringify(res.body));
+    assert.equal(String(jwt.decode(res.body.token).id), String(changed._id));
   });
 
   await test("once the customer proves the staff-typed email, reset and email sign-in work again", async () => {
