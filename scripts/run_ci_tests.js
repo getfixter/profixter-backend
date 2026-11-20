@@ -46,6 +46,8 @@ const SUITES = [
   "test_visit_entitlement_indexes.js",
   "test_full_day_visit.js",
   "test_meta_tracking.js",
+  // The live API counts only the live site: beacons from a preview or local build are refused (routes/track.js).
+  "test_track_off_site.js",
   // Webhook conversions: charged value, staff sales unreported, gift Purchase, browser ids.
   "test_meta_conversions.js",
   // ChatGPT Ads order_created proof: paid per our webhook AND per Stripe, never a staff sale.

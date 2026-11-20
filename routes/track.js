@@ -55,6 +55,37 @@ function noteRetiredRelay(path) {
   retiredRelayLoggedAt[path] = now;
   console.log(JSON.stringify({ event: "meta_relay_retired_called", path }));
 }
+/*
+ * Only the live site counts (2026-11-20). A Vercel preview or a local build
+ * pointed at this API used to record visitors, funnel steps and Conversions
+ * API events as real traffic. The frontend now stops sending off profixter.com
+ * (FrontEnd lib/tracking-scope), but previews built before that still send, so
+ * the API also refuses them: a browser always names the page's origin on these
+ * cross-origin posts. No Origin (a server, a test) is not refused. Only in
+ * production, so a local backend still records a local build.
+ */
+const LIVE_SITE_HOSTS = new Set(["www.profixter.com", "profixter.com"]);
+const offSiteSeen = new Map();
+function fromOffSitePage(req) {
+  if (process.env.NODE_ENV !== "production") return false;
+  const origin = String(req.headers.origin || "");
+  if (!origin || origin === "null") return false;
+  let host = "";
+  try {
+    host = new URL(origin).hostname;
+  } catch {
+    return true;
+  }
+  if (LIVE_SITE_HOSTS.has(host)) return false;
+  const now = Date.now();
+  if (!offSiteSeen.has(host) || now - offSiteSeen.get(host) > 60 * 60 * 1000) {
+    offSiteSeen.set(host, now);
+    if (offSiteSeen.size > 200) offSiteSeen.clear();
+    console.log(JSON.stringify({ event: "track_off_site_refused", host: host.slice(0, 80), path: req.path }));
+  }
+  return true;
+}
+
 router.post("/fbcap", (req, res) => {
   /*
    * Retired 2026-11-03. It forwarded whatever the body said - the event, the
@@ -285,6 +316,7 @@ const RELAY_LIMIT = { limit: 30, windowMs: 10 * 60 * 1000 };
 const RELAY_CUSTOM_KEYS = ["content_name", "content_category", "content_type", "lead_type", "visit_type", "source"];
 
 router.post("/meta", optionalAuth, async (req, res) => {
+  if (fromOffSitePage(req)) return res.status(204).end();
   try {
     const ip = clientIp(req);
     if (ip && !consume({ key: `meta-relay:${ip}`, ...RELAY_LIMIT }).allowed) return res.status(204).end();
@@ -431,6 +463,7 @@ async function stampWelcome(visitorId, step) {
 }
 
 router.post("/step", stepLimiter, async (req, res) => {
+  if (fromOffSitePage(req)) return res.status(204).end();
   try {
     const { FunnelStep, FunnelStepSeen, STEPS } = require("../models/FunnelStep");
     const visitorId = String(req.body?.visitorId || "");
@@ -477,6 +510,7 @@ const reviewOpenLimiter = rateLimit({
 });
 
 router.post("/review-open", express.text({ type: "text/plain", limit: "1kb" }), reviewOpenLimiter, async (req, res) => {
+  if (fromOffSitePage(req)) return res.status(204).end();
   try {
     const ReviewLinkClick = require("../models/ReviewLinkClick");
     const { FunnelStepSeen } = require("../models/FunnelStep");
@@ -525,6 +559,7 @@ function visitorAttribution(v) {
 }
 
 router.post("/visit", visitLimiter, async (req, res) => {
+  if (fromOffSitePage(req)) return res.status(204).end();
   try {
     const body = req.body || {};
     const visitorId = String(body.visitorId || "");
@@ -570,3 +605,4 @@ router.post("/visit", visitLimiter, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.fromOffSitePage = fromOffSitePage;
