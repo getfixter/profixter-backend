@@ -161,6 +161,39 @@ async function attachVerifiedPhone(user, e164) {
   return { ok: true, previousPhone, consentReset: verdict.reset ? { service: verdict.clearedTransactional, marketing: verdict.clearedMarketing } : null };
 }
 
+/*
+ * May proving this account's email inbox open it? Not while the email was only
+ * typed at checkout (User.emailUnconfirmedAt) and never verified: a typo would
+ * otherwise hand this customer's account to whoever owns the mistyped address.
+ */
+function inboxOpensAccount(user) {
+  return !(user?.emailUnconfirmedAt && !user.emailVerifiedAt);
+}
+
+/**
+ * The email a phone-verified customer typed while buying, saved without a
+ * second code (2026-11-19). Only onto an account with a verified phone and no
+ * email at all - never replacing one - and never an address another account uses.
+ */
+async function attachTypedEmail(user, email) {
+  const clean = normalizeEmail(email);
+  if (!clean || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean)) return { ok: false, code: "INVALID_EMAIL" };
+  if (!user.phoneVerifiedAt) return { ok: false, code: "EMAIL_CODE_REQUIRED" };
+  if (String(user.email || "").trim()) return { ok: false, code: "EMAIL_ALREADY_SET" };
+  const holder = await findCustomerByEmail(clean);
+  if (holder && String(holder._id) !== String(user._id)) return { ok: false, code: "IDENTIFIER_IN_USE" };
+  user.email = clean;
+  user.emailVerifiedAt = null;
+  user.emailUnconfirmedAt = new Date();
+  try {
+    await user.save();
+  } catch (error) {
+    if (isDuplicateKey(error)) return { ok: false, code: "IDENTIFIER_IN_USE" };
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function attachVerifiedEmail(user, email) {
   const clean = normalizeEmail(email);
   const holder = await findCustomerByEmail(clean);
@@ -169,6 +202,7 @@ async function attachVerifiedEmail(user, email) {
   if (previousEmail && previousEmail !== clean) user.emailIsAppleRelay = false;
   user.email = clean;
   user.emailVerifiedAt = new Date();
+  user.emailUnconfirmedAt = null;
   addProvider(user, "email_code");
   try {
     await user.save();
@@ -377,6 +411,8 @@ module.exports = {
   attachVerifiedPhone,
   createCustomer,
   findCustomerByEmail,
+  inboxOpensAccount,
+  attachTypedEmail,
   findCustomersByVerifiedPhone,
   issueChoiceToken,
   readChoiceToken,

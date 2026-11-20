@@ -159,6 +159,7 @@ function guestBookingFields({ guest, req, note, images, library, clientKey, hold
     status: "Pending",
     guestCheckout: true,
     guestContactConsent: { text: GUEST_CHECKOUT_CONSENT_TEXT, at: new Date(), ip: clean(clientIp(req), 60) },
+    ...(/^[A-Za-z0-9_-]{12,64}$/.test(String(req.body?.visitorId || "")) ? { siteVisitorId: String(req.body.visitorId) } : {}),
     ...(clientKey ? { checkoutClientKey: clientKey } : {}),
   };
 }
@@ -314,7 +315,8 @@ router.post("/one-time/checkout", ipLimit, photoUpload(upload), sanitizeUploaded
       priceId: settings.stripePriceId,
       productKind: "one_time_handyman_visit",
       pageExpiresAt,
-      cancelUrl: `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`,
+      // The welcome entry (2026-11-19) gets its own flow back; everyone else Book a Handyman.
+      cancelUrl: String(req.body?.returnTo || "") === "welcome" ? `${CLIENT_URL}/start?canceled=1&booking_id=${booking._id}` : `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`,
       req,
     });
     return res.json({ url: session.url, bookingId: String(booking._id), holdExpiresAt });

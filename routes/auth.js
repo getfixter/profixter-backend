@@ -851,6 +851,13 @@ router.post("/google", async (req, res) => {
     let user = await User.findOne({ googleId: identity.sub, role: { $ne: "employee" } });
     if (!user && identity.email) {
       user = await findCustomerByEmail(identity.email);
+      // An email only typed at checkout never opens the account (utils/auth/accounts inboxOpensAccount).
+      if (user && !authAccounts.inboxOpensAccount(user)) {
+        return res.status(409).json({
+          message: "That email isn't confirmed on its Profixter account yet. Sign in with your mobile number instead.",
+          code: "SIGN_IN_WITH_PHONE",
+        });
+      }
       if (user && user.googleId && user.googleId !== identity.sub) {
         // That account already belongs to a different Google account.
         return res.status(409).json({

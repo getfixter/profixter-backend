@@ -208,6 +208,18 @@ async function main() {
       assert.strictEqual(Math.floor(new Date(reservation.holdExpiresAt).getTime() / 1000), holdSec, "the reservation is held as long as the booking");
     });
 
+    await check("the welcome entry's guest checkout returns to /start if canceled and keeps its browser id", async () => {
+      const { r, s } = await oneTime({ returnTo: "welcome", visitorId: "v_welcomebrowser0001" });
+      assert.ok(s.config.cancel_url.startsWith("https://www.profixter.com/start?canceled=1&booking_id="), s.config.cancel_url);
+      assert.ok(s.config.success_url.includes("/book/confirmation"), "the same confirmation page");
+      const b = await Booking.findById(r.body.bookingId).lean();
+      assert.strictEqual(b.siteVisitorId, "v_welcomebrowser0001");
+    });
+    await check("everyone else still returns to Book a Handyman", async () => {
+      const { s } = await oneTime();
+      assert.ok(s.config.cancel_url.includes("/book/handyman?canceled=1"), s.config.cancel_url);
+    });
+
     console.log("\nA declined card, then a good one (One-Time)");
     let retry;
     await check("a decline keeps the booking Pending and the time held", async () => {

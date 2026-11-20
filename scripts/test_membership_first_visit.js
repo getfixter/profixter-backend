@@ -270,7 +270,7 @@ async function main() {
       const heldBefore = await BookingSlotReservation.countDocuments({ signInHold: true, status: "held" });
       const c = await call("POST", "/api/stripe/checkout/create-checkout-session", {
         as: far,
-        body: { plan: "basic", billingCycle: "monthly", addressId: String(far.addresses[0]._id), returnTo: "handyman", firstVisit: { holdToken: "", requestedDate: soon, requestedTime: "10:00" } },
+        body: { plan: "basic", billingCycle: "monthly", addressId: String(far.addresses[0]._id), returnTo: "welcome", firstVisit: { holdToken: "", requestedDate: soon, requestedTime: "10:00" } },
       });
       assert.strictEqual(c.status, 400, JSON.stringify(c.body));
       assert.strictEqual(c.body.code, "OUT_OF_SERVICE_AREA");
@@ -319,6 +319,25 @@ async function main() {
       assert.strictEqual(await BookingSlotReservation.countDocuments({ signInHold: true, status: "held" }), before);
       assert.strictEqual((await BookingSlotReservation.findById(holdToken.split(".")[0])).checkoutSessionId, session2.id);
       assert.strictEqual(fake.sessions.get(session1.id).status, "expired", "the older page was closed");
+      // Book a Handyman's cancel returns to it.
+      assert.strictEqual(session2.config.cancel_url, "https://www.profixter.com/book/handyman?canceled=membership");
+    });
+    await check("the welcome entry (returnTo welcome): same confirmation, a canceled page returns to /start", async () => {
+      const res = await call("POST", "/api/stripe/checkout/create-checkout-session", {
+        as: dana,
+        body: { plan: "basic", billingCycle: "monthly", addressId: String(dana.addresses[0]._id), returnTo: "welcome", firstVisit: { holdToken, requestedDate: soon, requestedTime: "10:00" } },
+      });
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      const s3 = fake.created[fake.created.length - 1];
+      assert.strictEqual(s3.config.success_url, "https://www.profixter.com/confirmationpage?session_id={CHECKOUT_SESSION_ID}&next=handyman");
+      assert.strictEqual(s3.config.cancel_url, "https://www.profixter.com/start?canceled=membership");
+      // Back to the page the rest of this suite expects to own the hold.
+      const again = await call("POST", "/api/stripe/checkout/create-checkout-session", {
+        as: dana,
+        body: { plan: "basic", billingCycle: "monthly", addressId: String(dana.addresses[0]._id), returnTo: "handyman", firstVisit: { holdToken, requestedDate: soon, requestedTime: "10:00" } },
+      });
+      assert.strictEqual(again.status, 200, JSON.stringify(again.body));
+      session2 = fake.created[fake.created.length - 1];
     });
     await check("the older page's expiry does not free the hold the newer page owns", async () => {
       assert.strictEqual(await deliver("checkout.session.expired", { ...fake.sessions.get(session1.id), object: "checkout.session" }), 200);

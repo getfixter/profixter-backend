@@ -114,6 +114,8 @@ const BookingSchema = new mongoose.Schema({
    * records it and sends the emails. declinedCount/lastDeclinedAt count cards
    * Stripe refused while the page stayed open; a decline never cancels.
    */
+  /* The browser that booked it (SiteVisitor.visitorId), for a guest's sale to be counted against how they arrived. Random id, nothing personal. */
+  siteVisitorId: { type: String, default: undefined, index: true, sparse: true },
   paymentSettlement: {
     sessionId: { type: String, default: "" },
     claimedAt: { type: Date, default: null },

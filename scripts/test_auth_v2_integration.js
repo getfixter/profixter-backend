@@ -123,6 +123,8 @@ async function test(name, fn) {
 
 const lastCode = (target) => [...sent].reverse().find((entry) => entry.target === target)?.code;
 const clearLimits = () => AuthRateCounter.deleteMany({});
+/* The account a phone sign-in opened (its session token names it). */
+const byPhone = (signin) => User.findById(jwt.decode(signin.body.token).id);
 
 async function phoneSignIn(phone, extra = {}) {
   const start = await post("/api/auth/otp/phone/start", { phone, smsTransactionalConsent: true, ...extra });
@@ -685,6 +687,87 @@ async function run() {
     assert.equal(me.body.phoneVerified, true);
     assert.equal(me.body.emailVerified, false);
     assert.deepEqual(me.body.authProviders, ["phone"]);
+  });
+
+  console.log("\n--- one code to buy: the email typed at checkout (2026-11-19)");
+
+  await test("a phone-verified customer saves the email they typed without a second code; it satisfies booking contact", async () => {
+    const signup = await phoneSignIn("6315550181");
+    const saved = await post("/api/auth/contact/email", { email: "Buyer.One@Example.com" }, signup.body.token);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.status, "saved");
+    const user = await byPhone(signup);
+    assert.equal(user.email, "buyer.one@example.com");
+    assert.equal(user.emailVerifiedAt, null, "not verified");
+    assert.ok(user.emailUnconfirmedAt, "marked as typed, unconfirmed");
+    assert.deepEqual(missingBookingContact({ ...user.toObject(), name: "Buyer One" }), [], "name + phone + email: nothing missing");
+    assert.equal(sent.filter((x) => x.channel === "email").length, 0, "no email code was sent");
+  });
+
+  await test("never replaces an email, never takes another account's, never without a verified phone", async () => {
+    const other = await makePasswordCustomer({ email: "taken@example.com", phone: "" });
+    const signup = await phoneSignIn("6315550182");
+    const taken = await post("/api/auth/contact/email", { email: "TAKEN@example.com" }, signup.body.token);
+    assert.equal(taken.status, 409);
+    assert.equal(taken.body.code, "IDENTIFIER_IN_USE");
+    const ok = await post("/api/auth/contact/email", { email: "mine@example.com" }, signup.body.token);
+    assert.equal(ok.status, 200);
+    const again = await post("/api/auth/contact/email", { email: "different@example.com" }, signup.body.token);
+    assert.equal(again.status, 409);
+    assert.equal(again.body.code, "EMAIL_ALREADY_SET");
+    assert.equal((await byPhone(signup)).email, "mine@example.com");
+    const google = await User.create({ userId: "49990001", name: "No Phone", role: "customer", signupMethod: "google", email: "" });
+    const token = jwt.sign({ id: String(google._id), tv: 0 }, process.env.JWT_SECRET);
+    const refused = await post("/api/auth/contact/email", { email: "nophone@example.com" }, token);
+    assert.ok([400, 401].includes(refused.status), String(refused.status));
+    assert.ok(other);
+    const anon = await post("/api/auth/contact/email", { email: "anon@example.com" });
+    assert.equal(anon.status, 401);
+  });
+
+  await test("a typed email never opens the account: email code, Google, Apple and password reset all refuse", async () => {
+    const signup = await phoneSignIn("6315550183");
+    await post("/api/auth/contact/email", { email: "typo@example.com" }, signup.body.token);
+    // Somebody who owns typo@example.com proves the inbox.
+    await clearLimits();
+    const byCode = await emailSignIn("typo@example.com");
+    assert.equal(byCode.status, 409, JSON.stringify(byCode.body));
+    assert.equal(byCode.body.code, "SIGN_IN_WITH_PHONE");
+    assert.equal(byCode.body.token, undefined);
+    googleIdentities.set("tok-typo", { provider: "google", sub: "g-typo", email: "typo@example.com", emailVerified: true, name: "Stranger" });
+    const byGoogle = await post("/api/auth/google", { idToken: "tok-typo" });
+    assert.equal(byGoogle.status, 409, JSON.stringify(byGoogle.body));
+    assert.equal(byGoogle.body.token, undefined);
+    const byApple = await post("/api/auth/apple", { idToken: appleToken({ sub: "a-typo", email: "typo@example.com", email_verified: "true" }), rawNonce: "nonce-1" });
+    assert.equal(byApple.status, 409, JSON.stringify(byApple.body));
+    assert.equal(byApple.body.token, undefined);
+    const reset = await post("/api/password-reset", { email: "typo@example.com" });
+    assert.equal(reset.status, 200, "same answer as for nobody");
+    assert.equal(resetMail.filter((m) => m.exists).length, 0, "no reset is offered for the account");
+    const user = await byPhone(signup);
+    assert.equal(user.googleId || null, null);
+    assert.equal(user.appleId || null, null);
+    assert.equal(user.emailVerifiedAt, null);
+  });
+
+  await test("the customer still signs in with their phone, and confirming the email later makes it a sign-in like any other", async () => {
+    const signup = await phoneSignIn("6315550184");
+    await post("/api/auth/contact/email", { email: "later@example.com" }, signup.body.token);
+    await clearLimits();
+    const back = await phoneSignIn("6315550184");
+    assert.equal(back.status, 200);
+    assert.equal(String((await byPhone(back))._id), String((await byPhone(signup))._id));
+    const start = await post("/api/auth/otp/email/start", { email: "later@example.com", mode: "attach" }, back.body.token);
+    assert.equal(start.status, 200, JSON.stringify(start.body));
+    const attach = await post("/api/auth/otp/email/verify", { email: "later@example.com", code: lastCode("later@example.com"), mode: "attach" }, back.body.token);
+    assert.equal(attach.status, 200, JSON.stringify(attach.body));
+    const user = await byPhone(signup);
+    assert.ok(user.emailVerifiedAt);
+    assert.equal(user.emailUnconfirmedAt, null);
+    await clearLimits();
+    const byCode = await emailSignIn("later@example.com");
+    assert.equal(byCode.status, 200);
+    assert.equal(String(jwt.decode(byCode.body.token).id), String((await byPhone(signup))._id));
   });
 }
 

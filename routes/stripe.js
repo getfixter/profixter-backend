@@ -250,10 +250,15 @@ router.post("/create-checkout-session", auth, async (req, res) => {
        * fires the Subscribe the ad accounts count) and then hands the
        * customer back to finish booking the visit they already described.
        */
-      ...(String(req.body?.returnTo || "") === "handyman"
+      /*
+       * The welcome entry (2026-11-19, frontend WelcomeFlow) pays the same way and
+       * lands on the same confirmation, which finishes the visit in Book a
+       * Handyman; only a canceled page goes back to the welcome flow it came from.
+       */
+      ...(["handyman", "welcome"].includes(String(req.body?.returnTo || ""))
         ? {
             successUrl: `${CLIENT_URL}/confirmationpage?session_id={CHECKOUT_SESSION_ID}&next=handyman`,
-            cancelUrl: `${CLIENT_URL}/book/handyman?canceled=membership`,
+            cancelUrl: String(req.body?.returnTo) === "welcome" ? `${CLIENT_URL}/start?canceled=membership` : `${CLIENT_URL}/book/handyman?canceled=membership`,
           }
         : {}),
       tracking: {

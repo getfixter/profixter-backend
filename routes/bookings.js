@@ -1182,7 +1182,9 @@ router.post(
          * Handyman flow, or the One-Time tab (the old URL lost the tab and
          * landed on the membership view).
          */
-        cancel_url: returnToHandyman
+        cancel_url: String(req.body.returnTo || "") === "welcome"
+          ? `${CLIENT_URL}/start?canceled=1&booking_id=${booking._id}`
+          : returnToHandyman
           ? `${CLIENT_URL}/book/handyman?canceled=1&booking_id=${booking._id}`
           : `${CLIENT_URL}/book?visit=additional&canceled=true&booking_id=${booking._id}`,
         expires_at: Math.floor(pageExpiresAt.getTime() / 1000),

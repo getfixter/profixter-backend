@@ -8,7 +8,13 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
-const { findCustomerByEmail } = require("../utils/userLookup");
+const { findCustomerByEmail: findAnyCustomerByEmail } = require("../utils/userLookup");
+const { inboxOpensAccount } = require("../utils/auth/accounts");
+/* An email only typed at checkout (never verified) is not a way into the account: as if nobody had it. */
+async function findCustomerByEmail(email) {
+  const user = await findAnyCustomerByEmail(email);
+  return user && inboxOpensAccount(user) ? user : null;
+}
 const { OtpError, startChallenge, verifyChallenge } = require("../utils/auth/otpService");
 const { clientIp } = require("../utils/auth/clientIp");
 

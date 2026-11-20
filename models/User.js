@@ -167,6 +167,14 @@ const UserSchema = new mongoose.Schema(
      */
     phoneVerifiedAt: { type: Date, default: null },
     emailVerifiedAt: { type: Date, default: null },
+    /*
+     * An email typed at checkout by a customer who proved their PHONE with a
+     * code (2026-11-19): one code is enough to buy. Until it is verified it is
+     * a receipt address only - it never opens this account (email code, Google,
+     * Apple, password reset all refuse it; utils/auth/accounts inboxOpensAccount),
+     * never links guest visits, and gets no marketing.
+     */
+    emailUnconfirmedAt: { type: Date, default: null },
     /** Apple "Hide My Email" relay address: real and deliverable, but not their own inbox. */
     emailIsAppleRelay: { type: Boolean, default: false },
     /** How the account was first created, for reporting. Never used for access. */

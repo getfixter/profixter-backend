@@ -51,6 +51,9 @@ const MESSAGES = {
   INVALID_CODE: "That code isn't right.",
   CODE_EXPIRED: "That code has expired. Send a new one.",
   IDENTIFIER_IN_USE: "That is already used by another Profixter account.",
+  SIGN_IN_WITH_PHONE: "That email isn't confirmed on its Profixter account yet. Sign in with your mobile number instead.",
+  EMAIL_CODE_REQUIRED: "Confirm this email with a code to continue.",
+  EMAIL_ALREADY_SET: "Your account already has an email.",
   LINK_EXPIRED: "That took a little too long. Please verify your phone again.",
   SIGN_IN_REQUIRED: "Please sign in first.",
   REAUTH_REQUIRED: "Please confirm it's you first.",
@@ -64,7 +67,7 @@ function sendError(res, error) {
   const status =
     code === "RATE_LIMITED" ? 429
       : code === "SMS_UNAVAILABLE" || code === "APPLE_NOT_CONFIGURED" ? 503
-        : code === "IDENTIFIER_IN_USE" ? 409
+        : code === "IDENTIFIER_IN_USE" || code === "SIGN_IN_WITH_PHONE" || code === "EMAIL_ALREADY_SET" ? 409
           : code === "INVALID_PROVIDER_TOKEN" || code === "SIGN_IN_REQUIRED" ? 401
             : code === "REAUTH_REQUIRED" ? 403
             : code && MESSAGES[code] ? 400
@@ -484,6 +487,25 @@ router.post("/otp/phone/choose", async (req, res) => {
   }
 });
 
+/* ------------------------------------------------- email typed at checkout */
+
+/*
+ * One code is enough to buy (2026-11-19). A customer who just proved their
+ * phone with a code types their email in the same flow; it is saved as their
+ * receipt address without a second code. It cannot open the account until
+ * they verify it (inboxOpensAccount), so a typo costs a receipt, not an account.
+ */
+router.post("/contact/email", async (req, res) => {
+  try {
+    const user = await requireSignedInUser(req);
+    const result = await accounts.attachTypedEmail(user, req.body?.email);
+    if (!result.ok) throw new AuthFlowError(result.code);
+    return res.json({ status: "saved", user: await userDTO(user) });
+  } catch (error) {
+    return sendError(res, error);
+  }
+});
+
 /* ------------------------------------------------------------ email code */
 
 router.post("/otp/email/start", async (req, res) => {
@@ -538,6 +560,8 @@ router.post("/otp/email/verify", async (req, res) => {
      * the phone, and the two are joined.
      */
     const existing = await accounts.findCustomerByEmail(email);
+    // An email only typed at checkout never opens the account (utils/auth/accounts inboxOpensAccount).
+    if (existing && !accounts.inboxOpensAccount(existing)) throw new AuthFlowError("SIGN_IN_WITH_PHONE");
     if (existing) {
       if (!existing.emailVerifiedAt) existing.emailVerifiedAt = new Date();
       accounts.addProvider(existing, "email_code");
@@ -585,6 +609,7 @@ router.post("/apple", async (req, res) => {
     let user = await User.findOne({ appleId: identity.sub, role: { $ne: "employee" } });
     if (!user && identity.email && !identity.emailIsRelay) {
       user = await accounts.findCustomerByEmail(identity.email);
+      if (user && !accounts.inboxOpensAccount(user)) throw new AuthFlowError("SIGN_IN_WITH_PHONE");
       if (user) {
         user.appleId = identity.sub;
         if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date();

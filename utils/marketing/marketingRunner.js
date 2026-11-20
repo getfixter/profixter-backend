@@ -87,6 +87,8 @@ async function findCandidates(now, limit) {
     employeePosition: { $in: [null, ""] },
     excludeFromMarketing: { $ne: true },
     email: { $regex: /.+@.+\..+/, $nin: suppressed },
+    // An email only typed at checkout and never verified gets receipts, not marketing (a typo is a stranger).
+    $or: [{ emailUnconfirmedAt: null }, { emailVerifiedAt: { $ne: null } }],
     // Nobody hears from marketing on the day they sign up.
     createdAt: { $lte: new Date(now.getTime() - 2 * DAY_MS) },
   })
