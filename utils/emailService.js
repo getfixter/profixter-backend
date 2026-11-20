@@ -982,6 +982,9 @@ Object.assign(
  * send path, logging, suppression and admin visibility as every other
  * transactional email. Nothing about their delivery is special.
  */
+/* Referral program emails to the referrer (utils/referrals). */
+Object.assign(TEMPLATES, require("./referrals/emails"));
+
 Object.assign(
   TEMPLATES,
   require("./gifts/giftEmailTemplates").createGiftEmailTemplates({

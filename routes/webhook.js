@@ -49,6 +49,7 @@ const {
 const { markFirstVisitPaid, markFirstVisitExpired, fulfillFirstVisitDraft } = require("../utils/membershipFirstVisitFulfillment");
 const freeVisitConversion = require("../utils/freeVisit/conversion");
 const salesStripe = require("../utils/sales/stripeEvents");
+const referralRewards = require("../utils/referrals/engine");
 const CalendarConfig = require("../models/CalendarConfig");
 const SlotCounter = require("../models/SlotCounter");
 const {
@@ -2389,6 +2390,12 @@ async function handleInvoicePaid(invoice) {
    */
   await salesStripe.onInvoicePaid({ invoice, stripeSubscription, subscription });
 
+  /*
+   * Customer referrals: a referred friend's first paid membership invoice makes
+   * the reward Pending, the second makes it ready. Never throws (utils/referrals/engine).
+   */
+  await referralRewards.onInvoicePaid({ invoice, stripeSubscription, subscription });
+
   return subscription;
 }
 
@@ -2806,6 +2813,8 @@ module.exports = async (req, res) => {
         });
         // Sales desk: a refund on a credited sale opens an owner review. Nothing is deducted automatically.
         await salesStripe.onChargeRefunded(event.data.object);
+        // Customer referrals: recompute the reward from the charge's refund total (idempotent).
+        await referralRewards.onChargeRefunded(event.data.object);
         break;
 
       /*
@@ -2820,11 +2829,13 @@ module.exports = async (req, res) => {
       case "charge.dispute.created":
         await handleLoyaltyDispute(event.data.object);
         await salesStripe.onDispute(event.data.object, "opened");
+        await referralRewards.onDispute(event.data.object, "opened");
         break;
 
       // Sales desk only: the outcome of a chargeback, for the owner's review. (Subscribe the endpoint to it to receive it.)
       case "charge.dispute.closed":
         await salesStripe.onDispute(event.data.object, "closed");
+        await referralRewards.onDispute(event.data.object, "closed");
         break;
 
       case "checkout.session.expired":

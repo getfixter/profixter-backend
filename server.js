@@ -244,6 +244,8 @@ app.use("/api/seo", require("./routes/seo"));
 // /api/test/ping (a public database ping) is no longer mounted (2026-11-12).
 app.use("/api/feedback", require("./routes/feedback"));
 app.use("/api/referrals", require("./routes/referrals"));
+// Admin > Referrals: referral rewards, owner only (utils/referrals).
+app.use("/api/admin/referral-rewards", require("./routes/adminReferrals"));
 app.use("/api", require("./routes/promotionPopup"));
 app.use("/api/admin/overview", require("./routes/adminOverview"));
 app.use("/api/admin/growth", require("./routes/adminGrowth"));

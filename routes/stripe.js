@@ -148,6 +148,16 @@ router.post("/create-checkout-session", auth, async (req, res) => {
   // The customer was shown the welcome price: never open a checkout at another price without telling them.
   const expectsWelcome = req.body?.welcomeOffer === true;
   try {
+    /*
+     * A friend's referral (/r/<code>) the browser still holds: recorded before
+     * the checkout opens, so it rides on the subscription's metadata and the
+     * reward follows the payment, promotion code or not. Never blocks a checkout.
+     */
+    const carried = require("../utils/referrals/engine").referralFromBody(req.body);
+    if (carried) {
+      const buyer = await User.findById(req.user.id).lean();
+      if (buyer) await require("../utils/referrals/engine").bindReferral({ user: buyer, code: carried.code, capturedAt: carried.capturedAt, via: "checkout" });
+    }
     let welcomeOffer = null;
     if (WELCOME_OFFER_CYCLES.includes(String(billingCycle || "monthly").toLowerCase())) {
       const user = await User.findById(req.user.id).lean();

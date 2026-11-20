@@ -358,6 +358,23 @@ async function openMembershipCheckout({
     }
 
     const extra = Object.fromEntries(Object.entries(extraMetadata || {}).map(([k, v]) => [k, String(v ?? "")]));
+    /*
+     * A referred customer (utils/referrals): the code goes on the session and
+     * the subscription, so the payment carries its referral whichever way the
+     * checkout was opened (customer, Pay by phone, payment link) and whatever
+     * promotion code is used on Stripe's page. Evidence only: the reward is
+     * decided from the account's referral record and Stripe's invoices.
+     */
+    try {
+      const { CustomerReferral } = require("../models/ReferralProgram");
+      const referral = await CustomerReferral.findOne({ referred: user._id, status: "attributed" }).select("code").lean();
+      if (referral?.code) {
+        extra.referralCode = referral.code;
+        extra.referralId = String(referral._id);
+      }
+    } catch (error) {
+      logCheckout("warn", "subscription_checkout_referral_lookup_failed", { requestId, message: error?.message || String(error) });
+    }
     const sessionConfig = {
       mode: "subscription",
       payment_method_types: ["card"],

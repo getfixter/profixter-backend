@@ -178,6 +178,8 @@ const SUITES = [
   "test_invoice_locate.js",
   "test_extra_charges.js",
   "test_sales_desk.js",
+  // Customer referral program: links, attribution, the reward from Stripe invoices, refunds, duplicates, owner payout (in-memory Mongo).
+  "test_referral_program.js",
   // Telemarketer invitation-link setup: no shared first password, single-use expiring links.
   "test_staff_setup.js",
   // Convert to paid visit: a free visit paid as a membership or One-Time visit, in place, once (in-memory replica set).

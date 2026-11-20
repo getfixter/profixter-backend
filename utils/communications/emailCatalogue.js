@@ -202,6 +202,15 @@ const NON_REGISTRY_EMAILS = {
     trigger: "A free visit was converted in place after the customer paid a conversion link.",
     source: "utils/freeVisit/conversion.js",
   },
+  admin_referral_reward: {
+    label: "Admin: referral reward ready or needs a look",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Internal",
+    channelClass: "internal",
+    trigger: "A referral reward became ready for approval, or a refund or chargeback changed one after it was pending, approved or mailed.",
+    source: "utils/referrals/notify.js",
+  },
   admin_visit_conversion_attention: {
     label: "Admin: paid conversion needs attention",
     category: "B",

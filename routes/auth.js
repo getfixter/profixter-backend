@@ -463,6 +463,7 @@ router.post("/register", async (req, res) => {
 
     await user.save();
     await require("../utils/sales/leads").recordReferralSignup(user);
+    await require("../utils/referrals/engine").bindFromRequest(user, req, "signup");
 
     /*
      * The consent history: each box the customer ticked, with the exact

@@ -313,6 +313,28 @@ const EMAIL_DEFINITIONS = {
   gift_ending_soon: { label: "Gift ending soon", preheader: "Your gift membership ends soon.", tokens: membershipTokens },
   gift_expired: { label: "Gift expired", preheader: "Your gift claim link expired.", tokens: () => ({}) },
 
+  /* ---------------------------- Referrals ---------------------------- */
+  referral_reward_pending: {
+    label: "Referral: reward pending",
+    preheader: "Your referral reward is pending.",
+    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || ""), planName: String(v.plan || "") }),
+  },
+  referral_reward_ready: {
+    label: "Referral: reward ready",
+    preheader: "Your referral reward is ready.",
+    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || "") }),
+  },
+  referral_payee_saved: {
+    label: "Referral: mailing details saved",
+    preheader: "We saved where to mail your check.",
+    tokens: (v) => ({ payee: String(v.payee || ""), mailingAddress: String(v.address || "") }),
+  },
+  referral_reward_mailed: {
+    label: "Referral: check mailed",
+    preheader: "Your referral check is in the mail.",
+    tokens: (v) => ({ amount: String(v.amount || ""), checkReference: String(v.reference || ""), mailedOn: String(v.mailedOn || "") }),
+  },
+
   /* ------------------------- Internal / admin ------------------------ */
   admin_booking_canceled: { label: "Admin: booking cancelled", channelClass: "internal", preheader: "", tokens: bookingTokens },
   admin_full_day_booked: { label: "Admin: Full Day booked", channelClass: "internal", preheader: "", tokens: bookingTokens },

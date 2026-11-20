@@ -302,6 +302,8 @@ function reportAccountLead(user, { req, metaEventId, fbp, fbc, sourcePath = "/si
 async function afterAccountCreated(user, { req, metaEventId, fbp, fbc, consents = null, sourcePath } = {}) {
   // Sales desk: an account created through an employee's referral link is recorded (evidence, not proof).
   await require("../sales/leads").recordReferralSignup(user);
+  // Customer referrals: the friend's personal link (/r/<code>) rides along as body.referral. Never throws.
+  await require("../referrals/engine").bindFromRequest(user, req, "signup");
 
   if (consents && user.phone) {
     try {
