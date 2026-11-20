@@ -862,12 +862,18 @@ async function run() {
     assert.equal(self.body.status, "link_required", "a number the customer typed themselves is not opened by the code alone");
   });
 
-  await test("a number Admin typed on any account (phoneEnteredByStaffAt) signs in the same way", async () => {
-    const changed = await makePasswordCustomer({ email: "admin-changed@example.com", phone: "+16315550198", phoneEnteredByStaffAt: new Date() });
+  await test("never by a number Admin changed later, nor once the account trusts something of the customer's", async () => {
+    const changed = await makeStaffCustomer({ email: "admin-changed@example.com", phone: "+16315550198" });
+    await User.updateOne({ _id: changed.user._id }, { $set: { phoneChangedByStaffAt: new Date() } });
     await clearLimits();
     const res = await phoneSignIn("6315550198");
-    assert.equal(res.body.status, "signed_in", JSON.stringify(res.body));
-    assert.equal(String(jwt.decode(res.body.token).id), String(changed._id));
+    assert.equal(res.body.status, "link_required", "a caller could have talked staff into the change");
+    assert.equal(res.body.token, undefined);
+    const owned = await makeStaffCustomer({ email: "owned@example.com", phone: "+16315550199" });
+    await User.updateOne({ _id: owned.user._id }, { $set: { emailVerifiedAt: new Date() } });
+    await clearLimits();
+    const res2 = await phoneSignIn("6315550199");
+    assert.equal(res2.body.status, "link_required", "a proved email means it is someone's account: confirm it the usual way");
   });
 
   await test("once the customer proves the staff-typed email, reset and email sign-in work again", async () => {

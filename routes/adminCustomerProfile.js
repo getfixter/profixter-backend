@@ -425,8 +425,8 @@ module.exports = function createAdminCustomerProfileRouter({ getAddressPlansForU
         if (nextPhone) set.phone = nextPhone;
         else unset.phone = "";
         set.phoneVerifiedAt = null;
-        // Typed by staff (2026-11-20): a code to it signs the customer in (routes/authV2.js phone verify).
-        if (nextPhone) set.phoneEnteredByStaffAt = new Date();
+        // Changed by staff (2026-11-20): never opens the account by a code alone (utils/auth/accounts staffPhoneUnproved).
+        set.phoneChangedByStaffAt = new Date();
         consentVerdict = consentResetForPhoneChange({
           previousPhone: existing.phone,
           nextPhone,

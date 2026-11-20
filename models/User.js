@@ -185,13 +185,15 @@ const UserSchema = new mongoose.Schema(
      */
     emailEnteredByStaffAt: { type: Date, default: null },
     /**
-     * Staff typed this phone number on a call (Admin created the account or
-     * changed the number), 2026-11-20. A code to it signs the customer in
-     * directly, as long as no other account lists the number
+     * Staff typed this phone number on a call when Admin created the account,
+     * 2026-11-20. A code to it signs the customer in directly while the account
+     * trusts nothing else of theirs, and no other account lists the number
      * (routes/authV2.js phone verify; utils/auth/accounts staffPhoneUnproved).
      * Accounts Admin created earlier are recognised by adminCreated.at.
      */
     phoneEnteredByStaffAt: { type: Date, default: null },
+    /** Admin changed the number after the account existed: it never opens the account by a code alone. */
+    phoneChangedByStaffAt: { type: Date, default: null },
     /** Apple "Hide My Email" relay address: real and deliverable, but not their own inbox. */
     emailIsAppleRelay: { type: Boolean, default: false },
     /** How the account was first created, for reporting. Never used for access. */

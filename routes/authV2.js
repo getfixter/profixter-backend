@@ -410,12 +410,12 @@ router.post("/otp/phone/verify", async (req, res) => {
     // 2. Accounts that only TYPED this number: never opened on the phone alone...
     const typed = await accounts.findCustomersWithUnverifiedPhone(phone);
     /*
-     * ...except one whose number staff typed on a call with this customer
-     * (Admin created the account, or changed the number), 2026-11-20. Staff
-     * read it back on the call and the welcome text went to it, so the code
-     * proves the same thing the temporary password (that number, texted to it)
-     * used to. Only when it is the one account listing the number; otherwise
-     * the usual "link to your account" step decides.
+     * ...except an account Admin created on a call with this customer, by the
+     * number staff typed then (2026-11-20). The welcome text went to it, so the
+     * code proves what the temporary password (that number, texted to it) used
+     * to. Only while the account trusts nothing else of theirs, never for a
+     * number Admin changed later, and only when it is the one account listing
+     * the number; otherwise the usual "link to your account" step decides.
      */
     if (typed.length === 1 && accounts.staffPhoneUnproved(typed[0])) {
       const staffMade = typed[0];

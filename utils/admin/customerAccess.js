@@ -296,7 +296,7 @@ async function resendAccess({ userId, admin, deps = {} }) {
 /** Still waiting on a first sign-in: staff made it, the phone is unproved and no password of their own. */
 function resendAccessWaiting(user) {
   const ownPassword = Boolean(user?.password) && !temporaryPassword.isIssued(user);
-  return Boolean(user) && !user.phoneVerifiedAt && !ownPassword && Boolean(user.signupMethod === "admin" || user.adminCreated?.at);
+  return Boolean(user) && !user.phoneVerifiedAt && !ownPassword && Boolean(temporaryPassword.isIssued(user) || user.signupMethod === "admin" || user.adminCreated?.at);
 }
 
 module.exports = {

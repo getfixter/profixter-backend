@@ -287,8 +287,11 @@ async function run() {
     assert.ok(!JSON.stringify(own.body).includes("hashed-own-password"));
     const staffCreated = await mk({ signupMethod: "admin" });
     assert.equal((await call("GET", `/api/admin/customers/${staffCreated._id}`, boss)).body.allowedActions.resendAccess, true);
+    // 2026-11-20: the sign-in steps go by text too, so an account with a phone and no email can be resent them.
     const noEmail = await User.create({ userId: "69999999", name: "No Email", role: "customer", signupMethod: "admin", phone: "+16315550199" });
-    assert.equal((await call("GET", `/api/admin/customers/${noEmail._id}`, boss)).body.allowedActions.resendAccess, false);
+    assert.equal((await call("GET", `/api/admin/customers/${noEmail._id}`, boss)).body.allowedActions.resendAccess, true);
+    await User.updateOne({ _id: noEmail._id }, { $set: { phoneVerifiedAt: new Date() } });
+    assert.equal((await call("GET", `/api/admin/customers/${noEmail._id}`, boss)).body.allowedActions.resendAccess, false, "signed in by phone: nothing to resend");
     const membersOnly = await staff(["members"]);
     const asMembers = await call("GET", `/api/admin/customers/${smith._id}`, membersOnly);
     assert.equal(asMembers.status, 200, JSON.stringify(asMembers.body));

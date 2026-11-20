@@ -179,7 +179,14 @@ function inboxOpensAccount(user) {
  */
 function staffPhoneUnproved(user) {
   if (!user || user.phoneVerifiedAt || !String(user.phone || "").trim()) return false;
-  return Boolean(user.phoneEnteredByStaffAt || user.adminCreated?.at);
+  // A number Admin CHANGED later never opens an account by a code alone: a caller
+  // could talk staff into changing it to theirs (routes/adminCustomerProfile.js).
+  if (user.phoneChangedByStaffAt) return false;
+  if (!(user.phoneEnteredByStaffAt || user.adminCreated?.at)) return false;
+  // Only while the account trusts nothing of the customer's own yet.
+  const temporary = require("./temporaryPassword").isIssued(user);
+  const ownPassword = Boolean(user.password) && !temporary;
+  return !(user.emailVerifiedAt || ownPassword || user.googleId || user.appleId);
 }
 
 /** The account's email was typed by staff (Admin created it, or changed the email) and the customer never proved it. */
