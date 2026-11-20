@@ -324,6 +324,12 @@ async function refund(inv, cents, eventId) {
     assert.strictEqual(r.body.reason, "already_member");
     assert.strictEqual(await refOf(member), null);
   });
+  await check("an earlier checkout whose payment never went through (incomplete) does not count as a membership", async () => {
+    const tried = await customer({ name: "Tri Again" });
+    await Subscription.collection.insertOne({ user: tried._id, stripeSubscriptionId: "sub_incomplete_1", status: "incomplete_expired", subscriptionType: "basic", latestPaymentDate: new Date() });
+    const r = await call("POST", "/api/referrals/claim", tried, { referral: { code } });
+    assert.strictEqual(r.body.reason, "recorded");
+  });
   await check("an unknown or telemarketer code records nothing", async () => {
     const x = await customer();
     assert.strictEqual((await call("POST", "/api/referrals/claim", x, { referral: { code: "nobody-zzzz" } })).body.reason, "unknown_code");

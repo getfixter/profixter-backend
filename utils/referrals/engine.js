@@ -76,7 +76,8 @@ async function mutate(id, fn, { attempts = 4 } = {}) {
 /** Has this account had a paid membership already (other than `exceptSubscriptionId`)? */
 async function hadPaidMembership(userId, exceptSubscriptionId = null) {
   const ids = [null, "", ...(exceptSubscriptionId ? [String(exceptSubscriptionId)] : [])];
-  return Boolean(await Subscription.exists({ user: userId, stripeSubscriptionId: { $nin: ids } }));
+  // A checkout whose first payment never went through (incomplete) is not a membership they had.
+  return Boolean(await Subscription.exists({ user: userId, stripeSubscriptionId: { $nin: ids }, status: { $nin: ["incomplete", "incomplete_expired"] } }));
 }
 
 function clampCapturedAt(value, now) {
