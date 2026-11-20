@@ -661,6 +661,200 @@ async function refund(inv, cents, eventId) {
     }
   });
 
+  /* ===================================================== annual rule (owner 2026-11-20) */
+  const DAY = 86400000;
+  const daysAgo = (n) => new Date(Date.now() - n * DAY).toISOString();
+  const annualFriend = async (name, { paidDaysAgo, percentOff = 0, promo = null, plan = "basic" } = {}) => {
+    const u = await customer({ name });
+    await engine.bindReferral({ user: u, code, via: "signup" });
+    const { sub, inv } = await pay(u, { plan, cycle: "annual", paidAt: daysAgo(paidDaysAgo), percentOff, promo, card: `fp_${name.replace(/\W/g, "")}` });
+    return { u, sub, inv };
+  };
+  await check("annual rule, pure: day 59 not yet; day 60 ready; ended at day 30 never; past due at day 61 waits; ended at day 70 still qualified", async () => {
+    const first = { cycle: "annual", paidAt: new Date("2026-01-01T12:00:00Z") };
+    const at = (d) => new Date(Date.parse("2026-01-01T12:00:00Z") + d * DAY);
+    assert.strictEqual(A.annualStanding(first, { status: "active" }, at(59.9)).state, "not_yet");
+    assert.strictEqual(A.annualStanding(first, { status: "active" }, at(60)).state, "ready");
+    assert.strictEqual(A.annualStanding(first, { status: "canceled", endedAt: at(30) }, at(61)).state, "ended_early");
+    assert.strictEqual(A.annualStanding(first, { status: "past_due" }, at(61)).state, "hold");
+    assert.strictEqual(A.annualStanding(first, { status: "canceled", endedAt: at(70) }, at(75)).state, "ready");
+    assert.strictEqual(A.paymentStands({ invoiceId: "in", paidPreTaxCents: 149000, refundedPreTaxCents: 0, disputed: false }), true);
+    assert.strictEqual(A.paymentStands({ invoiceId: "in", paidPreTaxCents: 149000, refundedPreTaxCents: 149000 }), false, "refunded to nothing");
+    assert.strictEqual(A.paymentStands({ invoiceId: "in", paidPreTaxCents: 149000, refundedPreTaxCents: 0, disputed: true }), false, "a chargeback");
+  });
+  await check("annual: Pending after the annual payment; no second invoice needed; the hourly sweep before day 60 changes nothing", async () => {
+    const { u } = await annualFriend("Ada Annual", { paidDaysAgo: 30 });
+    const r = await refOf(u);
+    assert.strictEqual(r.status, "pending");
+    assert.strictEqual(r.amountCents, 14900, "capped at $149");
+    const mail = sentEmails.find((e) => e.templateKey === "referral_reward_pending" && /annual/.test(e.vars?.readyWhen || ""));
+    assert.ok(mail, "the referrer is told it is ready after 60 days");
+    const s = await engine.sweepAnnual();
+    assert.strictEqual((await refOf(u)).status, "pending", JSON.stringify(s));
+    const view = (await call("GET", "/api/referrals/me", maria)).body.rewards.find((x) => x.id === String(r._id));
+    assert.match(view.note, /60 days of their annual membership/);
+  });
+  let annualId;
+  await check("annual: after 60 days of active membership the sweep makes it Ready (once), the owner is emailed and it is in Needs action", async () => {
+    sentEmails.length = 0;
+    const { u } = await annualFriend("Abe Ready", { paidDaysAgo: 61 });
+    const s1 = await engine.sweepAnnual();
+    const s2 = await engine.sweepAnnual();
+    const r = await refOf(u);
+    annualId = String(r._id);
+    assert.strictEqual(r.status, "eligible", JSON.stringify(s1));
+    assert.strictEqual(r.membership.status, "active");
+    assert.strictEqual(s2.eligible, 0, "the second run finds nothing new");
+    assert.strictEqual(sentEmails.filter((e) => e.promo && /ready/i.test(e.subject)).length, 1);
+    assert.ok(sentEmails.some((e) => e.templateKey === "referral_reward_ready" && /60 days/.test(e.vars.why)));
+    const na = await collectNeedsAction({ accessUser: owner });
+    assert.ok(na.items.some((i) => i.kind === "referral_reward_ready" && i.id === annualId));
+    const d = (await call("GET", `/api/admin/referral-rewards/${annualId}`, owner)).body.reward;
+    assert.strictEqual(d.rule, "annual");
+    assert.ok(d.qualifiesAt);
+  });
+  await check("annual: a membership that ended before its 60 days never qualifies (void)", async () => {
+    const { u, sub } = await annualFriend("Cal Canceled", { paidDaysAgo: 61 });
+    Object.assign(fake.subs.get(sub.id), { status: "canceled", canceled_at: Math.floor((Date.now() - 40 * DAY) / 1000), ended_at: Math.floor((Date.now() - 40 * DAY) / 1000) });
+    await engine.sweepAnnual();
+    const r = await refOf(u);
+    assert.strictEqual(r.status, "void");
+    assert.match(r.reason, /ended before its first 60 days/);
+  });
+  await check("annual: canceled AFTER 60 days of active membership still qualifies", async () => {
+    const { u, sub } = await annualFriend("Dot Later", { paidDaysAgo: 75 });
+    Object.assign(fake.subs.get(sub.id), { status: "canceled", canceled_at: Math.floor((Date.now() - 10 * DAY) / 1000), ended_at: Math.floor((Date.now() - 10 * DAY) / 1000) });
+    await engine.sweepAnnual();
+    assert.strictEqual((await refOf(u)).status, "eligible");
+  });
+  await check("annual: past due at day 61 waits; once active again the next run makes it Ready", async () => {
+    const { u, sub } = await annualFriend("Pat Pastdue", { paidDaysAgo: 61 });
+    fake.subs.get(sub.id).status = "past_due";
+    await engine.sweepAnnual();
+    assert.strictEqual((await refOf(u)).status, "pending");
+    fake.subs.get(sub.id).status = "active";
+    await engine.sweepAnnual();
+    assert.strictEqual((await refOf(u)).status, "eligible");
+  });
+  await check("annual refunds: a partial refund that leaves more than $149 keeps $149; one that leaves less pays what is left; a full refund voids", async () => {
+    const { u, inv } = await annualFriend("Rae Refund", { paidDaysAgo: 20 });
+    // Annual Basic $1,490 + tax. $1,000 back leaves ~$569 before tax: still $149.
+    assert.strictEqual(await refund(inv, 100000, "evt_annual_partial"), 200);
+    let r = await refOf(u);
+    assert.strictEqual(r.amountCents, 14900);
+    // $1,500 back leaves ~$117.27 before tax: the reward is what is left.
+    assert.strictEqual(await refund(inv, 150000, "evt_annual_more"), 200);
+    r = await refOf(u);
+    const left = r.first.paidPreTaxCents - r.first.refundedPreTaxCents;
+    assert.ok(left < 14900 && left > 0, String(left));
+    assert.strictEqual(r.amountCents, left);
+    assert.strictEqual(await refund(inv, inv.amount_paid, "evt_annual_full"), 200);
+    r = await refOf(u);
+    assert.strictEqual(r.status, "void");
+  });
+  await check("annual chargeback: the payment no longer stands - the sweep keeps it Pending and the owner sees the flag", async () => {
+    const { u, inv } = await annualFriend("Dee Dispute", { paidDaysAgo: 61 });
+    fake.charges.get(inv.charge).disputed = true;
+    assert.strictEqual(await sendEvent("charge.dispute.created", { id: "dp_annual", object: "dispute", charge: inv.charge, amount: inv.amount_paid, status: "needs_response" }), 200);
+    await engine.sweepAnnual();
+    const r = await refOf(u);
+    assert.strictEqual(r.status, "pending");
+    assert.ok(r.flags.some((f) => f.code === "chargeback"));
+  });
+  await check("annual with a promotion code: the code works and the reward is still capped at $149 ($1,341 paid)", async () => {
+    const { u } = await annualFriend("Pia Promo", { paidDaysAgo: 5, percentOff: 10, promo: "SAVE10" });
+    const r = await refOf(u);
+    assert.strictEqual(r.first.promoCode, "SAVE10");
+    assert.strictEqual(r.first.paidPreTaxCents, 134100);
+    assert.strictEqual(r.amountCents, 14900);
+  });
+  await check("Admin payout review, annual: approve re-reads the membership and the payment; a full refund in Stripe (no webhook yet) is refused and voids it", async () => {
+    const { u, inv } = await annualFriend("Ray Review", { paidDaysAgo: 62 });
+    await engine.sweepAnnual();
+    const id = String((await refOf(u))._id);
+    await call("POST", `/api/admin/referral-rewards/${id}/payee`, owner, { name: "Maria Lopez", line1: "12 Oak Street", city: "Huntington", state: "NY", zip: "11743", note: "Phone call" });
+    const flagged = await refOf(u);
+    if (flagged.flags.some((f) => f.strength !== "info")) await call("POST", `/api/admin/referral-rewards/${id}/flags/clear`, owner, { note: "Checked" });
+    fake.charges.get(inv.charge).amount_refunded = inv.amount_paid; // Stripe only
+    const r = await call("POST", `/api/admin/referral-rewards/${id}/approve`, owner, { expectedAmountCents: 14900, payeeConfirmed: true });
+    assert.strictEqual(r.status, 409);
+    assert.strictEqual(r.body.code, "RECHECK_CHANGED");
+    assert.strictEqual(r.body.reward.status, "void");
+  });
+  await check("Admin payout review, annual: approved, then the membership ends early in Stripe before mailing - mailing is refused and the reward voided", async () => {
+    // Paid 61 days ago but Stripe says it ended at day 50 (a late webhook): the recheck catches it.
+    const { u, sub } = await annualFriend("Mo Mailing", { paidDaysAgo: 61 });
+    await engine.sweepAnnual();
+    const id = String((await refOf(u))._id);
+    await call("POST", `/api/admin/referral-rewards/${id}/payee`, owner, { name: "Maria Lopez", line1: "12 Oak Street", city: "Huntington", state: "NY", zip: "11743", note: "Phone call" });
+    if ((await refOf(u)).flags.some((f) => f.strength !== "info")) await call("POST", `/api/admin/referral-rewards/${id}/flags/clear`, owner, { note: "Checked" });
+    const ok = await call("POST", `/api/admin/referral-rewards/${id}/approve`, owner, { expectedAmountCents: 14900, payeeConfirmed: true });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    Object.assign(fake.subs.get(sub.id), { status: "canceled", ended_at: Math.floor((Date.now() - 11 * DAY) / 1000), canceled_at: Math.floor((Date.now() - 11 * DAY) / 1000) });
+    const m = await call("POST", `/api/admin/referral-rewards/${id}/mailed`, owner, { reference: "Check 2001" });
+    assert.strictEqual(m.status, 409);
+    assert.strictEqual(m.body.reward.status, "void");
+  });
+  await check("Admin payout review, annual: approve and mark mailed when it all still holds", async () => {
+    const id = annualId;
+    await call("POST", `/api/admin/referral-rewards/${id}/payee`, owner, { name: "Maria Lopez", line1: "12 Oak Street", city: "Huntington", state: "NY", zip: "11743", note: "Phone call" });
+    const doc = await CustomerReferral.findById(id).lean();
+    if (doc.flags.some((f) => f.strength !== "info")) await call("POST", `/api/admin/referral-rewards/${id}/flags/clear`, owner, { note: "Checked" });
+    const a = await call("POST", `/api/admin/referral-rewards/${id}/approve`, owner, { expectedAmountCents: 14900, payeeConfirmed: true });
+    assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+    const m = await call("POST", `/api/admin/referral-rewards/${id}/mailed`, owner, { reference: "Check 2002", mailedAt: new Date(Date.now() - DAY).toISOString().slice(0, 10) });
+    assert.strictEqual(m.status, 200, JSON.stringify(m.body));
+    assert.strictEqual(m.body.reward.status, "mailed");
+  });
+  await check("the annual job is registered and runs the sweep under a lease", async () => {
+    const job = require("../jobs/referralRewards");
+    const r = await job.annualPass();
+    assert.ok(r && typeof r.checked === "number", JSON.stringify(r));
+  });
+
+  /* ===================================================== telemarketer overlap */
+  const tm = await User.create({ userId: "72009999", name: "Ana Caller", firstName: "Ana", email: "ana@staff.test", role: "employee", employeePosition: "Telemarketer", isActive: true });
+  await check("telemarketer overlap: the friend's first payment credited to a telemarketer is flagged for the owner, with the commission; approval waits until the owner decides", async () => {
+    const u = await customer({ name: "Tia Overlap" });
+    await engine.bindReferral({ user: u, code, via: "signup" });
+    const { sub, inv } = await pay(u, { paidAt: "2026-11-27T16:00:00Z", card: "fp_tia" });
+    const sale = await S.SalesEvent.findOne({ sourceKey: `invoice:${inv.id}` }).lean();
+    assert.ok(sale, "the sales desk recorded the same payment");
+    await S.SalesCredit.updateOne({ sale: sale._id }, { $set: { employee: tm._id, status: "credited", basis: "assignment" } }, { upsert: true });
+    await S.CommissionEntry.create({ sourceKey: `test:${inv.id}`, employee: tm._id, kind: "commission", amountCents: 5000, product: "membership_monthly", sale: sale._id, earnedAt: new Date(), earnedWeek: "2026-11-27", statementWeek: "2026-11-27" });
+    await pay(u, { sub, reason: "subscription_cycle", paidAt: "2026-12-27T16:00:00Z", card: "fp_tia" });
+    const r = await refOf(u);
+    assert.strictEqual(r.status, "eligible");
+    const f = r.flags.find((x) => x.code === "telemarketer_credit");
+    assert.ok(f, r.flags.map((x) => x.code).join());
+    assert.match(f.text, /Ana Caller/);
+    assert.match(f.text, /\$50\.00/);
+    const na = await collectNeedsAction({ accessUser: owner });
+    assert.ok(na.items.some((i) => i.id === String(r._id) && /flag/.test(i.subtitle)), "in the owner's queue with its flag");
+    const id = String(r._id);
+    await call("POST", `/api/admin/referral-rewards/${id}/payee`, owner, { name: "Maria Lopez", line1: "12 Oak Street", city: "Huntington", state: "NY", zip: "11743", note: "Phone call" });
+    const blocked = await call("POST", `/api/admin/referral-rewards/${id}/approve`, owner, { expectedAmountCents: 14900, payeeConfirmed: true });
+    assert.strictEqual(blocked.body.code, "FLAGS_OPEN");
+  });
+  await check("telemarketer overlap: a credit request filed later is caught by the recheck before approval", async () => {
+    const u = await customer({ name: "Lou Later" });
+    await engine.bindReferral({ user: u, code, via: "signup" });
+    const { sub, inv } = await pay(u, { paidAt: "2026-11-28T16:00:00Z", card: "fp_lou" });
+    await pay(u, { sub, reason: "subscription_cycle", paidAt: "2026-12-28T16:00:00Z", card: "fp_lou" });
+    const id = String((await refOf(u))._id);
+    assert.ok(!(await refOf(u)).flags.some((f) => f.code === "telemarketer_credit"), "nothing yet");
+    await call("POST", `/api/admin/referral-rewards/${id}/payee`, owner, { name: "Maria Lopez", line1: "12 Oak Street", city: "Huntington", state: "NY", zip: "11743", note: "Phone call" });
+    const sale = await S.SalesEvent.findOne({ sourceKey: `invoice:${inv.id}` }).lean();
+    await S.SalesCreditRequest.collection.insertOne({ employee: tm._id, sale: sale._id, kind: "missed_link", status: "pending", createdAt: new Date() });
+    const r = await call("POST", `/api/admin/referral-rewards/${id}/approve`, owner, { expectedAmountCents: 14900, payeeConfirmed: true });
+    assert.strictEqual(r.status, 409);
+    assert.ok(r.body.changes.some((c) => /sales desk/.test(c)), r.body.changes.join(" | "));
+  });
+  await check("telemarketer overlap: a commission on SOMEONE ELSE's payment is never a flag (matched by invoice only)", async () => {
+    const r = await refOf(ben);
+    assert.ok(!r.flags.some((f) => f.code === "telemarketer_credit"));
+  });
+
   server.close();
   await mongoose.disconnect();
   await mongod.stop();

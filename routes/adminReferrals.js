@@ -22,7 +22,7 @@ const User = require("../models/User");
 const { CustomerReferral } = require("../models/ReferralProgram");
 const engine = require("../utils/referrals/engine");
 const { flagsCleared, blockingFlags } = require("../utils/referrals/signals");
-const { REWARD_CAP_CENTS } = require("../utils/referrals/amounts");
+const { REWARD_CAP_CENTS, annualQualifiesAt } = require("../utils/referrals/amounts");
 const { PLAN_LABEL } = require("../utils/referrals/notify");
 const { createAdminActivityLog } = require("../utils/adminActivityLog");
 
@@ -115,6 +115,10 @@ function detail(doc, users) {
     capCents: REWARD_CAP_CENTS,
     first: inv(doc.first),
     second: inv(doc.second),
+    // Which rule decides: monthly - the second paid invoice; annual - 60 days of active membership.
+    rule: doc.first?.cycle === "annual" ? "annual" : "monthly",
+    qualifiesAt: doc.first?.cycle === "annual" ? annualQualifiesAt(doc.first) : null,
+    membership: doc.membership?.checkedAt ? { status: doc.membership.status, endedAt: doc.membership.endedAt, checkedAt: doc.membership.checkedAt } : null,
     flags: (doc.flags || []).map((f) => ({ code: f.code, strength: f.strength, text: f.text, at: f.at, reviewed: f.strength === "info" || reviewed.has(f.code) })),
     flagsReview: doc.flagsReview?.clearedAt ? { at: doc.flagsReview.clearedAt, note: doc.flagsReview.note, codes: doc.flagsReview.codes } : null,
     payee: doc.payee?.confirmedAt ? { ...doc.payee } : null,

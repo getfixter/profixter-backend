@@ -12,7 +12,9 @@
  *   first paid membership invoice   → Pending, amount = lesser of $149 and the
  *                                      membership amount actually collected on
  *                                      it (utils/referrals/amounts)
- *   second paid membership invoice  → Eligible (ready for the owner)
+ *   MONTHLY: second paid invoice    → Eligible (ready for the owner)
+ *   ANNUAL: 60 days of active membership after the annual payment cleared, the payment still standing
+ *           (sweepAnnual, hourly)  → Eligible
  *   a refund on the first invoice   → amount recomputed; refunded in full → Void
  *   a full refund on the second     → back to Pending, waiting for another paid month
  *   a chargeback                    → flagged for the owner
@@ -218,6 +220,9 @@ async function onInvoicePaid({ invoice, stripeSubscription = null, subscription 
         notifyPending = true;
         return true;
       }
+      // An annual referral never waits for a second invoice: it qualifies after 60 days of active membership
+      // (sweepAnnual, the hourly job). Its renewal a year later changes nothing here.
+      if (d.status === "pending" && d.first?.invoiceId && A.isAnnual(d.first)) return false;
       if (d.status === "pending" && d.first?.invoiceId) {
         const rec = A.invoiceRecord(invoice, { plan, cycle, cardFingerprint: await cardFingerprintOf(invoice) });
         if (rec.paidAt < d.first.paidAt) {
@@ -407,11 +412,25 @@ async function readInvoiceFromStripe(rec) {
   return { fresh, paid: invoice.status === "paid" };
 }
 
+/** The friend's membership, read from Stripe now: its status and when it ended (null while it runs). */
+async function readMembership(subscriptionId) {
+  const sub = await stripeClient().subscriptions.retrieve(String(subscriptionId));
+  const endedUnix = sub?.ended_at || (sub?.status === "canceled" ? sub?.canceled_at : null);
+  return { status: sub?.status || null, endedAt: endedUnix ? new Date(endedUnix * 1000) : null, checkedAt: new Date() };
+}
+
+const ANNUAL_WORDS = {
+  ended_early: "The annual membership ended before its first 60 days.",
+  not_yet: (at) => `The 60 days of active membership end ${at ? at.toISOString().slice(0, 10) : "later"}.`,
+  hold: (status) => `The annual membership is not active right now (${status || "unknown"}): it waits until it is.`,
+};
+
 /**
  * Before a check is approved or mailed: every number again, from Stripe, now.
  * Returns { ok, changes: [text], referral }. Updates the record to match.
+ * Monthly: both paid invoices. Annual: the annual payment, and 60 days of active membership (the subscription, now).
  */
-async function recheck(id, { by = "owner" } = {}) {
+async function recheck(id, { by = "owner", now = new Date() } = {}) {
   const changes = [];
   let doc = await mutate(id, async (d) => {
     changes.length = 0;
@@ -429,10 +448,22 @@ async function recheck(id, { by = "owner" } = {}) {
     if (d.amountCents !== prevAmount) changes.push(`The reward is now ${A.dollars(d.amountCents)} (was ${A.dollars(prevAmount)}).`);
     if (d.first.disputed) changes.push("There is a chargeback on the first payment.");
 
-    if (d.second?.invoiceId) {
+    // Has it qualified? Monthly: the second paid invoice still stands. Annual: 60 days of active membership.
+    let qualified = false;
+    let endedEarly = false;
+    if (A.isAnnual(d.first)) {
+      d.membership = await readMembership(d.first.subscriptionId);
+      const standing = A.annualStanding(d.first, d.membership, now);
+      endedEarly = standing.state === "ended_early";
+      qualified = standing.state === "ready";
+      if (standing.state === "ended_early") changes.push(ANNUAL_WORDS.ended_early);
+      else if (standing.state === "not_yet") changes.push(ANNUAL_WORDS.not_yet(standing.qualifiesAt));
+      else if (standing.state === "hold") changes.push(ANNUAL_WORDS.hold(d.membership.status));
+    } else if (d.second?.invoiceId) {
       const second = await readInvoiceFromStripe(d.second);
       d.second = { ...second.fresh, cardFingerprint: d.second.cardFingerprint };
-      if (!second.paid || !A.secondCleared(d.second)) changes.push("The second membership payment no longer counts (unpaid, refunded in full or disputed).");
+      qualified = second.paid && A.secondCleared(d.second);
+      if (!qualified) changes.push("The second membership payment no longer counts (unpaid, refunded in full or disputed).");
     } else {
       changes.push("The second paid membership invoice has not arrived yet.");
     }
@@ -441,10 +472,10 @@ async function recheck(id, { by = "owner" } = {}) {
     for (const f of blockingFlags(added)) changes.push(`New flag: ${f.text}`);
 
     if (["eligible", "approved"].includes(prevStatus)) {
-      if (d.amountCents <= 0) {
+      if (d.amountCents <= 0 || endedEarly) {
         d.status = "void";
-        d.reason = "Nothing left to reward after the recheck (refunded or unpaid).";
-      } else if (!d.second?.invoiceId || !A.secondCleared(d.second)) {
+        d.reason = endedEarly ? ANNUAL_WORDS.ended_early : "Nothing left to reward after the recheck (refunded or unpaid).";
+      } else if (!qualified || (A.isAnnual(d.first) && !A.paymentStands(d.first))) {
         d.status = "pending";
       } else if (prevStatus === "approved" && (d.amountCents !== d.approval?.amountCents || added.some((f) => f.strength !== "info"))) {
         d.status = "eligible";
@@ -452,10 +483,63 @@ async function recheck(id, { by = "owner" } = {}) {
       if (d.status !== "approved" && prevStatus === "approved") d.approval = { at: null, by: null, amountCents: 0 };
     }
     d.lastRecheck = { at: new Date(), ok: changes.length === 0, changes: [...changes] };
-    historyPush(d, "recheck", changes.length ? changes.join(" ") : "Stripe matches: amount and both payments confirmed.", by);
+    historyPush(d, "recheck", changes.length ? changes.join(" ") : A.isAnnual(d.first) ? "Stripe matches: amount, the annual payment and 60 days of active membership confirmed." : "Stripe matches: amount and both payments confirmed.", by);
     return true;
   });
   return { ok: changes.length === 0, changes: [...changes], referral: doc };
+}
+
+/**
+ * The annual rule's clock (jobs/referralRewards, hourly): every pending annual referral whose 60 days are over is read
+ * from Stripe again - the annual invoice, its charge (refunds, chargebacks) and the subscription - and then:
+ *   ready, payment stands, reward > 0  -> eligible (the referrer and the owner are told, once)
+ *   ended before the 60 days           -> void
+ *   refunded to nothing                -> void
+ *   past due / unpaid / paused, or a chargeback -> stays pending (looked at again next run)
+ * Idempotent; a Stripe failure leaves the referral as it was. Returns counts.
+ */
+async function sweepAnnual({ now = new Date(), limit = 100 } = {}) {
+  const cutoff = new Date(now.getTime() - A.ANNUAL_WAIT_DAYS * 24 * 60 * 60 * 1000);
+  const due = await CustomerReferral.find({ status: "pending", "first.cycle": "annual", "first.paidAt": { $lte: cutoff } }).select("_id").limit(limit).lean();
+  const out = { checked: 0, eligible: 0, void: 0, waiting: 0, failed: 0 };
+  for (const { _id } of due) {
+    out.checked += 1;
+    try {
+      let ready = false;
+      const doc = await mutate(_id, async (d) => {
+        if (d.status !== "pending" || !A.isAnnual(d.first)) return false;
+        const first = await readInvoiceFromStripe(d.first);
+        d.first = { ...first.fresh, cardFingerprint: d.first.cardFingerprint };
+        setAmount(d);
+        if (!first.paid) d.amountCents = 0;
+        d.membership = await readMembership(d.first.subscriptionId);
+        const standing = A.annualStanding(d.first, d.membership, now);
+        if (standing.state === "ended_early" || d.amountCents <= 0) {
+          d.status = "void";
+          d.reason = standing.state === "ended_early" ? ANNUAL_WORDS.ended_early : "The friend's annual membership payment was refunded in full.";
+          historyPush(d, "void", d.reason);
+          return true;
+        }
+        if (standing.state === "ready" && A.paymentStands(d.first)) {
+          d.status = "eligible";
+          historyPush(d, "eligible", `Ready: ${A.dollars(d.amountCents)} after 60 days of active annual membership.`);
+          await refreshFlags(d);
+          ready = true;
+          return true;
+        }
+        return true; // waiting: the membership read is kept for the owner to see
+      });
+      if (doc?.status === "void") out.void += 1;
+      else if (ready) {
+        out.eligible += 1;
+        await Promise.all([notify().referrerReady(doc), notify().ownerReady(doc)]);
+      } else out.waiting += 1;
+    } catch (error) {
+      out.failed += 1;
+      log("error", "annual_sweep_failed", { referralId: String(_id), message: String(error?.message || error).slice(0, 200) });
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ owner actions */
@@ -593,6 +677,7 @@ module.exports = {
   onChargeRefunded,
   onDispute,
   recheck,
+  sweepAnnual,
   setPayee,
   readPayee,
   clearFlags,

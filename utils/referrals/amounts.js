@@ -92,4 +92,38 @@ function secondCleared(second) {
 
 const dollars = (cents) => `$${(Math.round(Number(cents) || 0) / 100).toFixed(2)}`;
 
-module.exports = { REWARD_CAP_CENTS, COUNTED_REASONS, isCountedInvoice, invoiceRecord, withRefund, refundedPreTax, rewardCents, secondCleared, dollars, idOf };
+/*
+ * ANNUAL memberships (owner 2026-11-20): an annual friend pays once a year, so "the second paid invoice" would mean a
+ * year's wait. An annual referral qualifies instead after 60 days of active membership, counted from the cleared annual
+ * payment, provided that payment still stands (not refunded to nothing, no chargeback). Monthly is unchanged: the second
+ * paid membership invoice.
+ */
+const ANNUAL_WAIT_DAYS = 60;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isAnnual = (first) => first?.cycle === "annual";
+const annualQualifiesAt = (first) => (first?.paidAt ? new Date(new Date(first.paidAt).getTime() + ANNUAL_WAIT_DAYS * DAY_MS) : null);
+// Still a member, but not in good standing: wait (the job and the recheck look again later).
+const NOT_ACTIVE = new Set(["past_due", "unpaid", "paused", "incomplete", "incomplete_expired"]);
+
+/**
+ * Where an annual referral stands. `membership` = the Stripe subscription read now: { status, endedAt }.
+ *   ended_early  the membership ended before the 60 days were up (it never qualifies)
+ *   not_yet      the 60 days are not over
+ *   hold         60 days are over but the membership is not active right now (past due, unpaid, paused)
+ *   ready        60 days of active membership
+ * The payment itself (cleared, not refunded to nothing, no chargeback) is checked by the caller (paymentStands).
+ */
+function annualStanding(first, membership, now = new Date()) {
+  const at = annualQualifiesAt(first);
+  if (!at) return { state: "not_yet", qualifiesAt: null };
+  const ended = membership?.endedAt ? new Date(membership.endedAt) : null;
+  if (ended && ended < at) return { state: "ended_early", qualifiesAt: at };
+  if (now < at) return { state: "not_yet", qualifiesAt: at };
+  if (!ended && NOT_ACTIVE.has(String(membership?.status || ""))) return { state: "hold", qualifiesAt: at };
+  return { state: "ready", qualifiesAt: at };
+}
+
+/** The payment still counts: cleared, something left after refunds, no open or lost chargeback. */
+const paymentStands = (rec) => Boolean(rec?.invoiceId) && !rec.disputed && (rec.paidPreTaxCents || 0) - (rec.refundedPreTaxCents || 0) > 0;
+
+module.exports = { REWARD_CAP_CENTS, COUNTED_REASONS, ANNUAL_WAIT_DAYS, isCountedInvoice, invoiceRecord, withRefund, refundedPreTax, rewardCents, secondCleared, isAnnual, annualQualifiesAt, annualStanding, paymentStands, dollars, idOf };

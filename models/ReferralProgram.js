@@ -123,6 +123,12 @@ const CustomerReferralSchema = new Schema(
       by: { type: Schema.Types.ObjectId, ref: "User", default: null },
       note: { type: String, default: "" },
     },
+    // The friend's membership as last read from Stripe (the annual rule: 60 days of active membership).
+    membership: {
+      status: { type: String, default: null },
+      endedAt: { type: Date, default: null },
+      checkedAt: { type: Date, default: null },
+    },
     lastRecheck: {
       at: { type: Date, default: null },
       ok: { type: Boolean, default: null },
@@ -157,6 +163,7 @@ const CustomerReferralSchema = new Schema(
 CustomerReferralSchema.index({ referred: 1 }, { unique: true });
 CustomerReferralSchema.index({ referrer: 1, createdAt: -1 });
 CustomerReferralSchema.index({ status: 1, updatedAt: -1 });
+CustomerReferralSchema.index({ status: 1, "first.cycle": 1, "first.paidAt": 1 });
 CustomerReferralSchema.index({ "first.invoiceId": 1 }, { sparse: true });
 CustomerReferralSchema.index({ "second.invoiceId": 1 }, { sparse: true });
 CustomerReferralSchema.index({ "first.chargeId": 1 }, { sparse: true });

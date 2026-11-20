@@ -317,12 +317,12 @@ const EMAIL_DEFINITIONS = {
   referral_reward_pending: {
     label: "Referral: reward pending",
     preheader: "Your referral reward is pending.",
-    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || ""), planName: String(v.plan || "") }),
+    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || ""), planName: String(v.plan || ""), readyWhen: String(v.readyWhen || "") }),
   },
   referral_reward_ready: {
     label: "Referral: reward ready",
     preheader: "Your referral reward is ready.",
-    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || "") }),
+    tokens: (v) => ({ friend: String(v.friend || ""), amount: String(v.amount || ""), readyReason: String(v.why || "") }),
   },
   referral_payee_saved: {
     label: "Referral: mailing details saved",

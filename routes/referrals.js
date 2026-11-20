@@ -77,7 +77,9 @@ function customerView(doc, friend) {
           : doc.status === "attributed"
             ? "The reward starts when they pay for a membership."
             : doc.status === "pending"
-              ? "Ready after their second membership payment."
+              ? doc.first?.cycle === "annual"
+                ? `Ready after 60 days of their annual membership${doc.first?.paidAt ? ` (${new Date(new Date(doc.first.paidAt).getTime() + 60 * 86400000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" })})` : ""}.`
+                : "Ready after their second membership payment."
               : "",
     payee: p.confirmedAt
       ? { confirmed: true, name: p.name, address: [p.line1, p.line2, `${p.city}, ${p.state} ${p.zip}`].filter(Boolean).join(", ") }

@@ -10,23 +10,23 @@ const site = () => String(process.env.CLIENT_URL || "https://www.profixter.com")
 const rewardsUrl = () => `${site()}/account?referrals=1`;
 
 module.exports = {
-  referral_reward_pending: ({ name = "there", friend = "Your friend", amount = "", plan = "" }) =>
+  referral_reward_pending: ({ name = "there", friend = "Your friend", amount = "", plan = "", readyWhen = "" }) =>
     renderOperationalEmail({
       subject: `${friend} joined Profixter - your ${amount} reward is pending`,
       event: "Your referral reward is pending",
       who: `${friend} started a${plan ? ` ${plan}` : ""} membership through your link.`,
       highlight: amount,
       rows: [["Status", "Pending"]],
-      note: `Thanks, ${name}. The reward becomes ready when their second membership payment goes through. We'll then ask where to mail your check.`,
+      note: `Thanks, ${name}. The reward becomes ready ${readyWhen || "when their second membership payment goes through"}. We'll then ask where to mail your check.`,
       action: { label: "See your referrals", url: rewardsUrl() },
       footer: "The reward is the lesser of $149 and what your friend paid for their first membership payment, after discounts and refunds, before tax.",
     }),
 
-  referral_reward_ready: ({ name = "there", friend = "Your friend", amount = "" }) =>
+  referral_reward_ready: ({ name = "there", friend = "Your friend", amount = "", why = "" }) =>
     renderOperationalEmail({
       subject: `Your ${amount} referral reward is ready`,
       event: "Your referral reward is ready",
-      who: `${friend}'s second membership payment went through.`,
+      who: why || `${friend}'s second membership payment went through.`,
       highlight: amount,
       rows: [["Status", "Ready"]],
       note: `Please confirm the name and mailing address for your check, ${name}. We mail it once Profixter has checked the payments.`,

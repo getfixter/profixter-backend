@@ -9,7 +9,7 @@
  */
 const User = require("../../models/User");
 const { CustomerReferral } = require("../../models/ReferralProgram");
-const { dollars } = require("./amounts");
+const { dollars, isAnnual, annualQualifiesAt } = require("./amounts");
 
 const PLAN_LABEL = { basic: "Basic", plus: "Plus", premium: "Premium", elite: "Elite" };
 const ownerEmail = () => String(process.env.MAIL_ADMIN || "getfixter@gmail.com").toLowerCase();
@@ -58,11 +58,21 @@ async function referrerPending(doc) {
     friend: await friendOf(doc),
     amount: dollars(doc.amountCents),
     plan: PLAN_LABEL[doc.first?.plan] || "",
+    readyWhen: readyWhen(doc),
   });
 }
 
+const longDate = (d) => (d ? new Date(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" }) : "");
+/** When the reward becomes ready, in the referrer's words: monthly - the second payment; annual - 60 days. */
+function readyWhen(doc) {
+  if (isAnnual(doc.first)) return `after 60 days of their annual membership${annualQualifiesAt(doc.first) ? ` (${longDate(annualQualifiesAt(doc.first))})` : ""}, if it's still active`;
+  return "when their second membership payment goes through";
+}
+
 async function referrerReady(doc) {
-  return mailReferrer(doc, "referrerReadyAt", "referral_reward_ready", { friend: await friendOf(doc), amount: dollars(doc.amountCents) });
+  const friend = await friendOf(doc);
+  const why = isAnnual(doc.first) ? `${friend} has been a member for 60 days on an annual plan.` : `${friend}'s second membership payment went through.`;
+  return mailReferrer(doc, "referrerReadyAt", "referral_reward_ready", { friend, amount: dollars(doc.amountCents), why });
 }
 
 async function referrerMailed(doc) {
@@ -112,7 +122,9 @@ async function ownerReady(doc) {
     return mailOwner(
       `Referral reward ready: ${dollars(doc.amountCents)} for ${n.referrer}`,
       [
-        `${n.referrer} referred ${n.referred}, whose second membership payment has cleared. The reward is ${dollars(doc.amountCents)}.`,
+        isAnnual(doc.first)
+          ? `${n.referrer} referred ${n.referred}, who has had 60 days of active annual membership since the annual payment cleared. The reward is ${dollars(doc.amountCents)}.`
+          : `${n.referrer} referred ${n.referred}, whose second membership payment has cleared. The reward is ${dollars(doc.amountCents)}.`,
         flags.length ? `${flags.length} flag${flags.length === 1 ? "" : "s"} to review: ${flags.map((f) => f.text).join(" ")}` : "No flags.",
         "Approve it in Admin once the payee and mailing address are confirmed. Stripe is checked again before you approve and before you mark the check mailed.",
       ],

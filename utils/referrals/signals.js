@@ -18,6 +18,9 @@
  *   earlier_gift                 the referred account had a gifted membership before
  *   chargeback                   a chargeback on a counted payment
  *   tax_form (info)              the referrer's checks this year reach $600 (W-9 / 1099)
+ * The same sale on the sales desk:
+ *   telemarketer_credit          a telemarketer is credited / held / claiming the friend's first paid membership
+ *                                (matched by the sales desk's record of that exact Stripe invoice only)
  */
 const User = require("../../models/User");
 const Subscription = require("../../models/Subscription");
@@ -132,6 +135,8 @@ async function flagsFor(referral, { stripe = null, now = new Date() } = {}) {
 
     if (referral.first?.disputed || referral.second?.disputed) out.push(flag("chargeback", "payment"));
 
+    for (const f of await telemarketerOverlap(referral)) out.push(f);
+
     // Information only: never blocks approval.
     if (referral.amountCents > 0) {
       const year = new Date(now.getFullYear(), 0, 1);
@@ -152,6 +157,51 @@ async function flagsFor(referral, { stripe = null, now = new Date() } = {}) {
     console.error(JSON.stringify({ area: "referrals", event: "flags_failed", referralId: String(referral?._id || ""), message: String(error?.message || error).slice(0, 200) }));
   }
   return out;
+}
+
+/**
+ * The same membership earning a telemarketer commission too (owner 2026-11-20). Matched ONLY through the sales desk's
+ * own record of this exact payment: its SalesEvent is keyed by the friend's first paid invoice
+ * (`invoice:<Stripe invoice id>`, utils/sales/stripeEvents). On that sale: a credit to an employee (credited or held for
+ * the owner), another employee named as a claimant, or an open / approved credit request. Names, phones and addresses
+ * are never used to guess. Never throws (a failure means no flag, logged).
+ */
+async function telemarketerOverlap(referral) {
+  const invoiceId = referral.first?.invoiceId;
+  if (!invoiceId) return [];
+  try {
+    const { SalesEvent, SalesCredit, SalesCreditRequest, CommissionEntry } = require("../../models/Sales");
+    const sale = await SalesEvent.findOne({ sourceKey: `invoice:${invoiceId}` }).select("_id").lean();
+    if (!sale) return [];
+    const [credit, requests, entries] = await Promise.all([
+      SalesCredit.findOne({ sale: sale._id }).lean(),
+      SalesCreditRequest.find({ sale: sale._id, status: { $in: ["pending", "needs_info", "approved"] } }).select("employee status").lean(),
+      CommissionEntry.find({ sale: sale._id, kind: "commission" }).select("employee amountCents status").lean(),
+    ]);
+    const people = new Map();
+    const note = (id, what) => {
+      if (!id) return;
+      const k = String(id);
+      people.set(k, [...(people.get(k) || []), what]);
+    };
+    if (credit && ["credited", "held"].includes(credit.status) && credit.employee) note(credit.employee, credit.status === "held" ? "credit held for your review" : "credited with this sale");
+    for (const c of credit?.claimants || []) note(c.employee, "named as a claimant on this sale");
+    for (const r of requests) note(r.employee, r.status === "approved" ? "credit request approved" : "credit requested");
+    if (!people.size) return [];
+    const names = new Map((await User.find({ _id: { $in: [...people.keys()] } }).select("name").lean()).map((u) => [String(u._id), u.name || "A telemarketer"]));
+    const commission = entries.reduce((s, e) => s + (Number(e.amountCents) || 0), 0);
+    const who = [...people.entries()].map(([id, what]) => `${names.get(id) || "A telemarketer"} (${[...new Set(what)].join(", ")})`).join("; ");
+    return [
+      flag(
+        "telemarketer_credit",
+        "overlap",
+        `This membership is also on the sales desk: ${who}${commission ? `, commission ${dollars(commission)}` : ""}. Paying both would reward the same sale twice. Decide whether both apply before approving.`
+      ),
+    ];
+  } catch (error) {
+    console.error(JSON.stringify({ area: "referrals", event: "telemarketer_overlap_failed", message: String(error?.message || error).slice(0, 200) }));
+    return [];
+  }
 }
 
 /** Flags the owner must look at before approving (everything except information). */

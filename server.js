@@ -506,6 +506,8 @@ require("./jobs/campaignSender").startCampaignSender();
 require("./jobs/extraCharges").startExtraChargeJobs();
 // Sales desk: GHL webhook retries and nightly Stripe reconciliation (our records only).
 require("./jobs/salesDesk").startSalesDeskJobs();
+// Referral rewards: annual referrals become ready after 60 days of active membership (hourly; utils/referrals).
+require("./jobs/referralRewards").startReferralRewardJobs();
 
 /*
  * The Admin Overview's copy of Stripe charges (models/RevenueCharge). The
