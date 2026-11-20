@@ -421,7 +421,7 @@ const DEFINITIONS = {
   ADMIN_ACCOUNT_CREATED: {
     label: "Account created by Admin",
     template:
-      "{{brand}}: your account is ready. Sign in at {{site}}/signin with your email and temp password {{tempPassword}}, then set a new one. Reply STOP to opt out.",
+      "{{brand}}: your account is ready. At {{site}}/signin enter your mobile number, then temp password {{tempPassword}}, and set a new one. Reply STOP to opt out.",
     tokens: ({ tempPassword }) => ({ tempPassword: tempPassword || "your phone no." }),
   },
 
