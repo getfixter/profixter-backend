@@ -175,6 +175,15 @@ const UserSchema = new mongoose.Schema(
      * never links guest visits, and gets no marketing.
      */
     emailUnconfirmedAt: { type: Date, default: null },
+    /**
+     * Staff typed this email (Admin created the account, or Admin changed the
+     * email), 2026-11-20. Until the customer proves it with a code it opens
+     * nothing: no email code, Google, Apple or password reset, and the
+     * temporary password works only together with a code to the phone
+     * (utils/auth/accounts inboxOpensAccount / staffEmailUnproved). Accounts
+     * Admin created before this field are recognised by adminCreated.at.
+     */
+    emailEnteredByStaffAt: { type: Date, default: null },
     /** Apple "Hide My Email" relay address: real and deliverable, but not their own inbox. */
     emailIsAppleRelay: { type: Boolean, default: false },
     /** How the account was first created, for reporting. Never used for access. */

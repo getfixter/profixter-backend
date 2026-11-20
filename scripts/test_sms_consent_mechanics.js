@@ -1145,6 +1145,12 @@ async function main() {
      * pending. All types were rendered from the committed file and from this one
      * across six visit kinds and five statuses (1,230 renders); only those three
      * differ, and only for a pending status.
+     *
+     * Re-pinned 2026-11-20: ADMIN_ACCOUNT_CREATED said "sign in with your email
+     * and temp password", which no longer opens an account whose email staff
+     * typed (routes/auth.js login needs a code to the phone too). It now says to
+     * enter the mobile number, then the temp password. Only that type changed;
+     * still one GSM-7 segment (160 chars with the placeholder). For owner approval.
      */
     const digest = crypto
       .createHash("sha256")
@@ -1152,7 +1158,7 @@ async function main() {
       .digest("hex");
     assert.strictEqual(
       digest,
-      "b570ff9e64e5240705df57659149ba3de1f4dc795f852bf956a309d98d8e129b",
+      "4f75284bd842c8d1fc0458c9f203b5d240c8e02312d826017c6451c68c559a7f",
       "utils/sms/smsTemplates.js changed; re-approve the wording before updating this hash"
     );
   });

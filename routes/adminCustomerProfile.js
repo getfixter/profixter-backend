@@ -439,6 +439,9 @@ module.exports = function createAdminCustomerProfileRouter({ getAddressPlansForU
         else unset.email = "";
         set.emailVerifiedAt = null;
         set.emailIsAppleRelay = false;
+        // Typed by staff (2026-11-20): it opens nothing until the customer proves it (utils/auth/accounts inboxOpensAccount).
+        if (nextEmail) set.emailEnteredByStaffAt = new Date();
+        else unset.emailEnteredByStaffAt = "";
       }
 
       if (nextAddresses) {

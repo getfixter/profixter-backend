@@ -167,7 +167,16 @@ async function attachVerifiedPhone(user, e164) {
  * otherwise hand this customer's account to whoever owns the mistyped address.
  */
 function inboxOpensAccount(user) {
-  return !(user?.emailUnconfirmedAt && !user.emailVerifiedAt);
+  if (!user || user.emailVerifiedAt) return true;
+  if (user.emailUnconfirmedAt) return false;
+  // Typed by staff and never proved by the customer (2026-11-20).
+  return !staffEmailUnproved(user);
+}
+
+/** The account's email was typed by staff (Admin created it, or changed the email) and the customer never proved it. */
+function staffEmailUnproved(user) {
+  if (!user || user.emailVerifiedAt || !String(user.email || "").trim()) return false;
+  return Boolean(user.emailEnteredByStaffAt || user.adminCreated?.at);
 }
 
 /**
@@ -417,6 +426,7 @@ module.exports = {
   findCustomerByEmail,
   inboxOpensAccount,
   attachTypedEmail,
+  staffEmailUnproved,
   findCustomersByVerifiedPhone,
   issueChoiceToken,
   readChoiceToken,

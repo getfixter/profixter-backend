@@ -713,6 +713,25 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    /*
+     * 2026-11-20: the temporary password is the customer's phone number, and the
+     * email beside it was typed by staff. Together they would let whoever owns a
+     * mistyped inbox (or knows the number) in. So with an unproved staff email it
+     * opens the account only together with a code to the account's own phone:
+     * sign in with the mobile number, then enter the temporary password.
+     */
+    // While a temporary password is issued it IS the account's password (utils/auth/temporaryPassword issue).
+    if (temporaryPassword.isIssued(user) && authAccounts.staffEmailUnproved(user)) {
+      const proof = req.body?.linkToken ? authAccounts.readLinkToken(req.body.linkToken) : null;
+      const accountPhone = normalizePhoneE164(user.phone || "");
+      if (!proof || !accountPhone || proof.phone !== accountPhone) {
+        return res.status(401).json({
+          message: "Sign in with your mobile number. We'll text you a code, then enter your temporary password.",
+          code: "SIGN_IN_WITH_PHONE",
+        });
+      }
+    }
+
     await ensurePrimaryFromLegacy(user);
     /*
      * The password proves this account; a link token proves the phone the

@@ -414,7 +414,13 @@ router.post("/otp/phone/verify", async (req, res) => {
       return res.json({
         status: "link_required",
         linkToken: accounts.issueLinkToken(phone, consent),
-        hint: { maskedEmail: only ? maskEmail(only.email) : null, hasPassword: Boolean(only?.password) },
+        hint: {
+          maskedEmail: only ? maskEmail(only.email) : null,
+          hasPassword: Boolean(only?.password),
+          // 2026-11-20: an email staff typed (or one only typed at checkout) cannot confirm it's them; the page then offers the password only.
+          emailCodeOpens: only ? accounts.inboxOpensAccount(only) : true,
+          temporaryPassword: only ? require("../utils/auth/temporaryPassword").isLive(only) : false,
+        },
       });
     }
 

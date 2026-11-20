@@ -285,12 +285,12 @@ async function main() {
       const hours = (created.temporaryPassword.expiresAt - created.temporaryPassword.issuedAt) / 3600000;
       assert.strictEqual(hours, 72);
     });
-    await check("2. one welcome email with the temporary password", async () => {
+    await check("2. one welcome email: how to sign in, never the temporary password (staff typed the address)", async () => {
       const mails = sentEmails.filter((m) => m.templateKey === "admin_account_created");
       assert.strictEqual(mails.length, 1);
       assert.strictEqual(mails[0].to, "rosa.diaz@mailbox.org");
-      assert.ok(mails[0].text.includes("5165550142"));
-      assert.ok(/create a new password/i.test(mails[0].text));
+      assert.ok(!mails[0].text.includes("5165550142") && !String(mails[0].html || "").includes("5165550142"), "no temporary password in the email");
+      assert.ok(/mobile number/i.test(mails[0].text) && /create your own password/i.test(mails[0].text));
     });
     await check("3. one welcome text with the temporary password (consent recorded first, so not suppressed)", async () => {
       const texts = await SmsMessage.find({ user: created._id, notificationType: "ADMIN_ACCOUNT_CREATED" }).lean();
@@ -342,9 +342,17 @@ async function main() {
       assert.strictEqual(res.status, 403);
     });
 
+    const phoneProof = (e164) => require("../utils/auth/accounts").issueLinkToken(e164, {});
     let tempToken;
-    await check("4. the temporary password signs in once, typed as a phone number", async () => {
+    await check("4a. email + temporary password alone is refused: staff typed the email (2026-11-20)", async () => {
       const res = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142" } });
+      assert.strictEqual(res.status, 401, JSON.stringify(res.body));
+      assert.strictEqual(res.body.code, "SIGN_IN_WITH_PHONE");
+      const wrongPhone = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142", linkToken: phoneProof("+16315550999") } });
+      assert.strictEqual(wrongPhone.status, 401, "a code to some other phone is not enough");
+    });
+    await check("4. with a code to their own phone, the temporary password signs in once, typed as a phone number", async () => {
+      const res = await call("POST", "/api/auth/login", { body: { email: "rosa.diaz@mailbox.org", password: "(516) 555-0142", linkToken: phoneProof("+15165550142") } });
       assert.strictEqual(res.status, 200, JSON.stringify(res.body));
       assert.strictEqual(res.body.user.mustChangePassword, true);
       assert.strictEqual(res.body.user.temporaryPassword, true);
@@ -389,7 +397,7 @@ async function main() {
       const res = await asOwner("POST", "/api/admin/customers", { body: { firstName: "Ken", lastName: "Park", phone: "631-555-0177", email: "ken@example.test" } });
       assert.strictEqual(res.status, 201);
       waiting = await User.findById(res.body.customer._id);
-      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177" } });
+      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177", linkToken: phoneProof("+16315550177") } });
       assert.strictEqual(login.status, 200);
       await User.updateOne({ _id: waiting._id }, { $set: { "temporaryPassword.expiresAt": new Date(Date.now() - 1000) } });
       const again = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177" } });
@@ -404,7 +412,7 @@ async function main() {
       assert.strictEqual(res.status, 200, JSON.stringify(res.body));
       assert.strictEqual(sentEmails.filter((m) => m.templateKey === "admin_account_created").length, mailsBefore + 1);
       assert.strictEqual(await SmsMessage.countDocuments({ user: waiting._id, notificationType: "ADMIN_ACCOUNT_CREATED" }), 2);
-      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177" } });
+      const login = await call("POST", "/api/auth/login", { body: { email: "ken@example.test", password: "6315550177", linkToken: phoneProof("+16315550177") } });
       assert.strictEqual(login.status, 200);
     });
     await check("signing in another way (code, Google, Apple) retires the temporary password", async () => {

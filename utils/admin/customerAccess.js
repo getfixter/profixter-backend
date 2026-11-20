@@ -57,25 +57,27 @@ function renderAccessEmail({ user, plain, expiresAt }) {
   const signIn = "https://www.profixter.com/signin";
   const e = mail.escapeHtml;
   const p = (t) => `<p style="margin:0 0 16px;">${t}</p>`;
+  /*
+   * 2026-11-20: no temporary password in the email. Staff typed this address;
+   * if it is wrong, a stranger's inbox would hold the email and the password
+   * (the customer's phone number) together. The password goes by text to the
+   * phone, and works together with a code to that phone (routes/auth.js login).
+   */
+  void plain;
   const html = mail.frame(
     `${p(`Hi ${e(firstNameOf(user))},`)}
      ${p("Your Profixter account has been created, as we discussed on the phone.")}
-     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
-       <tr><td style="padding:4px 12px 4px 0;color:#64748b;">Email</td><td style="padding:4px 0;font-weight:600;">${e(user.email)}</td></tr>
-       <tr><td style="padding:4px 12px 4px 0;color:#64748b;">Temporary password</td><td style="padding:4px 0;font-weight:600;letter-spacing:1px;">${e(plain)}</td></tr>
-     </table>
-     ${p("Your temporary password is your phone number. When you sign in, you'll be asked to create a new password before you continue.")}
-     ${p(`The temporary password stops working on ${e(formatExpiry(expiresAt))} (New York time). After that, use "Forgot password" or call us.`)}
+     ${p("To sign in, choose Sign in and enter your mobile number. We'll text you a code, then enter the temporary password we sent you by text, and create your own password.")}
+     ${p(`The temporary password stops working on ${e(formatExpiry(expiresAt))} (New York time). After that, sign in with a code to your mobile number or call us.`)}
      ${mail.btn(signIn, "Sign in")}
      <p style="margin:20px 0 0;">The Profixter Team<br/><a href="https://www.profixter.com">https://www.profixter.com</a></p>`,
-    { preheader: "Sign in and create your own password." }
+    { preheader: "Sign in with your mobile number." }
   );
   const text = [
     `Hi ${firstNameOf(user)},`,
     "Your Profixter account has been created, as we discussed on the phone.",
-    `Email: ${user.email}\nTemporary password: ${plain}`,
-    "Your temporary password is your phone number. When you sign in, you'll be asked to create a new password before you continue.",
-    `The temporary password stops working on ${formatExpiry(expiresAt)} (New York time). After that, use "Forgot password" or call us.`,
+    "To sign in, choose Sign in and enter your mobile number. We'll text you a code, then enter the temporary password we sent you by text, and create your own password.",
+    `The temporary password stops working on ${formatExpiry(expiresAt)} (New York time). After that, sign in with a code to your mobile number or call us.`,
     `Sign in: ${signIn}`,
     "The Profixter Team\nhttps://www.profixter.com",
   ].join("\n\n");
@@ -226,6 +228,8 @@ async function createCustomerByAdmin({ body, admin, req = null, deps = {} }) {
     authProviders: ["password"],
     addresses: input.addresses,
     adminCreated: { at: now, by: admin?._id || null, byName: String(admin?.name || admin?.email || "").slice(0, 120) },
+    // Typed by staff: opens nothing until the customer proves it (utils/auth/accounts inboxOpensAccount).
+    emailEnteredByStaffAt: input.email ? now : null,
   });
   if (user.addresses.length) {
     user.defaultAddressId = user.addresses[0]._id;

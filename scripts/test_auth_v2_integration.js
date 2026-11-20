@@ -779,6 +779,108 @@ async function run() {
     assert.equal(byCode.status, 200);
     assert.equal(String(jwt.decode(byCode.body.token).id), String((await byPhone(signup))._id));
   });
+
+  console.log("\n--- staff-typed email (2026-11-20)");
+
+  /* An account Admin created on a call: staff typed the email and the phone; the temporary password is the phone number. */
+  async function makeStaffCustomer({ email, phone, marker = true }) {
+    const temporaryPassword = require("../utils/auth/temporaryPassword");
+    seq += 1;
+    const user = new User({
+      userId: String(41000000 + seq),
+      name: "Sam Staffmade",
+      email,
+      phone,
+      role: "customer",
+      signupMethod: "admin",
+      authProviders: ["password"],
+      adminCreated: { at: new Date(), byName: "Owner" },
+      ...(marker ? { emailEnteredByStaffAt: new Date() } : {}),
+    });
+    const { plain } = await temporaryPassword.issue(user, {});
+    await user.save();
+    return { user, plain };
+  }
+
+  await test("a staff-typed email never opens the account: email code, Google, Apple and password reset all refuse", async () => {
+    const { user } = await makeStaffCustomer({ email: "staff-typo@example.com", phone: "+16315550191" });
+    await clearLimits();
+    const byCode = await emailSignIn("staff-typo@example.com");
+    assert.equal(byCode.status, 409, JSON.stringify(byCode.body));
+    assert.equal(byCode.body.code, "SIGN_IN_WITH_PHONE");
+    assert.equal(byCode.body.token, undefined);
+    googleIdentities.set("tok-staff", { provider: "google", sub: "g-staff", email: "staff-typo@example.com", emailVerified: true, name: "Stranger" });
+    const byGoogle = await post("/api/auth/google", { idToken: "tok-staff" });
+    assert.equal(byGoogle.status, 409, JSON.stringify(byGoogle.body));
+    assert.equal(byGoogle.body.token, undefined);
+    const byApple = await post("/api/auth/apple", { idToken: appleToken({ sub: "a-staff", email: "staff-typo@example.com", email_verified: "true" }), rawNonce: "nonce-1" });
+    assert.equal(byApple.status, 409, JSON.stringify(byApple.body));
+    const before = resetMail.length;
+    const reset = await post("/api/password-reset", { email: "staff-typo@example.com" });
+    assert.equal(reset.status, 200, "same answer as for nobody");
+    assert.equal(resetMail.slice(before).filter((m) => m.exists).length, 0, "no reset is offered for the account");
+    const fresh = await User.findById(user._id);
+    assert.equal(fresh.emailVerifiedAt, null);
+    assert.equal(fresh.googleId || null, null);
+  });
+
+  await test("accounts Admin created before the marker are treated the same (adminCreated.at)", async () => {
+    await makeStaffCustomer({ email: "older-staff@example.com", phone: "+16315550192", marker: false });
+    await clearLimits();
+    const byCode = await emailSignIn("older-staff@example.com");
+    assert.equal(byCode.status, 409, JSON.stringify(byCode.body));
+    assert.equal(byCode.body.code, "SIGN_IN_WITH_PHONE");
+  });
+
+  await test("email + temporary password alone is refused; with a code to the account's own phone it signs in", async () => {
+    const { user, plain } = await makeStaffCustomer({ email: "staff-ok@example.com", phone: "+16315550193" });
+    await clearLimits();
+    const alone = await post("/api/auth/login", { email: "staff-ok@example.com", password: plain });
+    assert.equal(alone.status, 401, JSON.stringify(alone.body));
+    assert.equal(alone.body.code, "SIGN_IN_WITH_PHONE");
+    assert.equal(alone.body.token, undefined);
+    // Somebody else's phone code does not stand in for the account's phone.
+    const other = await post("/api/auth/otp/phone/start", { phone: "6315550194", smsTransactionalConsent: true });
+    assert.equal(other.status, 200);
+    const otherSignup = await post("/api/auth/otp/phone/verify", { phone: "6315550194", code: lastCode("+16315550194") });
+    assert.equal(otherSignup.status, 200);
+    // The customer: a code to their own phone, then the temporary password.
+    await clearLimits();
+    await post("/api/auth/otp/phone/start", { phone: "6315550193", smsTransactionalConsent: true });
+    const linkStep = await post("/api/auth/otp/phone/verify", { phone: "6315550193", code: lastCode("+16315550193") });
+    assert.equal(linkStep.body.status, "link_required", JSON.stringify(linkStep.body));
+    assert.equal(linkStep.body.hint.emailCodeOpens, false, "the page offers no email code for a staff-typed email");
+    assert.equal(linkStep.body.hint.temporaryPassword, true);
+    const withPhone = await post("/api/auth/login", { email: "staff-ok@example.com", password: plain, linkToken: linkStep.body.linkToken });
+    assert.equal(withPhone.status, 200, JSON.stringify(withPhone.body));
+    assert.equal(String(jwt.decode(withPhone.body.token).id), String(user._id));
+    assert.ok((await User.findById(user._id)).phoneVerifiedAt, "the phone is now proved");
+  });
+
+  await test("once the customer proves the staff-typed email, reset and email sign-in work again", async () => {
+    const { user } = await makeStaffCustomer({ email: "staff-proved@example.com", phone: "+16315550195" });
+    const token = jwt.sign({ id: String(user._id), tv: user.tokenVersion || 0 }, process.env.JWT_SECRET);
+    await clearLimits();
+    const start = await post("/api/auth/otp/email/start", { email: "staff-proved@example.com", mode: "attach" }, token);
+    assert.equal(start.status, 200, JSON.stringify(start.body));
+    const attach = await post("/api/auth/otp/email/verify", { email: "staff-proved@example.com", code: lastCode("staff-proved@example.com"), mode: "attach" }, token);
+    assert.equal(attach.status, 200, JSON.stringify(attach.body));
+    assert.ok((await User.findById(user._id)).emailVerifiedAt);
+    await clearLimits();
+    const before = resetMail.length;
+    await post("/api/password-reset", { email: "staff-proved@example.com" });
+    assert.equal(resetMail.slice(before).filter((m) => m.exists).length, 1, "recovery works for the proved address");
+    const byCode = await emailSignIn("staff-proved@example.com");
+    assert.equal(byCode.status, 200, JSON.stringify(byCode.body));
+  });
+
+  await test("a customer's own verified email still recovers the account (unchanged)", async () => {
+    const own = await makePasswordCustomer({ email: "own-verified@example.com", emailVerifiedAt: new Date() });
+    await clearLimits();
+    const before = resetMail.length;
+    await post("/api/password-reset", { email: own.email });
+    assert.equal(resetMail.slice(before).filter((m) => m.exists).length, 1);
+  });
 }
 
 (async () => {
