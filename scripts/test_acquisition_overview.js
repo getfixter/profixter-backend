@@ -424,6 +424,54 @@ async function main() {
     for (const k of ["visitors", "inquiries", "websiteLeads", "landingPageViews", "outboundClicks", "newPayingCustomers", "firstPaymentRevenue", "source"]) assert.ok(body.definitions[k], k);
   });
 
+  section("Welcome entry (2026-11-19)");
+  await test("the welcome screen and the first tap are stamped once on the browser, nothing personal", async () => {
+    const W = (id, extra) => ({ visitorId: `v-welcome-${id}-000000`, firstSeenAt: ago(1), landingPath: "/", ...extra });
+    await SiteVisitor.collection.insertMany([
+      W("m", { utmSource: "fb", utmMedium: "paid", utmCampaign: "52606450943827", hasFbclid: true, source: "meta_facebook" }),
+      W("o", {}),
+      W("h", {}),
+      W("idle", { utmSource: "ig", utmMedium: "paid", utmCampaign: "52606450943827", hasFbclid: true }),
+    ]);
+    for (const id of ["m", "o", "h", "idle"]) await call("POST", "/api/track/step", null, { visitorId: `v-welcome-${id}-000000`, step: "welcome_shown" });
+    await call("POST", "/api/track/step", null, { visitorId: "v-welcome-m-000000", step: "welcome_tap_membership" });
+    await call("POST", "/api/track/step", null, { visitorId: "v-welcome-m-000000", step: "welcome_tap_one_time" }); // a later tap never replaces the first
+    await call("POST", "/api/track/step", null, { visitorId: "v-welcome-o-000000", step: "welcome_tap_one_time" });
+    await call("POST", "/api/track/step", null, { visitorId: "v-welcome-h-000000", step: "welcome_exit_home" });
+    const m = await SiteVisitor.findOne({ visitorId: "v-welcome-m-000000" }).lean();
+    assert.ok(m.welcome.shownAt);
+    assert.strictEqual(m.welcome.firstTap, "membership");
+    const rows = await FunnelStep.find({ step: /^welcome_/ }).lean();
+    assert.strictEqual(rows.filter((r) => r.step === "welcome_shown").reduce((a, r) => a + r.count, 0), 4);
+  });
+  await test("the Overview reports first taps and first paid memberships per welcome browser, one-time sales apart", async () => {
+    const WM = oid();
+    await User.collection.insertOne({ _id: WM, userId: "PF-WM", name: "WM Tester", email: "wm@example.com", phone: "", role: "customer", isActive: true, createdAt: new Date(), attribution: { ...FB_TOUCH, visitorId: "v-welcome-m-000000" } });
+    await SiteVisitor.updateOne({ visitorId: "v-welcome-m-000000" }, { $set: { user: WM } });
+    await Subscription.collection.insertOne({ _id: oid(), user: WM, addressId: oid(), subscriptionType: "plus", billingCycle: "monthly", status: "active", startDate: new Date(), planPrice: 249, stripeSubscriptionId: "sub_WM" });
+    await Booking.collection.insertOne({ _id: oid(), user: null, guestCheckout: true, siteVisitorId: "v-welcome-o-000000", date: ago(-5), status: "Pending", createdAt: new Date(), bookingType: "one_time_handyman_visit", paymentState: "paid" });
+    body = await load();
+    const w = body.funnel.welcome;
+    assert.ok(w, "welcome block present");
+    assert.deepStrictEqual([w.shown, w.tapped, w.tapMembership, w.tapOneTime, w.exitHome, w.noTap], [4, 3, 1, 1, 1, 1], JSON.stringify(w));
+    assert.strictEqual(w.firstPaidMemberships, 1);
+    assert.strictEqual(w.oneTimeSales, 1);
+    assert.deepStrictEqual([w.meta.shown, w.meta.tapped, w.meta.firstPaidMemberships], [2, 1, 1]);
+  });
+  await test("renewals, a second home and a membership bought before the welcome screen never count as a new one", async () => {
+    const WM = (await User.findOne({ userId: "PF-WM" }).lean())._id;
+    // A second home's membership for the same customer, and a renewal charge on the first: still one.
+    await Subscription.collection.insertOne({ _id: oid(), user: WM, addressId: oid(), subscriptionType: "basic", billingCycle: "monthly", status: "active", startDate: new Date(), planPrice: 149, stripeSubscriptionId: "sub_WM2" });
+    STRIPE_ROWS.push({ id: "ch_wm_renewal", at: new Date(), kind: "membership", service: true, cents: 24900, refundedCents: 0, netCents: 24900, taxCents: 0, stripeCustomerId: "cus_WM", renewal: true });
+    // A member from before who saw the welcome screen later is not a welcome sale.
+    const OLDW = oid();
+    await User.collection.insertOne({ _id: OLDW, userId: "PF-OLDW", name: "Old Welcome", email: "oldw@example.com", role: "customer", isActive: true, createdAt: ago(100) });
+    await Subscription.collection.insertOne({ _id: oid(), user: OLDW, addressId: oid(), subscriptionType: "plus", billingCycle: "monthly", status: "active", startDate: ago(90), planPrice: 249, stripeSubscriptionId: "sub_OLDW" });
+    await SiteVisitor.collection.insertOne({ visitorId: "v-welcome-oldw-00000", firstSeenAt: ago(1), landingPath: "/", user: OLDW, welcome: { shownAt: ago(1), firstTap: "membership", firstTapAt: ago(1) } });
+    body = await load();
+    assert.strictEqual(body.funnel.welcome.firstPaidMemberships, 1, JSON.stringify(body.funnel.welcome));
+  });
+
   server.close();
   await mongoose.disconnect();
   await mongod.stop();

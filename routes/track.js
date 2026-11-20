@@ -401,6 +401,35 @@ const stepLimiter = rateLimit({
   keyResolver: (req) => clientIp(req) || null,
 });
 
+/*
+ * The welcome entry's own record on the browser (models/SiteVisitor.welcome):
+ * first shown, then the first tap, each written once. The visit beacon may
+ * land a moment after the welcome screen, so a missing visitor is tried once
+ * more; never inserted here (the beacon owns the first touch).
+ */
+async function stampWelcome(visitorId, step) {
+  const { WELCOME_STAMPS } = require("../models/FunnelStep");
+  const stamp = WELCOME_STAMPS[step];
+  if (!stamp) return;
+  const now = new Date();
+  const apply = () =>
+    stamp === "shown"
+      ? SiteVisitor.updateOne({ visitorId, "welcome.shownAt": { $in: [null] } }, { $set: { "welcome.shownAt": now } })
+      : SiteVisitor.updateOne(
+          { visitorId, "welcome.shownAt": { $ne: null }, "welcome.firstTap": { $in: [null] } },
+          { $set: { "welcome.firstTap": stamp, "welcome.firstTapAt": now } }
+        );
+  try {
+    const r = await apply();
+    if (!r.matchedCount && !(await SiteVisitor.exists({ visitorId }))) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await apply();
+    }
+  } catch (error) {
+    console.warn("Welcome stamp failed:", error.message);
+  }
+}
+
 router.post("/step", stepLimiter, async (req, res) => {
   try {
     const { FunnelStep, FunnelStepSeen, STEPS } = require("../models/FunnelStep");
@@ -410,6 +439,7 @@ router.post("/step", stepLimiter, async (req, res) => {
       return res.status(204).end();
     }
     const date = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    await stampWelcome(visitorId, step);
     try {
       await FunnelStepSeen.create({ key: `${visitorId}|${step}|${date}`, expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) });
     } catch (error) {

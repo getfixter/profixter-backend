@@ -43,10 +43,22 @@ const siteVisitorSchema = new mongoose.Schema(
      */
     source: { type: String, default: "direct", index: true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    /*
+     * The welcome entry on profixter.com (routes/track /step, 2026-11-19): when
+     * this browser was first shown it, and its first tap there. No personal
+     * data. Joined to the account through `user`, so a paid membership can be
+     * counted per welcome visitor.
+     */
+    welcome: {
+      shownAt: { type: Date, default: null },
+      firstTap: { type: String, enum: ["membership", "one_time", "home", null], default: null },
+      firstTapAt: { type: Date, default: null },
+    },
   },
   { timestamps: false }
 );
 
 siteVisitorSchema.index({ firstSeenAt: 1 });
+siteVisitorSchema.index({ "welcome.shownAt": 1 }, { sparse: true });
 
 module.exports = mongoose.model("SiteVisitor", siteVisitorSchema);

@@ -1032,6 +1032,71 @@ function buildAttention(data, period, counts) {
  * step was ever recorded: a step that did not exist yet is "not measured",
  * never zero.
  */
+/*
+ * The welcome entry on profixter.com (2026-11-19), per browser shown it in the
+ * period (SiteVisitor.welcome). Two questions, kept apart:
+ *  - does it get people moving: the first tap (membership, one-time, or the
+ *    current homepage) per browser shown;
+ *  - does it work: first paid memberships per browser shown, counted once per
+ *    customer at their first paid membership after they saw it (renewals,
+ *    second homes and gifts never count, as everywhere in this overview).
+ * One-time and Full Day sales are kept separate. Null before it existed.
+ */
+async function welcomeEntry(data, period) {
+  try {
+    const shown = await SiteVisitor.find({ "welcome.shownAt": { $gte: period.from, $lt: period.to } })
+      .select("visitorId welcome user utmSource utmMedium utmCampaign utmTerm utmContent campaignId campaignName adsetId adsetName adId adName refSource refCode referrerHost landingPath hasFbclid hasGclid")
+      .lean();
+    const out = {
+      shown: shown.length,
+      tapped: 0,
+      tapMembership: 0,
+      tapOneTime: 0,
+      exitHome: 0,
+      noTap: 0,
+      meta: { shown: 0, tapped: 0, firstPaidMemberships: 0 },
+      firstPaidMemberships: 0,
+      oneTimeSales: 0,
+    };
+    if (!shown.length) return out;
+    firstPaidMembershipCustomers(data, period.from, period.to); // builds data._firstMembershipAt
+    const visitorIds = [];
+    const userIds = [];
+    for (const v of shown) {
+      const isMeta = classifySource(visitorAttribution(v)).group === "meta";
+      if (isMeta) out.meta.shown += 1;
+      const tap = v.welcome?.firstTap || null;
+      if (tap === "membership") out.tapMembership += 1;
+      else if (tap === "one_time") out.tapOneTime += 1;
+      else if (tap === "home") out.exitHome += 1;
+      else out.noTap += 1;
+      if (tap) {
+        out.tapped += 1;
+        if (isMeta) out.meta.tapped += 1;
+      }
+      visitorIds.push(v.visitorId);
+      if (v.user) {
+        userIds.push(v.user);
+        const at = data._firstMembershipAt.get(String(v.user));
+        if (at && at >= new Date(v.welcome.shownAt) && at < period.to) {
+          out.firstPaidMemberships += 1;
+          if (isMeta) out.meta.firstPaidMemberships += 1;
+        }
+      }
+    }
+    out.oneTimeSales = await Booking.countDocuments({
+      bookingType: { $in: ["one_time_handyman_visit", "full_day_visit"] },
+      paymentState: "paid",
+      createdAt: { $gte: period.from, $lt: period.to },
+      $or: [{ siteVisitorId: { $in: visitorIds } }, ...(userIds.length ? [{ user: { $in: userIds } }] : [])],
+    });
+    return out;
+  } catch (error) {
+    console.warn("Overview welcome entry failed:", error.message);
+    return null;
+  }
+}
+
 async function funnelSteps(period) {
   try {
     const { FunnelStep, STEPS } = require("../../models/FunnelStep");
@@ -1205,7 +1270,7 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
 
   const revenueWindowFrom = new Date(Math.min(period.prevFrom.getTime(), yearPeriod.from.getTime()));
   const revenueWindowTo = new Date(Math.max(period.to.getTime(), yearPeriod.to.getTime()));
-  const [revenueAll, visitors, prevVisitors, mrr, adSpend, steps, metaEvents, feeMonths] = await Promise.all([
+  const [revenueAll, visitors, prevVisitors, mrr, adSpend, steps, metaEvents, feeMonths, welcome] = await Promise.all([
     collectedRevenue({ from: revenueWindowFrom, to: revenueWindowTo }),
     visitorCounts(period.from, period.to),
     visitorCounts(period.prevFrom, period.prevTo),
@@ -1215,6 +1280,7 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
     funnelSteps(period),
     metaEventCounts(period),
     readAgencyFees(),
+    welcomeEntry(data, period),
   ]);
   const agencyFee = agencyFeeForPeriod(feeMonths, period);
   const curRevenueRows = revenueAll.rows.filter((r) => inRange(r.at, period.from, period.to));
@@ -1404,6 +1470,7 @@ async function buildOverview({ range, from, to, now = new Date() } = {}) {
       firstPaidMemberships: firstPaidMembershipCustomers(data, period.from, period.to).length,
       requestOutcomes: requestOutcomeCounts,
       steps,
+      welcome,
     },
     sources: sources.rows,
     sourceGroups: sources.groups,
