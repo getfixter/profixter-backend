@@ -255,6 +255,29 @@ async function main() {
       holdToken = res.body.token;
     });
 
+    console.log("\nOnly where we work (2026-11-19)");
+    await check("a home outside Nassau and Suffolk: no first-visit draft and no membership checkout that books a visit", async () => {
+      const far = await customer({ addresses: [{ label: "Primary", line1: "5 W 34th St", city: "New York", state: "NY", zip: "10001", county: "New York" }] });
+      const form = new FormData();
+      form.append("addressId", String(far.addresses[0]._id));
+      form.append("note", "Replace an existing faucet in the kitchen.");
+      form.append("requestedDate", soon);
+      form.append("requestedTime", "10:00");
+      const d = await call("POST", "/api/bookings/first-visit-draft", { form, as: far });
+      assert.strictEqual(d.status, 400, JSON.stringify(d.body));
+      assert.strictEqual(d.body.code, "OUT_OF_SERVICE_AREA");
+      const before = fake.created.length;
+      const heldBefore = await BookingSlotReservation.countDocuments({ signInHold: true, status: "held" });
+      const c = await call("POST", "/api/stripe/checkout/create-checkout-session", {
+        as: far,
+        body: { plan: "basic", billingCycle: "monthly", addressId: String(far.addresses[0]._id), returnTo: "handyman", firstVisit: { holdToken: "", requestedDate: soon, requestedTime: "10:00" } },
+      });
+      assert.strictEqual(c.status, 400, JSON.stringify(c.body));
+      assert.strictEqual(c.body.code, "OUT_OF_SERVICE_AREA");
+      assert.strictEqual(fake.created.length, before, "no Stripe page opened");
+      assert.strictEqual(await BookingSlotReservation.countDocuments({ signInHold: true, status: "held" }), heldBefore, "nothing held for it");
+    });
+
     console.log("\nMembership checkout carries the held visit");
     let session1;
     await check("the checkout extends the hold over the Stripe page and opens the page with that expiry", async () => {

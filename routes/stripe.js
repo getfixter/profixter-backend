@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const { isAddressInServiceArea, outOfServiceAreaVisitMessage } = require("../utils/serviceArea");
 const auth = require("../middleware/auth");
 const mongoose = require("mongoose");
 const User = require("../models/User");
@@ -183,6 +184,17 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     let firstVisitHoldToken = "";
     let firstVisitHoldExpiresAt = null;
     if (firstVisit) {
+      /*
+       * A membership that books its first visit (2026-11-19): only for a home
+       * we serve, checked here as for every other booking (utils/serviceArea),
+       * before any time is held or page opened. Buying a plan without booking
+       * a visit is unchanged.
+       */
+      const buyer = await User.findById(req.user.id).select("addresses").lean();
+      const home = (buyer?.addresses || []).find((a) => String(a._id) === String(addressId));
+      if (home && !isAddressInServiceArea(home)) {
+        return res.status(400).json({ code: "OUT_OF_SERVICE_AREA", message: outOfServiceAreaVisitMessage(), field: "address" });
+      }
       if (firstVisit.slotStart <= new Date()) {
         return res.status(409).json({ code: "SLOT_UNAVAILABLE", message: "That time has passed. Pick another - everything else is saved." });
       }

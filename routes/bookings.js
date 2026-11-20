@@ -132,6 +132,7 @@ const {
 const {
   isAddressInServiceArea,
   outOfServiceAreaMessage,
+  outOfServiceAreaVisitMessage,
 } = require("../utils/serviceArea");
 const {
   getOneTimeVisitSettings,
@@ -1298,6 +1299,8 @@ router.post(
       const addressId = String(req.body?.addressId || "");
       const home = mongoose.isValidObjectId(addressId) ? me.addresses?.id?.(addressId) : null;
       if (!home) return res.status(400).json({ message: "Address not found on your account.", code: "ADDRESS_REQUIRED" });
+      // A membership's first visit is booked only where we work (2026-11-19, the same ZIP list as every booking).
+      if (!isAddressInServiceArea(home)) return res.status(400).json({ code: "OUT_OF_SERVICE_AREA", message: outOfServiceAreaVisitMessage(), field: "address" });
       const date = String(req.body?.requestedDate || "");
       const time = String(req.body?.requestedTime || "");
       const start = /^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}$/.test(time) ? moment.tz(`${date} ${time}`, "YYYY-MM-DD HH:mm", true, "America/New_York") : null;

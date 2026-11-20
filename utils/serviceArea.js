@@ -256,7 +256,13 @@ function outOfServiceAreaMessage() {
   return `We currently offer First Visit Free for homes in ${SERVICE_AREA_LABEL}.`;
 }
 
+/* For a paid membership visit (2026-11-19): the free-visit wording above is wrong there. */
+function outOfServiceAreaVisitMessage() {
+  return `We serve homes in ${SERVICE_AREA_LABEL}. That address is outside our area for now, so we can't book a visit there.`;
+}
+
 module.exports = {
+  outOfServiceAreaVisitMessage,
   NASSAU_ZIPS,
   SUFFOLK_ZIPS,
   SERVICE_AREA_ZIPS,
