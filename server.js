@@ -278,6 +278,10 @@ app.use("/api/admin/sms", require("./routes/adminSms"));
 // Template control and unified email+SMS history. Admin-only on both sides:
 // message bodies carry customer names, appointment times and claim links.
 app.use("/api/admin/communications", require("./routes/adminCommunications"));
+// The shared text inbox, customer history, manual and bulk texts (routes/adminComms.js).
+app.use("/api/admin/comms", require("./routes/adminComms"));
+// The signed, expiring image URL Twilio fetches for an outbound MMS (only public Communications URL).
+app.use("/api/comms", require("./routes/commsPublic"));
 app.use("/api/admin/recent-work", require("./routes/adminRecentWork"));
 app.use("/api/admin/gifts", require("./routes/adminGifts"));
 // Booth display. Admin: review, hide, restore. Public: view-only kiosk feed
@@ -506,6 +510,8 @@ require("./jobs/campaignSender").startCampaignSender();
 require("./jobs/extraCharges").startExtraChargeJobs();
 // Sales desk: GHL webhook retries and nightly Stripe reconciliation (our records only).
 require("./jobs/salesDesk").startSalesDeskJobs();
+// Communications: bulk worker, send reconciliation, history imports, health (jobs/comms.js).
+require("./jobs/comms").startCommsJobs();
 // Referral rewards: annual referrals become ready after 60 days of active membership (hourly; utils/referrals).
 require("./jobs/referralRewards").startReferralRewardJobs();
 

@@ -98,6 +98,11 @@ router.post("/inbound", (req, res) => {
     return res.status(403).type("text/plain").send("Forbidden");
   }
 
+  // Communications: the call shows in the caller's thread (metadata only). Never blocks the answer.
+  require("../utils/comms/ingest")
+    .recordInboundCall(req.body || {})
+    .catch((e) => console.warn(JSON.stringify({ event: "comms_call_record_failed", error: String(e?.message || "").slice(0, 120) })));
+
   console.log(
     JSON.stringify({
       event: "voice_inbound_announced",

@@ -426,6 +426,8 @@ module.exports = {
   addressDto,
   buildRows,
   customerBaseQuery,
+  filterClauses,
+  PLANS,
   listCustomers,
   searchCustomers,
   searchJobs,

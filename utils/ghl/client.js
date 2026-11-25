@@ -66,6 +66,19 @@ const ghl = {
       env,
       fetchImpl,
     }),
+  /**
+   * Read-only conversation history for Communications' import
+   * (utils/comms/imports.js). Oldest-active first, so a checkpoint on the last
+   * sort value resumes exactly where an interrupted import stopped.
+   */
+  searchConversations: ({ startAfterDate, limit = 50, env, fetchImpl } = {}) =>
+    call("GET", "/conversations/search", {
+      query: { locationId: config(env).locationId, limit, sort: "asc", sortBy: "last_message_date", ...(startAfterDate ? { startAfterDate } : {}) },
+      env,
+      fetchImpl,
+    }),
+  getMessages: (conversationId, { lastMessageId, limit = 100, type, env, fetchImpl } = {}) =>
+    call("GET", `/conversations/${encodeURIComponent(conversationId)}/messages`, { query: { limit, lastMessageId, type }, env, fetchImpl }),
 };
 
 module.exports = { BASE, GhlError, ghl };

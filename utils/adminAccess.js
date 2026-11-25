@@ -58,6 +58,16 @@ const PERMISSIONS = Object.freeze({
   LEADS_MANAGE: "leads.manage",
   PROJECTS_MANAGE: "projects.manage",
   COMMUNICATIONS_MANAGE: "communications.manage",
+  /*
+   * The shared text inbox (routes/adminComms.js). Read: conversations, the
+   * customer communication timeline and media. Send: one-to-one texts, notes,
+   * read/archive/assign, linking unknown numbers. Bulk: preparing bulk texts;
+   * only the owner approves one (admin.all), so a bulk send prepared by
+   * anybody else waits for the owner.
+   */
+  COMMS_READ: "comms.read",
+  COMMS_SEND: "comms.send",
+  COMMS_BULK: "comms.bulk",
   RECENT_WORK_MANAGE: "recentWork.manage",
   PROMOTION_MANAGE: "promotion.manage",
   BLACKLIST_MANAGE: "blacklist.manage",
@@ -199,6 +209,20 @@ const SECTIONS = Object.freeze([
     label: "Recent Work / Photos",
     description: "Website work photos: upload, edit, publish and remove",
     permissions: [PERMISSIONS.RECENT_WORK_MANAGE],
+  },
+  {
+    id: "conversations",
+    group: "business",
+    label: "Conversations",
+    description: "The shared text inbox and customers' communication history: read, reply, add notes, assign",
+    permissions: [PERMISSIONS.COMMS_READ, PERMISSIONS.COMMS_SEND],
+  },
+  {
+    id: "bulk-texts",
+    group: "marketing",
+    label: "Bulk texts",
+    description: "Prepare bulk texts to customers (the owner approves before anything is sent)",
+    permissions: [PERMISSIONS.COMMS_READ, PERMISSIONS.COMMS_BULK],
   },
   {
     id: "communications",

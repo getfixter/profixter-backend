@@ -61,6 +61,7 @@ function statusCallbackUrlFor(req) {
 
 function deny(res, reason) {
   console.warn(JSON.stringify({ event: "sms_webhook_rejected", reason }));
+  require("../utils/comms/core").healthEvent("webhook_rejected", reason).catch(() => {});
   return res.status(403).type("text/plain").send("Forbidden");
 }
 
@@ -147,6 +148,15 @@ router.post("/status", async (req, res) => {
         : { providerMessageSid: sid, status: { $nin: ["delivered"] } };
 
     const result = await SmsMessage.updateOne(filter, { $set: update });
+
+    /*
+     * Communications: the same status for the thread (manual, bulk and
+     * mirrored automated texts share the Twilio SID). Rank-guarded, and a
+     * status that beats its own send is parked until the SID is saved.
+     */
+    await require("../utils/comms/status")
+      .applyProviderStatus(sid, rawStatus, { errorCode, errorMessage: String(req.body?.ErrorMessage || "") })
+      .catch((e) => require("../utils/comms/core").healthEvent("status_apply_failed", e.message));
 
     /*
      * Teach the phone-status layer what the carrier just told us.
@@ -245,13 +255,30 @@ router.post("/inbound", async (req, res) => {
 
   if (!from) return emptyTwiml(res);
 
+  /*
+   * Communications: every inbound text is kept in the shared inbox (it used
+   * to be logged without its content). A replayed webhook (same MessageSid)
+   * lands on the stored row and changes nothing, including the auto-reply.
+   */
+  let duplicate = false;
+  try {
+    const recorded = await require("../utils/comms/ingest").recordInboundSms(req.body || {});
+    duplicate = recorded.duplicate;
+  } catch (error) {
+    console.error(JSON.stringify({ event: "comms_inbound_record_failed", error: String(error?.message || "").slice(0, 200) }));
+    await require("../utils/comms/core").healthEvent("inbound_record_failed", error?.message);
+  }
+  if (duplicate) return emptyTwiml(res);
+
   try {
     if (STOP_WORDS.has(keyword)) {
+      await require("../utils/comms/ingest").recordKeywordEvent(from, "stop").catch(() => {});
       await applyOptOut(from, keyword);
       console.log(
         JSON.stringify({ event: "sms_opt_out", from: maskPhone(from), keyword })
       );
     } else if (START_WORDS.has(keyword)) {
+      await require("../utils/comms/ingest").recordKeywordEvent(from, "start").catch(() => {});
       await applyOptIn(from, keyword);
       console.log(
         JSON.stringify({ event: "sms_opt_in", from: maskPhone(from), keyword })
@@ -271,8 +298,14 @@ router.post("/inbound", async (req, res) => {
        * get read as an instruction about a booking. It gets one answer telling
        * the sender where a person actually is.
        */
-      console.log(JSON.stringify({ event: "sms_inbound_ignored", from: maskPhone(from) }));
-      await replyThatNobodyIsReading(from, req.body);
+      console.log(JSON.stringify({ event: "sms_inbound_stored", from: maskPhone(from) }));
+      /*
+       * The "not monitored" auto-reply stays exactly as it was until the owner
+       * switches it off in Communications settings (it becomes untrue once
+       * somebody reads this inbox). Default: on.
+       */
+      const settings = await require("../utils/comms/core").getSettings();
+      if (settings.inboundAutoReply !== "off") await replyThatNobodyIsReading(from, req.body);
     }
   } catch (error) {
     console.error(

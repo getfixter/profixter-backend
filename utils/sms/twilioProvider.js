@@ -139,6 +139,14 @@ async function sendMessage({
   body,
   notificationType = "",
   statusCallback = statusCallbackUrl(),
+  /*
+   * Communications (utils/comms) names the exact Profixter line. With a
+   * Messaging Service, Twilio uses a From that is in the service's sender
+   * pool, so the customer sees the number chosen and the service's opt-out
+   * handling still applies. Automated texts pass neither and are unchanged.
+   */
+  from = "",
+  mediaUrls = [],
 }) {
   /*
    * Asked per type, and asked again here on purpose. The service layer has
@@ -179,9 +187,11 @@ async function sendMessage({
    */
   if (creds.messagingServiceSid) {
     params.set("MessagingServiceSid", creds.messagingServiceSid);
+    if (from) params.set("From", from);
   } else {
-    params.set("From", creds.phoneNumber);
+    params.set("From", from || creds.phoneNumber);
   }
+  for (const url of (mediaUrls || []).slice(0, 10)) params.append("MediaUrl", url);
   if (statusCallback) params.set("StatusCallback", statusCallback);
 
   const url = `${TWILIO_API_BASE}/Accounts/${encodeURIComponent(creds.accountSid)}/Messages.json`;
@@ -232,7 +242,67 @@ async function sendMessage({
     status: String(payload?.status || "queued"),
     numSegments: Number(payload?.num_segments || 0) || 0,
     to: maskPhone(payload?.to || to),
+    from: String(payload?.from || ""),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Read-only lookups (reconciliation and history import)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET one Twilio API page. Read-only; uses the API key, falling back to the
+ * account credential for resources the key may not cover. Never logs either.
+ * `pathOrUri` is a path under the account ("/Messages.json?...") or a
+ * next_page_uri Twilio returned.
+ */
+async function twilioGet(pathOrUri, { base = TWILIO_API_BASE } = {}) {
+  if (!twilioConfigured()) throw new SmsProviderError("Twilio is not configured", { reason: "provider_not_configured" });
+  const creds = twilioCredentials();
+  const url = pathOrUri.startsWith("http")
+    ? pathOrUri
+    : pathOrUri.startsWith("/2010-04-01")
+      ? `https://api.twilio.com${pathOrUri}`
+      : `${base}/Accounts/${encodeURIComponent(creds.accountSid)}${pathOrUri}`;
+  const tries = [basicAuthHeader(creds.apiKey, creds.apiSecret)];
+  if (creds.authToken) tries.push(basicAuthHeader(creds.accountSid, creds.authToken));
+  let last = null;
+  for (const auth of tries) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { headers: { Authorization: auth, Accept: "application/json" }, signal: controller.signal });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) return json;
+      last = new SmsProviderError(String(json?.message || `Twilio returned ${res.status}`).slice(0, 200), { code: json?.code, status: res.status });
+      if (res.status !== 401 && res.status !== 403) break;
+    } catch (error) {
+      last = new SmsProviderError(`Twilio request failed: ${error?.message || "network error"}`, { reason: "provider_unreachable", retryable: true });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw last;
+}
+
+/**
+ * Outbound messages to one number from one sender since a moment, for
+ * reconciling a send whose request timed out (did Twilio accept it?).
+ */
+async function findSentMessages({ to, from = "", since }) {
+  const day = new Date(since).toISOString().slice(0, 10);
+  const q = new URLSearchParams({ To: to, PageSize: "50", "DateSent>": day });
+  if (from) q.set("From", from);
+  const json = await twilioGet(`/Messages.json?${q.toString()}`);
+  return json.messages || [];
+}
+
+/** Download Twilio-hosted media (inbound MMS) with our credentials. */
+async function fetchMedia(url) {
+  const creds = twilioCredentials();
+  const res = await fetch(url, { headers: { Authorization: basicAuthHeader(creds.apiKey, creds.apiSecret) }, redirect: "follow" });
+  if (!res.ok) throw new SmsProviderError(`Media download failed (${res.status})`, { status: res.status });
+  return { buffer: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get("content-type") || "application/octet-stream" };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -299,8 +369,11 @@ module.exports = {
   RETRYABLE_TWILIO_CODES,
   SmsProviderError,
   classifyTwilioError,
+  fetchMedia,
+  findSentMessages,
   isOptOutError,
   sendMessage,
+  twilioGet,
   validateTwilioSignature,
   webhookUrlFor,
 };

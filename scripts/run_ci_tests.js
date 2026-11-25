@@ -182,6 +182,8 @@ const SUITES = [
   "test_referral_program.js",
   // Telemarketer invitation-link setup: no shared first password, single-use expiring links.
   "test_staff_setup.js",
+  // Communications: shared inbox, manual and bulk texts, webhooks, imports, timeline.
+  "test_comms.js",
   // Convert to paid visit: a free visit paid as a membership or One-Time visit, in place, once (in-memory replica set).
   "test_free_visit_conversion.js",
   "test_membership_signup_once.js",
