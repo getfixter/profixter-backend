@@ -42,8 +42,13 @@ const MAX_RETRY_ATTEMPTS = RETRY.maxAttempts;
  * thread. The mirror runs after each recorded state change, only with the real
  * model and a live connection, and can never fail the send.
  */
-async function mirror(id, MessageModel) {
-  await require("../comms/ingest").mirrorAfterWrite(id, MessageModel);
+/* Off the send path: the mirror never adds time to an automated text (it runs right after). */
+function mirror(id, MessageModel) {
+  setImmediate(() => {
+    require("../comms/ingest")
+      .mirrorAfterWrite(id, MessageModel)
+      .catch(() => {});
+  });
 }
 
 function isDuplicateKeyError(error) {
@@ -155,7 +160,7 @@ async function deliverClaimedMessage(record, { MessageModel = SmsMessage } = {})
       to: maskPhone(record.toPhone),
       attempts,
     });
-    await mirror(record._id, MessageModel);
+    mirror(record._id, MessageModel);
     return { ok: true, status: "sent", sid: result.sid };
   } catch (error) {
     const retryable = Boolean(error?.retryable) && attempts < MAX_RETRY_ATTEMPTS;
@@ -203,7 +208,7 @@ async function deliverClaimedMessage(record, { MessageModel = SmsMessage } = {})
       reason: error?.reason || "",
       message: truncate(error?.message, 200),
     });
-    await mirror(record._id, MessageModel);
+    mirror(record._id, MessageModel);
     return { ok: false, status: retryable ? "retry_scheduled" : "failed", error };
   }
 }
@@ -305,7 +310,7 @@ async function enqueueSms({
       detail: eligibility.detail || "",
       to: maskPhone(e164),
     });
-    await mirror(record._id, MessageModel);
+    mirror(record._id, MessageModel);
     return { ok: false, status: "suppressed", reason: eligibility.reason, id: record._id };
   }
 
@@ -339,7 +344,7 @@ async function enqueueSms({
       segments: estimateSegments(body),
       bodyPreview: body.slice(0, 80),
     });
-    await mirror(record._id, MessageModel);
+    mirror(record._id, MessageModel);
     return { ok: true, status: "simulated", id: record._id, body };
   }
 

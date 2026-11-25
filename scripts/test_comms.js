@@ -201,6 +201,15 @@ const inbound = (from, body, extra = {}) => webhook("/api/sms/webhook/inbound", 
 const status = (sid, s, extra = {}) => webhook("/api/sms/webhook/status", { MessageSid: sid, MessageStatus: s, ...extra });
 const key = () => `k${crypto.randomUUID().replace(/-/g, "")}`;
 const settle = () => new Promise((r) => setTimeout(r, 50));
+/* The automation mirror runs just after a send (off its path): wait for the row it writes. */
+async function eventually(fn, ms = 3000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await fn();
+    if (v || Date.now() > end) return v;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
 
 let passed = 0;
 let failed = 0;
@@ -482,14 +491,14 @@ const ny2pm = () => {
     const r = await sendTransactionalSms({ notificationType: "ACCOUNT_CREATED", dedupeKey: `t:${hal._id}`, user: hal, vars: { name: "Hal" }, now: ny2pm() });
     assert.strictEqual(r.status, "sent", JSON.stringify(r));
     const sms = await SmsMessage.findById(r.id).lean();
-    const m = await CommMessage.findOne({ smsMessage: sms._id }).lean();
+    const m = await eventually(() => CommMessage.findOne({ smsMessage: sms._id }).lean());
     assert.deepStrictEqual([m.kind, m.automationType, m.status], ["automation", "ACCOUNT_CREATED", "queued"]);
     await status(sms.providerMessageSid, "delivered");
-    assert.strictEqual((await CommMessage.findById(m._id).lean()).status, "delivered");
+    assert.strictEqual((await eventually(async () => ((await CommMessage.findById(m._id).lean()).status === "delivered" ? "delivered" : null))), "delivered");
     assert.strictEqual((await SmsMessage.findById(r.id).lean()).status, "delivered", "the automation's own record still updates");
     const suppressed = await sendTransactionalSms({ notificationType: "ACCOUNT_CREATED", dedupeKey: `t:${nora._id}`, user: nora, vars: {}, now: ny2pm() });
     assert.strictEqual(suppressed.status, "suppressed");
-    const sm = await CommMessage.findOne({ smsMessage: suppressed.id }).lean();
+    const sm = await eventually(() => CommMessage.findOne({ smsMessage: suppressed.id }).lean());
     assert.deepStrictEqual([sm.status, /Not sent/.test(sm.errorMessage)], ["suppressed", true]);
   });
 
