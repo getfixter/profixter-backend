@@ -97,7 +97,7 @@ function conversationQuery({ filter = "all", line = "", channel = "", actorId })
   if (filter === "unmatched") q.linkState = { $in: ["unknown", "ambiguous"] };
   // History-only contacts that nobody has linked stay out of the everyday inbox (Unmatched shows them).
   if (filter !== "unmatched" && filter !== "archived") q.$or = [{ importOnly: { $ne: true } }, { linkState: "linked" }];
-  if (line && toE164(line)) q.lines = toE164(line);
+  if (line && core.lineNumber(line)) q.lines = core.lineNumber(line);
   if (channel) q.channels = channel;
   q.lastMessageAt = { $ne: null };
   return q;
@@ -116,11 +116,16 @@ async function listConversations({ filter = "all", line = "", channel = "", curs
   const c = decodeCursor(cursor);
   if (c) q.$and = [{ $or: [{ lastMessageAt: { $lt: c.at } }, { lastMessageAt: c.at, _id: { $lt: c.id } }] }];
   const n = Math.min(Math.max(Number(limit) || 30, 1), 60);
-  const rows = await CommConversation.find(q).sort({ lastMessageAt: -1, _id: -1 }).limit(n + 1).lean();
+  const [rows, total] = await Promise.all([
+    CommConversation.find(q).sort({ lastMessageAt: -1, _id: -1 }).limit(n + 1).lean(),
+    // The first page also says how many match, so "select all matching" can show (and confirm) the exact number.
+    c ? Promise.resolve(null) : CommConversation.countDocuments(conversationQuery({ filter, line, channel, actorId })),
+  ]);
   const page = rows.slice(0, n);
   const users = await usersById(page.map((r) => r.user));
   const last = page[page.length - 1];
   return {
+    ...(total === null ? {} : { total }),
     items: page.map((r) => conversationDto(r, users)),
     nextCursor: rows.length > n && last ? `${new Date(last.lastMessageAt).toISOString()}|${last._id}` : null,
   };

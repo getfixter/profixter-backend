@@ -84,7 +84,7 @@ async function nextNumber() {
 
 function validateDraft({ purpose, lineNumber, body, audience }) {
   if (!["service", "marketing"].includes(purpose)) throw new BulkError(400, "PURPOSE", "Choose whether this is a service message or a promotion.");
-  if (!toE164(lineNumber)) throw new BulkError(400, "LINE", "Choose a Profixter number to send from.");
+  if (!core.lineNumber(lineNumber)) throw new BulkError(400, "LINE", "Choose a Profixter number to send from.");
   const text = String(body || "").trim();
   if (!text) throw new BulkError(400, "EMPTY", "Write the message.");
   if (text.length > 1000) throw new BulkError(400, "TOO_LONG", "Keep bulk messages under 1,000 characters.");
@@ -103,7 +103,7 @@ async function createDraft({ actor, name, purpose, lineNumber, body, audience, s
         number: await nextNumber(),
         name: String(name || "").slice(0, 120),
         purpose,
-        lineNumber: toE164(lineNumber),
+        lineNumber: core.lineNumber(lineNumber),
         body: String(body).trim(),
         savedReply: core.isObjectId(savedReply) ? savedReply : null,
         audience: { type: audience.type, userIds: audience.type === "selected" ? audience.userIds.filter(core.isObjectId) : [], segment: audience.segment || "", label },
@@ -129,7 +129,7 @@ async function updateDraft({ id, patch }) {
   if (!["draft", "previewed"].includes(bulk.status)) throw new BulkError(409, "LOCKED", "This bulk send can no longer be edited.");
   const next = { purpose: patch.purpose ?? bulk.purpose, lineNumber: patch.lineNumber ?? bulk.lineNumber, body: patch.body ?? bulk.body, audience: patch.audience ?? bulk.audience };
   validateDraft(next);
-  Object.assign(bulk, { name: patch.name ?? bulk.name, purpose: next.purpose, lineNumber: toE164(next.lineNumber), body: String(next.body).trim(), status: "draft", snapshotAt: null, counts: { total: 0, eligible: 0, excluded: 0 }, exclusions: {} });
+  Object.assign(bulk, { name: patch.name ?? bulk.name, purpose: next.purpose, lineNumber: core.lineNumber(next.lineNumber), body: String(next.body).trim(), status: "draft", snapshotAt: null, counts: { total: 0, eligible: 0, excluded: 0 }, exclusions: {} });
   if (patch.audience) bulk.audience = { type: next.audience.type, userIds: next.audience.type === "selected" ? (next.audience.userIds || []).filter(core.isObjectId) : [], segment: next.audience.segment || "", label: next.audience.type === "segment" ? SEGMENTS.find((s) => s.key === next.audience.segment)?.label || "" : `${(next.audience.userIds || []).length} selected customers` };
   bulk.version += 1;
   await bulk.save();

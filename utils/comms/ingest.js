@@ -1,7 +1,6 @@
 const mongoose = require("mongoose");
 const SmsMessage = require("../../models/SmsMessage");
 const CommMessage = require("../../models/CommMessage");
-const { getTypeSpec } = require("../sms/smsTypes");
 const { toE164, maskPhone } = require("../sms/smsPhone");
 const core = require("./core");
 const { drainPending, rankOf } = require("./status");
@@ -26,7 +25,7 @@ const { drainPending, rankOf } = require("./status");
 async function recordInboundSms(params, { now = new Date() } = {}) {
   const sid = String(params.MessageSid || params.SmsSid || "").trim();
   const from = toE164(params.From);
-  const to = toE164(params.To) || "";
+  const to = core.lineNumber(params.To) || "";
   if (!sid || !from) return { message: null, duplicate: false };
   const existing = await CommMessage.findOne({ provider: "twilio", providerId: sid });
   if (existing) return { message: existing, duplicate: true };
@@ -151,12 +150,10 @@ const MIRROR_STATUS = {
   simulated: "suppressed",
 };
 
+/** "BOOKING_REMINDER_24H" -> "Booking reminder 24h": a short, readable name for the automation. */
 function automationLabel(type) {
-  try {
-    return getTypeSpec(type).description || type;
-  } catch {
-    return type;
-  }
+  const words = String(type || "Automated text").toLowerCase().replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**
@@ -185,7 +182,7 @@ async function mirrorSmsMessage(smsMessageOrId, { importRun = null } = {}) {
     body: sms.body || "",
     toAddress: phone,
     automationType: sms.notificationType,
-    authorName: `Automated: ${automationLabel(sms.notificationType)}`,
+    authorName: `Automated · ${automationLabel(sms.notificationType)}`,
     purpose: sms.channelClass === "marketing" ? "marketing" : "service",
     segments: sms.segments || 0,
     booking: sms.booking || null,

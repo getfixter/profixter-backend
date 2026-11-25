@@ -266,10 +266,21 @@ function installFakes({ s3Root, publicBase, log = console.log, loadStripeData })
 
   /* Twilio -> outbox */
   const twilio = require(local("utils/sms/twilioProvider.js"));
-  twilio.sendMessage = async function previewSendMessage({ to, body, notificationType = "" }) {
+  twilio.sendMessage = async function previewSendMessage({ to, body, notificationType = "", from = "", mediaUrls = [] }) {
     const sid = `SMpreview${crypto.randomBytes(12).toString("hex")}`;
-    await outbox.record({ channel: "sms", to: String(to || ""), body: String(body || ""), notificationType, sid });
-    return { sid, status: "sent", numSegments: Math.max(1, Math.ceil(String(body || "").length / 153)), to: String(to || "") };
+    await outbox.record({ channel: "sms", to: String(to || ""), from: String(from || ""), body: String(body || ""), notificationType, sid, media: (mediaUrls || []).length });
+    return { sid, status: "sent", numSegments: Math.max(1, Math.ceil(String(body || "").length / 153)), to: String(to || ""), from: String(from || "") };
+  };
+  /* Communications' read-only Twilio lookups: answered from the outbox, never the network. */
+  twilio.findSentMessages = async function previewFindSent({ to }) {
+    const items = await outbox.list({ limit: 500 });
+    return items.filter((m) => m.channel === "sms" && m.to === to).map((m) => ({ sid: m.sid, to: m.to, from: m.from, body: m.body, status: "delivered", date_created: new Date(m.at).toUTCString() }));
+  };
+  twilio.twilioGet = async function previewTwilioGet() {
+    return { messages: [], calls: [], incoming_phone_numbers: [], phone_numbers: [], compliance: [], next_page_uri: null };
+  };
+  twilio.fetchMedia = async function previewFetchMedia() {
+    return { buffer: Buffer.from(""), contentType: "image/jpeg" };
   };
 
   /* Schedulers that are not started. */

@@ -263,7 +263,7 @@ function buildMatchingFilter(matching, actorId) {
   if (matching.filter === "problems") q.deliveryProblem = true;
   if (matching.filter === "unmatched") q.linkState = { $in: ["unknown", "ambiguous"] };
   if (matching.filter !== "unmatched" && matching.filter !== "archived") q.$or = [{ importOnly: { $ne: true } }, { linkState: "linked" }];
-  if (matching.line && toE164(matching.line)) q.lines = toE164(matching.line);
+  if (matching.line && core.lineNumber(matching.line)) q.lines = core.lineNumber(matching.line);
   if (matching.channel) q.channels = String(matching.channel);
   q.lastMessageAt = { $ne: null };
   return q;

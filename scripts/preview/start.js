@@ -126,6 +126,22 @@ function previewRouter({ express, s3, outbox, safety, StripeFactory, state }) {
     return sendStored(rest.startsWith(`${prefix}/`) ? rest : `${prefix}/${rest}`, res);
   });
 
+  /*
+   * Communications in the preview: simulate a customer's reply or a carrier
+   * delivery update (what Twilio's signed webhooks do in production). Preview
+   * only; the real webhooks still require Twilio's signature.
+   */
+  router.post("/__preview/sms/inbound", express.json(), async (req, res) => {
+    const { recordInboundSms } = require(path.join(BACKEND, "utils", "comms", "ingest.js"));
+    const r = await recordInboundSms({ MessageSid: `SMpreviewin${Date.now()}${Math.random().toString(16).slice(2, 8)}`, From: req.body?.from, To: req.body?.to || process.env.TWILIO_PHONE_NUMBER, Body: req.body?.body || "", NumMedia: "0" });
+    res.json({ ok: Boolean(r.message), id: r.message ? String(r.message._id) : null });
+  });
+  router.post("/__preview/sms/status", express.json(), async (req, res) => {
+    const { applyProviderStatus } = require(path.join(BACKEND, "utils", "comms", "status.js"));
+    const m = await applyProviderStatus(String(req.body?.sid || ""), String(req.body?.status || ""), { errorCode: req.body?.errorCode || "" });
+    res.json({ ok: Boolean(m), status: m ? m.status : null });
+  });
+
   router.get("/__preview/status", async (req, res) => {
     res.json({
       preview: true,

@@ -36,16 +36,19 @@ function clearSettingsCache() {
  * the Messaging Service with that number as From, so the customer sees exactly
  * the number chosen and the service's opt-out handling still applies.
  */
+/** Our own line from configuration: any well-formed E.164 number (it is ours, not a customer's to validate). */
+const lineNumber = (raw) => toE164(raw) || (/^\+\d{10,15}$/.test(String(raw || "").trim()) ? String(raw).trim() : "");
+
 async function senders() {
   const s = await getSettings();
   const creds = twilioCredentials();
   if (s.senders?.length) return s.senders.map((x) => ({ ...x, messagingServiceSid: x.messagingServiceSid || creds.messagingServiceSid }));
-  const n = toE164(creds.phoneNumber);
+  const n = lineNumber(creds.phoneNumber);
   return n ? [{ number: n, label: "Profixter texts", messagingServiceSid: creds.messagingServiceSid, sms: true, mms: true }] : [];
 }
 
 async function senderFor(number) {
-  const e = toE164(number);
+  const e = lineNumber(number);
   return (await senders()).find((x) => x.number === e) || null;
 }
 
@@ -96,7 +99,7 @@ const contactKeyForPhone = (phone) => {
  * recycled number): then it becomes ambiguous again, so a stranger's new
  * messages never land on the old customer's history.
  */
-async function conversationForPhone(phone, { lineNumber = "", displayName = "" } = {}) {
+async function conversationForPhone(phone, { lineNumber: lineNumberArg = "", displayName = "" } = {}) {
   const e164 = toE164(phone);
   if (!e164) throw new Error("conversationForPhone needs a valid phone");
   const key = contactKeyForPhone(e164);
@@ -106,7 +109,7 @@ async function conversationForPhone(phone, { lineNumber = "", displayName = "" }
     const doc = {
       contactKey: key,
       externalPhone: e164,
-      lineNumber: toE164(lineNumber) || "",
+      lineNumber: lineNumber(lineNumberArg) || "",
       displayName: displayName || "",
       ...linkFromMatches(matches),
     };
@@ -248,6 +251,7 @@ module.exports = {
   getSettings,
   healthEvent,
   isObjectId,
+  lineNumber,
   linkFromMatches,
   phonesForUser,
   preview,
