@@ -77,7 +77,7 @@ const ghl = {
       env,
       fetchImpl,
     }),
-  getMessages: (conversationId, { lastMessageId, limit = 100, type, env, fetchImpl } = {}) =>
+  readConversationMessages: (conversationId, { lastMessageId, limit = 100, type, env, fetchImpl } = {}) =>
     call("GET", `/conversations/${encodeURIComponent(conversationId)}/messages`, { query: { limit, lastMessageId, type }, env, fetchImpl }),
 };
 

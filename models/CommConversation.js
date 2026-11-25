@@ -56,7 +56,7 @@ const CommConversationSchema = new mongoose.Schema(
     lines: { type: [String], default: [] },
     /** True while every message came from a history import (hidden from the default inbox until linked). */
     importOnly: { type: Boolean, default: true },
-    ghlContactId: { type: String, default: "" },
+    importContactId: { type: String, default: "" },
 
     /** Bumped on every change; the live inbox polls on changedAt. */
     version: { type: Number, default: 0 },

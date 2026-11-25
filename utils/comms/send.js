@@ -249,7 +249,7 @@ async function retryText({ actor, messageId, idempotencyKey, quietHoursAck = fal
 }
 
 /** An internal note. Never sent to anyone. */
-async function addNote({ actor, conversationId, body, idempotencyKey }) {
+async function addInternalNote({ actor, conversationId, body, idempotencyKey }) {
   if (!KEY_RE.test(String(idempotencyKey || ""))) throw new SendError(400, "IDEMPOTENCY_KEY_REQUIRED", "Missing idempotency key.");
   const text = String(body || "").trim();
   if (!text) throw new SendError(400, "EMPTY", "Type a note.");
@@ -323,4 +323,4 @@ async function reconcileUnknown({ now = new Date(), limit = 25 } = {}) {
   return out;
 }
 
-module.exports = { OPT_OUT_LINE, SendError, addNote, reconcileUnknown, retryText, sendText, sendingState, withOptOut };
+module.exports = { OPT_OUT_LINE, SendError, addInternalNote, reconcileUnknown, retryText, sendText, sendingState, withOptOut };

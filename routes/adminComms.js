@@ -325,7 +325,7 @@ router.post("/conversations/:id/unlink", ...canSend, async (req, res) => {
 
 router.post("/conversations/:id/notes", ...canSend, async (req, res) => {
   try {
-    const { message, duplicate } = await send.addNote({ actor: actorOf(req), conversationId: req.params.id, body: req.body?.body, idempotencyKey: req.body?.idempotencyKey });
+    const { message, duplicate } = await send.addInternalNote({ actor: actorOf(req), conversationId: req.params.id, body: req.body?.body, idempotencyKey: req.body?.idempotencyKey });
     res.status(duplicate ? 200 : 201).json({ message: read.messageDto(message), duplicate });
   } catch (error) {
     fail(res, error);
@@ -606,7 +606,7 @@ router.get("/settings", ...ownerOnly, async (req, res) => {
     const s = await core.getSettings({ fresh: true });
     const runs = await CommImportRun.find({}).lean();
     res.json({
-      settings: { manualSendingEnabled: s.manualSendingEnabled, bulkSendingEnabled: s.bulkSendingEnabled, inboundAutoReply: s.inboundAutoReply, ghlSyncEnabled: s.ghlSyncEnabled, sendersRefreshedAt: s.sendersRefreshedAt, registration: s.registration || {}, version: s.version },
+      settings: { manualSendingEnabled: s.manualSendingEnabled, bulkSendingEnabled: s.bulkSendingEnabled, inboundAutoReply: s.inboundAutoReply, ghlHistoryAutoImport: s.ghlHistoryAutoImport, sendersRefreshedAt: s.sendersRefreshedAt, registration: s.registration || {}, version: s.version },
       lines: await core.senders(),
       sending: { manual: await send.sendingState("manual"), bulk: await send.sendingState("bulk") },
       imports: imports.SOURCES.map((source) => {
@@ -625,7 +625,7 @@ router.put("/settings", ...ownerOnly, async (req, res) => {
   try {
     const b = req.body || {};
     const set = {};
-    for (const k of ["manualSendingEnabled", "bulkSendingEnabled", "ghlSyncEnabled"]) if (typeof b[k] === "boolean") set[k] = b[k];
+    for (const k of ["manualSendingEnabled", "bulkSendingEnabled", "ghlHistoryAutoImport"]) if (typeof b[k] === "boolean") set[k] = b[k];
     if (b.inboundAutoReply === "on" || b.inboundAutoReply === "off") set.inboundAutoReply = b.inboundAutoReply;
     if (!Object.keys(set).length) return res.status(400).json({ message: "Nothing to change." });
     const filter = { _id: "comms" };

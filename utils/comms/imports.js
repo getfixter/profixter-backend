@@ -242,7 +242,7 @@ async function conversationForGhl(c) {
   const phone = toE164(c.phone);
   if (phone) {
     const conv = await core.conversationForPhone(phone, { displayName: c.contactName || c.fullName || "" });
-    if (!conv.ghlContactId && c.contactId) await core.touch(conv, { ghlContactId: c.contactId, displayName: conv.displayName || c.contactName || c.fullName || "" });
+    if (!conv.importContactId && c.contactId) await core.touch(conv, { importContactId: c.contactId, displayName: conv.displayName || c.contactName || c.fullName || "" });
     return conv;
   }
   const key = `ghl:${c.contactId}`;
@@ -256,7 +256,7 @@ async function conversationForGhl(c) {
     link = core.linkFromMatches(users);
   }
   try {
-    conv = await core.CommConversation.create({ contactKey: key, externalEmail: email, ghlContactId: c.contactId, displayName: c.contactName || c.fullName || email || "GoHighLevel contact", ...link });
+    conv = await core.CommConversation.create({ contactKey: key, externalEmail: email, importContactId: c.contactId, displayName: c.contactName || c.fullName || email || "GoHighLevel contact", ...link });
   } catch (err) {
     if (err?.code !== 11000) throw err;
     conv = await core.CommConversation.findOne({ contactKey: key });
@@ -300,7 +300,7 @@ async function importGhlConversation(run, c) {
   run.counts[conv.linkState === "linked" ? "matched" : "unmatched"] += 1;
   let lastMessageId;
   for (let page = 0; page < 50; page++) {
-    const res = await ghl.getMessages(c.id, { lastMessageId, limit: 100, type: GHL_TYPES });
+    const res = await ghl.readConversationMessages(c.id, { lastMessageId, limit: 100, type: GHL_TYPES });
     const box = res?.messages || {};
     const items = Array.isArray(box) ? box : box.messages || [];
     for (const m of items) {
@@ -394,7 +394,7 @@ async function runImportsTick({ now = new Date() } = {}) {
  */
 async function ghlIncrementalTick() {
   const settings = await core.getSettings();
-  if (!settings.ghlSyncEnabled) return { skipped: true };
+  if (!settings.ghlHistoryAutoImport) return { skipped: true };
   const run = await runFor("ghl");
   if (run.status === "done" || run.status === "idle") await CommImportRun.updateOne({ _id: run._id }, { $set: { status: "running" } });
   return { resumed: true };

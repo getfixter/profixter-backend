@@ -138,7 +138,7 @@ const SettingsSchema = new mongoose.Schema(
       usecase: { type: String, default: "" },
       error: { type: String, default: "" },
     },
-    ghlSyncEnabled: { type: Boolean, default: false },
+    ghlHistoryAutoImport: { type: Boolean, default: false },
     updatedBy: { type: ObjectId, ref: "User", default: null },
     version: { type: Number, default: 0 },
   },
