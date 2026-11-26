@@ -44,9 +44,14 @@ until the owner flips a switch in **Communications → Settings**:
 | "Not monitored" auto-reply | **on** | Same auto-reply as today. Switch **off** once someone answers the inbox (the reply becomes untrue) |
 | Keep GoHighLevel flowing | **off** | GHL history only updates when an import is run |
 
-Changes that take effect at deploy (no customer-visible effect):
-- Inbound texts are **stored** (body, pictures copied to private S3) and shown in
-  the inbox; replays of the same `MessageSid` are no-ops.
+Changes that take effect at deploy, with both sending switches off (tested:
+"DEPLOY STATE" in `scripts/test_comms.js`):
+- Inbound texts are **stored immediately** (body, pictures copied to private S3)
+  and shown in the inbox; replays of the same `MessageSid` are no-ops.
+- The existing **"not monitored" auto-reply still fires** (setting default "on"):
+  it is sent by the pre-existing automation pipeline (`SMS_ENABLED=true`), not by
+  Communications, at most once per number per New York day. Nothing else is
+  sent: manual sends are refused (`SENDING_OFF`) and the bulk worker idles.
 - Inbound calls to the Twilio number are logged (metadata only).
 - Every automated text the existing pipeline records (`SmsMessage`) is mirrored
   into the customer's thread (including held-back ones, labelled "Not sent").
@@ -68,16 +73,35 @@ Mongoose at boot (`commconversations`, `commmessages` (with a text index),
 
 - **STOP** (SmsOptOut, also learned from Twilio error 21610) blocks everything.
   Carrier-refused numbers are not texted.
-- **Service** messages: the customer's own service-text opt-in, **or** a
-  conversation the customer started (they texted us in the last 30 days;
-  one-to-one only, never for bulk). Outside 8am-9pm New York the sender must
-  tick a confirmation.
+- **Service** messages: the customer's own service-text opt-in. Replying to
+  someone who texted first **without** an opt-in is OFF by default (Settings:
+  "Reply to people who texted first without opting in"), because the registered
+  A2P campaign describes consent only from the sign-up form and account settings
+  (see 3a). Outside 8am-9pm New York the sender must tick a confirmation.
 - **Promotions**: only the marketing consent that qualifies under
   `marketingSmsBasis` (never inferred from an account, booking, membership or a
   service text), the marketing switch, the launch date, 11am-6pm; "Reply STOP
   to opt out." is appended.
 - Bulk: blocked customers, duplicates, no phone, STOP and missing consent are
   excluded with their reasons; everyone is re-checked just before their text.
+
+## 3a. What the registered A2P campaign covers (read from Twilio 2026-11-25)
+
+Campaign VERIFIED, use case LOW_VOLUME (mixed), created and last updated
+2026-09-11, brand Premium Island Homes Inc / ProFixter.
+- **Covered:** transactional/service texts about accounts and appointments
+  (confirmations, reminders, schedule changes, visit updates, membership,
+  payments) to customers who ticked "Text me about my ProFixter visits"; and
+  optional promotional texts (memberships, kitchen/bath) to customers who ticked
+  "Text me occasional ProFixter offers". Opt-in only at /signup and /account;
+  "no keyword, no verbal, no paper opt-in". STOP/HELP keywords registered.
+- **Not described:** two-way, staff-written customer-care conversations, or
+  replying to people who texted first without opting in. Sample messages are all
+  one-way notifications. Manual service texts to opted-in customers fit the
+  registered description; replies to non-opted-in texters wait for an updated
+  campaign (Console only; it is VERIFIED) and the owner's setting.
+- Promotions: only the "offers" opt-in, which `marketingSmsBasis` already
+  enforces; bulk promotions additionally stay off (bulk switch).
 
 ## 4. Sources of history and how far back
 
@@ -117,6 +141,15 @@ everyday inbox until linked.
    5. Turn bulk texts on only when needed.
 5. **No webhook cutover**: Twilio already posts to Profixter. Do **not** change
    the Messaging Service or number URLs.
+
+### Turning the auto-reply off for the live test, and restoring it
+
+Admin → Communications → Settings → "Not monitored auto-reply to incoming texts"
+→ switch off (confirm). Takes effect within 5 seconds (settings cache). To
+restore after a failed test: switch it back on. New texters get the reply again
+immediately; a number that already received it today does not get a second one
+until the next New York day (the original once-per-number-per-day rule).
+Tested: "LIVE-TEST SWITCH" in `scripts/test_comms.js`.
 
 ### Live round-trip test (owner's own phone; no customer is texted)
 
@@ -166,7 +199,15 @@ everyday inbox until linked.
 - A shared number is never attached to a customer until someone chooses; a
   recycled number becomes ambiguous; messages keep the customer they belonged
   to when sent; relinking moves history only when asked.
-- Bulk: audience frozen at preview; confirm must quote the count; worker never
-  exceeds it; overlapping workers and crashed workers do not duplicate.
+- Bulk: the preview stores a SHA-256 fingerprint of the line, purpose, message
+  and every recipient's customer id, phone and personalised text. Confirm and the
+  owner's approval must quote that fingerprint (a matching count is not enough),
+  and the server recomputes it from the stored rows; the worker recomputes it
+  before every batch and halts (status "halted", nothing more sent) on any
+  difference. Tested: Alice + Bob previewed, Alice + Carol re-previewed (same
+  count) cannot be confirmed with the first preview; a message change with the
+  same people cannot either; a row swapped after confirmation is refused at
+  approval; a swap after approval halts the send before anyone is texted.
+  Overlapping and crashed workers do not duplicate.
 - Media: private S3; Twilio fetches outbound pictures through a 2-hour HMAC URL;
   Admin views pictures only through a permission-checked endpoint.

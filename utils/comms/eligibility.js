@@ -34,6 +34,7 @@ const TEXT = {
   opted_out_marketing: "This number opted out of promotional texts.",
   phone_undeliverable: "Carriers have refused texts to this number. Fix the number before texting.",
   no_service_consent: "No service-text consent: the customer hasn't turned on service texts and hasn't texted us in the last 30 days.",
+  texted_first_not_registered: "This person texted us but hasn't turned on service texts. Profixter's texting registration covers only customers who opted in, so replies to them are off. The owner can change this in Settings.",
   bulk_requires_opt_in: "Bulk service texts need the customer's own service-text opt-in.",
   transactional_disabled_by_user: "The customer turned service texts off.",
   marketing_requires_account: "Promotional texts need a linked customer with promotional-text consent.",
@@ -88,8 +89,18 @@ async function checkCommsSend({ purpose, phone, user = null, mode = "manual", no
     if (account.eligible) basis = "service_opt_in";
     else if (account.reason === "transactional_disabled_by_user") return no("transactional_disabled_by_user");
     else if (mode === "bulk") return no("bulk_requires_opt_in");
-    else if (await customerTextedRecently(e164, now)) basis = "customer_texted_recently";
-    else return no("no_service_consent");
+    else if (await customerTextedRecently(e164, now)) {
+      /*
+       * The registered A2P campaign (2026-09-11) describes consent ONLY from the
+       * sign-up form and account settings. Replying to someone who texted first
+       * but never opted in is therefore off unless the owner turns it on
+       * (Settings: replyWithoutOptIn), e.g. after the campaign describes two-way
+       * customer care.
+       */
+      const settings = await require("./core").getSettings();
+      if (!settings.replyWithoutOptIn) return no("texted_first_not_registered");
+      basis = "customer_texted_recently";
+    } else return no("no_service_consent");
     if (mode === "manual" && !withinSendWindow("ACCOUNT_CREATED", now)) {
       warnings.push({
         code: "quiet_hours",

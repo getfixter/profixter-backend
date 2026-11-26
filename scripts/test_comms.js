@@ -300,6 +300,22 @@ const ny2pm = () => {
     assert.strictEqual(twilio.posts.length - before, 1, "the existing 'not monitored' auto-reply still goes out by default, once");
     assert.strictEqual(twilio.posts[twilio.posts.length - 1].get("To"), "+16315550101");
   });
+  await check("DEPLOY STATE (both sending switches off): a reply is stored at once, the existing 'not monitored' auto-reply still fires, and nothing else can send", async () => {
+    const s = (await call("GET", "/api/admin/comms/settings", owner)).body;
+    assert.deepStrictEqual([s.settings.manualSendingEnabled, s.settings.bulkSendingEnabled, s.settings.inboundAutoReply], [false, false, "on"], "the defaults a deploy starts with");
+    const before = twilio.posts.length;
+    assert.strictEqual(await inbound("+16315550303", "Hi, do you work in Commack?"), 200);
+    const m = await CommMessage.findOne({ fromAddress: "+16315550303", direction: "inbound" }).lean();
+    assert.strictEqual(m.body, "Hi, do you work in Commack?", "stored immediately, with its text");
+    assert.strictEqual(twilio.posts.length - before, 1, "the auto-reply went out, exactly as before the release");
+    assert.match(twilio.posts[twilio.posts.length - 1].get("Body"), /not monitored/);
+    const auto = await SmsMessage.findOne({ notificationType: "INBOUND_INFO_REPLY", toPhone: "+16315550303" }).lean();
+    assert.strictEqual(auto.status, "sent", "sent by the existing automation pipeline (SMS_ENABLED), not by Communications");
+    const conv = await CommConversation.findOne({ externalPhone: "+16315550303" });
+    const manual = await call("POST", "/api/admin/comms/send", owner, { conversationId: String(conv._id), lineNumber: LINE, body: "Yes we do", idempotencyKey: key(), quietHoursAck: true });
+    assert.deepStrictEqual([manual.status, manual.body.code], [409, "SENDING_OFF"], "manual texting stays off");
+    assert.strictEqual(twilio.posts.length - before, 1, "nothing but the existing auto-reply was sent");
+  });
   await check("the owner can switch the 'not monitored' auto-reply off; replies are still stored", async () => {
     await CommSettings.updateOne({ _id: "comms" }, { $set: { inboundAutoReply: "off" } }, { upsert: true });
     core.clearSettingsCache();
@@ -307,6 +323,22 @@ const ny2pm = () => {
     await inbound("+16315550101", "Also, can you look at the gate?");
     assert.strictEqual(twilio.posts.length, before);
     assert.strictEqual((await CommConversation.findOne({ externalPhone: "+16315550101" }).lean()).unreadCount, 2);
+  });
+  await check("LIVE-TEST SWITCH: Settings turns the auto-reply off and back on (restores it for new texters; still at most once per number per day)", async () => {
+    const off = await call("PUT", "/api/admin/comms/settings", owner, { inboundAutoReply: "off" });
+    assert.strictEqual(off.status, 200);
+    const before = twilio.posts.length;
+    await inbound("+16315550404", "Test from the owner's phone");
+    assert.strictEqual(twilio.posts.length, before, "off: no auto-reply to the test phone");
+    const on = await call("PUT", "/api/admin/comms/settings", owner, { inboundAutoReply: "on" });
+    assert.strictEqual(on.status, 200);
+    assert.strictEqual((await call("GET", "/api/admin/comms/settings", owner)).body.settings.inboundAutoReply, "on");
+    await inbound("+16315550505", "A new customer texting after the restore");
+    assert.strictEqual(twilio.posts.length - before, 1, "restored: a new texter gets the auto-reply again");
+    assert.strictEqual(twilio.posts[twilio.posts.length - 1].get("To"), "+16315550505");
+    await inbound("+16315550303", "Second text today from someone already answered");
+    assert.strictEqual(twilio.posts.length - before, 1, "the existing once-per-number-per-day rule still applies");
+    await call("PUT", "/api/admin/comms/settings", owner, { inboundAutoReply: "off" });
   });
   await check("a reply brings an archived conversation back; reading clears unread for everyone", async () => {
     const conv = await CommConversation.findOne({ externalPhone: "+16315550101" });
@@ -362,10 +394,16 @@ const ny2pm = () => {
     assert.match(none.body.message, /hasn't texted us in the last 30 days/);
     const promo = await call("POST", "/api/admin/comms/send", agent, { userId: String(cam._id), lineNumber: LINE, body: "Sale!", purpose: "marketing", idempotencyKey: key(), quietHoursAck: true });
     assert.deepStrictEqual([promo.status, promo.body.reason], [422, "marketing_not_opted_in"]);
-    // Ana texted us: replying is allowed without an opt-in.
+    // Ana texted us but never opted in. The registered campaign covers opted-in customers only, so this is off by default.
     const conv = await CommConversation.findOne({ externalPhone: "+16315550101" });
+    const refused = await call("POST", "/api/admin/comms/send", agent, { conversationId: String(conv._id), lineNumber: LINE, body: "Yes, Tuesday at 10.", idempotencyKey: key(), quietHoursAck: true });
+    assert.deepStrictEqual([refused.status, refused.body.reason], [422, "texted_first_not_registered"]);
+    assert.match(refused.body.message, /registration covers only customers who opted in/);
+    // The owner can allow replies to people who texted first (e.g. once the campaign covers two-way care).
+    assert.strictEqual((await call("PUT", "/api/admin/comms/settings", owner, { replyWithoutOptIn: true })).status, 200);
     const reply = await call("POST", "/api/admin/comms/send", agent, { conversationId: String(conv._id), lineNumber: LINE, body: "Yes, Tuesday at 10.", idempotencyKey: key(), quietHoursAck: true });
     assert.strictEqual(reply.status, 201, JSON.stringify(reply.body));
+    await call("PUT", "/api/admin/comms/settings", owner, { replyWithoutOptIn: false });
   });
   await check("send once: double-click and replay produce ONE Twilio request; the chosen line is the From; accepted is not delivered", async () => {
     const k = key();
@@ -514,25 +552,28 @@ const ny2pm = () => {
   await Blacklist.create({ user: blockedP._id, userId: blockedP.userId, email: blockedP.email, phone: blockedP.phone, phoneDigits: blockedP.phone.slice(2), reason: "test" });
   const audience = [...bulkPeople, noPhone, dup, noOpt, stopped, blockedP].map((u) => String(u._id));
   let bulkId;
+  let bulkHash;
 
   await check("bulk preview freezes the audience and explains every exclusion", async () => {
     const d = await call("POST", "/api/admin/comms/bulk", owner, { name: "Gate check", purpose: "service", lineNumber: LINE, body: "Hi {firstName}, we're in your area Friday.", audience: { type: "selected", userIds: audience } });
     assert.strictEqual(d.status, 201, JSON.stringify(d.body));
     bulkId = d.body.bulk.id;
     const p = (await call("POST", `/api/admin/comms/bulk/${bulkId}/preview`, owner)).body;
+    bulkHash = p.bulk.snapshotHash;
+    assert.match(bulkHash, /^[a-f0-9]{64}$/);
     assert.deepStrictEqual([p.bulk.counts.total, p.bulk.counts.eligible], [9, 4]);
     const reasons = Object.fromEntries(p.exclusions.map((e) => [e.reason, e.count]));
     assert.deepStrictEqual(reasons, { no_valid_phone: 1, duplicate_phone: 1, bulk_requires_opt_in: 1, opted_out_all: 1, blocked: 1 });
     assert.strictEqual(p.samples[0].body, "Hi Bulk, we're in your area Friday.");
   });
   await check("confirm must quote the previewed count; a non-owner's confirmation waits for the owner's approval", async () => {
-    const wrong = await call("POST", `/api/admin/comms/bulk/${bulkId}/confirm`, owner, { expectedEligible: 5, confirmKey: key() });
+    const wrong = await call("POST", `/api/admin/comms/bulk/${bulkId}/confirm`, owner, { expectedEligible: 5, expectedHash: bulkHash, confirmKey: key() });
     assert.strictEqual(wrong.body.code, "COUNT_CHANGED");
     const mk = await call("POST", "/api/admin/comms/bulk", marketer, { purpose: "service", lineNumber: LINE, body: "Hello {firstName}", audience: { type: "selected", userIds: [String(bulkPeople[1]._id)] } });
-    await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/preview`, marketer);
-    const c = await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/confirm`, marketer, { expectedEligible: 1, confirmKey: key() });
+    const mp = (await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/preview`, marketer)).body;
+    const c = await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/confirm`, marketer, { expectedEligible: 1, expectedHash: mp.bulk.snapshotHash, confirmKey: key() });
     assert.strictEqual(c.body.bulk.status, "pending_approval");
-    assert.strictEqual((await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/approve`, marketer)).status, 403);
+    assert.strictEqual((await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/approve`, marketer, { expectedHash: mp.bulk.snapshotHash })).status, 403);
     await bulkMod.runBulkTick({ now: ny2pm() });
     assert.strictEqual(await CommMessage.countDocuments({ bulkSend: mk.body.bulk.id }), 0, "nothing sent before approval");
     await call("POST", `/api/admin/comms/bulk/${mk.body.bulk.id}/cancel`, owner);
@@ -540,7 +581,7 @@ const ny2pm = () => {
   await check("a later member of the audience is NOT texted: only the confirmed snapshot is sent", async () => {
     // Somebody joins the selection list after preview: the confirmed audience cannot grow.
     await CommBulkSend.updateOne({ _id: bulkId }, { $push: { "audience.userIds": (await customer({ name: "Late Joiner", smsPreferences: optedIn }))._id } });
-    const c = await call("POST", `/api/admin/comms/bulk/${bulkId}/confirm`, owner, { expectedEligible: 4, confirmKey: key() });
+    const c = await call("POST", `/api/admin/comms/bulk/${bulkId}/confirm`, owner, { expectedEligible: 4, expectedHash: bulkHash, confirmKey: key() });
     assert.strictEqual(c.body.bulk.status, "scheduled", JSON.stringify(c.body));
     assert.strictEqual(c.body.bulk.confirmedCount, 4);
   });
@@ -575,11 +616,67 @@ const ny2pm = () => {
     const list = (await call("GET", `/api/admin/comms/bulk/${bulkId}/recipients`, owner)).body.items;
     assert.ok(list.some((x) => x.status === "excluded" && /blocked/i.test(x.reason)));
   });
+  await check("EXACT AUDIENCE: preview Alice + Bob, then Alice + Carol is previewed (same count): the Alice + Bob confirmation is refused and Carol is never texted", async () => {
+    const alice = await customer({ name: "Alice Exact", smsPreferences: optedIn });
+    const bob = await customer({ name: "Bob Exact", smsPreferences: optedIn });
+    const carol = await customer({ name: "Carol Swapped", smsPreferences: optedIn });
+    const d = await call("POST", "/api/admin/comms/bulk", owner, { purpose: "service", lineNumber: LINE, body: "Hi {firstName}, see you Friday.", audience: { type: "selected", userIds: [String(alice._id), String(bob._id)] } });
+    const p1 = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
+    assert.strictEqual(p1.bulk.counts.eligible, 2);
+    // Another tab (or person) swaps Bob for Carol and previews again: still 2 people.
+    await call("PUT", `/api/admin/comms/bulk/${d.body.bulk.id}`, owner, { audience: { type: "selected", userIds: [String(alice._id), String(carol._id)] } });
+    const p2 = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
+    assert.strictEqual(p2.bulk.counts.eligible, 2, "same count");
+    assert.notStrictEqual(p2.bulk.snapshotHash, p1.bulk.snapshotHash, "different people, different fingerprint");
+    const stale = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 2, expectedHash: p1.bulk.snapshotHash, confirmKey: key() });
+    assert.deepStrictEqual([stale.status, stale.body.code], [409, "SNAPSHOT_CHANGED"]);
+    const noHash = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 2, confirmKey: key() });
+    assert.deepStrictEqual([noHash.status, noHash.body.code], [409, "SNAPSHOT_CHANGED"], "a matching count alone is never enough");
+    const before = twilio.posts.length;
+    await bulkMod.runBulkTick({ now: ny2pm() });
+    assert.strictEqual(twilio.posts.length, before, "nothing sent: it was never confirmed");
+    assert.ok(!twilio.posts.some((x) => x.get("To") === carol.phone), "Carol was never texted");
+  });
+  await check("EXACT MESSAGE: the same two people with a changed message (same count) cannot be confirmed with the old preview", async () => {
+    const a = await customer({ name: "Ann Message", smsPreferences: optedIn });
+    const b = await customer({ name: "Ben Message", smsPreferences: optedIn });
+    const d = await call("POST", "/api/admin/comms/bulk", owner, { purpose: "service", lineNumber: LINE, body: "We arrive at 9.", audience: { type: "selected", userIds: [String(a._id), String(b._id)] } });
+    const p1 = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
+    await call("PUT", `/api/admin/comms/bulk/${d.body.bulk.id}`, owner, { body: "We arrive at 11." });
+    const p2 = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
+    assert.strictEqual(p2.bulk.counts.eligible, p1.bulk.counts.eligible);
+    const r = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 2, expectedHash: p1.bulk.snapshotHash, confirmKey: key() });
+    assert.deepStrictEqual([r.status, r.body.code], [409, "SNAPSHOT_CHANGED"]);
+  });
+  await check("EXACT APPROVAL AND SEND: a recipient swapped after confirmation is refused at approval; a swap after approval halts the send before anyone is texted", async () => {
+    const alice = await customer({ name: "Alice Approve", smsPreferences: optedIn });
+    const bob = await customer({ name: "Bob Approve", smsPreferences: optedIn });
+    const carol = await customer({ name: "Carol Intruder", smsPreferences: optedIn });
+    // A team member confirms Alice + Bob; it waits for the owner.
+    const d = await call("POST", "/api/admin/comms/bulk", marketer, { purpose: "service", lineNumber: LINE, body: "Hello {firstName}", audience: { type: "selected", userIds: [String(alice._id), String(bob._id)] } });
+    const p = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, marketer)).body;
+    const c = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, marketer, { expectedEligible: 2, expectedHash: p.bulk.snapshotHash, confirmKey: key() });
+    assert.strictEqual(c.body.bulk.status, "pending_approval");
+    // Bob's row is rewritten to Carol behind the screen's back (same count).
+    await CommBulkRecipient.updateOne({ bulk: d.body.bulk.id, phone: bob.phone }, { $set: { user: carol._id, phone: carol.phone, name: carol.name, body: "Hello Carol" } });
+    const ap = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/approve`, owner, { expectedHash: p.bulk.snapshotHash });
+    assert.deepStrictEqual([ap.status, ap.body.code], [409, "SNAPSHOT_CHANGED"], "the owner cannot approve something other than what was confirmed");
+    // Put Bob back; the owner approves the real snapshot; a swap AFTER approval halts the worker.
+    await CommBulkRecipient.updateOne({ bulk: d.body.bulk.id, phone: carol.phone }, { $set: { user: bob._id, phone: bob.phone, name: "Bob Approve", body: "Hello Bob" } });
+    assert.strictEqual((await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/approve`, owner, { expectedHash: p.bulk.snapshotHash })).status, 200);
+    await CommBulkRecipient.updateOne({ bulk: d.body.bulk.id, phone: bob.phone }, { $set: { user: carol._id, phone: carol.phone, body: "Hello Carol" } });
+    const before = twilio.posts.length;
+    const out = await bulkMod.runBulkTick({ now: ny2pm() });
+    assert.strictEqual(out.halted, 1);
+    assert.strictEqual(twilio.posts.length, before, "not even Alice is texted once the snapshot is broken");
+    assert.ok(!twilio.posts.some((x) => x.get("To") === carol.phone), "Carol was never texted");
+    assert.strictEqual((await CommBulkSend.findById(d.body.bulk.id).lean()).status, "halted");
+  });
   await check("a worker that died mid-send is resumed without a second text (idempotent per recipient)", async () => {
     const p = await customer({ name: "Crash Person", smsPreferences: optedIn });
     const d = await call("POST", "/api/admin/comms/bulk", owner, { purpose: "service", lineNumber: LINE, body: "Crash test", audience: { type: "selected", userIds: [String(p._id)] } });
-    await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner);
-    await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 1, confirmKey: key() });
+    const dp = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
+    await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 1, expectedHash: dp.bulk.snapshotHash, confirmKey: key() });
     await bulkMod.runBulkTick({ now: ny2pm() });
     const r = await CommBulkRecipient.findOne({ bulk: d.body.bulk.id }).lean();
     // Simulate: the worker sent, then died before recording the outcome.
@@ -593,9 +690,9 @@ const ny2pm = () => {
   await check("cancel a scheduled send: pending recipients are canceled and nothing goes out", async () => {
     const p = await customer({ name: "Cancel Person", smsPreferences: optedIn });
     const d = await call("POST", "/api/admin/comms/bulk", owner, { purpose: "service", lineNumber: LINE, body: "Later", audience: { type: "selected", userIds: [String(p._id)] } });
-    await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner);
+    const dp = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
     const when = new Date(Date.now() + 3600e3).toISOString();
-    const c = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 1, scheduledFor: when, confirmKey: key() });
+    const c = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 1, expectedHash: dp.bulk.snapshotHash, scheduledFor: when, confirmKey: key() });
     assert.strictEqual(c.body.bulk.status, "scheduled");
     const x = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/cancel`, owner);
     assert.deepStrictEqual([x.body.bulk.status, x.body.canceled], ["canceled", 1]);
@@ -609,7 +706,7 @@ const ny2pm = () => {
     const d = await call("POST", "/api/admin/comms/bulk", owner, { purpose: "marketing", lineNumber: LINE, body: "20% off", audience: { type: "selected", userIds: [String(cam._id)] } });
     const p = (await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/preview`, owner)).body;
     assert.deepStrictEqual(p.exclusions.map((e) => e.reason), ["marketing_not_opted_in"]);
-    const c = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 0, confirmKey: key() });
+    const c = await call("POST", `/api/admin/comms/bulk/${d.body.bulk.id}/confirm`, owner, { expectedEligible: 0, expectedHash: p.bulk.snapshotHash, confirmKey: key() });
     assert.strictEqual(c.status, 409);
     await enableSending(true);
   });

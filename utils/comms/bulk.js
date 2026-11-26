@@ -24,6 +24,7 @@ const send = require("./send");
  * each send's idempotency key is derived from the recipient row, so a worker
  * that dies mid-send and is picked up again lands on the text already sent.
  */
+const crypto = require("crypto");
 const MAX_AUDIENCE = 5000;
 const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
 const RECIPIENT_LOCK_MS = 2 * 60 * 1000;
@@ -73,6 +74,41 @@ async function audienceUsers(audience) {
 function personalize(template, user) {
   const first = String(user.firstName || String(user.name || "").split(" ")[0] || "there").trim() || "there";
   return String(template).replace(/\{\s*firstName\s*\}/g, first).replace(/\{\s*name\s*\}/g, String(user.name || first).trim());
+}
+
+/* ======================================================= exact-audience lock */
+
+/**
+ * The fingerprint of exactly what a person previewed and approved.
+ *
+ * Not a count: the line, the purpose, the message, and each recipient's
+ * customer id, phone number and personalised text, in a fixed order. Two
+ * audiences of the same size (Alice + Bob vs Alice + Carol) or the same people
+ * with a different message produce different fingerprints. Only the confirmed
+ * audience's rows count (round 0, not excluded); their identity never changes
+ * after preview, so the fingerprint stays valid while statuses move.
+ */
+function snapshotDigest(bulk, rows) {
+  const recipients = rows
+    .filter((r) => r.status !== "excluded" && !(r.round > 0))
+    .map((r) => [String(r.user || ""), String(r.phone || ""), String(r.body || "")])
+    .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const material = JSON.stringify({ line: bulk.lineNumber, purpose: bulk.purpose, body: bulk.body, recipients });
+  return crypto.createHash("sha256").update(material).digest("hex");
+}
+
+async function currentDigest(bulk) {
+  const rows = await CommBulkRecipient.find({ bulk: bulk._id }).select("user phone body status round").lean();
+  return snapshotDigest(bulk, rows);
+}
+
+function assertSameSnapshot(bulk, expectedHash, current) {
+  if (!expectedHash || expectedHash !== bulk.snapshotHash) {
+    throw new BulkError(409, "SNAPSHOT_CHANGED", "This isn't the audience and message you reviewed (it was previewed again since). Review the current preview before confirming.");
+  }
+  if (current !== bulk.snapshotHash) {
+    throw new BulkError(409, "SNAPSHOT_CHANGED", "The recipients or message changed after the preview. Preview again before confirming.");
+  }
 }
 
 /* ============================================================== lifecycle */
@@ -180,6 +216,7 @@ async function preview({ id, now = new Date() }) {
   const eligible = rows.filter((r) => r.status === "eligible");
   bulk.status = "previewed";
   bulk.snapshotAt = now;
+  bulk.snapshotHash = snapshotDigest(bulk, rows);
   bulk.counts = { total: users.length, eligible: eligible.length, excluded: users.length - eligible.length };
   bulk.exclusions = exclusions;
   bulk.version += 1;
@@ -203,7 +240,7 @@ function exclusionText(reason) {
  * saw. The owner's confirmation schedules it; anyone else's waits for the
  * owner's approval.
  */
-async function confirm({ id, actor, isOwner, expectedEligible, scheduledFor = null, confirmKey, now = new Date() }) {
+async function confirm({ id, actor, isOwner, expectedEligible, expectedHash, scheduledFor = null, confirmKey, now = new Date() }) {
   if (!/^[A-Za-z0-9_-]{16,100}$/.test(String(confirmKey || ""))) throw new BulkError(400, "KEY", "Missing confirmation key.");
   const replay = await CommBulkSend.findOne({ confirmKey });
   if (replay) return replay;
@@ -212,6 +249,8 @@ async function confirm({ id, actor, isOwner, expectedEligible, scheduledFor = nu
   if (!bulk.snapshotAt || now - bulk.snapshotAt > SNAPSHOT_TTL_MS) throw new BulkError(409, "STALE", "The preview is more than 30 minutes old. Preview again so you confirm today's audience.");
   if (Number(expectedEligible) !== bulk.counts.eligible) throw new BulkError(409, "COUNT_CHANGED", `The audience is ${bulk.counts.eligible} people, not ${expectedEligible}. Review the preview again.`);
   if (bulk.counts.eligible < 1) throw new BulkError(409, "EMPTY", "Nobody in this audience can receive it.");
+  // The exact people and message, not just how many: a same-size swap is refused.
+  assertSameSnapshot(bulk, expectedHash, await currentDigest(bulk));
   const state = await send.sendingState("bulk");
   if (!state.on) throw new BulkError(409, "SENDING_OFF", state.reason);
   let when = now;
@@ -222,7 +261,7 @@ async function confirm({ id, actor, isOwner, expectedEligible, scheduledFor = nu
     if (when.getTime() > now.getTime() + 30 * 864e5) throw new BulkError(400, "WHEN", "Schedule within the next 30 days.");
   }
   const updated = await CommBulkSend.findOneAndUpdate(
-    { _id: bulk._id, status: "previewed", version: bulk.version },
+    { _id: bulk._id, status: "previewed", version: bulk.version, snapshotHash: expectedHash },
     {
       $set: {
         status: isOwner ? "scheduled" : "pending_approval",
@@ -241,9 +280,17 @@ async function confirm({ id, actor, isOwner, expectedEligible, scheduledFor = nu
   return updated;
 }
 
-async function approve({ id, actor, now = new Date() }) {
+/**
+ * The owner approves the exact audience and message they are looking at: the
+ * fingerprint shown with the recipients must match what was confirmed and what
+ * is stored now.
+ */
+async function approve({ id, actor, expectedHash, now = new Date() }) {
+  const pending = await loadBulk(id);
+  if (pending.status !== "pending_approval") throw new BulkError(409, "NOT_PENDING", "This bulk send isn't waiting for approval.");
+  assertSameSnapshot(pending, expectedHash, await currentDigest(pending));
   const bulk = await CommBulkSend.findOneAndUpdate(
-    { _id: id, status: "pending_approval" },
+    { _id: id, status: "pending_approval", snapshotHash: expectedHash },
     { $set: { status: "scheduled", approvedBy: actor._id, approvedByName: core.displayNameOf(actor), approvedAt: now }, $inc: { version: 1 } },
     { new: true }
   );
@@ -375,6 +422,14 @@ async function runBulkTick({ now = new Date(), maxBulks = 3 } = {}) {
       if (!state.on) continue;
       if (!bulkWindowOpen(bulk.purpose, now)) {
         out.waitingForWindow += 1;
+        continue;
+      }
+      // Integrity: the rows about to be sent must still be exactly the approved snapshot.
+      if ((await currentDigest(bulk)) !== bulk.snapshotHash) {
+        await CommBulkSend.updateOne({ _id: bulk._id }, { $set: { status: "halted", haltedReason: "The recipients or message no longer match what was approved. Nothing more was sent." }, $inc: { version: 1 } });
+        await CommBulkRecipient.updateMany({ bulk: bulk._id, status: "eligible" }, { $set: { status: "canceled", reason: "Halted: the audience no longer matched the approval." } });
+        await core.healthEvent("bulk_halted_integrity", String(bulk._id));
+        out.halted = (out.halted || 0) + 1;
         continue;
       }
       if (bulk.status === "scheduled") await CommBulkSend.updateOne({ _id: bulk._id, status: "scheduled" }, { $set: { status: "sending", startedAt: bulk.startedAt || now }, $inc: { version: 1 } });

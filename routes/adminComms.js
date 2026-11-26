@@ -479,6 +479,8 @@ const bulkDto = (b, extra = {}) => ({
   status: b.status,
   scheduledFor: b.scheduledFor,
   snapshotAt: b.snapshotAt,
+  snapshotHash: b.snapshotHash || "",
+  haltedReason: b.haltedReason || "",
   confirmedCount: b.confirmedCount,
   counts: b.counts,
   exclusions: Object.fromEntries(b.exclusions instanceof Map ? b.exclusions : Object.entries(b.exclusions || {})),
@@ -561,7 +563,7 @@ router.get("/bulk/:id/recipients", ...canBulk, async (req, res) => {
 
 router.post("/bulk/:id/confirm", ...canBulk, async (req, res) => {
   try {
-    const row = await bulk.confirm({ id: req.params.id, actor: actorOf(req), isOwner: isOwner(req), expectedEligible: req.body?.expectedEligible, scheduledFor: req.body?.scheduledFor || null, confirmKey: req.body?.confirmKey });
+    const row = await bulk.confirm({ id: req.params.id, actor: actorOf(req), isOwner: isOwner(req), expectedEligible: req.body?.expectedEligible, expectedHash: String(req.body?.expectedHash || ""), scheduledFor: req.body?.scheduledFor || null, confirmKey: req.body?.confirmKey });
     log(req, "Bulk Text Confirmed", "comms_bulk", row._id, row.number, { recipients: row.confirmedCount, status: row.status, scheduledFor: row.scheduledFor, line: row.lineNumber, purpose: row.purpose });
     res.json({ bulk: bulkDto(row) });
   } catch (error) {
@@ -571,7 +573,7 @@ router.post("/bulk/:id/confirm", ...canBulk, async (req, res) => {
 
 router.post("/bulk/:id/approve", ...ownerOnly, async (req, res) => {
   try {
-    const row = await bulk.approve({ id: req.params.id, actor: actorOf(req) });
+    const row = await bulk.approve({ id: req.params.id, actor: actorOf(req), expectedHash: String(req.body?.expectedHash || "") });
     log(req, "Bulk Text Approved", "comms_bulk", row._id, row.number, { recipients: row.confirmedCount });
     res.json({ bulk: bulkDto(row) });
   } catch (error) {
@@ -606,7 +608,7 @@ router.get("/settings", ...ownerOnly, async (req, res) => {
     const s = await core.getSettings({ fresh: true });
     const runs = await CommImportRun.find({}).lean();
     res.json({
-      settings: { manualSendingEnabled: s.manualSendingEnabled, bulkSendingEnabled: s.bulkSendingEnabled, inboundAutoReply: s.inboundAutoReply, ghlHistoryAutoImport: s.ghlHistoryAutoImport, sendersRefreshedAt: s.sendersRefreshedAt, registration: s.registration || {}, version: s.version },
+      settings: { manualSendingEnabled: s.manualSendingEnabled, bulkSendingEnabled: s.bulkSendingEnabled, inboundAutoReply: s.inboundAutoReply, replyWithoutOptIn: Boolean(s.replyWithoutOptIn), ghlHistoryAutoImport: s.ghlHistoryAutoImport, sendersRefreshedAt: s.sendersRefreshedAt, registration: s.registration || {}, version: s.version },
       lines: await core.senders(),
       sending: { manual: await send.sendingState("manual"), bulk: await send.sendingState("bulk") },
       imports: imports.SOURCES.map((source) => {
@@ -625,7 +627,7 @@ router.put("/settings", ...ownerOnly, async (req, res) => {
   try {
     const b = req.body || {};
     const set = {};
-    for (const k of ["manualSendingEnabled", "bulkSendingEnabled", "ghlHistoryAutoImport"]) if (typeof b[k] === "boolean") set[k] = b[k];
+    for (const k of ["manualSendingEnabled", "bulkSendingEnabled", "ghlHistoryAutoImport", "replyWithoutOptIn"]) if (typeof b[k] === "boolean") set[k] = b[k];
     if (b.inboundAutoReply === "on" || b.inboundAutoReply === "off") set.inboundAutoReply = b.inboundAutoReply;
     if (!Object.keys(set).length) return res.status(400).json({ message: "Nothing to change." });
     const filter = { _id: "comms" };

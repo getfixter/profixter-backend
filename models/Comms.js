@@ -42,6 +42,14 @@ const BulkSendSchema = new mongoose.Schema(
     status: { type: String, default: "draft" },
     scheduledFor: { type: Date, default: null },
     snapshotAt: { type: Date, default: null },
+    /*
+     * SHA-256 of exactly what was previewed: line, purpose, message, and every
+     * recipient's customer, phone and personalised text (utils/comms/bulk.js
+     * snapshotDigest). Confirm and approval must quote it; the worker re-checks
+     * it before sending and halts on any difference.
+     */
+    snapshotHash: { type: String, default: "" },
+    haltedReason: { type: String, default: "" },
     confirmedCount: { type: Number, default: 0 },
     counts: {
       total: { type: Number, default: 0 },
@@ -120,6 +128,8 @@ const SettingsSchema = new mongoose.Schema(
     manualSendingEnabled: { type: Boolean, default: false },
     bulkSendingEnabled: { type: Boolean, default: false },
     inboundAutoReply: { type: String, enum: ["on", "off"], default: "on" },
+    /* Reply to someone who texted first but never opted in (off: the A2P campaign registers sign-up/account consent only). */
+    replyWithoutOptIn: { type: Boolean, default: false },
     /** Profixter lines from Twilio (refreshed read-only by the owner). Empty = the configured number. */
     senders: [
       {
