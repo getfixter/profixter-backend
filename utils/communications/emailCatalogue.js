@@ -328,6 +328,15 @@ const NON_REGISTRY_EMAILS = {
     trigger: "A membership checkout completes for a home Stripe is already billing.",
     source: "routes/webhook.js",
   },
+  admin_tip_reconcile_alert: {
+    label: "Admin: tip reconciliation",
+    category: "B",
+    disposition: DISPOSITIONS.VISIBLE,
+    audience: "Internal",
+    channelClass: "internal",
+    trigger: "The hourly Stripe tip check finds a tip with no Profixter record, a difference or a dispute.",
+    source: "jobs/tipReconcile.js",
+  },
   admin_retention_offer_accepted: {
     label: "Admin: retention offer accepted",
     category: "B",

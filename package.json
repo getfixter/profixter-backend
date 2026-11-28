@@ -29,6 +29,8 @@
     "test:email-system": "node scripts/test_transactional_email_system.js",
     "test:fixter-tips": "node scripts/test_fixter_tips.js",
     "test:fixter-tips-integration": "node scripts/test_fixter_tips_integration.js",
+    "test:tip-reconcile-integration": "node scripts/test_tip_reconcile_integration.js",
+    "tips:repair": "node scripts/repair_missing_tips.js",
     "test:invoice-payment-email": "node scripts/test_invoice_payment_notification.js",
     "test:one-time-visit-flow": "node scripts/test_one_time_visit_payment_flow.js",
     "test:full-day": "node scripts/test_full_day_visit.js",

@@ -34,9 +34,7 @@ const {
 const { findBillingUserByEmail } = require("../utils/userLookup");
 const {
   applyRefundToTip,
-  isEligibleFixter,
-  isFixterTipCheckoutSession,
-  tipRecordFromCheckoutSession,
+  isTipCheckoutSession,
 } = require("../utils/fixterTips");
 const mail = require("../utils/emailService");
 const smsNotify = require("../utils/sms/smsNotifications");
@@ -1509,163 +1507,26 @@ async function handleFullDayCheckoutExpired(session, status = "expired") {
 /* Fixter tips                                                         */
 /* ------------------------------------------------------------------ */
 
-function objectIdOrNull(value) {
-  const text = String(value || "").trim();
-  return mongoose.isValidObjectId(text) ? text : null;
-}
-
 /**
- * The Fixter this tip claims to be for, re-validated here.
+ * Record a tip (either tip flow: our tip checkout, or the old static Stripe
+ * tip link). The work lives in utils/tipRecording so the hourly reconcile and
+ * the repair script write tips exactly the way this webhook does. Idempotent on
+ * the PaymentIntent (read, then the unique index). The Fixter is emailed only
+ * from here, never from reconcile or repair.
  *
- * The session was created minutes ago and metadata is not evidence: the
- * employee could have been edited or removed since. Anything that is not
- * currently a Fixter or General Fixter resolves to null and the tip is recorded
- * unassigned rather than credited to a record that no longer means what it did.
+ * eventCreated is the Stripe event time in seconds: the tip carries the time
+ * the customer paid, not the time this happened to run.
  */
-async function loadTipFixter(fixterId) {
-  const id = objectIdOrNull(fixterId);
-  if (!id) return null;
-  const fixter = await User.findById(id)
-    .select("_id name email role employeePosition isActive")
-    .lean();
-  return isEligibleFixter(fixter) ? fixter : null;
-}
-
-/**
- * The person who tipped, where we can say so honestly.
- *
- * The account from our own token is the strong answer. Failing that, an exact
- * match on the email Stripe collected is an identity link, not a guess about
- * who earned the money, so it is safe to record - it never affects attribution.
- */
-async function loadTipUser(userId, booking, session) {
-  const fromToken = objectIdOrNull(userId) || objectIdOrNull(booking?.user);
-  if (fromToken) {
-    const user = await User.findById(fromToken).select("_id name email role").lean();
-    if (user) return user;
-  }
-
-  const email = String(
-    session?.customer_details?.email || session?.customer_email || ""
-  )
-    .trim()
-    .toLowerCase();
-  if (!email) return null;
-
-  // Never an account whose email was only typed at checkout (utils/communications/unconfirmedEmailPolicy).
-  return User.findOne({ email, role: "customer", $or: [{ emailUnconfirmedAt: null }, { emailVerifiedAt: { $ne: null } }] })
-    .select("_id name email role")
-    .lean();
-}
-
-/** Tell the Fixter. Uses their own account email; no address is written here. */
-async function notifyFixterOfTip(tip, fixter) {
-  if (!fixter?.email) return;
-  try {
-    await mail.sendTx(
-      "fixter_tip_received",
-      fixter.email,
-      {
-        name: String(fixter.name || "").split(/\s+/)[0] || "there",
-        amount: formatAdminMoney(tip.amountCents, tip.currency),
-        tipperName: tip.tipperName || "",
-        bookingNumber: tip.bookingNumberSnapshot || "",
-        receivedAt: tip.receivedAt,
-      },
-      {
-        bccAdmin: false,
-        logContext: {
-          userId: fixter._id,
-          recipientName: fixter.name || "",
-          recipientEmail: fixter.email,
-          customerName: tip.tipperName || "",
-          customerEmail: tip.tipperEmail || "",
-          emailType: "transactional",
-          source: "stripeWebhookFixterTip",
-        },
-      }
-    );
-    await Tip.updateOne({ _id: tip._id }, { $set: { notificationSentAt: new Date() } });
-  } catch (error) {
-    console.error("fixter_tip_received email failed:", error.message);
-  }
-}
-
-/**
- * Record a tip.
- *
- * Idempotent on the PaymentIntent in two layers: a read first so the common
- * redelivery is cheap, and the unique index behind it so two deliveries racing
- * each other still produce one Tip.
- */
-async function handleFixterTipCheckoutCompleted(session, eventId) {
-  const metadata = session.metadata || {};
-  const paymentIntentId = stripeId(session.payment_intent);
-
-  if (!paymentIntentId) {
-    logWebhook("error", "fixter_tip_missing_payment_intent", {
-      stripeSessionId: session.id,
-    });
-    return null;
-  }
-
-  if (String(session.payment_status || "").toLowerCase() !== "paid") {
-    logWebhook("warn", "fixter_tip_not_paid", {
-      stripeSessionId: session.id,
-      paymentStatus: session.payment_status || null,
-    });
-    return null;
-  }
-
-  const existing = await Tip.findOne({ stripePaymentIntentId: paymentIntentId }).lean();
-  if (existing) {
-    logWebhook("info", "fixter_tip_duplicate_event", {
-      stripeSessionId: session.id,
-      tipId: String(existing._id),
-    });
-    return { tipId: String(existing._id), duplicate: true };
-  }
-
-  const fixter = await loadTipFixter(metadata.fixterId);
-  const bookingId = objectIdOrNull(metadata.bookingId);
-  const booking = bookingId
-    ? await Booking.findById(bookingId).select("_id bookingNumber name email user").lean()
-    : null;
-  const user = await loadTipUser(metadata.userId, booking, session);
-
-  const record = tipRecordFromCheckoutSession(session, {
-    fixter,
-    booking,
-    user,
+async function handleFixterTipCheckoutCompleted(session, eventId, eventCreated = null) {
+  const paidAt = Number.isFinite(Number(eventCreated)) && Number(eventCreated) > 0 ? new Date(Number(eventCreated) * 1000) : new Date();
+  const result = await require("../utils/tipRecording").recordTipFromSession(session, {
     eventId,
+    paidAt,
+    recordedBy: "webhook",
+    notify: true,
   });
-
-  let tip;
-  try {
-    tip = await Tip.create(record);
-  } catch (error) {
-    if (error?.code === 11000) {
-      const winner = await Tip.findOne({ stripePaymentIntentId: paymentIntentId }).lean();
-      logWebhook("info", "fixter_tip_concurrent_duplicate", {
-        stripeSessionId: session.id,
-        tipId: winner ? String(winner._id) : null,
-      });
-      return winner ? { tipId: String(winner._id), duplicate: true } : null;
-    }
-    throw error;
-  }
-
-  logWebhook("info", "fixter_tip_recorded", {
-    stripeSessionId: session.id,
-    tipId: String(tip._id),
-    amountCents: tip.amountCents,
-    attributed: !!tip.fixter,
-    assignmentStatus: tip.assignmentStatus,
-  });
-
-  await notifyFixterOfTip(tip, fixter);
-
-  return { tipId: String(tip._id), attributed: !!tip.fixter };
+  if (!result) return null;
+  return result.duplicate ? { tipId: result.tipId, duplicate: true } : { tipId: result.tipId, attributed: result.attributed };
 }
 
 /**
@@ -1698,6 +1559,29 @@ async function handleTipChargeRefunded(charge) {
     status: tip.status,
   });
   return { tipId: String(tip._id), ...result };
+}
+
+/**
+ * A disputed tip: flagged for a person, amounts untouched. A chargeback is not
+ * a refund until Stripe settles it (a lost dispute arrives as its own money
+ * movement), so the retained total is not guessed here. No-op for anything that
+ * is not a Tip we hold; never throws into the webhook.
+ */
+async function handleTipDispute(dispute) {
+  try {
+    const paymentIntentId = stripeId(dispute?.payment_intent);
+    if (!paymentIntentId) return null;
+    const status = String(dispute?.status || "open").slice(0, 40);
+    const result = await Tip.updateOne(
+      { stripePaymentIntentId: paymentIntentId },
+      { $set: { disputeStatus: status, needsReview: true, reviewReason: `Card dispute in Stripe (${status}).` } }
+    );
+    if (result.matchedCount) logWebhook("warn", "fixter_tip_disputed", { stripePaymentIntentId: paymentIntentId, status });
+    return result.matchedCount ? { status } : null;
+  } catch (error) {
+    logWebhook("warn", "fixter_tip_dispute_flag_failed", { message: String(error?.message || error).slice(0, 160) });
+    return null;
+  }
 }
 
 /**
@@ -1762,7 +1646,7 @@ async function alertIfHomeBilledTwice({ user, subscription, stripeSubscription }
   }
 }
 
-async function handleCheckoutCompleted(session, eventId) {
+async function handleCheckoutCompleted(session, eventId, eventCreated = null) {
   /*
    * A Charge extra payment page (utils/extraCharges). First, and returns: it
    * is a one-time payment for one AdditionalCharge record and must never reach
@@ -1803,8 +1687,9 @@ async function handleCheckoutCompleted(session, eventId) {
     return result;
   }
 
-  if (isFixterTipCheckoutSession(session)) {
-    return handleFixterTipCheckoutCompleted(session, eventId);
+  /* Both tip flows. The old static link is recognised by its Payment Link id, never by the amount. */
+  if (isTipCheckoutSession(session)) {
+    return handleFixterTipCheckoutCompleted(session, eventId, eventCreated);
   }
 
   if (isOneTimeCheckoutSession(session)) {
@@ -2782,7 +2667,7 @@ module.exports = async (req, res) => {
     let syncResult = null;
     switch (event.type) {
       case "checkout.session.completed":
-        syncResult = await handleCheckoutCompleted(event.data.object, event.id);
+        syncResult = await handleCheckoutCompleted(event.data.object, event.id, event.created);
         // An Admin payment link this checkout came from is now paid (no-op for everything else).
         await markAdminPaymentLinkPaid(event.data.object).catch((error) =>
           logWebhook("warn", "admin_payment_link_mark_paid_failed", { stripeSessionId: event.data.object?.id, message: error?.message })
@@ -2830,12 +2715,14 @@ module.exports = async (req, res) => {
         await handleLoyaltyDispute(event.data.object);
         await salesStripe.onDispute(event.data.object, "opened");
         await referralRewards.onDispute(event.data.object, "opened");
+        await handleTipDispute(event.data.object);
         break;
 
       // Sales desk only: the outcome of a chargeback, for the owner's review. (Subscribe the endpoint to it to receive it.)
       case "charge.dispute.closed":
         await salesStripe.onDispute(event.data.object, "closed");
         await referralRewards.onDispute(event.data.object, "closed");
+        await handleTipDispute(event.data.object);
         break;
 
       case "checkout.session.expired":
@@ -2881,7 +2768,7 @@ module.exports = async (req, res) => {
       case "checkout.session.async_payment_failed":
         // A delayed payment on a paid visit's page: paid settles it once; failed ends it (the page is closed by then).
         if (isOneTimeCheckoutSession(event.data.object) || isFullDayCheckoutSession(event.data.object)) {
-          if (event.type === "checkout.session.async_payment_succeeded") syncResult = await handleCheckoutCompleted(event.data.object, event.id);
+          if (event.type === "checkout.session.async_payment_succeeded") syncResult = await handleCheckoutCompleted(event.data.object, event.id, event.created);
           else if (isOneTimeCheckoutSession(event.data.object)) syncResult = await handleOneTimeCheckoutExpired(event.data.object, "failed");
           else syncResult = await handleFullDayCheckoutExpired(event.data.object, "failed");
           break;
@@ -3021,6 +2908,7 @@ module.exports.handleInvoicePaid = handleInvoicePaid;
 module.exports.handlePaidVisitCheckoutExpired = async (session) =>
   isOneTimeCheckoutSession(session) ? handleOneTimeCheckoutExpired(session, "expired") : isFullDayCheckoutSession(session) ? handleFullDayCheckoutExpired(session, "expired") : null;
 module.exports.handleTipChargeRefunded = handleTipChargeRefunded;
+module.exports.handleTipDispute = handleTipDispute;
 
 /*
  * The discount helpers, exposed for testing.

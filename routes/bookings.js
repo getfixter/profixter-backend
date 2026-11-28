@@ -423,6 +423,31 @@ router.get("/", auth, async (req, res) => {
     } catch (error) {
       console.error("GET /bookings upgrade state failed:", error?.message || error);
     }
+    /*
+     * "Leave a tip" on a completed visit: the same server-issued, attributed
+     * link the completion email carries (utils/fixterTips tipUrlForBooking). It
+     * used to be the old static Stripe link, which records nothing on the
+     * website (the 2026-11-25 missing tip). The Fixter id is read here only to
+     * seal it inside the encrypted token; it is not sent to the browser.
+     */
+    try {
+      const { tipUrlForBooking } = require("../utils/fixterTips");
+      const completed = bookings.filter((b) => String(b.status || "").toLowerCase() === "completed");
+      if (completed.length) {
+        const fixters = new Map(
+          (await Booking.find({ _id: { $in: completed.map((b) => b._id) } }).select("_id assignedFixterId").lean()).map((b) => [
+            String(b._id),
+            b.assignedFixterId || null,
+          ])
+        );
+        for (const booking of completed) {
+          booking.tipUrl = tipUrlForBooking({ _id: booking._id, user: booking.user, assignedFixterId: fixters.get(String(booking._id)) });
+        }
+      }
+    } catch (error) {
+      console.error("GET /bookings tip links failed:", error?.message || error);
+    }
+
     /* Its Stripe ids and the visit's former type are Admin's, not the card's. */
     for (const booking of bookings) {
       delete booking.freeVisitConversion;

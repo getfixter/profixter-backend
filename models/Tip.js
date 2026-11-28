@@ -115,12 +115,39 @@ const TipSchema = new mongoose.Schema(
     /** Why this tip could not be attributed automatically, for the admin. */
     unassignedReason: { type: String, trim: true, maxlength: 240, default: "" },
 
-    /** How the customer reached the tip page. */
+    /**
+     * How the customer reached the tip page. "legacy_payment_link" is the old
+     * static Stripe tip link (utils/fixterTips LEGACY_TIP_PAYMENT_LINK_IDS),
+     * which carries no Profixter context at all.
+     */
     source: {
       type: String,
-      enum: ["completion_email", "direct"],
+      enum: ["completion_email", "direct", "legacy_payment_link"],
       default: "direct",
     },
+    /**
+     * What the Fixter credit rests on. "checkout_token": the server-issued tip
+     * link named them. "visit_history": an old-link tip, credited because every
+     * visit the customer had in the 30 days before it was done by that one
+     * Fixter (utils/fixterTips attributionFromVisitHistory). "admin": placed by
+     * hand. Empty while unassigned.
+     */
+    attributionBasis: {
+      type: String,
+      enum: ["", "checkout_token", "visit_history", "admin"],
+      default: "",
+    },
+    /** Set when a person should look at this tip (ambiguous match, Stripe disagreement). */
+    needsReview: { type: Boolean, default: false, index: true },
+    reviewReason: { type: String, trim: true, maxlength: 240, default: "" },
+    /** Which path wrote the record: the live webhook, the hourly reconcile, or a repair run. */
+    recordedBy: {
+      type: String,
+      enum: ["webhook", "reconcile", "repair"],
+      default: "webhook",
+    },
+    /** Stripe disputes are recorded for review only; they do not change the amounts. */
+    disputeStatus: { type: String, trim: true, maxlength: 40, default: "" },
     notificationSentAt: { type: Date, default: null },
   },
   { timestamps: true }

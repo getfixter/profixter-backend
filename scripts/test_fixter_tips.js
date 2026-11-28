@@ -1018,6 +1018,156 @@ async function main() {
     assert.strictEqual(summary.fixters[0].weekly, undefined);
   });
 
+  /* ---------------- the old static tip link (2026-11-25 missing tip) ---------------- */
+  console.log("\nThe old static Stripe tip link");
+
+  const LEGACY_LINK = tips.DEFAULT_LEGACY_TIP_PAYMENT_LINK_IDS[0];
+  const legacySession = (over = {}) => ({
+    id: "cs_live_legacy",
+    mode: "payment",
+    payment_status: "paid",
+    amount_total: $(50),
+    currency: "usd",
+    payment_intent: "pi_legacy_1",
+    payment_link: LEGACY_LINK,
+    customer_details: { name: "Gwen Example", email: "gwen@example.com" },
+    metadata: {},
+    ...over,
+  });
+
+  await test("a session from the old tip link is a tip, recognised by the link", () => {
+    assert.strictEqual(LEGACY_LINK, "plink_1RycuaBw0RtvSZjMIGYLnCpD");
+    assert.strictEqual(tips.isLegacyTipPaymentLinkSession(legacySession()), true);
+    assert.strictEqual(tips.isTipCheckoutSession(legacySession()), true);
+    assert.strictEqual(tips.isFixterTipCheckoutSession(legacySession()), false);
+  });
+
+  await test("a $50 payment is never a tip because of its amount", () => {
+    // Same amount, same shape, no tip link and no tip marker: a visit, an
+    // invoice, anything. It must not be classified as a tip.
+    assert.strictEqual(tips.isTipCheckoutSession(legacySession({ payment_link: null })), false);
+    assert.strictEqual(tips.isTipCheckoutSession(legacySession({ payment_link: "plink_1TwpJXBw0RtvSZjM3GNjTObq" })), false);
+    assert.strictEqual(tips.isTipCheckoutSession(legacySession({ mode: "subscription" })), false);
+  });
+
+  await test("the legacy link list can be replaced from the environment", () => {
+    process.env.STRIPE_LEGACY_TIP_PAYMENT_LINKS = "plink_a, plink_b";
+    try {
+      assert.deepStrictEqual(tips.legacyTipPaymentLinkIds(), ["plink_a", "plink_b"]);
+      assert.strictEqual(tips.isTipCheckoutSession(legacySession()), false);
+      assert.strictEqual(tips.isTipCheckoutSession(legacySession({ payment_link: "plink_b" })), true);
+    } finally {
+      delete process.env.STRIPE_LEGACY_TIP_PAYMENT_LINKS;
+    }
+  });
+
+  const paidAt = new Date("2026-11-25T22:40:29Z");
+  const visit = (id, completedAt, fixterId = "fixter1", status = "Completed") => ({
+    _id: id,
+    bookingNumber: id.toUpperCase(),
+    status,
+    completedAt: new Date(completedAt),
+    assignedFixterId: fixterId,
+    name: "Gwen Example",
+    email: "gwen@example.com",
+  });
+  const fixtersById = new Map([
+    ["fixter1", ROMAN],
+    ["fixter2", { ...ROMAN, _id: "fixter2", name: "Other Fixter" }],
+  ]);
+
+  await test("Gwen's case: every recent visit by one Fixter credits that Fixter and the same-day visit", () => {
+    const found = tips.attributionFromVisitHistory({
+      visits: [visit("v_oct29", "2026-10-29T14:07:22Z"), visit("v_nov24", "2026-11-24T15:01:18Z"), visit("v_nov25", "2026-11-25T22:33:26Z")],
+      fixtersById,
+      paidAt,
+    });
+    assert.strictEqual(found.fixter?._id, "fixter1");
+    assert.strictEqual(found.booking?._id, "v_nov25", "the visit completed 7 minutes before the tip is the job");
+    assert.strictEqual(found.reviewReason, "");
+  });
+
+  await test("certain Fixter, uncertain job: the Fixter is credited and the visit is left empty", () => {
+    const found = tips.attributionFromVisitHistory({
+      visits: [visit("v1", "2026-11-25T10:00:00Z"), visit("v2", "2026-11-25T15:00:00Z")],
+      fixtersById,
+      paidAt,
+    });
+    assert.strictEqual(found.fixter?._id, "fixter1");
+    assert.strictEqual(found.booking, null);
+    const late = tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-11-06T22:35:52Z")], fixtersById, paidAt });
+    assert.strictEqual(late.fixter?._id, "fixter1");
+    assert.strictEqual(late.booking, null, "a visit weeks earlier is not linked as the job");
+  });
+
+  await test("two Fixters in the window: nobody is credited, and the reason says why", () => {
+    const found = tips.attributionFromVisitHistory({
+      visits: [visit("v1", "2026-11-20T10:00:00Z", "fixter2"), visit("v2", "2026-11-25T22:33:26Z")],
+      fixtersById,
+      paidAt,
+    });
+    assert.strictEqual(found.fixter, null);
+    assert.match(found.reviewReason, /more than one Fixter/);
+  });
+
+  await test("no recent completed visit, a visit with no Fixter, or a non-Fixter: unassigned with a reason", () => {
+    assert.match(tips.attributionFromVisitHistory({ visits: [], fixtersById, paidAt }).reviewReason, /no completed visit/);
+    assert.match(
+      tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-10-01T10:00:00Z")], fixtersById, paidAt }).reviewReason,
+      /no completed visit/,
+      "a visit older than 30 days counted"
+    );
+    assert.match(
+      tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-11-25T23:00:00Z")], fixtersById, paidAt }).reviewReason,
+      /no completed visit/,
+      "a visit completed after the tip counted"
+    );
+    assert.match(
+      tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-11-25T20:00:00Z", "fixter1", "Confirmed")], fixtersById, paidAt }).reviewReason,
+      /no completed visit/
+    );
+    assert.match(
+      tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-11-25T20:00:00Z", "")], fixtersById, paidAt }).reviewReason,
+      /no Fixter recorded/
+    );
+    assert.match(
+      tips.attributionFromVisitHistory({ visits: [visit("v1", "2026-11-25T20:00:00Z", "ghost")], fixtersById, paidAt }).reviewReason,
+      /not a Fixter account/
+    );
+  });
+
+  await test("an old-link record carries the payment time, the source and what the credit rests on", () => {
+    const credited = tips.tipRecordFromCheckoutSession(legacySession(), {
+      fixter: ROMAN,
+      booking: visit("v_nov25", "2026-11-25T22:33:26Z"),
+      user: { _id: "user1", name: "Gwen Example" },
+      paidAt,
+      recordedBy: "repair",
+    });
+    assert.strictEqual(credited.amountCents, $(50));
+    assert.strictEqual(credited.receivedAt.toISOString(), paidAt.toISOString(), "the tip took the repair time instead of the payment time");
+    assert.strictEqual(credited.source, "legacy_payment_link");
+    assert.strictEqual(credited.attributionBasis, "visit_history");
+    assert.strictEqual(credited.assignmentStatus, "attributed");
+    assert.strictEqual(credited.recordedBy, "repair");
+    assert.strictEqual(credited.needsReview, false);
+    assert.strictEqual(credited.stripePaymentIntentId, "pi_legacy_1");
+
+    const open = tips.tipRecordFromCheckoutSession(legacySession(), { paidAt, reviewReason: "Old-link tip: the customer's recent visits were done by more than one Fixter." });
+    assert.strictEqual(open.fixter, null);
+    assert.strictEqual(open.assignmentStatus, "unassigned");
+    assert.strictEqual(open.needsReview, true);
+    assert.match(open.unassignedReason, /more than one Fixter/);
+  });
+
+  await test("a tip-checkout record says its credit came from the token, and keeps the payment time", () => {
+    const record = tips.tipRecordFromCheckoutSession(session(), { fixter: ROMAN, booking: BOOKING, paidAt });
+    assert.strictEqual(record.attributionBasis, "checkout_token");
+    assert.strictEqual(record.source, "completion_email");
+    assert.strictEqual(record.needsReview, false);
+    assert.strictEqual(record.receivedAt.toISOString(), paidAt.toISOString());
+  });
+
   console.log(`\n${passed} passed, ${failures.length} failed.`);
   if (failures.length) process.exit(1);
 }

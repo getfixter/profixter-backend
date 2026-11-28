@@ -16,10 +16,19 @@
  *    server issued and can decrypt (utils/tipToken); the Fixter is looked up
  *    and re-validated here, on both the create and the record paths.
  *
- * 2. Attribution is recorded or it is absent. There is no inference step. A
- *    tip whose context cannot be resolved is stored unassigned and shown to the
+ * 2. Attribution is recorded or it is absent. There is no guessing. A tip
+ *    whose context cannot be resolved is stored unassigned and shown to the
  *    admin to place by hand. Crediting the likely Fixter would be a bookkeeping
  *    error that looks exactly like a correct entry.
+ *
+ *    One narrow, labelled exception: a tip paid through the OLD static Stripe
+ *    link (which still exists and was still behind My Visits' "Leave a tip"
+ *    until 2026-11-27) carries no context at all. It is credited only when the
+ *    payer is a Profixter customer by a usable account email AND every visit
+ *    that customer had completed in the 30 days before the tip was done by one
+ *    and the same Fixter (attributionFromVisitHistory). Anything less stays
+ *    unassigned and flagged for review. The record says so
+ *    (attributionBasis "visit_history"), so it never looks like a token match.
  *
  * 3. A failed page is lost money. Every failure to resolve context degrades to
  *    an unattributed tip rather than an error, because a customer with their
@@ -96,6 +105,37 @@ const TIP_PRICE_LOOKUP_KEY = "profixter_fixter_tip_usd_v2";
 const TIP_SESSION_WINDOW_MS = 60 * 60 * 1000;
 
 const TIME_ZONE = "America/New_York";
+
+/**
+ * The old static Stripe tip Payment Link ("Tip Mr. Fixter",
+ * buy.stripe.com/eVq8wO3W98O03NL3ASawo00). Still active in Stripe, because it
+ * is printed and bookmarked in places this code cannot see, so its sessions are
+ * recognised as tips by the link they came through - never by their amount.
+ * A code default on purpose: the EB environment is at its size limit.
+ * STRIPE_LEGACY_TIP_PAYMENT_LINKS (comma separated) replaces the list.
+ */
+const DEFAULT_LEGACY_TIP_PAYMENT_LINK_IDS = Object.freeze(["plink_1RycuaBw0RtvSZjMIGYLnCpD"]);
+
+function legacyTipPaymentLinkIds() {
+  const configured = String(process.env.STRIPE_LEGACY_TIP_PAYMENT_LINKS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.length ? configured : [...DEFAULT_LEGACY_TIP_PAYMENT_LINK_IDS];
+}
+
+/**
+ * When the website's tip ledger began recording (first Tip record:
+ * 2026-08-12 18:01 UTC). Tips paid before this never had a website record to
+ * go missing from; they are Stripe-only history, and reconciliation and repair
+ * do not reach behind it unless explicitly told to.
+ */
+const TIP_LEDGER_STARTED_AT = new Date("2026-08-12T18:00:00Z");
+
+/** How far back an old-link tip looks for the visits it could be for. */
+const VISIT_HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** A visit completed this close before the tip is the visit it is linked to. */
+const SAME_VISIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 let cachedTipPriceId = null;
 
@@ -232,6 +272,18 @@ function isFixterTipCheckoutSession(session) {
     String(session?.mode || "").toLowerCase() === "payment" &&
     session?.metadata?.productKind === FIXTER_TIP_PRODUCT_KIND
   );
+}
+
+/** A session from the old static tip link. Identified by the link, never by the amount. */
+function isLegacyTipPaymentLinkSession(session) {
+  if (String(session?.mode || "").toLowerCase() !== "payment") return false;
+  const link = idString(session?.payment_link);
+  return !!link && legacyTipPaymentLinkIds().includes(link);
+}
+
+/** Either tip flow. This is the definition of "a tip" everywhere money is reconciled. */
+function isTipCheckoutSession(session) {
+  return isFixterTipCheckoutSession(session) || isLegacyTipPaymentLinkSession(session);
 }
 
 /**
@@ -449,9 +501,19 @@ async function createTipCheckoutSession({
  * credited, whose name and email are kept, and what an unresolvable tip looks
  * like in the ledger.
  */
-function tipRecordFromCheckoutSession(session, { fixter = null, booking = null, user = null, eventId = "" } = {}) {
+function tipRecordFromCheckoutSession(
+  session,
+  { fixter = null, booking = null, user = null, eventId = "", paidAt = null, recordedBy = "webhook", reviewReason = "" } = {}
+) {
   const metadata = session?.metadata || {};
   const eligible = isEligibleFixter(fixter);
+  const legacy = isLegacyTipPaymentLinkSession(session) && !isFixterTipCheckoutSession(session);
+  /*
+   * When the customer paid, not when we happened to write it down. The live
+   * webhook passes the event time; reconcile and repair pass the charge time.
+   * A tip recorded late must still land in the pay period it was paid in.
+   */
+  const when = paidAt instanceof Date && !Number.isNaN(paidAt.getTime()) ? paidAt : new Date();
 
   /*
    * ProFixter's own record of this customer outranks whatever was typed into
@@ -478,7 +540,7 @@ function tipRecordFromCheckoutSession(session, { fixter = null, booking = null, 
 
     amountCents: Math.max(toCents(session?.amount_total), 0),
     currency: String(session?.currency || "usd").toLowerCase(),
-    receivedAt: new Date(),
+    receivedAt: when,
     status: paidStatus === "paid" ? "succeeded" : "pending",
 
     stripePaymentIntentId: idString(session?.payment_intent),
@@ -504,14 +566,62 @@ function tipRecordFromCheckoutSession(session, { fixter = null, booking = null, 
     refundedAt: null,
 
     assignmentStatus: eligible ? "attributed" : "unassigned",
+    attributionBasis: eligible ? (legacy ? "visit_history" : "checkout_token") : "",
     unassignedReason: eligible
       ? ""
-      : metadata.fixterId
-        ? "The Fixter recorded on this tip is no longer a valid employee account."
-        : "This tip arrived without Fixter context and must be assigned by hand.",
+      : legacy
+        ? cleanText(reviewReason, 240) || "Paid through the old Stripe tip link, which carries no visit or Fixter. Assign by hand."
+        : metadata.fixterId
+          ? "The Fixter recorded on this tip is no longer a valid employee account."
+          : "This tip arrived without Fixter context and must be assigned by hand.",
+    needsReview: !eligible && legacy,
+    reviewReason: !eligible && legacy ? cleanText(reviewReason, 240) || "No verifiable visit or Fixter for this old-link tip." : "",
+    recordedBy: ["webhook", "reconcile", "repair"].includes(recordedBy) ? recordedBy : "webhook",
 
-    source: metadata.source === "completion_email" ? "completion_email" : "direct",
+    source: legacy ? "legacy_payment_link" : metadata.source === "completion_email" ? "completion_email" : "direct",
   };
+}
+
+/**
+ * Who an old-link tip is for, from the customer's own visit history.
+ *
+ * Pure. `visits` are the customer's bookings (any status); `fixtersById` maps
+ * a Fixter id to its user record. The rule, strict on purpose:
+ *   - only visits marked Completed, completed in the 30 days before the tip;
+ *   - every one of them assigned to the same single, eligible Fixter;
+ *   - the visit itself is linked only when exactly one was completed in the
+ *     24 hours before the tip (otherwise the Fixter is still certain, the job
+ *     is not, and the booking stays empty).
+ * Any other shape returns no Fixter and a reason a person can act on.
+ */
+function attributionFromVisitHistory({ visits = [], fixtersById = new Map(), paidAt } = {}) {
+  const paid = new Date(paidAt).getTime();
+  if (!Number.isFinite(paid)) return { fixter: null, booking: null, reviewReason: "The tip has no payment time." };
+
+  const completed = visits
+    .filter((visit) => String(visit?.status || "").toLowerCase() === "completed" && visit.completedAt)
+    .map((visit) => ({ visit, at: new Date(visit.completedAt).getTime() }))
+    .filter(({ at }) => Number.isFinite(at) && at <= paid && at >= paid - VISIT_HISTORY_WINDOW_MS);
+
+  if (!completed.length) {
+    return { fixter: null, booking: null, reviewReason: "Old-link tip: the customer had no completed visit in the 30 days before it." };
+  }
+
+  const fixterIds = new Set(completed.map(({ visit }) => idString(visit.assignedFixterId)));
+  if (fixterIds.has("")) {
+    return { fixter: null, booking: null, reviewReason: "Old-link tip: a recent visit has no Fixter recorded, so who it is for is not certain." };
+  }
+  if (fixterIds.size !== 1) {
+    return { fixter: null, booking: null, reviewReason: "Old-link tip: the customer's recent visits were done by more than one Fixter." };
+  }
+
+  const fixter = fixtersById.get([...fixterIds][0]) || null;
+  if (!isEligibleFixter(fixter)) {
+    return { fixter: null, booking: null, reviewReason: "Old-link tip: the Fixter on the customer's recent visits is not a Fixter account." };
+  }
+
+  const sameVisit = completed.filter(({ at }) => at >= paid - SAME_VISIT_WINDOW_MS);
+  return { fixter, booking: sameVisit.length === 1 ? sameVisit[0].visit : null, reviewReason: "" };
 }
 
 /**
@@ -741,7 +851,13 @@ module.exports = {
   TIP_PRESET_CENTS,
   TIP_PRICE_LOOKUP_KEY,
   TIP_SESSION_WINDOW_MS,
+  TIP_LEDGER_STARTED_AT,
+  DEFAULT_LEGACY_TIP_PAYMENT_LINK_IDS,
   applyRefundToTip,
+  attributionFromVisitHistory,
+  isLegacyTipPaymentLinkSession,
+  isTipCheckoutSession,
+  legacyTipPaymentLinkIds,
   buildTipCheckoutParams,
   createTipCheckoutSession,
   ensureTipPriceId,

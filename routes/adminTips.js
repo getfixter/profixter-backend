@@ -65,6 +65,11 @@ function tipDTO(tip) {
     tipperKind: tip.tipperKind || "unknown",
     bookingNumber: tip.bookingNumberSnapshot || "",
     source: tip.source || "direct",
+    attributionBasis: tip.attributionBasis || "",
+    needsReview: !!tip.needsReview,
+    reviewReason: tip.reviewReason || "",
+    disputeStatus: tip.disputeStatus || "",
+    recordedBy: tip.recordedBy || "webhook",
   };
 }
 
@@ -155,6 +160,10 @@ router.get("/", auth, ...requirePermission(PERMISSIONS.TIPS_READ), async (req, r
       unassigned: isAdmin
         ? tips.filter((tip) => !tip.fixter).map(tipDTO)
         : [],
+      /* Attributed but worth a look: a dispute, or a Stripe difference. Unassigned ones are already above. */
+      needsReview: isAdmin
+        ? tips.filter((tip) => tip.needsReview && tip.fixter).map(tipDTO)
+        : [],
       assignableFixters: isAdmin
         ? employees
             .filter((employee) => isEligibleFixter(employee))
@@ -200,6 +209,7 @@ router.post(
         tip.fixterNameSnapshot = "";
         tip.fixterPositionSnapshot = "";
         tip.assignmentStatus = "unassigned";
+        tip.attributionBasis = "";
         tip.unassignedReason = "Returned to the unassigned list by an admin.";
         tip.assignedAt = new Date();
         tip.assignedBy = req.accessUser._id;
@@ -221,7 +231,13 @@ router.post(
         tip.fixterNameSnapshot = fixterLabel(fixter);
         tip.fixterPositionSnapshot = fixter.employeePosition || "";
         tip.assignmentStatus = "manually_assigned";
+        tip.attributionBasis = "admin";
         tip.unassignedReason = "";
+        /* A person placed it, which is the review an ambiguous match was waiting for. A dispute still stands. */
+        if (!tip.disputeStatus) {
+          tip.needsReview = false;
+          tip.reviewReason = "";
+        }
         tip.assignedAt = new Date();
         tip.assignedBy = req.accessUser._id;
         await tip.save();

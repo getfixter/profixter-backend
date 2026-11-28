@@ -508,6 +508,8 @@ require("./jobs/signatureExpiry").startSignatureExpiry();
 require("./jobs/campaignSender").startCampaignSender();
 /* Charge extra: open payments every 10 minutes, refunds nightly, from Stripe (never charges or messages). */
 require("./jobs/extraCharges").startExtraChargeJobs();
+/* Tips: hourly check of Stripe tip payments against Tip records (records new gaps, alerts; never charges or messages customers). */
+require("./jobs/tipReconcile").startTipReconcileJobs();
 // Sales desk: GHL webhook retries and nightly Stripe reconciliation (our records only).
 require("./jobs/salesDesk").startSalesDeskJobs();
 // Communications: bulk worker, send reconciliation, history imports, health (jobs/comms.js).
