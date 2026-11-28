@@ -27,10 +27,14 @@ const AUTO_RECORD_FROM = new Date("2026-11-28T00:00:00Z");
 const ALERT_KEY = "tip-reconcile-last-alert";
 const ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * What is still wrong. Tips the job just recorded are not part of it: each is
+ * recorded exactly once, so a run that recorded one always reports it, and the
+ * next run does not mistake the same unresolved gap for a new one.
+ */
 function fingerprint(result) {
   const parts = [
     ...result.missing.filter((m) => !result.recorded.some((r) => r.paymentIntentId === m.paymentIntentId)).map((m) => `m:${m.paymentIntentId}`),
-    ...result.recorded.map((r) => `r:${r.paymentIntentId}`),
     ...result.amountMismatch.map((r) => `a:${r.paymentIntentId}`),
     ...result.disputed.map((r) => `d:${r.paymentIntentId}`),
     ...result.unexplained.map((r) => `u:${r.paymentIntentId}`),
@@ -42,7 +46,8 @@ async function alertOnce(result, counts) {
   const AnalyticsState = require("../models/AnalyticsState");
   const print = fingerprint(result);
   const last = await AnalyticsState.findOne({ key: ALERT_KEY }).lean();
-  if (last?.value?.fingerprint === print && Date.now() - Number(last.value.at || 0) < ALERT_REPEAT_MS) return false;
+  const repeat = last?.value?.fingerprint === print && Date.now() - Number(last.value.at || 0) < ALERT_REPEAT_MS;
+  if (repeat && !result.recorded.length) return false;
   await AnalyticsState.updateOne({ key: ALERT_KEY }, { $set: { value: { fingerprint: print, at: Date.now() } } }, { upsert: true });
 
   const { sendAdminEventNotification } = require("../utils/adminLeadNotification");
